@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import Database from 'better-sqlite3-multiple-ciphers'
 import { regeneratePlatform, regenerateUser } from './synthetic'
 
 let root: string
@@ -56,5 +57,17 @@ describe('synthetic regeneration', () => {
   it('writes the user database inside that user folder and nowhere else', () => {
     const userTarget = regenerateUser('testgen', { root })
     expect(userTarget).toBe(join(root, 'users', 'testgen', 'synthetic.db'))
+
+    // Verify the file actually exists
+    expect(existsSync(userTarget)).toBe(true)
+
+    // Verify the seeded content landed in the database
+    const db = new Database(userTarget)
+    try {
+      const row = db.prepare('SELECT merchant FROM spend LIMIT 1').get() as any
+      expect(row?.merchant).toBe('COFFEE PALACE TEST')
+    } finally {
+      db.close()
+    }
   })
 })
