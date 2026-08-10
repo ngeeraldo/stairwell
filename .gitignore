@@ -31,6 +31,9 @@ build/
 next-env.d.ts
 .vercel
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Logs
 *.log
 npm-debug.log*
