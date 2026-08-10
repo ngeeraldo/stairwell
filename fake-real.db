@@ -1,0 +1,3 @@
+DECOY FILE — NOT A DATABASE. NOT REAL DATA.
+Created deliberately to test the .claude/hooks/deny-sensitive-files.sh PreToolUse guard.
+Contains no rows, no schema, no user data, no tokens. Safe to delete at any time.

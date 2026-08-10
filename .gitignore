@@ -1,0 +1,38 @@
+# Databases — CLAUDE.md > Data safety: real DBs exist only on the server.
+# Nothing matching these may ever be committed.
+*.db
+*.sqlite
+*.sqlite3
+
+# SQLite sidecars hold the same rows as the database itself.
+*-wal
+*-shm
+*-journal
+
+# Exception: fake-real.db is a deliberate decoy holding no data. It is tracked
+# on purpose so the guard hook always has a fixture to be tested against.
+# See CLAUDE.md > Data safety.
+!fake-real.db
+
+# Secrets — Plaid tokens, keys.
+.env
+.env.*
+
+# Dependencies
+node_modules/
+
+# Next.js build artifacts
+.next/
+out/
+build/
+next-env.d.ts
+.vercel
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# macOS
+.DS_Store
