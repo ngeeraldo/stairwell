@@ -186,6 +186,24 @@ else
     schema.sql
   gate_check BLOCK "schema + unrelated same-user file" \
     users/alice/schema.sql users/alice/spec.md
+
+  gate_check BLOCK "platform schema alone" \
+    platform/schema.sql
+  gate_check PASS  "platform schema + platform/seed.ts" \
+    platform/schema.sql platform/seed.ts
+  gate_check PASS  "platform schema + tests/" \
+    platform/schema.sql tests/auth/password.test.ts
+  gate_check BLOCK "platform schema + user tests/" \
+    platform/schema.sql users/alice/tests/panels.test.ts
+  gate_check BLOCK "platform schema + platform doc" \
+    platform/schema.sql platform/notes.md
+  gate_check BLOCK "platform unsatisfied, user satisfied" \
+    platform/schema.sql users/alice/schema.sql users/alice/seed.py
+  gate_check PASS  "platform + user, both satisfied" \
+    platform/schema.sql platform/seed.ts \
+    users/alice/schema.sql users/alice/tests/panels.test.ts
+  gate_check PASS  "modules/plaid.sql is not a schema.sql" \
+    modules/plaid.sql
 fi
 echo
 

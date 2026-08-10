@@ -22,28 +22,42 @@ set -uo pipefail
 check_schema_drift() {
   [ $# -eq 0 ] && return 0
 
-  local f g user satisfied
+  local f g user satisfied label seed tests_prefix
   local blocked=""
 
   for f in "$@"; do
-    # Only users/<name>/schema.sql triggers the rule. Reconstructing the path
-    # from the extracted <name> keeps deeper paths from matching loosely.
+    # Pattern table. Each staged schema names the exact generator and the
+    # tests/ prefix that satisfy it. Matching is per-scope and strict:
+    # users/alice is never satisfied by users/bob, and neither is satisfied
+    # by platform.
     case "$f" in
-      users/*/schema.sql) ;;
-      *) continue ;;
+      users/*/schema.sql)
+        user=${f#users/}
+        user=${user%%/*}
+        # Reconstructing the path keeps deeper paths from matching loosely.
+        [ "users/$user/schema.sql" = "$f" ] || continue
+        label="users/$user"
+        seed="users/$user/seed.py"
+        tests_prefix="users/$user/tests/"
+        ;;
+      platform/schema.sql)
+        label="platform"
+        seed="platform/seed.ts"
+        tests_prefix="tests/"
+        ;;
+      *)
+        continue
+        ;;
     esac
-    user=${f#users/}
-    user=${user%%/*}
-    [ "users/$user/schema.sql" = "$f" ] || continue
 
     satisfied=0
     for g in "$@"; do
-      if [ "$g" = "users/$user/seed.py" ]; then
+      if [ "$g" = "$seed" ]; then
         satisfied=1
         break
       fi
       case "$g" in
-        users/"$user"/tests/*)
+        "$tests_prefix"*)
           satisfied=1
           break
           ;;
@@ -52,8 +66,8 @@ check_schema_drift() {
 
     if [ $satisfied -eq 0 ]; then
       case " $blocked " in
-        *" $user "*) ;;
-        *) blocked="$blocked $user" ;;
+        *" $label "*) ;;
+        *) blocked="$blocked $label" ;;
       esac
     fi
   done
@@ -67,14 +81,22 @@ check_schema_drift() {
     echo "CLAUDE.md > Schema & module rules:"
     echo "  \"schema.sql + seed.py + tests/ update in the SAME commit. No drift.\""
     echo
-    for user in $blocked; do
-      echo "  users/$user/schema.sql is staged, but nothing else for '$user' is."
+    for label in $blocked; do
+      echo "  $label/schema.sql is staged, but nothing else for '$label' is."
       echo "    Stage one of these in the same commit:"
-      echo "      users/$user/seed.py"
-      echo "      users/$user/tests/..."
+      case "$label" in
+        platform)
+          echo "      platform/seed.ts"
+          echo "      tests/..."
+          ;;
+        *)
+          echo "      $label/seed.py"
+          echo "      $label/tests/..."
+          ;;
+      esac
       echo
     done
-    echo "A change to another user's folder does not satisfy this — the match is per-user."
+    echo "A change to another scope does not satisfy this — the match is per-scope."
     echo
     echo "git commit --no-verify bypasses this gate for genuine exceptions,"
     echo "but that should be rare. Prefer staging the companion change."
@@ -93,8 +115,8 @@ fi
 # Main: collect staged paths and apply the gate.
 # ---------------------------------------------------------------------------
 
-# Fast path: the overwhelming majority of commits touch no schema.sql at all.
-# Bail out immediately so the gate costs one git call.
+# Fast path: most commits touch no schema.sql at all. Bail out immediately so
+# the gate costs one git call. Gate B replaces this block in Task 3.
 if ! git diff --cached --name-only --diff-filter=ACMR | grep -q '/schema\.sql$'; then
   exit 0
 fi
