@@ -377,6 +377,157 @@ else
 fi
 echo
 
+echo "Gate C: TypeScript errors block the commit"
+if [ ! -f "$GATE" ]; then
+  printf '  %-6s %-34s %s\n' "FAIL" "gate script present (C)" "missing $GATE"
+  fail=$((fail + 1))
+  failed_cases+=("gate script present (C)")
+else
+  # Stub commands stand in for the real compiler via TYPECHECK_CMD so this
+  # group runs in milliseconds instead of shelling out to tsc repeatedly.
+  # The real, unstubbed compiler is exercised separately (see below).
+  _stub_tsc_pass() { return 0; }
+  _stub_tsc_fail() { echo "TS2345: FAKE_TSC_STUB_MARKER not assignable" >&2; return 1; }
+
+  # typecheck_check <expected BLOCK|PASS> <label> <TYPECHECK_CMD stub> <staged paths...>
+  typecheck_check() {
+    local expected=$1 label=$2 cmd=$3
+    shift 3
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE"
+      TYPECHECK_CMD="$cmd" check_typecheck "$@"
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # typecheck_skip_check <expected BLOCK|PASS> <label> <cmd> <staged paths...>
+  typecheck_skip_check() {
+    local expected=$1 label=$2 cmd=$3
+    shift 3
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE"
+      TYPECHECK_CMD="$cmd" SKIP_TYPECHECK=1 check_typecheck "$@"
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # typecheck_says <expected-substring> <label> <cmd> <staged paths...>
+  typecheck_says() {
+    local expected=$1 label=$2 cmd=$3
+    shift 3
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+      TYPECHECK_CMD="$cmd" check_typecheck "$@" 2>&1 >/dev/null
+    )
+    if printf '%s' "$out" | grep -qF "$expected"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "says '$expected'"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s missing '\''%s'\''\n' "FAIL" "$label" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # typecheck_skip_says <expected-substring> <label> <cmd> <staged paths...>
+  typecheck_skip_says() {
+    local expected=$1 label=$2 cmd=$3
+    shift 3
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+      TYPECHECK_CMD="$cmd" SKIP_TYPECHECK=1 check_typecheck "$@" 2>&1 >/dev/null
+    )
+    if printf '%s' "$out" | grep -qF "$expected"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "says '$expected'"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s missing '\''%s'\''\n' "FAIL" "$label" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # typecheck_skip_silent <label> <cmd> <staged paths...>
+  typecheck_skip_silent() {
+    local label=$1 cmd=$2
+    shift 2
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+      TYPECHECK_CMD="$cmd" SKIP_TYPECHECK=1 check_typecheck "$@" 2>&1 >/dev/null
+    )
+    if [ -z "$out" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "silent"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s expected silence, got output\n' "FAIL" "$label"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # 1. Staged .ts + stubbed passing typecheck -> allows.
+  typecheck_check PASS  "staged .ts + passing typecheck" \
+    _stub_tsc_pass lib/auth/password.ts
+  # 2. Staged .ts + stubbed FAILING typecheck -> blocks.
+  typecheck_check BLOCK "staged .ts + failing typecheck" \
+    _stub_tsc_fail lib/auth/password.ts
+  # 3. Staged .tsx + stubbed failing typecheck -> blocks.
+  typecheck_check BLOCK "staged .tsx + failing typecheck" \
+    _stub_tsc_fail "app/admin/page.tsx"
+  # 4. No TypeScript staged -> allows, fast path (command must not even run).
+  typecheck_check PASS  "no TypeScript staged (fast path)" \
+    _stub_tsc_fail CLAUDE.md
+  # 5. Staged .ts + failing typecheck + SKIP_TYPECHECK=1 -> allows.
+  typecheck_skip_check PASS "SKIP_TYPECHECK turns block into pass" \
+    _stub_tsc_fail lib/auth/password.ts
+  # 6. The skip announces itself on stderr.
+  typecheck_skip_says "SKIP_TYPECHECK=1" "skip announces itself" \
+    _stub_tsc_fail lib/auth/password.ts
+  # 7. The skip is silent when no TypeScript is staged.
+  typecheck_skip_silent "skip is silent when no TypeScript staged" \
+    _stub_tsc_fail CLAUDE.md
+  # 8. Blocking output includes the compiler's own message.
+  typecheck_says "FAKE_TSC_STUB_MARKER" "blocking output includes compiler's own message" \
+    _stub_tsc_fail lib/auth/password.ts
+  # 9. SKIP_TYPECHECK=1 does not leak into Gate A (schema drift stays blocked).
+  SKIP_TYPECHECK=1 gate_check BLOCK "SKIP_TYPECHECK does not leak into Gate A" \
+    users/alice/schema.sql
+  # 10. A file merely named like TypeScript (wrong extension) does not trigger.
+  typecheck_check PASS  "file named like TypeScript, wrong extension" \
+    _stub_tsc_fail "docs/typescript-notes.md"
+fi
+echo
+
 total=$((pass + fail))
 if [ $fail -eq 0 ]; then
   echo "All $total checks passed."

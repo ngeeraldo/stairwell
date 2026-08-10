@@ -269,6 +269,76 @@ check_test_coverage() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# Gate C — typecheck.
+#
+# next.config.ts sets no typescript.ignoreBuildErrors, so a TypeScript error
+# is a hard `next build` failure, not a warning. vitest cannot catch this: it
+# transpiles through esbuild, which strips types without ever checking them,
+# so a fully green suite proves nothing about type correctness. This gate is
+# the only thing in the repo that actually runs the compiler.
+#
+# Known limitation: `tsc --noEmit` checks the working tree, not the staged
+# content, so a commit that stages only part of a file's changes gets
+# typechecked against code that is not exactly what is being committed. This
+# is accepted — mutating the working tree from a pre-commit hook to close
+# that gap risks destroying uncommitted work, which is worse than the gap.
+# ---------------------------------------------------------------------------
+
+# check_typecheck <staged paths...>
+#   exit 0 = allow commit, exit 1 = block (message on stderr)
+check_typecheck() {
+  [ $# -eq 0 ] && return 0
+
+  local f has_ts=0
+  for f in "$@"; do
+    case "$f" in
+      *.ts|*.tsx) has_ts=1; break ;;
+    esac
+  done
+  [ $has_ts -eq 0 ] && return 0
+
+  # Indirected so the harness can substitute a stub and run this group in
+  # milliseconds instead of shelling out to tsc dozens of times.
+  TYPECHECK_CMD="${TYPECHECK_CMD:-npx tsc --noEmit}"
+
+  local out rc
+  out=$($TYPECHECK_CMD 2>&1)
+  rc=$?
+  [ $rc -eq 0 ] && return 0
+
+  # An announced skip. Printed only when the gate WOULD have blocked, so a
+  # SKIP_TYPECHECK exported in a shell profile cannot produce noise that
+  # trains the eye to ignore it.
+  if [ "${SKIP_TYPECHECK:-0}" = "1" ]; then
+    {
+      echo
+      echo "Gate C SKIPPED (SKIP_TYPECHECK=1) — TypeScript errors are being ignored:"
+      echo
+      echo "$out"
+      echo
+    } >&2
+    return 0
+  fi
+
+  {
+    echo
+    echo "COMMIT BLOCKED — TypeScript errors"
+    echo
+    echo "next.config.ts sets no typescript.ignoreBuildErrors, so this is a hard"
+    echo "'next build' failure, not a warning. vitest cannot catch it: it"
+    echo "transpiles through esbuild, which strips types without checking them."
+    echo
+    echo "$out"
+    echo
+    echo "git commit --no-verify bypasses this gate for genuine exceptions,"
+    echo "but that should be rare. Prefer fixing the type error."
+    echo
+  } >&2
+
+  return 1
+}
+
 # When sourced by the test harness, stop here and expose the function only.
 if [ "${SCHEMA_GATE_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -283,11 +353,13 @@ while IFS= read -r line; do
   [ -n "$line" ] && files+=("$line")
 done < <(git diff --cached --name-only --diff-filter=ACMR)
 
-# Both gates run; both failures are reported before exiting, so a commit that
-# trips each one does not require two round trips to discover that.
+# All three gates run; all failures are reported before exiting, so a commit
+# that trips more than one does not require multiple round trips to discover
+# that.
 rc=0
 check_schema_drift ${files[@]+"${files[@]}"} || rc=1
 check_test_coverage ${files[@]+"${files[@]}"} || rc=1
+check_typecheck ${files[@]+"${files[@]}"} || rc=1
 [ $rc -ne 0 ] && exit 1
 
 exit 0

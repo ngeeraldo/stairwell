@@ -56,6 +56,15 @@ architectural changes; do not relitigate decided items).
 - `SKIP_TEST_GATE=1 git commit` skips the coverage gate only, and prints the
   untested files. When Claude uses the skip, it states the reason in the
   commit message.
+- A commit staging any `.ts`/`.tsx` file also runs a typecheck gate
+  (`npx tsc --noEmit`) and blocks on a compiler error, printing the
+  compiler's own message. vitest transpiles through esbuild and does not
+  catch type errors, so this gate is the only thing that actually runs the
+  compiler. It checks the working tree, not the staged content, so a
+  partially-staged file is typechecked against unstaged edits too — a known,
+  accepted limitation. `SKIP_TYPECHECK=1 git commit` skips it only, and only
+  announces the skip when a TypeScript file was actually staged. When Claude
+  uses the skip, it states the reason in the commit message.
 
 ## Sacred data
 - Metrics log and chat transcripts are append-only. Never migrate, rewrite,
