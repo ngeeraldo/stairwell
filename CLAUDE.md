@@ -25,6 +25,7 @@ architectural changes; do not relitigate decided items).
   files. A denial is the rule working, not a bug to route around.
 - After any plugin update or hook change, run .claude/hooks/test-hooks.sh
   and confirm all pass.
+- On any fresh clone of this repo, run ./setup.sh before doing anything else.
 
 ## Schema & module rules
 - schema.sql + seed.py + tests/ update in the SAME commit. No drift.
