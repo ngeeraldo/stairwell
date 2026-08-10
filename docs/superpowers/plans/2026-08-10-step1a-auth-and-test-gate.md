@@ -635,6 +635,10 @@ rc=0
 check_schema_drift ${files[@]+"${files[@]}"} || rc=1
 check_test_coverage ${files[@]+"${files[@]}"} || rc=1
 [ $rc -ne 0 ] && exit 1
+
+# Required. Without it the script's exit status is that of the test above,
+# which is 1 when rc is 0 — the hook would block every valid commit.
+exit 0
 ```
 
 The `grep` fast path is removed: Gate B has to classify every staged path, so there is nothing to skip. The hook still makes exactly one `git` call.
