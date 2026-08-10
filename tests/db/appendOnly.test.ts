@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { openPlatformDb } from '@/lib/db/platform'
-import { appendTranscript, readTranscript } from '@/lib/db/appendOnly'
+import { appendMetric, appendTranscript, readTranscript } from '@/lib/db/appendOnly'
 
 let dir: string
 let db: ReturnType<typeof openPlatformDb>
@@ -38,6 +38,14 @@ describe('append-only tables', () => {
     expect(() => db.prepare('DELETE FROM transcripts').run()).toThrow(
       /append-only/,
     )
+  })
+
+  it('appendMetric writes account_id, event, and at to the correct columns', () => {
+    appendMetric(db, { accountId: 7, event: 'session_open', at: 12345 })
+    const rows = db
+      .prepare('SELECT account_id, event, at FROM metrics')
+      .all() as { account_id: number; event: string; at: number }[]
+    expect(rows).toEqual([{ account_id: 7, event: 'session_open', at: 12345 }])
   })
 
   it('refuses UPDATE on metrics', () => {
