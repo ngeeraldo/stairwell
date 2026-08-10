@@ -127,6 +127,68 @@ check DENY  "NotebookEdit notebook_path .db" \
   '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"prod.db"}}'
 echo
 
+# ---------------------------------------------------------------------------
+# Anti-drift pre-commit gate (.githooks/pre-commit)
+#
+# Sourced with SCHEMA_GATE_SOURCE_ONLY=1 so only check_schema_drift() is
+# exposed — no real commits, no staging, no repo state touched.
+# ---------------------------------------------------------------------------
+GATE="$(cd "$HOOK_DIR/../.." && pwd)/.githooks/pre-commit"
+
+echo "Anti-drift gate: schema.sql needs a same-user companion"
+if [ ! -f "$GATE" ]; then
+  printf '  %-6s %-34s %s\n' "FAIL" "gate script present" "missing $GATE"
+  fail=$((fail + 1))
+  failed_cases+=("gate script present")
+else
+  # gate_check <expected BLOCK|PASS> <label> <staged paths...>
+  gate_check() {
+    local expected=$1 label=$2
+    shift 2
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE"
+      check_schema_drift "$@"
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  gate_check BLOCK "schema alone" \
+    users/alice/schema.sql
+  gate_check PASS  "schema + same-user seed.py" \
+    users/alice/schema.sql users/alice/seed.py
+  gate_check PASS  "schema + same-user tests/" \
+    users/alice/schema.sql users/alice/tests/test_panels.py
+  gate_check BLOCK "alice schema + bob tests/" \
+    users/alice/schema.sql users/bob/tests/test_panels.py
+  gate_check BLOCK "alice schema + bob seed.py" \
+    users/alice/schema.sql users/bob/seed.py
+  gate_check PASS  "no schema.sql staged at all" \
+    CLAUDE.md .claude/hooks/test-hooks.sh .gitignore
+  gate_check PASS  "empty staged list"
+  gate_check BLOCK "two users, only one satisfied" \
+    users/alice/schema.sql users/alice/seed.py users/bob/schema.sql
+  gate_check PASS  "two users, both satisfied" \
+    users/alice/schema.sql users/alice/seed.py \
+    users/bob/schema.sql users/bob/tests/test_x.py
+  gate_check PASS  "root schema.sql (rule is per-user)" \
+    schema.sql
+  gate_check BLOCK "schema + unrelated same-user file" \
+    users/alice/schema.sql users/alice/spec.md
+fi
+echo
+
 total=$((pass + fail))
 if [ $fail -eq 0 ]; then
   echo "All $total checks passed."

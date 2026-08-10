@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Anti-drift pre-commit gate.
+#
+# Enforces CLAUDE.md > Schema & module rules:
+#   "schema.sql + seed.py + tests/ update in the SAME commit. No drift."
+#
+# A staged users/<name>/schema.sql must be accompanied, IN THE SAME COMMIT, by
+# a staged change to that SAME user's seed.py or something under that user's
+# tests/. Per-user matching is strict: users/alice/schema.sql is NOT satisfied
+# by users/bob/tests/.
+#
+# Wired via:  git config core.hooksPath .githooks
+#
+# The decision logic lives in check_schema_drift() so it can be sourced and
+# unit-tested against synthetic file lists with no real commits:
+#   SCHEMA_GATE_SOURCE_ONLY=1 . .githooks/pre-commit
+#   check_schema_drift users/alice/schema.sql
+set -uo pipefail
+
+# check_schema_drift <staged paths...>
+#   exit 0 = allow commit, exit 1 = block (message on stderr)
+check_schema_drift() {
+  [ $# -eq 0 ] && return 0
+
+  local f g user satisfied
+  local blocked=""
+
+  for f in "$@"; do
+    # Only users/<name>/schema.sql triggers the rule. Reconstructing the path
+    # from the extracted <name> keeps deeper paths from matching loosely.
+    case "$f" in
+      users/*/schema.sql) ;;
+      *) continue ;;
+    esac
+    user=${f#users/}
+    user=${user%%/*}
+    [ "users/$user/schema.sql" = "$f" ] || continue
+
+    satisfied=0
+    for g in "$@"; do
+      if [ "$g" = "users/$user/seed.py" ]; then
+        satisfied=1
+        break
+      fi
+      case "$g" in
+        users/"$user"/tests/*)
+          satisfied=1
+          break
+          ;;
+      esac
+    done
+
+    if [ $satisfied -eq 0 ]; then
+      case " $blocked " in
+        *" $user "*) ;;
+        *) blocked="$blocked $user" ;;
+      esac
+    fi
+  done
+
+  [ -z "$blocked" ] && return 0
+
+  {
+    echo
+    echo "COMMIT BLOCKED — schema drift"
+    echo
+    echo "CLAUDE.md > Schema & module rules:"
+    echo "  \"schema.sql + seed.py + tests/ update in the SAME commit. No drift.\""
+    echo
+    for user in $blocked; do
+      echo "  users/$user/schema.sql is staged, but nothing else for '$user' is."
+      echo "    Stage one of these in the same commit:"
+      echo "      users/$user/seed.py"
+      echo "      users/$user/tests/..."
+      echo
+    done
+    echo "A change to another user's folder does not satisfy this — the match is per-user."
+    echo
+    echo "git commit --no-verify bypasses this gate for genuine exceptions,"
+    echo "but that should be rare. Prefer staging the companion change."
+    echo
+  } >&2
+
+  return 1
+}
+
+# When sourced by the test harness, stop here and expose the function only.
+if [ "${SCHEMA_GATE_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Main: collect staged paths and apply the gate.
+# ---------------------------------------------------------------------------
+
+# Fast path: the overwhelming majority of commits touch no schema.sql at all.
+# Bail out immediately so the gate costs one git call.
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -q '/schema\.sql$'; then
+  exit 0
+fi
+
+files=()
+while IFS= read -r line; do
+  [ -n "$line" ] && files+=("$line")
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+check_schema_drift ${files[@]+"${files[@]}"} || exit 1
+
+# ---------------------------------------------------------------------------
+# TODO (not implemented yet — deliberate placeholder):
+#
+#   Run scoped tests for each user whose files are staged, i.e. for a staged
+#   users/<name>/*, run that user's suite under users/<name>/tests/ and block
+#   the commit on failure. Scoped rather than repo-wide so the gate stays fast.
+#
+#   Depends on: a per-user test runner existing, and tests/ being populated.
+#   Do NOT implement until those exist — see CLAUDE.md > Testing.
+# ---------------------------------------------------------------------------
+
+exit 0
