@@ -106,6 +106,140 @@ check_schema_drift() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# Gate B — test coverage.
+#
+# CLAUDE.md > Testing: "Changes to data logic (queries, panels, derived
+# tables) require test changes in the same commit. Pure styling/copy changes
+# do not."
+#
+# Each staged path classifies as exempt, a test, or guarded. A guarded scope
+# with no staged test IN ITS OWN SCOPE blocks the commit.
+# ---------------------------------------------------------------------------
+
+# _gate_b_class <path>
+#   prints: exempt | test:<scope> | guard:<scope> | unguarded
+_gate_b_class() {
+  local p=$1 u
+
+  # Docs first: a .md is never a test, even under tests/.
+  case "$p" in
+    *.md|docs/*|LICENSE) echo "exempt"; return ;;
+  esac
+
+  # Test paths, which satisfy their own scope.
+  case "$p" in
+    tests/*) echo "test:platform"; return ;;
+    modules/tests/*) echo "test:modules"; return ;;
+    .claude/hooks/test-hooks.sh) echo "test:guards"; return ;;
+    users/*/tests/*)
+      u=${p#users/}
+      u=${u%%/*}
+      echo "test:user:$u"
+      return
+      ;;
+  esac
+
+  # Gate A's territory. Exempt here so the two gates do not overlap: without
+  # this, Gate B would force tests/ for platform/schema.sql and kill Gate A's
+  # seed branch, and would break the existing "schema + same-user seed.py"
+  # verdict.
+  case "$p" in
+    schema.sql|*/schema.sql|platform/seed.ts|users/*/seed.py) echo "exempt"; return ;;
+  esac
+
+  # Styling, assets, and config.
+  case "$p" in
+    *.css|*.scss|*.svg|public/*|mockup.html|*/mockup.html) echo "exempt"; return ;;
+    *.json|*.yml|*.yaml|*.toml) echo "exempt"; return ;;
+    next.config.*|vitest.config.*|tsconfig*|Caddyfile|.gitignore|setup.sh|deploy/*) echo "exempt"; return ;;
+  esac
+
+  # Guarded scopes.
+  case "$p" in
+    app/*|lib/*|platform/*|middleware.ts) echo "guard:platform"; return ;;
+    modules/*) echo "guard:modules"; return ;;
+    .githooks/*|.claude/hooks/*) echo "guard:guards"; return ;;
+    users/*/*)
+      u=${p#users/}
+      u=${u%%/*}
+      echo "guard:user:$u"
+      return
+      ;;
+  esac
+
+  echo "unguarded"
+}
+
+# check_test_coverage <staged paths...>
+#   exit 0 = allow commit, exit 1 = block (message on stderr)
+check_test_coverage() {
+  [ $# -eq 0 ] && return 0
+
+  local p class scope
+  local guarded="" satisfied="" untested="" unsatisfied=""
+
+  for p in "$@"; do
+    class=$(_gate_b_class "$p")
+    case "$class" in
+      test:*)
+        scope=${class#test:}
+        case " $satisfied " in
+          *" $scope "*) ;;
+          *) satisfied="$satisfied $scope" ;;
+        esac
+        ;;
+      guard:*)
+        scope=${class#guard:}
+        case " $guarded " in
+          *" $scope "*) ;;
+          *) guarded="$guarded $scope" ;;
+        esac
+        untested="${untested}${scope} ${p}
+"
+        ;;
+    esac
+  done
+
+  for scope in $guarded; do
+    case " $satisfied " in
+      *" $scope "*) ;;
+      *) unsatisfied="$unsatisfied $scope" ;;
+    esac
+  done
+
+  [ -z "$unsatisfied" ] && return 0
+
+  {
+    echo
+    echo "COMMIT BLOCKED — untested change"
+    echo
+    echo "CLAUDE.md > Testing:"
+    echo "  \"Changes to data logic (queries, panels, derived tables) require"
+    echo "   test changes in the same commit.\""
+    echo
+    for scope in $unsatisfied; do
+      echo "  scope '$scope' has guarded changes and no staged test:"
+      printf '%s' "$untested" | while IFS=' ' read -r s f; do
+        [ "$s" = "$scope" ] && echo "      $f"
+      done
+      case "$scope" in
+        platform) echo "    Satisfy it by staging a test under: tests/" ;;
+        modules)  echo "    Satisfy it by staging a test under: modules/tests/" ;;
+        guards)   echo "    Satisfy it by staging: .claude/hooks/test-hooks.sh" ;;
+        user:*)   echo "    Satisfy it by staging a test under: users/${scope#user:}/tests/" ;;
+      esac
+      echo
+    done
+    echo "Pure styling or copy changes are exempt by path. If this change is one"
+    echo "of those and the path cannot say so, re-run with:"
+    echo "  SKIP_TEST_GATE=1 git commit ..."
+    echo
+  } >&2
+
+  return 1
+}
+
 # When sourced by the test harness, stop here and expose the function only.
 if [ "${SCHEMA_GATE_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -115,28 +249,16 @@ fi
 # Main: collect staged paths and apply the gate.
 # ---------------------------------------------------------------------------
 
-# Fast path: most commits touch no schema.sql at all. Bail out immediately so
-# the gate costs one git call. Gate B replaces this block in Task 3.
-if ! git diff --cached --name-only --diff-filter=ACMR | grep -q '/schema\.sql$'; then
-  exit 0
-fi
-
 files=()
 while IFS= read -r line; do
   [ -n "$line" ] && files+=("$line")
 done < <(git diff --cached --name-only --diff-filter=ACMR)
 
-check_schema_drift ${files[@]+"${files[@]}"} || exit 1
-
-# ---------------------------------------------------------------------------
-# TODO (not implemented yet — deliberate placeholder):
-#
-#   Run scoped tests for each user whose files are staged, i.e. for a staged
-#   users/<name>/*, run that user's suite under users/<name>/tests/ and block
-#   the commit on failure. Scoped rather than repo-wide so the gate stays fast.
-#
-#   Depends on: a per-user test runner existing, and tests/ being populated.
-#   Do NOT implement until those exist — see CLAUDE.md > Testing.
-# ---------------------------------------------------------------------------
+# Both gates run; both failures are reported before exiting, so a commit that
+# trips each one does not require two round trips to discover that.
+rc=0
+check_schema_drift ${files[@]+"${files[@]}"} || rc=1
+check_test_coverage ${files[@]+"${files[@]}"} || rc=1
+[ $rc -ne 0 ] && exit 1
 
 exit 0

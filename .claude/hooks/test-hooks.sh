@@ -207,6 +207,92 @@ else
 fi
 echo
 
+echo "Gate B: guarded changes need same-scope tests"
+if [ ! -f "$GATE" ]; then
+  printf '  %-6s %-34s %s\n' "FAIL" "gate script present (B)" "missing $GATE"
+  fail=$((fail + 1))
+  failed_cases+=("gate script present (B)")
+else
+  # coverage_check <expected BLOCK|PASS> <label> <staged paths...>
+  coverage_check() {
+    local expected=$1 label=$2
+    shift 2
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE"
+      check_test_coverage "$@"
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  coverage_check BLOCK "lib/ alone" \
+    lib/session/store.ts
+  coverage_check PASS  "lib/ + tests/" \
+    lib/session/store.ts tests/session/store.test.ts
+  coverage_check BLOCK "app/ alone" \
+    "app/admin/page.tsx"
+  coverage_check BLOCK "middleware.ts alone" \
+    middleware.ts
+  coverage_check BLOCK "platform/ code alone" \
+    platform/migrate.ts
+  coverage_check PASS  "docs only" \
+    README.md docs/superpowers/specs/x.md architecture-overview.md
+  coverage_check PASS  "styling only" \
+    "app/globals.css" public/logo.svg
+  coverage_check PASS  "config only" \
+    package.json next.config.ts tsconfig.json vitest.config.ts .gitignore
+  coverage_check BLOCK "user panel alone" \
+    "users/alice/app/panels/spend.tsx"
+  coverage_check PASS  "user panel + same-user tests/" \
+    "users/alice/app/panels/spend.tsx" users/alice/tests/spend.test.ts
+  coverage_check BLOCK "user panel + other-user tests/" \
+    "users/alice/app/panels/spend.tsx" users/bob/tests/spend.test.ts
+  coverage_check PASS  "user contract files only" \
+    users/alice/mockup.html users/alice/spec.md
+  coverage_check BLOCK "modules/ alone" \
+    modules/plaid.sql
+  coverage_check PASS  "modules/ + modules/tests/" \
+    modules/plaid.sql modules/tests/plaid.test.ts
+  coverage_check BLOCK "modules/ + platform tests/" \
+    modules/plaid.sql tests/auth/password.test.ts
+  coverage_check BLOCK "platform code + modules tests/" \
+    lib/db/platform.ts modules/tests/plaid.test.ts
+  coverage_check BLOCK "hook alone" \
+    .githooks/pre-commit
+  coverage_check PASS  "hook + harness" \
+    .githooks/pre-commit .claude/hooks/test-hooks.sh
+  coverage_check BLOCK "guard hook alone" \
+    .claude/hooks/deny-sensitive-files.sh
+  coverage_check PASS  "settings.json is config" \
+    .claude/settings.json
+  coverage_check PASS  "tests/ alone" \
+    tests/auth/password.test.ts
+  coverage_check PASS  "empty staged list"
+  coverage_check PASS  "seed.py alone is Gate A territory" \
+    users/alice/seed.py
+  coverage_check PASS  "seed.ts alone is Gate A territory" \
+    platform/seed.ts
+  coverage_check PASS  "schema.sql alone is Gate A territory" \
+    platform/schema.sql
+  coverage_check BLOCK "two scopes, only one satisfied" \
+    lib/db/platform.ts tests/db/platform.test.ts "users/alice/app/panels/spend.tsx"
+  coverage_check PASS  "two scopes, both satisfied" \
+    lib/db/platform.ts tests/db/platform.test.ts \
+    "users/alice/app/panels/spend.tsx" users/alice/tests/spend.test.ts
+fi
+echo
+
 total=$((pass + fail))
 if [ $fail -eq 0 ]; then
   echo "All $total checks passed."
