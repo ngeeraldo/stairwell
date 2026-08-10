@@ -220,6 +220,25 @@ check_test_coverage() {
 
   [ -z "$unsatisfied" ] && return 0
 
+  # An announced skip. Printed only when the gate WOULD have blocked, so a
+  # SKIP_TEST_GATE exported in a shell profile cannot produce noise that
+  # trains the eye to ignore it.
+  if [ "${SKIP_TEST_GATE:-0}" = "1" ]; then
+    {
+      echo
+      echo "Gate B SKIPPED (SKIP_TEST_GATE=1) — these guarded files ship untested:"
+      for scope in $unsatisfied; do
+        printf '%s' "$untested" | while IFS=' ' read -r s f; do
+          [ "$s" = "$scope" ] && printf '  %-11s %s\n' "$scope:" "$f"
+        done
+      done
+      echo
+      echo "CLAUDE.md > Testing: state the reason for the skip in the commit message."
+      echo
+    } >&2
+    return 0
+  fi
+
   {
     echo
     echo "COMMIT BLOCKED — untested change"

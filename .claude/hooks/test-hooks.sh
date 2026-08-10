@@ -300,6 +300,80 @@ else
   coverage_check PASS  "two scopes, both satisfied" \
     lib/db/platform.ts tests/db/platform.test.ts \
     "users/alice/app/panels/spend.tsx" users/alice/tests/spend.test.ts
+
+  # skip_check <expected BLOCK|PASS> <label> <staged paths...>
+  skip_check() {
+    local expected=$1 label=$2
+    shift 2
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE"
+      SKIP_TEST_GATE=1 check_test_coverage "$@"
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # skip_says <expected-substring> <label> <staged paths...>
+  skip_says() {
+    local expected=$1 label=$2
+    shift 2
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+      SKIP_TEST_GATE=1 check_test_coverage "$@" 2>&1 >/dev/null
+    )
+    if printf '%s' "$out" | grep -qF "$expected"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "says '$expected'"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s missing '\''%s'\''\n' "FAIL" "$label" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # skip_silent <label> <staged paths...>
+  skip_silent() {
+    local label=$1
+    shift
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+      SKIP_TEST_GATE=1 check_test_coverage "$@" 2>&1 >/dev/null
+    )
+    if [ -z "$out" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "silent"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s expected silence, got output\n' "FAIL" "$label"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  skip_check PASS "SKIP_TEST_GATE turns block into pass" \
+    lib/session/store.ts
+  skip_says "lib/session/store.ts" "skip names the untested file" \
+    lib/session/store.ts
+  skip_says "platform:" "skip names the scope" \
+    lib/session/store.ts
+  skip_silent "skip is silent when nothing is guarded" \
+    README.md package.json
+  skip_silent "skip is silent when tests are staged" \
+    lib/session/store.ts tests/session/store.test.ts
 fi
 echo
 

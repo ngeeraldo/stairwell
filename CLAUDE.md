@@ -15,6 +15,9 @@ architectural changes; do not relitigate decided items).
 - All synthetic merchants/values are loudly fake ("COFFEE PALACE TEST").
 - Never log, commit, or write real user data, Plaid tokens, or secrets to
   code, fixtures, tests, or debug output.
+- Derived keys exist only in the in-process TTL map — never serialized,
+  persisted, logged, or written to the sessions table. Passwords and keys
+  never appear in cookies, localStorage, URLs, or any persisted artifact.
 - Real DBs exist only on the server. If a non-synthetic .db appears locally,
   stop and flag it. ONE known exception: fake-real.db in the repo root is a
   deliberate decoy holding no data, used to test the guard hook. Do not flag
@@ -41,6 +44,18 @@ architectural changes; do not relitigate decided items).
 - Changes to data logic (queries, panels, derived tables) require test
   changes in the same commit. Pure styling/copy changes do not.
 - Tests run against a fresh synthetic.db and must pass before deploy.
+- Run tests with `npx vitest run`. Scope a run with a path:
+  `npx vitest run users/nico`, `npx vitest run tests`.
+- The pre-commit gate enforces the first rule by scope:
+  - `app/`, `lib/`, `platform/`, `middleware.ts` → a test under `tests/`
+  - `modules/` → a test under `modules/tests/`
+  - `users/<name>/` → a test under `users/<name>/tests/`
+  - `.githooks/`, `.claude/hooks/` → `.claude/hooks/test-hooks.sh`
+- Docs, styling, and config are exempt by path. `schema.sql` and the seed
+  generators are governed by the anti-drift rule instead.
+- `SKIP_TEST_GATE=1 git commit` skips the coverage gate only, and prints the
+  untested files. When Claude uses the skip, it states the reason in the
+  commit message.
 
 ## Sacred data
 - Metrics log and chat transcripts are append-only. Never migrate, rewrite,
