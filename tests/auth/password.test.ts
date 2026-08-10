@@ -40,9 +40,23 @@ describe('password derivations', () => {
     const hash = await hashPassword('correct horse', saltAuth)
     const key = await deriveDbKey('correct horse', saltKey)
 
-    // The stored verifier must not contain the key material in any form.
-    expect(hash).not.toContain(key.toString('hex'))
-    expect(hash).not.toContain(key.toString('base64'))
+    // The stored verifier's own digest must not equal the key.
+    const digest = Buffer.from(hash.slice(hash.lastIndexOf('$') + 1), 'base64')
+    expect(digest.equals(key)).toBe(false)
+    // The salt actually changes the derived key.
+    expect((await deriveDbKey('correct horse', saltAuth)).equals(key)).toBe(false)
+  })
+
+  it('matches a known answer for a fixed password and salt', async () => {
+    // Pins algorithm, version, memoryCost, timeCost, parallelism, and
+    // outputLen simultaneously: if any library default ever shifts, this
+    // fails loudly instead of silently rekeying every user's database.
+    // The password is loudly fake and the salt/key here are not secrets.
+    const fixedSalt = Buffer.alloc(16, 0x42)
+    const key = await deriveDbKey('correct horse', fixedSalt)
+    expect(key.toString('hex')).toBe(
+      'f947e6e7f8cec5018aaa98bdd372821c55f55dd7c4001c60e604677b1dc8c19a',
+    )
   })
 
   it('gives different salts on every call', () => {

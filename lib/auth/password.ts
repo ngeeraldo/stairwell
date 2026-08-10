@@ -1,4 +1,5 @@
-import { hash, verify, Algorithm } from '@node-rs/argon2'
+import { hash, hashRaw, verify } from '@node-rs/argon2'
+import type { Algorithm } from '@node-rs/argon2'
 import { randomBytes } from 'node:crypto'
 
 /**
@@ -10,11 +11,20 @@ import { randomBytes } from 'node:crypto'
  * verifier gets an attacker no closer to the key.
  */
 
+// `Algorithm` is an ambient `const enum` in @node-rs/argon2's typings, and
+// this project has `isolatedModules: true` (tsconfig.json), so it cannot be
+// referenced as a value (TS2748). Pin the numeric value directly — Argon2id
+// is enum value 2 — via a type-only import plus a cast, so the algorithm
+// stays explicitly, verifiably Argon2id rather than falling back silently
+// to the library default.
+const ARGON2ID = 2 as Algorithm
+
 const OPTS = {
-  algorithm: Algorithm.Argon2id,
+  algorithm: ARGON2ID,
   memoryCost: 19456,
   timeCost: 2,
   parallelism: 1,
+  outputLen: 32,
 } as const
 
 export function newSalts(): { saltAuth: Buffer; saltKey: Buffer } {
@@ -43,8 +53,5 @@ export async function deriveDbKey(
   password: string,
   saltKey: Buffer,
 ): Promise<Buffer> {
-  const encoded = await hash(password, { ...OPTS, salt: saltKey })
-  // The encoded form is `$argon2id$...$<salt>$<hash>`; take the raw digest.
-  const digest = encoded.slice(encoded.lastIndexOf('$') + 1)
-  return Buffer.from(digest, 'base64').subarray(0, 32)
+  return hashRaw(password, { ...OPTS, salt: saltKey, outputLen: 32 })
 }
