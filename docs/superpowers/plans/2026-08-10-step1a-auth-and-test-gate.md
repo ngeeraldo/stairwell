@@ -423,6 +423,16 @@ else
     "app/globals.css" public/logo.svg
   coverage_check PASS  "config only" \
     package.json next.config.ts tsconfig.json vitest.config.ts .gitignore
+  coverage_check BLOCK "nested json is code, not config" \
+    lib/config.json
+  coverage_check PASS  "nested json + platform tests/" \
+    lib/config.json tests/db/config.test.ts
+  coverage_check BLOCK "nested yaml in platform scope" \
+    platform/rules.yaml
+  coverage_check BLOCK "nested toml in modules scope" \
+    modules/plaid.toml
+  coverage_check BLOCK "nested json in user scope" \
+    "users/alice/app/data.json"
   coverage_check BLOCK "user panel alone" \
     "users/alice/app/panels/spend.tsx"
   coverage_check PASS  "user panel + same-user tests/" \
@@ -520,11 +530,21 @@ _gate_b_class() {
     schema.sql|*/schema.sql|platform/seed.ts|users/*/seed.py) echo "exempt"; return ;;
   esac
 
-  # Styling, assets, and config.
+  # Styling, assets, and named config.
   case "$p" in
     *.css|*.scss|*.svg|public/*|mockup.html|*/mockup.html) echo "exempt"; return ;;
-    *.json|*.yml|*.yaml|*.toml) echo "exempt"; return ;;
     next.config.*|vitest.config.*|tsconfig*|Caddyfile|.gitignore|setup.sh|deploy/*) echo "exempt"; return ;;
+  esac
+
+  # Extension-based config exemption, ROOT LEVEL ONLY.
+  #
+  # `case` globs match `/`, so a bare `*.json` arm would also exempt
+  # lib/config.json, platform/rules.yaml, and users/alice/app/data.json —
+  # failing Gate B open for fixtures and rule tables living inside guarded
+  # scopes. Only a path with no slash is tooling config.
+  case "$p" in
+    */*) ;;
+    *.json|*.yml|*.yaml|*.toml) echo "exempt"; return ;;
   esac
 
   # Guarded scopes.

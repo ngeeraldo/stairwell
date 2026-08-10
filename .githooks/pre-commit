@@ -148,11 +148,21 @@ _gate_b_class() {
     schema.sql|*/schema.sql|platform/seed.ts|users/*/seed.py) echo "exempt"; return ;;
   esac
 
-  # Styling, assets, and config.
+  # Styling, assets, and named config.
   case "$p" in
     *.css|*.scss|*.svg|public/*|mockup.html|*/mockup.html) echo "exempt"; return ;;
-    *.json|*.yml|*.yaml|*.toml) echo "exempt"; return ;;
     next.config.*|vitest.config.*|tsconfig*|Caddyfile|.gitignore|setup.sh|deploy/*) echo "exempt"; return ;;
+  esac
+
+  # Extension-based config exemption, ROOT LEVEL ONLY.
+  #
+  # `case` globs match `/`, so a bare `*.json` arm would also exempt
+  # lib/config.json, platform/rules.yaml, and users/alice/app/data.json —
+  # failing Gate B open for fixtures and rule tables living inside guarded
+  # scopes. Only a path with no slash is tooling config.
+  case "$p" in
+    */*) ;;
+    *.json|*.yml|*.yaml|*.toml) echo "exempt"; return ;;
   esac
 
   # Guarded scopes.

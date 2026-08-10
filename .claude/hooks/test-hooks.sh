@@ -252,6 +252,16 @@ else
     "app/globals.css" public/logo.svg
   coverage_check PASS  "config only" \
     package.json next.config.ts tsconfig.json vitest.config.ts .gitignore
+  coverage_check BLOCK "nested json is code, not config" \
+    lib/config.json
+  coverage_check PASS  "nested json + platform tests/" \
+    lib/config.json tests/db/config.test.ts
+  coverage_check BLOCK "nested yaml in platform scope" \
+    platform/rules.yaml
+  coverage_check BLOCK "nested toml in modules scope" \
+    modules/plaid.toml
+  coverage_check BLOCK "nested json in user scope" \
+    "users/alice/app/data.json"
   coverage_check BLOCK "user panel alone" \
     "users/alice/app/panels/spend.tsx"
   coverage_check PASS  "user panel + same-user tests/" \
