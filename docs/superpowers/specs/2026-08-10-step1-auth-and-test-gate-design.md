@@ -1,16 +1,21 @@
-# Step 1 — Auth, Site Up, Test Layout, Test Gate
+# Step 1a — Auth, Test Layout, Test Gate
 
 **Date:** 2026-08-10
 **Status:** Approved, pre-implementation
-**Covers:** Build-order step 1 from `architecture-overview.md`, plus the test
-directory layout and the pre-commit test-coverage gate.
+**Covers:** The application half of build-order step 1 from
+`architecture-overview.md`, plus the test directory layout and the pre-commit
+test-coverage gate.
 
-**Checkpoint (unchanged from the build order):** Nico logs in as two dev users;
-each sees only their own empty space; the admin portal loads, empty. Reachable
-over HTTPS at `app.stairwell.run`.
+**Paired with:** `2026-08-10-step1-infra-and-deploy-design.md`, which takes this
+work from a localhost checkpoint to a live one at `app.stairwell.run`. That spec
+owns the droplet, TLS, DNS, and the deploy path. Nothing here depends on it.
+
+**Checkpoint:** on localhost, Nico logs in as two dev users; each is 404-blind to
+the other's space; the admin portal loads, empty. Re-verification of this same
+checkpoint against the live URL is the infra spec's exit condition.
 
 Decisions in `architecture-overview.md` and `CLAUDE.md` are settled and are not
-relitigated here. This document records only what step 1 adds.
+relitigated here. This document records only what step 1a adds.
 
 ---
 
@@ -18,28 +23,33 @@ relitigated here. This document records only what step 1 adds.
 
 | Question | Decision |
 |---|---|
-| Step 1 deploy target | Live on a subdomain, not localhost-only |
-| Hostname | `app.stairwell.run` |
-| Edge / TLS | Grey-cloud (DNS-only) A record → Caddy on the VPS with Let's Encrypt |
-| VPS | DigitalOcean, Ubuntu 24.04 LTS |
 | Session model | Two-tier: session persists, derived key does not |
+| Key lifetime | Idle TTL 4h, absolute ceiling 12h, wiped on logout |
 | Test runner | Vitest everywhere; `seed.py` covered by asserting on the DB it produces |
 | Gate A trigger | Schema-triggered only (a lone generator edit passes) |
+| Gate B skip | `SKIP_TEST_GATE=1`, which names the untested files on stderr |
 
-### Why DNS-only rather than a Cloudflare tunnel
+Hostname, edge/TLS, and VPS decisions live in the infra spec.
 
-`kplife.stairwell.run` is an existing tunnel CNAME pointing at Nico's laptop. It
-is a separate DNS record from the app's A record and is never touched by this
-work.
+### 1.1 Build sequence
 
-The app deliberately does *not* reuse the tunnel pattern. The login password is
-SQLCipher key material (§2.2), so whoever terminates TLS sees key material in
-plaintext. Cloudflare terminating TLS would put an asterisk on the onboarding
-promise — *"I'd have to deliberately modify the system to see anything"* — that
-could not be honestly omitted from the login-page paragraph. Terminating TLS on
-the VPS costs `ufw` plus key-only SSH, which is the cheaper side of that trade.
+**The gate extensions are built and harness-verified before any auth code is
+written.** §4 lands first — both gates, all ~45 harness cases green — and only
+then does §2 and §3's application code begin.
 
-Flipping to proxied later is a one-click change if DDoS cover is ever needed.
+This is not merely tidy ordering. It makes the auth work the first real traffic
+through Gate B: every commit of `lib/`, `app/`, and `middleware.ts` has to
+satisfy the scope rules that were just written, on real changes rather than on
+synthetic path lists. A gate that is wrong in practice reveals itself
+immediately, while the only thing depending on it is a step whose tests are
+being written anyway — rather than months later, when working around it is
+cheaper than fixing it.
+
+The test *layout* (§3) is a prerequisite of the gate, not a consumer of it: Gate
+B's scope table names `tests/`, `modules/tests/`, and `users/<name>/tests/`, so
+those directories and the Vitest config exist before the gate that points at
+them. Directory scaffolding and config are Gate B-exempt, so this ordering does
+not deadlock.
 
 ---
 
@@ -47,18 +57,18 @@ Flipping to proxied later is a one-click change if DDoS cover is ever needed.
 
 ### 2.1 Platform data
 
-Step 1 introduces a platform database, distinct from the per-user encrypted DBs
+Step 1a introduces a platform database, distinct from the per-user encrypted DBs
 described in `architecture-overview.md` §4. It holds accounts, sessions,
 transcripts, metrics, and the request queue — the records Nico is already
 promised access to at onboarding. It is not encrypted with any user's key.
 
-- Production: `platform.db` on the VPS. Denied locally by the guard hook, which
-  is correct.
+- Production: `platform.db` on the server. Denied locally by the guard hook,
+  which is correct.
 - Development: `platform/dev/synthetic.db`. The basename is deliberate — the
   guard hook in `.claude/hooks/deny-sensitive-files.sh` matches on basename, and
   `synthetic.db` is the only allowed name.
 
-Step 1 only *writes* accounts and sessions. The `transcripts` and `metrics`
+Step 1a only *writes* accounts and sessions. The `transcripts` and `metrics`
 tables are defined now — with their append-only triggers (§2.6) — but stay empty
 until steps 2 and 7 populate them. Defining them now costs nothing and means the
 append-only guarantee is in place before the first row ever exists, rather than
@@ -112,11 +122,11 @@ ceiling overriding refresh, and logout wiping immediately.
 ### 2.5 Routing and authorization
 
 - `accounts.role ∈ ('user', 'admin')`. The admin account is distinct from the
-  two dev users, which is what makes the step 1 checkpoint verifiable.
+  two dev users, which is what makes the checkpoint verifiable.
 - `/[user]/…` returns **404, not 403**, when the session does not own the slug.
   One dev user cannot confirm the other exists.
 - `/admin` requires `role = 'admin'` and is read-only.
-- At step 1 the per-user space is empty and `/unlock` derives a key against
+- The per-user space is empty at this step, and `/unlock` derives a key against
   nothing. This is deliberate: the state machine and its tests exist now, so
   step 6 fills in the SQLCipher open rather than reworking every request path.
 
@@ -156,7 +166,7 @@ users/<name>/           spec.md, mockup.html, schema.sql, seed.py, synthetic.db
   tests/                scoped to that dashboard
 tests/                  platform tests (auth, session, routing, admin)
   support/
-deploy/
+deploy/                 created by the infra spec, exempt from Gate B
 ```
 
 `modules/` is the home for the shared schema module library named in
@@ -269,12 +279,31 @@ every existing verdict is preserved.
 blunt instrument but drops Gate A as well, which is the wrong trade for a
 styling-only `.tsx` edit that Gate B classifies as guarded.
 
+**A skip is never silent.** When `SKIP_TEST_GATE=1` suppresses a block, the hook
+prints to stderr the guarded files that went untested, grouped by scope, so
+every skip is a conscious glance rather than a bypass that scrolls past:
+
+```
+Gate B SKIPPED (SKIP_TEST_GATE=1) — these guarded files ship untested:
+  platform:  app/(auth)/login/page.tsx
+             lib/session/cookie.ts
+  user:nico: users/nico/app/panels/spend.tsx
+```
+
+The message is printed only when the gate *would have blocked*. A commit that
+sets the variable but stages nothing guarded prints nothing, so the variable
+being exported in a shell profile cannot produce noise that trains the eye to
+ignore it.
+
+`CLAUDE.md` gains a matching rule: when Claude uses the skip, it states the
+reason in the commit message.
+
 Path-based classification cannot tell a styling-only `.tsx` change from a logic
-change. That is an accepted limitation; the targeted escape hatch is the answer.
+change. That is an accepted limitation; the announced escape hatch is the answer.
 
 ### 4.5 Harness growth
 
-`.claude/hooks/test-hooks.sh` grows its gate group from 11 cases to roughly 43.
+`.claude/hooks/test-hooks.sh` grows its gate group from 11 cases to roughly 45.
 
 New Gate A cases (8):
 
@@ -289,41 +318,20 @@ New Gate A cases (8):
 | both scopes, both satisfied | PASS |
 | `modules/plaid.sql` (not a `schema.sql`) | PASS |
 
-New Gate B cases (~24), covering: each guarded scope unsatisfied and satisfied;
+New Gate B cases (~26), covering: each guarded scope unsatisfied and satisfied;
 both wrong-scope directions for `user:*` and for `modules` vs `platform`; each
 exempt family (docs, styling, config); a test file alone; the empty list;
 `seed.py` alone passing Gate B; a mixed commit where only one scope is
-satisfied; `.githooks/pre-commit` alone versus paired with the harness; and
-`SKIP_TEST_GATE=1`.
+satisfied; `.githooks/pre-commit` alone versus paired with the harness;
+`SKIP_TEST_GATE=1` turning a block into a pass; the skip message naming every
+untested guarded file and its scope; and the skip printing nothing when nothing
+guarded is staged.
 
 The existing guard-hook cases in the harness are unchanged.
 
 ---
 
-## 5. Infrastructure
-
-**Server.** DigitalOcean droplet, Ubuntu 24.04 LTS. Non-root deploy user,
-key-only SSH, `ufw` limited to 22/80/443, unattended-upgrades enabled.
-
-**Edge.** Caddy terminates TLS with Let's Encrypt and reverse-proxies to Next.js
-on `127.0.0.1:3000`, which runs under a systemd unit. Node 22 is pinned to match
-local, because `better-sqlite3-multiple-ciphers` compiles natively on the box.
-
-**DNS.** One Cloudflare record: grey-cloud (DNS-only) A record, `app` → droplet
-IP. The `kplife` tunnel CNAME is a different record and is not modified.
-
-**Deploy.** `deploy/deploy.sh`, run over SSH:
-
-```
-git pull && npm ci && npm run build && npx vitest run && systemctl restart stairwell
-```
-
-Tests gate the restart, per `CLAUDE.md` > Testing. `.env` exists only on the
-server; it is gitignored and hook-denied locally.
-
----
-
-## 6. Documentation updates in the same work
+## 5. Documentation updates in the same work
 
 **`CLAUDE.md` > Data safety** gains, verbatim:
 
@@ -331,24 +339,27 @@ server; it is gitignored and hook-denied locally.
 > persisted, logged, or written to the sessions table. Passwords and keys never
 > appear in cookies, localStorage, URLs, or any persisted artifact.
 
-**`CLAUDE.md` > Testing** gains the Gate B scopes, the `SKIP_TEST_GATE=1` escape
-hatch, and the Vitest commands.
+**`CLAUDE.md` > Testing** gains the Gate B scopes, the Vitest commands, and the
+skip rule: `SKIP_TEST_GATE=1` is available for changes Gate B misclassifies, and
+when Claude uses it, the commit message states why.
 
-**`architecture-overview.md`** records the step 1 decisions from §1 of this
-document — hostname, edge choice, two-tier session model, and the platform
-database — so the overview stays the single source of settled decisions.
+**`architecture-overview.md`** records the step 1a decisions from §1 — the
+two-tier session model and the platform database — so the overview stays the
+single source of settled decisions.
 
 ---
 
-## 7. Out of scope
+## 6. Out of scope
 
-Deferred to their own build-order steps, and not to be built here:
+Deferred, and not to be built here:
 
+- Everything in the infra spec: droplet, Caddy, TLS, DNS, `deploy/`. This work
+  ends at a localhost checkpoint.
 - The chat window and LLM chatbot (step 2)
 - ntfy.sh alerts (step 3)
 - The interview → spec flow (step 4)
 - Any per-user dashboard code or panels (step 5)
-- Plaid, SQLCipher, and the login-triggered sync (step 6) — step 1 builds the
+- Plaid, SQLCipher, and the login-triggered sync (step 6) — this step builds the
   lock state machine, not the encrypted database
 - The privacy toggle, metrics off-VPS backup (step 7)
 - The scoped per-user test runner inside the pre-commit hook — still blocked on
