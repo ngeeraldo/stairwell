@@ -300,12 +300,18 @@ check_typecheck() {
 
   # Indirected so the harness can substitute a stub and run this group in
   # milliseconds instead of shelling out to tsc dozens of times.
-  TYPECHECK_CMD="${TYPECHECK_CMD:-npx tsc --noEmit}"
+  local TYPECHECK_CMD="${TYPECHECK_CMD:-npx tsc --noEmit}"
 
   local out rc
   out=$($TYPECHECK_CMD 2>&1)
   rc=$?
   [ $rc -eq 0 ] && return 0
+
+  # Exit 127 means the shell could not find/run TYPECHECK_CMD at all (e.g.
+  # no `npx`/`tsc` on PATH) — that is a broken environment, not a type
+  # error, and must not be reported to the developer as one.
+  local internal_failure=0
+  [ $rc -eq 127 ] && internal_failure=1
 
   # An announced skip. Printed only when the gate WOULD have blocked, so a
   # SKIP_TYPECHECK exported in a shell profile cannot produce noise that
@@ -313,9 +319,15 @@ check_typecheck() {
   if [ "${SKIP_TYPECHECK:-0}" = "1" ]; then
     {
       echo
-      echo "Gate C SKIPPED (SKIP_TYPECHECK=1) — TypeScript errors are being ignored:"
+      if [ $internal_failure -eq 1 ]; then
+        echo "Gate C SKIPPED (SKIP_TYPECHECK=1) — could not run the typechecker:"
+      else
+        echo "Gate C SKIPPED (SKIP_TYPECHECK=1) — TypeScript errors are being ignored:"
+      fi
       echo
       echo "$out"
+      echo
+      echo "CLAUDE.md > Testing: state the reason for the skip in the commit message."
       echo
     } >&2
     return 0
@@ -323,16 +335,24 @@ check_typecheck() {
 
   {
     echo
-    echo "COMMIT BLOCKED — TypeScript errors"
-    echo
-    echo "next.config.ts sets no typescript.ignoreBuildErrors, so this is a hard"
-    echo "'next build' failure, not a warning. vitest cannot catch it: it"
-    echo "transpiles through esbuild, which strips types without checking them."
+    if [ $internal_failure -eq 1 ]; then
+      echo "COMMIT BLOCKED — Gate C could not run the typechecker"
+      echo
+      echo "TYPECHECK_CMD exited 127 (command not found). This is an environment"
+      echo "problem — e.g. no npx/tsc on PATH — not a type error."
+    else
+      echo "COMMIT BLOCKED — TypeScript errors"
+      echo
+      echo "next.config.ts sets no typescript.ignoreBuildErrors, so this is a hard"
+      echo "'next build' failure, not a warning. vitest cannot catch it: it"
+      echo "transpiles through esbuild, which strips types without checking them."
+    fi
     echo
     echo "$out"
     echo
-    echo "git commit --no-verify bypasses this gate for genuine exceptions,"
-    echo "but that should be rare. Prefer fixing the type error."
+    echo "SKIP_TYPECHECK=1 git commit ... bypasses this gate for genuine"
+    echo "exceptions, but that should be rare. Prefer fixing the underlying"
+    echo "problem instead."
     echo
   } >&2
 

@@ -510,8 +510,11 @@ else
   # 5. Staged .ts + failing typecheck + SKIP_TYPECHECK=1 -> allows.
   typecheck_skip_check PASS "SKIP_TYPECHECK turns block into pass" \
     _stub_tsc_fail lib/auth/password.ts
-  # 6. The skip announces itself on stderr.
-  typecheck_skip_says "SKIP_TYPECHECK=1" "skip announces itself" \
+  # 6. The skip announces itself on stderr. Checks for "Gate C SKIPPED", not
+  # "SKIP_TYPECHECK=1" alone — that literal also appears in the block
+  # message's bypass suggestion, so it would not distinguish the skip
+  # branch from the block branch.
+  typecheck_skip_says "Gate C SKIPPED" "skip announces itself" \
     _stub_tsc_fail lib/auth/password.ts
   # 7. The skip is silent when no TypeScript is staged.
   typecheck_skip_silent "skip is silent when no TypeScript staged" \
@@ -522,6 +525,11 @@ else
   # 9. SKIP_TYPECHECK=1 does not leak into Gate A (schema drift stays blocked).
   SKIP_TYPECHECK=1 gate_check BLOCK "SKIP_TYPECHECK does not leak into Gate A" \
     users/alice/schema.sql
+  # 9b. Same property for Gate B: SKIP_TYPECHECK=1 is not a coverage bypass
+  # either. No live defect today (SKIP_TYPECHECK is read only inside
+  # check_typecheck), but the mutation was otherwise invisible to this harness.
+  SKIP_TYPECHECK=1 coverage_check BLOCK "SKIP_TYPECHECK does not leak into Gate B" \
+    lib/session/store.ts
   # 10. A file merely named like TypeScript (wrong extension) does not trigger.
   typecheck_check PASS  "file named like TypeScript, wrong extension" \
     _stub_tsc_fail "docs/typescript-notes.md"
