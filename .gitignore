@@ -21,6 +21,9 @@
 # Dependencies
 node_modules/
 
+# Scratch: git worktrees live under .claude/, which is otherwise tracked.
+.claude/worktrees/
+
 # Next.js build artifacts
 .next/
 out/
