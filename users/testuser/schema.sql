@@ -1,0 +1,1 @@
+CREATE TABLE throwaway_test (id INTEGER PRIMARY KEY);
