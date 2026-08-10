@@ -1676,11 +1676,13 @@ describe('key map lifetime', () => {
     expect(getKey('s1')).toBeUndefined()
   })
 
-  it('keeps the ceiling of the original unlock when re-put', () => {
+  it('restarts the ceiling on re-unlock', () => {
     putKey('s1', KEY)
     vi.advanceTimersByTime(1000)
     putKey('s1', KEY)
-    // A re-unlock is a fresh unlock: the ceiling restarts.
+    // A re-unlock is a fresh unlock: the ceiling restarts. Re-entering the
+    // password is the thing that earns a new 12 hours, which is exactly the
+    // property getKey's refresh must NOT have.
     vi.advanceTimersByTime(ABSOLUTE_TTL_MS - 2000)
     expect(getKey('s1')).toEqual(KEY)
   })
@@ -2039,14 +2041,16 @@ reaches the sessions table and that destroying a session drops the key."
 ### Task 11: Three-state routing
 
 **Files:**
-- Create: `lib/session/resolve.ts`, `middleware.ts`
+- Create: `lib/session/resolve.ts`, `lib/db/instance.ts`, `lib/session/guard.ts`, `middleware.ts`
 - Create: `tests/routing/middleware.test.ts`
 
 **Interfaces:**
 - Consumes: `readSession` (Task 10), `getKey` (Task 9).
-- Produces: `resolveState(db, sessionId | undefined): 'anonymous' | 'authenticated' | 'unlocked'` and `routeFor(state, pathname): string | null` — the path to redirect to, or `null` to allow.
+- Produces: `resolveState(db, sessionId | undefined): 'anonymous' | 'authenticated' | 'unlocked'`, `routeFor(state, pathname): string | null`, `redirectTargetFor(db, sessionId, pathname): string | null`, `getDb(): PlatformDb`, and `requireState(pathname): Promise<void>`.
 
-The decision logic lives in `lib/session/resolve.ts` so it is testable without booting Next.js; `middleware.ts` is a thin adapter.
+The decision logic lives in `lib/session/resolve.ts` so it is testable without booting Next.js. `middleware.ts` and `lib/session/guard.ts` are thin adapters over it.
+
+**Why the guard exists.** `middleware.ts` can only check cookie presence — the edge runtime cannot open SQLite. Without a server-side guard, an authenticated-but-locked session reaches a user space without unlocking, because `canSeeUserSpace` (Task 13) checks the session row and not the key. The guard is what makes the two-tier lock actually hold, and it is why Task 14's checkpoint step 8 passes for the right reason rather than by accident.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2127,7 +2131,36 @@ describe('routeFor', () => {
     expect(routeFor('unlocked', '/login')).toBe('/')
   })
 })
+
+describe('redirectTargetFor', () => {
+  it('sends a locked session away from a user space', async () => {
+    const id = await createAccount(db, { slug: 'a', role: 'user', password: 'pw' })
+    const sid = createSession(db, id)
+    // This is the two-tier lock holding. Without it, a session that survived
+    // a deploy reaches the dashboard without re-entering the password.
+    expect(redirectTargetFor(db, sid, '/a')).toBe('/unlock')
+  })
+
+  it('lets an unlocked session into a user space', async () => {
+    const id = await createAccount(db, { slug: 'a', role: 'user', password: 'pw' })
+    const sid = createSession(db, id)
+    putKey(sid, Buffer.alloc(32, 1))
+    expect(redirectTargetFor(db, sid, '/a')).toBeNull()
+  })
+
+  it('sends a cookie-less request to login', () => {
+    expect(redirectTargetFor(db, undefined, '/a')).toBe('/login')
+  })
+
+  it('lets a locked session reach unlock', async () => {
+    const id = await createAccount(db, { slug: 'a', role: 'user', password: 'pw' })
+    const sid = createSession(db, id)
+    expect(redirectTargetFor(db, sid, '/unlock')).toBeNull()
+  })
+})
 ```
+
+Add `redirectTargetFor` to the import from `@/lib/session/resolve` at the top of the file.
 
 - [ ] **Step 2: Run it to make sure it fails**
 
@@ -2178,9 +2211,63 @@ export function routeFor(state: AuthState, pathname: string): string | null {
   }
   return null
 }
+
+/** resolveState composed with routeFor — the whole decision in one call. */
+export function redirectTargetFor(
+  db: PlatformDb,
+  sessionId: string | undefined,
+  pathname: string,
+): string | null {
+  return routeFor(resolveState(db, sessionId), pathname)
+}
 ```
 
-- [ ] **Step 4: Write `middleware.ts`**
+- [ ] **Step 4: Write `lib/db/instance.ts` and `lib/session/guard.ts`**
+
+```ts
+// lib/db/instance.ts
+import { openPlatformDb, type PlatformDb } from './platform'
+
+let db: PlatformDb | undefined
+
+/**
+ * Process-wide platform handle. The path is explicit in production via
+ * PLATFORM_DB; the fallback is the synthetic dev database, which is the only
+ * database name the guard hook allows locally.
+ */
+export function getDb(): PlatformDb {
+  if (!db) db = openPlatformDb(process.env.PLATFORM_DB ?? 'platform/dev/synthetic.db')
+  return db
+}
+```
+
+```ts
+// lib/session/guard.ts
+import { cookies } from 'next/headers'
+import { redirect } from 'next/navigation'
+import { getDb } from '@/lib/db/instance'
+import { SESSION_COOKIE } from './store'
+import { redirectTargetFor } from './resolve'
+
+/**
+ * Server-side state guard for protected pages.
+ *
+ * middleware.ts cannot do this job: the edge runtime cannot open SQLite, so
+ * it can only check that a cookie exists. This is where the two-tier lock is
+ * actually enforced — an authenticated-but-locked session gets sent to
+ * /unlock rather than reaching a dashboard.
+ *
+ * A thin adapter by design; the decision it delegates to is tested in
+ * tests/routing/middleware.test.ts.
+ */
+export async function requireState(pathname: string): Promise<void> {
+  const sessionId = (await cookies()).get(SESSION_COOKIE)?.value
+  const target = redirectTargetFor(getDb(), sessionId, pathname)
+  if (target) redirect(target)
+}
+```
+
+- [ ] **Step 5: Write `middleware.ts`**
 
 ```ts
 import { NextResponse, type NextRequest } from 'next/server'
@@ -2207,23 +2294,26 @@ export const config = {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
 npx vitest run tests/routing/middleware.test.ts
 ```
 
-Expected: 11 passed.
+Expected: 15 passed.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add lib/session/resolve.ts middleware.ts tests/routing/middleware.test.ts
-git commit -m "Add three-state routing
+git add lib/session/resolve.ts lib/session/guard.ts lib/db/instance.ts middleware.ts tests/routing/middleware.test.ts
+git commit -m "Add three-state routing and the server-side unlock guard
 
 resolveState and routeFor hold the anonymous/authenticated/unlocked
 decision, testable without booting Next.js. middleware.ts stays a thin
-cookie-presence check because the edge runtime cannot open SQLite."
+cookie-presence check because the edge runtime cannot open SQLite, so
+requireState is where the two-tier lock is actually enforced - without
+it, a session that survived a deploy would reach a dashboard without
+re-entering the password."
 ```
 
 ---
@@ -2231,13 +2321,13 @@ cookie-presence check because the edge runtime cannot open SQLite."
 ### Task 12: Login, unlock, and logout
 
 **Files:**
-- Create: `lib/db/instance.ts`, `app/api/login/route.ts`, `app/api/unlock/route.ts`, `app/api/logout/route.ts`
-- Create: `app/(auth)/login/page.tsx`, `app/(auth)/unlock/page.tsx`
+- Create: `app/api/login/route.ts`, `app/api/unlock/route.ts`, `app/api/logout/route.ts`
+- Create: `app/(auth)/login/page.tsx`, `app/(auth)/unlock/page.tsx`, `lib/auth/flow.ts`
 - Create: `tests/auth/flow.test.ts`
 
 **Interfaces:**
-- Consumes: everything from Tasks 6, 8, 9, 10.
-- Produces: `getDb(): PlatformDb` — the process-wide platform handle, path from `PLATFORM_DB` or `platform/dev/synthetic.db`; `login(db, slug, password)` and `unlock(db, sessionId, password)` as testable functions in `lib/auth/flow.ts`.
+- Consumes: everything from Tasks 6, 8, 9, 10, and `getDb()` from Task 11.
+- Produces: `login(db, slug, password): Promise<string | null>` and `unlock(db, sessionId, password): Promise<boolean>` in `lib/auth/flow.ts`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2319,7 +2409,7 @@ Expected: FAIL — cannot resolve `@/lib/auth/flow`.
 ```ts
 import type { PlatformDb } from '@/lib/db/platform'
 import { checkPassword, findAccountBySlug } from './accounts'
-import { deriveDbKey } from './password'
+import { deriveDbKey, verifyPassword } from './password'
 import { putKey } from '@/lib/session/keymap'
 import { createSession, readSession } from '@/lib/session/store'
 
@@ -2348,18 +2438,22 @@ export async function unlock(
   const session = readSession(db, sessionId)
   if (!session) return false
   const account = db
-    .prepare('SELECT * FROM accounts WHERE id = ?')
+    .prepare('SELECT auth_hash, salt_key FROM accounts WHERE id = ?')
     .get(session.account_id) as
     | { auth_hash: string; salt_key: Buffer }
     | undefined
   if (!account) return false
-  const { checkPassword: check } = await import('./accounts')
-  if (!(await check({ auth_hash: account.auth_hash } as never, password)))
-    return false
+  if (!(await verifyPassword(account.auth_hash, password))) return false
   putKey(sessionId, await deriveDbKey(password, account.salt_key))
   return true
 }
 ```
+
+Note the import line at the top of this file is
+`import { checkPassword, findAccountBySlug } from './accounts'` and
+`import { deriveDbKey, verifyPassword } from './password'` — `unlock` verifies
+against the stored hash directly rather than going through `checkPassword`,
+which expects a full `Account`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -2369,24 +2463,10 @@ npx vitest run tests/auth/flow.test.ts
 
 Expected: 7 passed.
 
-- [ ] **Step 5: Write `lib/db/instance.ts` and the routes**
+- [ ] **Step 5: Write the routes and pages**
 
-```ts
-// lib/db/instance.ts
-import { openPlatformDb, type PlatformDb } from './platform'
-
-let db: PlatformDb | undefined
-
-/**
- * Process-wide platform handle. The path is explicit in production via
- * PLATFORM_DB; the fallback is the synthetic dev database, which is the only
- * database name the guard hook allows locally.
- */
-export function getDb(): PlatformDb {
-  if (!db) db = openPlatformDb(process.env.PLATFORM_DB ?? 'platform/dev/synthetic.db')
-  return db
-}
-```
+`lib/db/instance.ts` already exists from Task 11 — import `getDb` from it, do
+not recreate it.
 
 ```ts
 // app/api/login/route.ts
@@ -2533,7 +2613,7 @@ Expected: all pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add lib/auth/flow.ts lib/db/instance.ts app/api/login/route.ts app/api/unlock/route.ts app/api/logout/route.ts "app/(auth)/login/page.tsx" "app/(auth)/unlock/page.tsx" tests/auth/flow.test.ts
+git add lib/auth/flow.ts app/api/login/route.ts app/api/unlock/route.ts app/api/logout/route.ts "app/(auth)/login/page.tsx" "app/(auth)/unlock/page.tsx" tests/auth/flow.test.ts
 git commit -m "Add login, unlock, and logout
 
 Login issues a session but deliberately does not unlock - the key is
@@ -2687,6 +2767,7 @@ import { notFound } from 'next/navigation'
 import { getDb } from '@/lib/db/instance'
 import { SESSION_COOKIE } from '@/lib/session/store'
 import { canSeeUserSpace } from '@/lib/auth/authorize'
+import { requireState } from '@/lib/session/guard'
 
 export default async function UserSpace({
   params,
@@ -2694,6 +2775,12 @@ export default async function UserSpace({
   params: Promise<{ user: string }>
 }) {
   const { user } = await params
+
+  // Enforce the two-tier lock first: a locked session goes to /unlock rather
+  // than reaching a dashboard. middleware.ts cannot do this — the edge
+  // runtime cannot open SQLite.
+  await requireState(`/${user}`)
+
   const sessionId = (await cookies()).get(SESSION_COOKIE)?.value
 
   // 404, never 403: a 403 would confirm that the other dev user exists.
@@ -2909,4 +2996,8 @@ session alive but the key gone."
 
 **Type consistency:** `PlatformDb` is defined in Task 6 and used unchanged in 7, 10, 11, 13. `openPlatformDb`, `createAccount`, `findAccountBySlug`, `createSession`, `readSession`, `destroySession`, `putKey`, `getKey`, `dropKey`, `resolveState`, `routeFor`, `canSeeUserSpace`, `isAdmin`, `login`, `unlock` keep the same names and signatures everywhere they appear.
 
-**Known rough edge:** `lib/auth/flow.ts` `unlock()` re-imports `checkPassword` and casts a partial account. Task 12 step 3 works, but if the implementer prefers, replacing the cast with a direct `verifyPassword(account.auth_hash, password)` import is equivalent and cleaner. Either passes the tests.
+**Pre-flight amendments (2026-08-10, approved by Nico before execution):**
+
+1. **The two-tier lock did not hold.** `routeFor` was tested but never wired, and `canSeeUserSpace` checks the session row without checking the key — so an authenticated-but-locked session reached a user space, and Task 14's checkpoint step 8 would have failed. Task 11 now also produces `redirectTargetFor`, `lib/db/instance.ts` (moved forward from Task 12), and `lib/session/guard.ts`; Task 13's `app/[user]/page.tsx` calls `requireState` before authorizing.
+2. **`unlock()` cleaned up.** It verifies against the stored hash with `verifyPassword` directly, instead of re-importing `checkPassword` mid-function and casting a partial account with `as never`.
+3. **Task 9 test renamed** to `restarts the ceiling on re-unlock`, which is what it asserts. The old name claimed the opposite.
