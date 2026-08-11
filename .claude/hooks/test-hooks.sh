@@ -1161,6 +1161,41 @@ esac'
     failed_cases+=("smoke failure aborts the deploy")
   fi
 
+  # deploy.sh replaces ITSELF at step 2 (git pull), so the deploy that introduces
+  # a contract change would otherwise be the one deploy exempt from it. Measured:
+  # the run that first delivered smoke.sh skipped the gate and reported the OLD
+  # success message. Both halves of the mitigation are pinned here because each
+  # fails silently on its own.
+  if grep -qE '^[^#]*DEPLOY_REEXECED=1 exec \./deploy/deploy\.sh' "$DEPLOY_SCRIPT"; then
+    printf '  %-6s %-38s %s\n' "PASS" "re-execs when deploy scripts change" "exec present"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-38s %s\n' "FAIL" "re-execs when deploy scripts change" "no re-exec: a contract change would skip its own deploy"
+    fail=$((fail + 1))
+    failed_cases+=("re-execs when deploy scripts change")
+  fi
+
+  # Wrapping the body in main() makes bash parse the whole file before running
+  # any of it, so a mid-run replacement cannot splice old and new lines together.
+  if grep -qE '^main "\$@"' "$DEPLOY_SCRIPT" && grep -qE '^main\(\) \{' "$DEPLOY_SCRIPT"; then
+    printf '  %-6s %-38s %s\n' "PASS" "body wrapped in main() for atomic parse" "main() and call present"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-38s %s\n' "FAIL" "body wrapped in main() for atomic parse" "unwrapped: a mid-run pull can splice this file"
+    fail=$((fail + 1))
+    failed_cases+=("body wrapped in main() for atomic parse")
+  fi
+
+  # The re-exec must be guarded, or it recurses forever.
+  if grep -qE '^[^#]*-z "\$\{DEPLOY_REEXECED:-\}"' "$DEPLOY_SCRIPT"; then
+    printf '  %-6s %-38s %s\n' "PASS" "re-exec is guarded against looping" "guard present"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-38s %s\n' "FAIL" "re-exec is guarded against looping" "unguarded exec would recurse"
+    fail=$((fail + 1))
+    failed_cases+=("re-exec is guarded against looping")
+  fi
+
   rm -rf "$smoke_sandbox"
 fi
 echo
