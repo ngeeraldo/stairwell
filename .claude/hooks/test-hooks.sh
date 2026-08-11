@@ -244,6 +244,16 @@ else
     "app/admin/page.tsx"
   coverage_check BLOCK "middleware.ts alone" \
     middleware.ts
+  coverage_check BLOCK "scripts/ alone" \
+    scripts/create-dev-users.ts
+  coverage_check PASS  "scripts/ + tests/" \
+    scripts/create-dev-users.ts tests/scripts/createDevUsers.test.ts
+  coverage_check BLOCK "root-level .ts alone (instrumentation.ts)" \
+    instrumentation.ts
+  coverage_check BLOCK "root-level .tsx alone" \
+    fake-root-component.tsx
+  coverage_check PASS  "root-level .ts + tests/" \
+    instrumentation.ts tests/instrumentation.test.ts
   coverage_check BLOCK "platform/ code alone" \
     platform/migrate.ts
   coverage_check PASS  "docs only" \

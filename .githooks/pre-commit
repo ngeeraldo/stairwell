@@ -167,7 +167,7 @@ _gate_b_class() {
 
   # Guarded scopes.
   case "$p" in
-    app/*|lib/*|platform/*|middleware.ts) echo "guard:platform"; return ;;
+    app/*|lib/*|platform/*|middleware.ts|scripts/*) echo "guard:platform"; return ;;
     modules/*) echo "guard:modules"; return ;;
     .githooks/*|.claude/hooks/*) echo "guard:guards"; return ;;
     users/*/*)
@@ -176,6 +176,16 @@ _gate_b_class() {
       echo "guard:user:$u"
       return
       ;;
+  esac
+
+  # Root-level TypeScript that fell through everything above
+  # (instrumentation.ts, sentry.config.ts, and future siblings). This is
+  # deliberately guarded, not exempt: scripts/create-dev-users.ts shipped
+  # untested specifically because the old fall-through called root-level
+  # .ts "unguarded". Only a path with no slash reaches here.
+  case "$p" in
+    */*) ;;
+    *.ts|*.tsx) echo "guard:platform"; return ;;
   esac
 
   echo "unguarded"
