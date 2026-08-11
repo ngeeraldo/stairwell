@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import { SESSION_COOKIE } from '@/lib/session/store'
+import { SESSION_COOKIE } from '@/lib/session/cookie'
 
 /**
  * Thin adapter. The decision logic lives in lib/session/resolve.ts so it can

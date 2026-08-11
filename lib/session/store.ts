@@ -1,9 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import type { PlatformDb } from '@/lib/db/platform'
 import { dropKey } from './keymap'
+import { COOKIE_OPTIONS, SESSION_COOKIE, SESSION_TTL_MS } from './cookie'
 
-export const SESSION_COOKIE = 'stairwell_session'
-export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
+// Re-exported from lib/session/cookie.ts (the edge-safe module) so every
+// existing import site (`from '@/lib/session/store'`) keeps working
+// unchanged. middleware.ts imports SESSION_COOKIE from './cookie' directly
+// instead, so it never has to load this file's `node:crypto` import.
+export { COOKIE_OPTIONS, SESSION_COOKIE, SESSION_TTL_MS }
 
 export type Session = {
   id: string
@@ -45,11 +49,3 @@ export function destroySession(db: PlatformDb, sessionId: string): void {
   dropKey(sessionId)
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId)
 }
-
-export const COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: true,
-  sameSite: 'lax',
-  path: '/',
-  maxAge: SESSION_TTL_MS / 1000,
-} as const
