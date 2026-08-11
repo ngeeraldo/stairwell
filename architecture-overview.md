@@ -66,6 +66,31 @@ Server (single VPS)
   via SQLite triggers.
 - **Schemas are fully bespoke per user, assembled from optional modules.** No mandatory layers — the interview decides what exists; some users will have no finance data at all. You maintain a small library of reusable schema modules (first: `plaid.sql`, since Plaid dictates its shape and the sync job writes into it; workout/sleep modules emerge once hand-built twice). A user who wants finance includes the module; one who doesn't has no Plaid connection or sync job at all. **Rule: shared-module internals are never forked per user** — user-specific needs are met with views/derived tables on top, so shared sync code and each module's synthetic faker keep working for everyone. Custom tables outside modules are unlimited.
 
+### 2a. Hosting (step 1b)
+- **`app.stairwell.run`** on a DigitalOcean droplet (Ubuntu 24.04), Next.js
+  under systemd on `127.0.0.1:3000` behind Caddy.
+- **TLS terminates on the droplet, not at Cloudflare.** The DNS record is
+  grey-cloud (DNS only). The login password is SQLCipher key material, so an
+  edge that terminates TLS would see it in plaintext — which would put an
+  asterisk on the onboarding promise that cannot be honestly omitted. Flipping
+  to a proxied record later is reversible; the privacy paragraph is not.
+  Verified by certificate rather than by header: `app.stairwell.run` presents
+  our own Let's Encrypt certificate, where the deliberately-proxied
+  `kplife.stairwell.run` presents Cloudflare's.
+- The loopback bind is the `-H 127.0.0.1` **flag**, never a `HOSTNAME`
+  environment variable — `next start` does not read that variable, and the
+  difference is a socket on every interface versus one on loopback. Checked with
+  `ss -ltnp`, because an external probe cannot tell the two apart through `ufw`.
+- `kplife.stairwell.run` is an unrelated tunnel CNAME and is untouched.
+- Deploys go out through `deploy/deploy.sh`: pull, install, build, test,
+  restart. Tests gate the restart, so a failing suite leaves the previous
+  version serving.
+- **Redirects are host-relative in route handlers and absolute in middleware.**
+  Not a style choice: `new URL(path, request.url)` yields the *internal* origin
+  behind a proxy, and Next's middleware runtime rejects a relative `Location`
+  outright. See `lib/http/redirect.ts`. Anything running behind a reverse proxy
+  has to respect this asymmetry.
+
 ### 3. Bank connection = Plaid (production, already approved)
 - 0/200 item cap available. Enabled: Transactions (24mo history), Balance, Transactions Refresh (powers login-sync), Recurring Transactions (subscription/paycheck detection — useful day-one panel material, since it works before any custom logging accumulates).
 - **Plaid Link runs on the friend's device** — their bank credentials never touch your systems; you store only the access token, encrypted at rest.

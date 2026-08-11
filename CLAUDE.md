@@ -45,6 +45,13 @@ architectural changes; do not relitigate decided items).
   docs/superpowers/specs/2026-08-10-step1-auth-and-test-gate-design.md (§3 owns
   this layout). Absence of a mockup is not a reason to leave an auth-page gap
   unfixed — check the design doc instead.
+- Deploys go out through deploy/deploy.sh only — never by editing files on
+  the droplet. Tests gate the restart.
+- The app runs behind a reverse proxy, so `request.url` is NOT the URL the
+  browser asked for. Redirects use lib/http/redirect.ts: host-relative in route
+  handlers, absolute in middleware (Next rejects a relative Location there).
+  Never reintroduce `new URL(path, request.url)` — it names the internal origin
+  and every local check passes anyway.
 
 ## Testing
 - Changes to data logic (queries, panels, derived tables) require test
