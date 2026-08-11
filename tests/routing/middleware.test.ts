@@ -96,6 +96,18 @@ describe('routeFor', () => {
     expect(routeFor('authenticated', '/login')).toBe('/unlock')
     expect(routeFor('unlocked', '/login')).toBe('/')
   })
+
+  it('does not treat a slug that merely starts with "admin" as the admin space', () => {
+    // Regression: '/adminbob'.startsWith('/admin') is true, which used to
+    // let an authenticated-but-locked session reach a same-named user slug
+    // without ever passing /unlock. This is the exact leak the two-tier
+    // lock exists to prevent.
+    expect(routeFor('authenticated', '/adminbob')).toBe('/unlock')
+  })
+
+  it('still lets locked users reach real admin subpaths', () => {
+    expect(routeFor('authenticated', '/admin/settings')).toBeNull()
+  })
 })
 
 describe('redirectTargetFor', () => {
@@ -194,6 +206,26 @@ describe('requireState', () => {
 
     expect(redirectMock).toHaveBeenCalledWith('/login')
   })
+
+  it('lets a locked session reach /unlock itself', async () => {
+    // All the tests above pass '/a' as the pathname, so on their own they
+    // cannot tell a correct requireState from one that ignores its
+    // argument and hardcodes '/a'. This exercises the pathname plumbing:
+    // the same locked session that gets bounced from '/a' must NOT be
+    // bounced from '/unlock'.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess } = await import('@/lib/session/store')
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'a', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    cookieSlot.value = { value: sid }
+
+    const { requireState } = await import('@/lib/session/guard')
+    await requireState('/unlock')
+
+    expect(redirectMock).not.toHaveBeenCalled()
+  })
 })
 
 // --- B: a wrong matcher silently disables the middleware everywhere, a
@@ -229,6 +261,12 @@ describe('config.matcher', () => {
   // it, while still exercising the live pattern rather than a hand-copied
   // string comparison.
   const pattern = new RegExp(`^${config.matcher[0]}$`)
+
+  it('has exactly one matcher entry', () => {
+    // Only matcher[0] is exercised by the tests below. Without this, a
+    // second entry added later would go completely unasserted.
+    expect(config.matcher).toHaveLength(1)
+  })
 
   it('excludes next internals, favicon, and the login API route', () => {
     expect(pattern.test('/_next/static/chunk.js')).toBe(false)

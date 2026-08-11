@@ -19,7 +19,16 @@ export function resolveState(
 }
 
 const PUBLIC = new Set(['/login'])
-const LOCKED_OK = new Set(['/unlock', '/admin'])
+const LOCKED_OK = new Set(['/unlock'])
+
+/**
+ * A path segment boundary, not a string prefix: '/admin' must match itself
+ * or a '/admin/...' subpath, never a same-named slug like '/adminbob' — see
+ * the routeFor tests for the regression this guards.
+ */
+function isAdminPath(pathname: string): boolean {
+  return pathname === '/admin' || pathname.startsWith('/admin/')
+}
 
 /** The path to redirect to, or null to allow the request through. */
 export function routeFor(state: AuthState, pathname: string): string | null {
@@ -30,9 +39,7 @@ export function routeFor(state: AuthState, pathname: string): string | null {
     return state === 'unlocked' ? '/' : '/unlock'
   }
   if (state === 'authenticated') {
-    return LOCKED_OK.has(pathname) || pathname.startsWith('/admin')
-      ? null
-      : '/unlock'
+    return LOCKED_OK.has(pathname) || isAdminPath(pathname) ? null : '/unlock'
   }
   return null
 }
