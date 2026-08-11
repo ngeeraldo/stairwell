@@ -27,7 +27,8 @@ export function canSeeUserSpace(
   sessionId: string | undefined,
   slug: string,
 ): boolean {
-  return accountFor(db, sessionId)?.slug === slug
+  const account = accountFor(db, sessionId)
+  return account !== undefined && account.slug === slug
 }
 
 export function isAdmin(

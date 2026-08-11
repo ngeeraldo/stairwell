@@ -1,3 +1,4 @@
+// app/admin/page.tsx
 import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { getDb } from '@/lib/db/instance'

@@ -17,8 +17,16 @@ import { canSeeUserSpace, isAdmin } from '@/lib/auth/authorize'
 // throw `ReferenceError: React is not defined` the moment their JSX runs —
 // purely a test-environment gap, unrelated to the components' own logic.
 // Exposing React globally (test file only; no project config touched) lets
-// the unqualified `React` reference in the compiled output resolve.
-;(globalThis as unknown as { React: typeof React }).React = React
+// the unqualified `React` reference in the compiled output resolve. Scoped
+// with vi.stubGlobal/unstubAllGlobals rather than a bare assignment so the
+// mutation doesn't leak past this file's own test run.
+beforeEach(() => {
+  vi.stubGlobal('React', React)
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 // --- Mocks for the two page components (groups C and D below). Real
 // next/navigation notFound()/redirect() both THROW to unwind the render —
@@ -97,6 +105,20 @@ describe('user space authorization', () => {
 
   it('refuses with no session', () => {
     expect(canSeeUserSpace(db, undefined, 'devone')).toBe(false)
+  })
+
+  it('fails closed when both session and slug are absent (defence in depth)', () => {
+    // canSeeUserSpace's signature requires slug: string, so an undefined
+    // slug can't happen through the App Router today (params.user is always
+    // a non-empty string) — but this is an exported security primitive
+    // whose entire job is to fail closed, for whatever caller reaches it
+    // next. The bug this pins: `accountFor(db, sessionId)?.slug === slug`
+    // evaluates `undefined === undefined` -> true whenever there is no
+    // session AND the caller passes no slug, exactly backwards for a
+    // function whose contract is "no session -> false, always."
+    expect(
+      canSeeUserSpace(db, undefined, undefined as unknown as string),
+    ).toBe(false)
   })
 })
 
@@ -212,6 +234,87 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     const { default: UserSpace } = await import('@/app/[user]/page')
     await expect(
       UserSpace({ params: Promise.resolve({ user: 'ghost' }) }),
+    ).rejects.toThrow('NEXT_NOT_FOUND')
+
+    expect(notFoundMock).toHaveBeenCalledTimes(1)
+    expect(redirectMock).not.toHaveBeenCalled()
+  })
+
+  it('sends a locked non-owner to /unlock before ever checking ownership', async () => {
+    // Locked (authenticated, no key) session for devone, requesting
+    // devtwo's space. requireState must bounce this to /unlock — the
+    // two-tier lock is enforced upstream of canSeeUserSpace, so a locked
+    // session never even gets to find out whether it owns the slug it
+    // asked for.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const oneId = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    await createAcct(handle, { slug: 'devtwo', role: 'user', password: 'pw' })
+    const sid = createSess(handle, oneId) // no putKey: locked
+    cookieSlot.value = { value: sid }
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    await expect(
+      UserSpace({ params: Promise.resolve({ user: 'devtwo' }) }),
+    ).rejects.toThrow('NEXT_REDIRECT:/unlock')
+
+    expect(redirectMock).toHaveBeenCalledWith('/unlock')
+    expect(notFoundMock).not.toHaveBeenCalled()
+  })
+
+  it('sends a locked owner to /unlock too — the lock does not care whether you own the slug', async () => {
+    // Same locked state, but this time the requester DOES own the slug.
+    // Without this test, "locked non-owner -> /unlock" alone can't rule out
+    // a component that only bounces locked sessions when they're *not* the
+    // owner (which would silently let a locked owner reach their own
+    // dashboard without ever unlocking).
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id) // no putKey: locked
+    cookieSlot.value = { value: sid }
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    await expect(
+      UserSpace({ params: Promise.resolve({ user: 'devone' }) }),
+    ).rejects.toThrow('NEXT_REDIRECT:/unlock')
+
+    expect(redirectMock).toHaveBeenCalledWith('/unlock')
+    expect(notFoundMock).not.toHaveBeenCalled()
+  })
+
+  it('404s an unlocked admin session browsing a user space — admin is not an override, at the page layer', async () => {
+    // The unit-level "does not let an admin browse user spaces either"
+    // test covers canSeeUserSpace directly; this covers the same property
+    // through the actual page component, the same way the wrong-owner and
+    // unknown-slug tests above do for ordinary users.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const adminId = await createAcct(handle, { slug: 'nico', role: 'admin', password: 'pw' })
+    const sid = createSess(handle, adminId)
+    putK(sid, Buffer.alloc(32, 1)) // unlocked
+    cookieSlot.value = { value: sid }
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    await expect(
+      UserSpace({ params: Promise.resolve({ user: 'devone' }) }),
     ).rejects.toThrow('NEXT_NOT_FOUND')
 
     expect(notFoundMock).toHaveBeenCalledTimes(1)
