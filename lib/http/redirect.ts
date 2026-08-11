@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
 
 /**
  * A redirect whose `Location` is host-relative.
@@ -50,4 +50,66 @@ export function relativeRedirect(path: string, status = 303): NextResponse {
     )
   }
   return new NextResponse(null, { status, headers: { location: path } })
+}
+
+// A bare host, optionally with a port. Deliberately rejects anything containing
+// '/', '@', whitespace or a scheme, so a malformed header cannot be spliced into
+// the origin below and change where the redirect points.
+const HOST_PATTERN = /^[a-z0-9.-]+(:\d{1,5})?$/i
+
+/**
+ * The middleware counterpart of `relativeRedirect`, which CANNOT be used in
+ * middleware.
+ *
+ * Next's middleware runtime parses the `Location` header as a URL, so a relative
+ * value throws before the response ever leaves the process. Observed on the
+ * droplet and reproduced locally against `next start`:
+ *
+ *   TypeError: Invalid URL ... code: 'ERR_INVALID_URL', input: '/login'
+ *
+ * and the request 500s. Route handlers have no such constraint — a relative
+ * Location works there and is preferred, because it needs no host at all. This
+ * asymmetry is not obvious and is the reason these are two functions rather than
+ * one: the unit test for `middleware()` passes either way, because the throw
+ * happens in Next's adapter after our function returns.
+ *
+ * So middleware needs an absolute URL, which means it needs a host, and
+ * `request.nextUrl` supplies the loopback one (that is the whole bug). The host
+ * therefore comes from the proxy headers.
+ *
+ * WHY TRUSTING THOSE HEADERS IS SAFE HERE, and what would break it:
+ * `deploy/Caddyfile` declares a single site block for `app.stairwell.run`, and
+ * Caddy matches sites by Host header — a request bearing any other Host does not
+ * match and never reaches this app. `ufw` allows only 22/80/443, and Next binds
+ * 127.0.0.1, so Caddy is the only path in. The Host is therefore already
+ * validated before we see it.
+ *
+ * If a second site block, a wildcard host, or a direct route to port 3000 is
+ * ever added, that guarantee is gone and this should switch to an explicit
+ * allowlisted origin from configuration.
+ */
+export function middlewareRedirect(
+  request: NextRequest,
+  path: string,
+  status = 307,
+): NextResponse {
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    throw new Error(
+      `middlewareRedirect: path must be host-relative and not protocol-relative, got '${path}'`,
+    )
+  }
+
+  const forwardedHost = request.headers.get('x-forwarded-host')
+  const host = forwardedHost ?? request.headers.get('host')
+  const proto = request.headers.get('x-forwarded-proto')
+
+  // Fall back to the request's own origin rather than throwing: a 500 on the
+  // unauthenticated entry path is worse than a redirect to the internal origin,
+  // and HOST_PATTERN only rejects values Caddy would never produce.
+  if (!host || !HOST_PATTERN.test(host)) {
+    return NextResponse.redirect(new URL(path, request.nextUrl.origin), status)
+  }
+
+  const scheme = proto === 'http' || proto === 'https' ? proto : 'https'
+  return NextResponse.redirect(new URL(path, `${scheme}://${host}`), status)
 }

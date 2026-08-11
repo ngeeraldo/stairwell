@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { SESSION_COOKIE } from '@/lib/session/cookie'
-import { relativeRedirect } from '@/lib/http/redirect'
+import { middlewareRedirect } from '@/lib/http/redirect'
 
 /**
  * Thin adapter. The decision logic lives in lib/session/resolve.ts so it can
@@ -22,11 +22,15 @@ export function middleware(request: NextRequest) {
     if (pathname.startsWith('/api/')) {
       return new NextResponse(null, { status: 401 })
     }
-    // 307 preserves the method, matching NextResponse.redirect's default,
-    // which this replaced. Relative because an absolute Location built from
-    // request.url names the loopback origin behind a proxy — see
-    // lib/http/redirect.ts.
-    return relativeRedirect('/login', 307)
+    // 307 preserves the method, matching NextResponse.redirect's default.
+    //
+    // Absolute, built from the proxy headers — NOT relative. Middleware is the
+    // one layer where a relative Location cannot work: Next's middleware runtime
+    // parses the header as a URL and throws ERR_INVALID_URL, 500ing the request.
+    // Route handlers are the opposite and use relativeRedirect. See
+    // lib/http/redirect.ts for the measurement and for why trusting the host
+    // header is safe behind this Caddyfile.
+    return middlewareRedirect(request, '/login', 307)
   }
   return NextResponse.next()
 }

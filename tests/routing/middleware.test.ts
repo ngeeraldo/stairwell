@@ -234,15 +234,34 @@ describe('middleware', () => {
   it('redirects a cookie-less request to /login', () => {
     const request = new NextRequest('http://localhost/nico')
     const response = middleware(request)
-    // Relative, not absolute: an absolute Location is built from the
-    // server's own bind address, which behind Caddy is 127.0.0.1:3000.
-    // Measured live at app.stairwell.run before the fix:
-    // `location: https://localhost:3000/login`. See the long comment on
-    // expectRelativeRedirect in tests/auth/routes.test.ts.
+    // ABSOLUTE here, unlike the route handlers, which use relative Locations.
+    // Middleware has no choice: Next's middleware runtime parses this header as
+    // a URL and throws ERR_INVALID_URL on a relative one, 500ing the request.
+    // See lib/http/redirect.ts. The host comes from the proxy headers; with none
+    // set (as here) it falls back to the request's own origin.
     const location = response.headers.get('location')
-    expect(location).toBe('/login')
-    expect(location).toMatch(/^\//)
-    expect(location).not.toMatch(/^[a-z]+:\/\//i)
+    expect(location).toBe('http://localhost/login')
+    expect(new URL(location!).pathname).toBe('/login')
+  })
+
+  it('sends a cookie-less request to the EXTERNAL host, not the loopback origin', () => {
+    // The regression this pins shipped to production: behind Caddy the Location
+    // was https://localhost:3000/login, so a first-time visitor to
+    // https://app.stairwell.run/ landed on a connection error. The two tests
+    // either side of this one construct a NextRequest with no proxy headers, so
+    // they cannot tell the fixed behaviour from the broken one — this is the one
+    // that can.
+    const request = new NextRequest('http://127.0.0.1:3000/nico', {
+      headers: {
+        host: 'app.stairwell.run',
+        'x-forwarded-host': 'app.stairwell.run',
+        'x-forwarded-proto': 'https',
+      },
+    })
+    const response = middleware(request)
+    expect(response.headers.get('location')).toBe(
+      'https://app.stairwell.run/login',
+    )
   })
 
   it('does not redirect a cookie-less request already at /login', () => {
@@ -285,15 +304,14 @@ describe('middleware', () => {
     const request = new NextRequest('http://localhost/nico')
     const response = middleware(request)
     expect(response.status).toBe(307)
-    // Relative, not absolute: an absolute Location is built from the
-    // server's own bind address, which behind Caddy is 127.0.0.1:3000.
-    // Measured live at app.stairwell.run before the fix:
-    // `location: https://localhost:3000/login`. See the long comment on
-    // expectRelativeRedirect in tests/auth/routes.test.ts.
+    // ABSOLUTE here, unlike the route handlers, which use relative Locations.
+    // Middleware has no choice: Next's middleware runtime parses this header as
+    // a URL and throws ERR_INVALID_URL on a relative one, 500ing the request.
+    // See lib/http/redirect.ts. The host comes from the proxy headers; with none
+    // set (as here) it falls back to the request's own origin.
     const location = response.headers.get('location')
-    expect(location).toBe('/login')
-    expect(location).toMatch(/^\//)
-    expect(location).not.toMatch(/^[a-z]+:\/\//i)
+    expect(location).toBe('http://localhost/login')
+    expect(new URL(location!).pathname).toBe('/login')
   })
 
   it('passes an API request through untouched when the session cookie is present', () => {
