@@ -1,3 +1,6 @@
+// Importing a test-support helper from a dev script is intentional here, not
+// an accident: openPlatformDb() never mkdirSync's, so regeneratePlatform()
+// (below) is what actually creates platform/dev/ on a fresh clone.
 import { regeneratePlatform } from '../tests/support/synthetic'
 import { openPlatformDb } from '../lib/db/platform'
 import { createAccount } from '../lib/auth/accounts'
