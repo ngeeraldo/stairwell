@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { verify } from '@node-rs/argon2'
 import { openPlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { login, unlock } from '@/lib/auth/flow'
@@ -65,13 +66,44 @@ describe('login', () => {
       expect(spy).toHaveBeenCalledTimes(1)
       const [knownSlugArg] = spy.mock.calls[0]!
 
+      // NOTE on the assertion failure messages below: if any of these ever
+      // fail, the test runner will print `knownSlugArg`, which is this
+      // test's own `nico` account's stored `auth_hash`. That's safe here
+      // specifically -- the account is created fresh per test in a
+      // mkdtempSync temp dir with the loudly fake password 'pw' and is
+      // destroyed in afterEach -- but this pattern (asserting on a real
+      // auth_hash) should not spread to tests against non-synthetic data.
+
       // Both calls must pass a real Argon2id-encoded verifier string (not
       // undefined, not skipped) -- the unknown-slug branch is doing the
       // same shape of work as the known-account branch, just against a
-      // fixed dummy hash instead of the account's stored one.
+      // fixed dummy hash instead of the account's stored one. On its own
+      // this only pins "some argon2id-headered string, not undefined"; the
+      // two assertions below make it load-bearing.
       const argon2idShape = /^\$argon2id\$v=\d+\$m=\d+,t=\d+,p=\d+\$/
       expect(unknownSlugArg).toEqual(expect.stringMatching(argon2idShape))
       expect(knownSlugArg).toEqual(expect.stringMatching(argon2idShape))
+
+      // Pin algorithm, version, and all three cost parameters (m, t, p) as
+      // equal across both branches. Without this, DUMMY_HASH's parameters
+      // and lib/auth/password.ts's OPTS could drift apart -- e.g. a routine
+      // OPTS hardening (raising memoryCost) would make new accounts cost
+      // more while the unknown-slug branch silently stays at the old,
+      // cheaper cost, reopening a smaller but real, directional timing gap.
+      // Neither the shape regex above nor the timing floor below would
+      // notice that; this does.
+      expect(unknownSlugArg.split('$').slice(0, 4)).toEqual(
+        knownSlugArg.split('$').slice(0, 4),
+      )
+
+      // Deterministic (no stopwatch) proof that the unknown-slug branch's
+      // hash is a genuine, working Argon2 verifier and not merely a string
+      // shaped like one. @node-rs/argon2's verify() throws on a malformed
+      // encoding rather than returning false (verifyPassword's try/catch
+      // hides that), so this fails if DUMMY_HASH is ever swapped for
+      // something that only looks right. Unlike the timing test below,
+      // this one survives that timing test being deleted.
+      await expect(verify(unknownSlugArg, 'x')).resolves.toBe(false)
     })
 
     // Wall-clock assertions are normally too flaky to pin security behaviour

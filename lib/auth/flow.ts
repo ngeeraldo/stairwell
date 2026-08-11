@@ -6,11 +6,15 @@ import { createSession, readSession } from '@/lib/session/store'
 
 // A real Argon2id hash (same OPTS as lib/auth/password.ts: algorithm 2,
 // memoryCost 19456, timeCost 2, parallelism 1, outputLen 32) of a loudly
-// fake password, generated once via hashPassword. Its only job is to give
+// fake password, generated once and hardcoded here. Its only job is to give
 // `verifyPassword` real Argon2 work to do on the unknown-slug branch below,
 // so that branch costs the same as a real verify and an attacker cannot use
-// wall-clock time to learn whether a slug exists (Task 13G). It verifies
-// deterministically to `false` against any guess and is not a secret.
+// wall-clock time to learn whether a slug exists (Task 13G). Its return
+// value is discarded; only its cost matters.
+//
+// To regenerate (both values are loudly fake, not secrets, and the salt is
+// fixed only so this constant is reproducible/auditable):
+//   hashPassword('DUMMY-NOT-A-REAL-PASSWORD-oracle-fix-13G', Buffer.alloc(16, 0x99))
 const DUMMY_HASH =
   '$argon2id$v=19$m=19456,t=2,p=1$mZmZmZmZmZmZmZmZmZmZmQ$g5OANDJjXnwpUD9m4VxfTuBU//J2PhaxCX3zEteqjn8'
 
