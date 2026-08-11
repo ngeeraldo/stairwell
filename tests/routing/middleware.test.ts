@@ -250,6 +250,45 @@ describe('middleware', () => {
     const response = middleware(request)
     expect(response.headers.get('location')).toBeNull()
   })
+
+  it('gives a cookie-less API POST a 401, not a redirect', () => {
+    // redirect() defaults to 307 (method-preserving) to /login, which has
+    // no POST handler — the caller would see a 405 that says nothing about
+    // the real problem (no session) instead of a 401 that does.
+    const request = new NextRequest('http://localhost/api/unlock', {
+      method: 'POST',
+    })
+    const response = middleware(request)
+    expect(response.status).toBe(401)
+    expect(response.headers.get('location')).toBeNull()
+  })
+
+  it('gives a cookie-less API GET a 401 too, not just POST', () => {
+    const request = new NextRequest('http://localhost/api/logout')
+    const response = middleware(request)
+    expect(response.status).toBe(401)
+    expect(response.headers.get('location')).toBeNull()
+  })
+
+  it('still redirects a cookie-less request to a non-API page', () => {
+    // Guards against a fix that returns 401 for every path instead of only
+    // /api/* — a page visitor with no cookie must still get the login page,
+    // not a bare 401.
+    const request = new NextRequest('http://localhost/nico')
+    const response = middleware(request)
+    expect(response.status).toBe(307)
+    expect(response.headers.get('location')).toBe('http://localhost/login')
+  })
+
+  it('passes an API request through untouched when the session cookie is present', () => {
+    const request = new NextRequest('http://localhost/api/unlock', {
+      method: 'POST',
+      headers: { cookie: `${SESSION_COOKIE}=abc` },
+    })
+    const response = middleware(request)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('location')).toBeNull()
+  })
 })
 
 describe('config.matcher', () => {

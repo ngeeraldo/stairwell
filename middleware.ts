@@ -12,6 +12,15 @@ export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   if (!hasCookie && pathname !== '/login') {
+    // An API caller with no session cookie gets a 401, not a redirect. A
+    // redirect() here defaults to 307 (method-preserving) to /login, which
+    // has no POST handler — the caller would see a 405 instead of the 401
+    // that actually describes the problem. The matcher below already
+    // excludes api/login, so every /api/* path reaching this branch is
+    // genuinely unauthenticated.
+    if (pathname.startsWith('/api/')) {
+      return new NextResponse(null, { status: 401 })
+    }
     return NextResponse.redirect(new URL('/login', request.url))
   }
   return NextResponse.next()
