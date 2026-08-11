@@ -710,7 +710,12 @@ else
   # the file AS A SCRIPT, both directions, so the harness would catch that
   # exact class of bug (the same "green but doesn't run" failure this task
   # exists to prevent, one level up).
-  as_script_out=$(printf '' | BUILD_CMD=false bash "$PUSH_GATE" origin http://x </dev/null 2>&1)
+  #
+  # TEST_CMD is pinned to a passing stub in both cases below: main now runs
+  # check_tests before check_build (see pre-push), so without a TEST_CMD
+  # override these would shell out to a real `npx vitest run` and these
+  # cases would stop isolating BUILD_CMD's effect on the exit code.
+  as_script_out=$(printf '' | TEST_CMD=true BUILD_CMD=false bash "$PUSH_GATE" origin http://x </dev/null 2>&1)
   as_script_rc=$?
   if [ $as_script_rc -eq 1 ]; then
     printf '  %-6s %-34s %s\n' "PASS" "as-a-script: failing BUILD_CMD blocks" "exit 1"
@@ -721,7 +726,7 @@ else
     failed_cases+=("as-a-script: failing BUILD_CMD blocks")
   fi
 
-  as_script_out=$(printf '' | BUILD_CMD=true bash "$PUSH_GATE" origin http://x </dev/null 2>&1)
+  as_script_out=$(printf '' | TEST_CMD=true BUILD_CMD=true bash "$PUSH_GATE" origin http://x </dev/null 2>&1)
   as_script_rc=$?
   if [ $as_script_rc -eq 0 ]; then
     printf '  %-6s %-34s %s\n' "PASS" "as-a-script: passing BUILD_CMD allows" "exit 0"
@@ -730,6 +735,195 @@ else
     printf '  %-6s %-34s got exit %s, want 0\n' "FAIL" "as-a-script: passing BUILD_CMD allows" "$as_script_rc"
     fail=$((fail + 1))
     failed_cases+=("as-a-script: passing BUILD_CMD allows")
+  fi
+fi
+echo
+
+echo "Gate E: a failing test suite blocks the push"
+if [ ! -f "$PUSH_GATE" ]; then
+  printf '  %-6s %-34s %s\n' "FAIL" "gate script present (E)" "missing $PUSH_GATE"
+  fail=$((fail + 1))
+  failed_cases+=("gate script present (E)")
+else
+  # Stub commands stand in for the real suite via TEST_CMD so this group
+  # runs in milliseconds instead of shelling out to `npx vitest run`. The
+  # real, unstubbed suite is exercised separately (see report).
+  _stub_tests_pass() { return 0; }
+  _stub_tests_fail() { echo "FAIL tests/session/keymap.test.ts FAKE_TEST_STUB_MARKER" >&2; return 1; }
+  _MISSING_TEST_CMD="___stairwell_gate_e_no_such_command___"
+
+  # tests_check <expected BLOCK|PASS> <label> <TEST_CMD stub>
+  tests_check() {
+    local expected=$1 label=$2 cmd=$3
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE"
+      TEST_CMD="$cmd" check_tests
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # tests_skip_check <expected BLOCK|PASS> <label> <cmd>
+  tests_skip_check() {
+    local expected=$1 label=$2 cmd=$3
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE"
+      TEST_CMD="$cmd" SKIP_TEST_RUN_GATE=1 check_tests
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # tests_says <expected-substring> <label> <cmd>
+  tests_says() {
+    local expected=$1 label=$2 cmd=$3
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE" >/dev/null 2>&1
+      TEST_CMD="$cmd" check_tests 2>&1 >/dev/null
+    )
+    if printf '%s' "$out" | grep -qF "$expected"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "says '$expected'"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s missing '\''%s'\''\n' "FAIL" "$label" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # tests_skip_says <expected-substring> <label> <cmd>
+  tests_skip_says() {
+    local expected=$1 label=$2 cmd=$3
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE" >/dev/null 2>&1
+      TEST_CMD="$cmd" SKIP_TEST_RUN_GATE=1 check_tests 2>&1 >/dev/null
+    )
+    if printf '%s' "$out" | grep -qF "$expected"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "says '$expected'"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s missing '\''%s'\''\n' "FAIL" "$label" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # tests_skip_silent <label> <cmd>
+  #
+  # "Silent" here means the SKIP notice stays silent — check_tests always
+  # prints a one-line progress notice before running the suite, independent
+  # of pass/fail/skip, so the stub run is never byte-for-byte empty. What
+  # must stay silent specifically is the "Gate E SKIPPED" announcement,
+  # which is only correct to print when the gate would actually have
+  # blocked.
+  tests_skip_silent() {
+    local label=$1 cmd=$2
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE" >/dev/null 2>&1
+      TEST_CMD="$cmd" SKIP_TEST_RUN_GATE=1 check_tests 2>&1 >/dev/null
+    )
+    if ! printf '%s' "$out" | grep -qF "Gate E SKIPPED"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "no skip notice"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s expected no skip notice, got one\n' "FAIL" "$label"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # 1. Stubbed passing suite -> allows the push.
+  tests_check PASS  "stubbed passing test suite" \
+    _stub_tests_pass
+  # 2. Stubbed FAILING suite -> blocks the push.
+  tests_check BLOCK "stubbed failing test suite" \
+    _stub_tests_fail
+  # 3. Blocking output includes the suite's own distinctive message.
+  tests_says "FAKE_TEST_STUB_MARKER" "blocking output includes test suite's own message" \
+    _stub_tests_fail
+  # 4. SKIP_TEST_RUN_GATE=1 with a failing suite -> allows.
+  tests_skip_check PASS "SKIP_TEST_RUN_GATE turns block into pass" \
+    _stub_tests_fail
+  # 5. The skip announces itself on stderr.
+  tests_skip_says "Gate E SKIPPED" "skip announces itself" \
+    _stub_tests_fail
+  # 6. The skip is SILENT when the suite passed anyway.
+  tests_skip_silent "skip is silent when the suite passed" \
+    _stub_tests_pass
+  # 7. Exit 127 (command not found) reports a missing-toolchain failure, not
+  # a test failure, and still blocks (fails closed) when not skipped.
+  tests_check BLOCK "TEST_CMD not found (exit 127) still blocks" \
+    "$_MISSING_TEST_CMD"
+  tests_says "Gate E could not run the test suite" "exit 127 reports missing toolchain, not a test failure" \
+    "$_MISSING_TEST_CMD"
+  # 8. SKIP_TEST_RUN_GATE=1 must not leak into any pre-commit gate or into
+  # Gate D — each must still block/run with it set.
+  SKIP_TEST_RUN_GATE=1 gate_check BLOCK "SKIP_TEST_RUN_GATE does not leak into Gate A" \
+    users/alice/schema.sql
+  SKIP_TEST_RUN_GATE=1 coverage_check BLOCK "SKIP_TEST_RUN_GATE does not leak into Gate B" \
+    lib/session/store.ts
+  SKIP_TEST_RUN_GATE=1 typecheck_check BLOCK "SKIP_TEST_RUN_GATE does not leak into Gate C" \
+    _stub_tsc_fail lib/auth/password.ts
+  SKIP_TEST_RUN_GATE=1 build_check BLOCK "SKIP_TEST_RUN_GATE does not leak into Gate D" \
+    _stub_build_fail
+
+  # 9. As in Gate D: sourcing check_tests directly proves the decision logic,
+  # not that the file's main block actually calls it before check_build.
+  # Invoke the file AS A SCRIPT, both directions.
+  as_script_out=$(printf '' | TEST_CMD=false BUILD_CMD=true bash "$PUSH_GATE" origin http://x </dev/null 2>&1)
+  as_script_rc=$?
+  if [ $as_script_rc -eq 1 ]; then
+    printf '  %-6s %-34s %s\n' "PASS" "as-a-script: failing TEST_CMD blocks" "exit 1"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s got exit %s, want 1\n' "FAIL" "as-a-script: failing TEST_CMD blocks" "$as_script_rc"
+    fail=$((fail + 1))
+    failed_cases+=("as-a-script: failing TEST_CMD blocks")
+  fi
+
+  # 10. Ordering: TEST_CMD runs before BUILD_CMD (main's fail-fast design).
+  # A failing TEST_CMD with a PASSING BUILD_CMD (case 9) already proves
+  # check_tests genuinely gates the push on its own; this case proves the
+  # specific ordering by checking which gate's message appears when BOTH
+  # would fail — if main called check_build first, this would report a
+  # build failure instead.
+  as_script_out=$(printf '' | TEST_CMD=false BUILD_CMD=false bash "$PUSH_GATE" origin http://x </dev/null 2>&1)
+  as_script_rc=$?
+  if [ $as_script_rc -eq 1 ] && printf '%s' "$as_script_out" | grep -qF "PUSH BLOCKED — tests failed"; then
+    printf '  %-6s %-34s %s\n' "PASS" "as-a-script: tests run before build" "blocked at Gate E"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s got exit %s\n' "FAIL" "as-a-script: tests run before build" "$as_script_rc"
+    fail=$((fail + 1))
+    failed_cases+=("as-a-script: tests run before build")
   fi
 fi
 echo

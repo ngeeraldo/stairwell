@@ -65,16 +65,21 @@ architectural changes; do not relitigate decided items).
   accepted limitation. `SKIP_TYPECHECK=1 git commit` skips it only, and only
   announces the skip when a TypeScript file was actually staged. When Claude
   uses the skip, it states the reason in the commit message.
-- A pre-push gate (Gate D) runs `npx next build` on every push, unconditionally
-  — a build break can originate anywhere in the module graph (a config edit, a
-  dependency bump, an innocent-looking import), so there is no fast path.
-  `tsc --noEmit` clean does not mean the build succeeds: a middleware.ts import
-  that pulled in `node:crypto` via lib/session/store.ts broke `next build` for
-  two full tasks while the suite stayed green and Gate C stayed clean. This
-  gate exists because "tsc clean" does not mean "builds". `SKIP_BUILD_GATE=1
-  git push` skips it only, and only announces the skip when the build actually
-  would have failed. When Claude uses the skip, it states the reason in the
-  commit message.
+- A pre-push gate runs `npx vitest run` (Gate E) and then `npx next build`
+  (Gate D) on every push, unconditionally — a break in either can originate
+  anywhere (a config edit, a dependency bump, an innocent-looking import), so
+  there is no fast path. `tsc --noEmit` clean does not mean the build
+  succeeds: a middleware.ts import that pulled in `node:crypto` via
+  lib/session/store.ts broke `next build` for two full tasks while the suite
+  stayed green and Gate C stayed clean — Gate D exists because "tsc clean"
+  does not mean "builds". Gate B (pre-commit) only checks that a guarded
+  change staged some file under `tests/`, not that the suite passes — Gate E
+  exists because "a test file is staged" does not mean "the tests pass".
+  Gate E runs first (fail fast on the cheap check before paying for the
+  ~1-minute build). `SKIP_TEST_RUN_GATE=1 git push` skips Gate E only,
+  `SKIP_BUILD_GATE=1 git push` skips Gate D only, each only announcing the
+  skip when it actually would have blocked. When Claude uses either skip, it
+  states the reason in the commit message.
 
 ## Sacred data
 - Metrics log and chat transcripts are append-only. Never migrate, rewrite,

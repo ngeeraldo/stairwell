@@ -1,32 +1,44 @@
 #!/usr/bin/env bash
-# Pre-push build gate (Gate D).
+# Pre-push build gate (Gate D) and test-suite gate (Gate E).
 #
-# Why this exists: `npx next build` failed for two full tasks and nothing
+# Why Gate D exists: `npx next build` failed for two full tasks and nothing
 # noticed. middleware.ts imported a constant from lib/session/store.ts, which
 # imports node:crypto, which the edge runtime cannot bundle. Throughout that
 # window the suite was green and `tsc --noEmit` was clean. Gate C (pre-commit)
-# exists because "tests green" does not mean "compiles"; this gate exists
+# exists because "tests green" does not mean "compiles"; Gate D exists
 # because "tsc green" does not mean "builds".
 #
-# Tier: pre-push, not pre-commit. A build takes about a minute and writes
-# .next/ as a side effect — the wrong cost and blast radius for a per-commit
-# hook. Task 14's checkpoint asserts the build separately, so the two tiers
+# Why Gate E exists: Gate B (pre-commit) only checks that a file under
+# tests/ is STAGED for a guarded change — not that the suite passes. Editing
+# a comment in a test file satisfies it. Before Gate E, a commit that turned
+# 50 tests red could pass all three pre-commit gates and push clean, because
+# nothing anywhere actually ran `npx vitest run`. Gate D catches "does not
+# compile"; Gate E catches "does not pass".
+#
+# Tier: pre-push, not pre-commit, for both. A build takes about a minute and
+# writes .next/ as a side effect — the wrong cost and blast radius for a
+# per-commit hook — and the full suite, while fast today, is the same kind of
+# whole-tree check as the build rather than a staged-files check like Gates
+# A-C. Task 14's checkpoint asserts the build separately, so the two tiers
 # together mean a break cannot leave the machine and cannot survive to "done".
 #
-# No fast path — deliberate. Gate C skips when no TypeScript is staged, but a
-# build break can originate anywhere in the module graph, including
-# next.config.ts, a dependency bump, or a file that itself looks innocent
-# (the original bug was exactly that shape: middleware.ts importing a
-# legitimate module). Correctly scoping a fast path here means parsing the
-# pushed ref range off stdin, which is a bug farm for a gate that runs a
-# handful of times a day. So: run unconditionally.
+# No fast path for either — deliberate. Gate C skips when no TypeScript is
+# staged, but a build break can originate anywhere in the module graph,
+# including next.config.ts, a dependency bump, or a file that itself looks
+# innocent (the original bug was exactly that shape: middleware.ts importing
+# a legitimate module), and a test regression can equally originate anywhere.
+# Correctly scoping a fast path here means parsing the pushed ref range off
+# stdin, which is a bug farm for a gate that runs a handful of times a day.
+# So: run both unconditionally.
 #
 # Wired via:  git config core.hooksPath .githooks (set by setup.sh)
 #
-# The decision logic lives in check_build() so it can be sourced and
-# unit-tested against a stubbed BUILD_CMD with no real build and no real push:
+# The decision logic lives in check_build() and check_tests() so each can be
+# sourced and unit-tested against a stubbed BUILD_CMD/TEST_CMD with no real
+# build, no real test run, and no real push:
 #   SCHEMA_GATE_SOURCE_ONLY=1 . .githooks/pre-push
 #   BUILD_CMD=... check_build
+#   TEST_CMD=...  check_tests
 set -uo pipefail
 
 # check_build
@@ -100,6 +112,74 @@ check_build() {
   return 1
 }
 
+# check_tests
+#   exit 0 = allow push, exit 1 = block (message on stderr)
+check_tests() {
+  # Indirected so the harness can substitute a stub and run this group in
+  # milliseconds instead of shelling out to a real `npx vitest run`.
+  local TEST_CMD="${TEST_CMD:-npx vitest run}"
+
+  echo "Gate E: running the test suite..." >&2
+
+  local out rc
+  out=$($TEST_CMD 2>&1)
+  rc=$?
+  [ $rc -eq 0 ] && return 0
+
+  # Exit 127 means the shell could not find/run TEST_CMD at all (e.g. no
+  # npx/vitest on PATH) — that is a broken environment, not a failing test,
+  # and must not be reported to the developer as one.
+  local internal_failure=0
+  [ $rc -eq 127 ] && internal_failure=1
+
+  # An announced skip. Printed only when the gate WOULD have blocked, so a
+  # SKIP_TEST_RUN_GATE exported in a shell profile cannot produce noise that
+  # trains the eye to ignore it.
+  if [ "${SKIP_TEST_RUN_GATE:-0}" = "1" ]; then
+    {
+      echo
+      if [ $internal_failure -eq 1 ]; then
+        echo "Gate E SKIPPED (SKIP_TEST_RUN_GATE=1) — could not run the tests:"
+      else
+        echo "Gate E SKIPPED (SKIP_TEST_RUN_GATE=1) — a test failure is being ignored:"
+      fi
+      echo
+      echo "$out"
+      echo
+      echo "CLAUDE.md > Testing: state the reason for the skip in the commit message."
+      echo
+    } >&2
+    return 0
+  fi
+
+  {
+    echo
+    if [ $internal_failure -eq 1 ]; then
+      echo "PUSH BLOCKED — Gate E could not run the test suite"
+      echo
+      echo "TEST_CMD exited 127 (command not found). This is an environment"
+      echo "problem — e.g. no npx/vitest on PATH — not a failing test."
+    else
+      echo "PUSH BLOCKED — tests failed"
+      echo
+      echo "Gate B (pre-commit) only checks that a guarded change staged SOME"
+      echo "file under tests/ — not that the suite passes. A commit that turns"
+      echo "tests red can satisfy every pre-commit gate and reach this point."
+      echo "This gate exists because 'a test file is staged' does not mean"
+      echo "'the tests pass'."
+    fi
+    echo
+    echo "$out"
+    echo
+    echo "SKIP_TEST_RUN_GATE=1 git push ... bypasses this gate for genuine"
+    echo "exceptions, but that should be rare. Prefer fixing the underlying"
+    echo "problem instead."
+    echo
+  } >&2
+
+  return 1
+}
+
 # When sourced by the test harness, stop here and expose the function only.
 if [ "${SCHEMA_GATE_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -115,5 +195,9 @@ fi
 # configurations, so drain it explicitly.
 cat >/dev/null
 
+# Tests first: a real `npx vitest run` here takes low single-digit seconds,
+# a real build takes about a minute. Failing the cheap check first means a
+# red suite does not also pay for a build that a red suite makes moot.
+check_tests || exit 1
 check_build
 exit $?
