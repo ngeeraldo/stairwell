@@ -46,7 +46,13 @@ architectural changes; do not relitigate decided items).
   this layout). Absence of a mockup is not a reason to leave an auth-page gap
   unfixed — check the design doc instead.
 - Deploys go out through deploy/deploy.sh only — never by editing files on
-  the droplet. Tests gate the restart.
+  the droplet. Tests gate the restart, and deploy/smoke.sh gates success:
+  **a deploy that starts the process but does not serve correctly is a failed
+  deploy.** `systemctl is-active` is true the moment systemd forks npm, so it
+  cannot tell "serving" from "started". The smoke check polls for a real 200 and
+  asserts the redirect shape at both layers. It has no skip variable by design —
+  retarget it with an origin argument (`deploy/smoke.sh http://localhost:3000`)
+  if DNS is not up yet, but do not add a way to switch it off.
 - The app runs behind a reverse proxy, so `request.url` is NOT the URL the
   browser asked for. Redirects use lib/http/redirect.ts: host-relative in route
   handlers, absolute in middleware (Next rejects a relative Location there).

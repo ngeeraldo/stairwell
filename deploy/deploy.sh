@@ -59,6 +59,21 @@ systemctl is-active --quiet stairwell || {
   exit 1
 }
 
+# 7. Smoke check. `is-active` above is necessary and NOT sufficient: it goes true
+#    the moment systemd forks npm, several seconds before Next is listening, and
+#    it stays true for a process that serves 500s. A deploy that starts the
+#    process but does not serve correctly is a failed deploy.
+#
+#    Both step-1b outages were redirect bugs that passed the suite, tsc, the
+#    build, and Gates D+E, and would have been caught here. No skip variable
+#    exists on purpose — retarget it with an origin argument if you must.
+if ! ./deploy/smoke.sh; then
+  echo "DEPLOY FAILED — the service restarted but is not serving correctly." >&2
+  echo "The new code IS live and failing; this is not a rollback." >&2
+  journalctl -u stairwell -n 30 --no-pager >&2
+  exit 1
+fi
+
 echo
-echo "Deployed $(git rev-parse --short HEAD). Service is active."
+echo "Deployed $(git rev-parse --short HEAD). Service is active and serving."
 echo

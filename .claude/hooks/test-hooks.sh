@@ -959,6 +959,212 @@ else
 fi
 echo
 
+echo "Deploy smoke check: serving, not merely started"
+SMOKE_SCRIPT="$(cd "$HOOK_DIR/../.." && pwd)/deploy/smoke.sh"
+if [ ! -x "$SMOKE_SCRIPT" ]; then
+  printf '  %-6s %-38s %s\n' "FAIL" "smoke script present and executable" "missing or not +x: $SMOKE_SCRIPT"
+  fail=$((fail + 1))
+  failed_cases+=("smoke script present and executable")
+else
+  # deploy/smoke.sh talks HTTP, so the harness stubs its one fetch primitive via
+  # SMOKE_FETCH, exactly as Gates D and E stub BUILD_CMD and TEST_CMD. The stub
+  # is invoked as `stub <method> <url>` and prints the status code on line 1 and
+  # the Location header on line 2 — the same contract the real curl path honours.
+  smoke_sandbox=$(mktemp -d)
+
+  # smoke_check <expected PASS|BLOCK> <label> <stub-body>
+  smoke_check() {
+    local expected=$1 label=$2 body=$3
+    local stub="$smoke_sandbox/fetch-$((pass + fail)).sh" rc actual
+    {
+      echo '#!/usr/bin/env bash'
+      echo 'method="$1"; url="$2"'
+      echo "$body"
+    } > "$stub"
+    chmod +x "$stub"
+    SMOKE_FETCH="$stub" SMOKE_ATTEMPTS=3 SMOKE_SLEEP=0 \
+      "$SMOKE_SCRIPT" https://app.stairwell.run >/dev/null 2>&1
+    rc=$?
+    actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-38s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-38s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # smoke_says <expected-substring> <label> <stub-body>
+  smoke_says() {
+    local expected=$1 label=$2 body=$3
+    local stub="$smoke_sandbox/fetch-$((pass + fail)).sh" out
+    {
+      echo '#!/usr/bin/env bash'
+      echo 'method="$1"; url="$2"'
+      echo "$body"
+    } > "$stub"
+    chmod +x "$stub"
+    out=$(SMOKE_FETCH="$stub" SMOKE_ATTEMPTS=3 SMOKE_SLEEP=0 \
+      "$SMOKE_SCRIPT" https://app.stairwell.run 2>&1)
+    if printf '%s' "$out" | grep -qF "$expected"; then
+      printf '  %-6s %-38s %s\n' "PASS" "$label" "says '$expected'"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-38s missing %s\n' "FAIL" "$label" "'$expected'"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # A fully healthy deployment: /login 200, / -> absolute /login on the right
+  # host, POST /api/login -> relative.
+  _SMOKE_GOOD='
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 200; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://app.stairwell.run/login" ;;
+  "POST https://app.stairwell.run/api/login") echo 303; echo "/login?error=1" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  smoke_check PASS "healthy deployment" "$_SMOKE_GOOD"
+
+  # Readiness. curl exits 0 on a 502, so a naive exit-code poll passes instantly
+  # while Caddy is still returning Bad Gateway. This is the mistake that produced
+  # phantom results while the checkpoint was being run by hand.
+  # Everything EXCEPT /login is healthy here, deliberately. An earlier version of
+  # this case returned 000 for the other paths, and stayed green against a mutant
+  # whose readiness check accepted any status — the root-redirect check failed
+  # instead, so the case proved nothing about readiness. With the rest healthy,
+  # only the readiness check can block, and the case is diagnostic.
+  smoke_check BLOCK "permanent 502 on /login blocks" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 502; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://app.stairwell.run/login" ;;
+  "POST https://app.stairwell.run/api/login") echo 303; echo "/login?error=1" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  smoke_says "never returned 200" "502 reported as a readiness failure" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 502; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://app.stairwell.run/login" ;;
+  "POST https://app.stairwell.run/api/login") echo 303; echo "/login?error=1" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  # A 502 that clears must NOT fail the deploy — the restart window is normal.
+  smoke_check PASS "transient 502 then 200 passes" '
+counter="'"$smoke_sandbox"'/poll-count"
+n=$(cat "$counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$counter"
+case "$method $url" in
+  "GET https://app.stairwell.run/login")
+      if [ "$n" -lt 2 ]; then echo 502; else echo 200; fi; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://app.stairwell.run/login" ;;
+  "POST https://app.stairwell.run/api/login") echo 303; echo "/login?error=1" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  # OUTAGE 1: the absolute redirect naming the internal origin. /login answers
+  # 200 and the root returns a healthy-looking 307, so liveness alone passes.
+  smoke_check BLOCK "redirect naming localhost blocks" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 200; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://localhost:3000/login" ;;
+  "POST https://app.stairwell.run/api/login") echo 303; echo "/login?error=1" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  smoke_says "yields the internal origin" "internal-origin redirect names the cause" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 200; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://localhost:3000/login" ;;
+  "POST https://app.stairwell.run/api/login") echo 303; echo "/login?error=1" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  # OUTAGE 2: middleware ERR_INVALID_URL. /login is not matched by the failing
+  # branch, so it still answers 200 — liveness passes and only the root 500s.
+  smoke_check BLOCK "root 500 blocks (middleware throw)" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 200; echo "" ;;
+  "GET https://app.stairwell.run/") echo 500; echo "" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  # A route handler regressing to an absolute Location — the opposite layer, and
+  # invisible to every other check here.
+  smoke_check BLOCK "absolute route-handler Location blocks" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 200; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://app.stairwell.run/login" ;;
+  "POST https://app.stairwell.run/api/login") echo 303; echo "https://app.stairwell.run/login?error=1" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  # Protocol-relative resolves to a DIFFERENT origin, so it must not be accepted
+  # as "relative".
+  smoke_check BLOCK "protocol-relative redirect blocks" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 200; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "//evil.example/login" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  # Redirecting somewhere other than /login.
+  smoke_check BLOCK "root redirect to the wrong path blocks" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 200; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://app.stairwell.run/unlock" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  # There is deliberately no skip variable. If one is ever added, this fails and
+  # whoever added it has to justify it.
+  smoke_check BLOCK "no skip variable turns a failure into a pass" '
+case "$method $url" in
+  "GET https://app.stairwell.run/login") echo 502; echo "" ;;
+  "GET https://app.stairwell.run/") echo 307; echo "https://app.stairwell.run/login" ;;
+  "POST https://app.stairwell.run/api/login") echo 303; echo "/login?error=1" ;;
+  *) echo 000; echo "" ;;
+esac'
+
+  # Every case above exercises deploy/smoke.sh directly. NONE of them would notice
+  # deploy.sh dropping the call — the same blind spot Task 12G found in Gate D,
+  # where 11 green cases coexisted with a pre-push hook that never invoked the
+  # gate. This is a static check because deploy.sh's other steps (git pull, npm
+  # ci, next build, systemctl) cannot be run in the harness; it pins the one thing
+  # that would silently disarm the contract.
+  DEPLOY_SCRIPT="$(cd "$HOOK_DIR/../.." && pwd)/deploy/deploy.sh"
+  if grep -qE '^[^#]*\./deploy/smoke\.sh' "$DEPLOY_SCRIPT"; then
+    printf '  %-6s %-38s %s\n' "PASS" "deploy.sh actually invokes smoke.sh" "invocation present"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-38s %s\n' "FAIL" "deploy.sh actually invokes smoke.sh" "no uncommented ./deploy/smoke.sh call"
+    fail=$((fail + 1))
+    failed_cases+=("deploy.sh actually invokes smoke.sh")
+  fi
+
+  # ...and that a smoke failure aborts rather than being logged and ignored.
+  # ^[^#]* anchors this to an UNCOMMENTED line. Without it the pattern matched
+  # `# if ! ./deploy/smoke.sh; then` and stayed green against a mutant that had
+  # commented the gate out — caught by running exactly that mutation.
+  if grep -qE '^[^#]*if ! \./deploy/smoke\.sh; then' "$DEPLOY_SCRIPT" \
+     && grep -qE '^[^#]*exit 1' "$DEPLOY_SCRIPT"; then
+    printf '  %-6s %-38s %s\n' "PASS" "smoke failure aborts the deploy" "guarded and exits nonzero"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-38s %s\n' "FAIL" "smoke failure aborts the deploy" "smoke result is not gating"
+    fail=$((fail + 1))
+    failed_cases+=("smoke failure aborts the deploy")
+  fi
+
+  rm -rf "$smoke_sandbox"
+fi
+echo
+
 echo "setup.sh: repairs the exec bit on all four hook scripts"
 SETUP_SCRIPT="$(cd "$HOOK_DIR/../.." && pwd)/setup.sh"
 if [ ! -f "$SETUP_SCRIPT" ]; then
