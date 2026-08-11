@@ -13,8 +13,16 @@ import { middleware, config } from '@/middleware'
 // Mocks for lib/session/guard.ts's requireState (group A below). Following
 // the pattern in this same directory's root.test.ts: mock the Next.js
 // server APIs rather than the module under test.
+//
+// cookieGet checks its `name` argument against the real SESSION_COOKIE
+// constant rather than returning a fixed value regardless of the key asked
+// for — otherwise a "reads the wrong cookie name" bug in guard.ts would
+// slip past every test in group A undetected.
 const redirectMock = vi.fn()
-const cookieGet = vi.fn()
+const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
+const cookieGet = vi.fn((name: string) =>
+  name === SESSION_COOKIE ? cookieSlot.value : undefined,
+)
 
 vi.mock('next/navigation', () => ({
   redirect: (path: string) => redirectMock(path),
@@ -133,7 +141,8 @@ describe('requireState', () => {
     process.env.PLATFORM_DB = join(guardDir, 'synthetic.db')
     vi.resetModules()
     redirectMock.mockClear()
-    cookieGet.mockReset()
+    cookieGet.mockClear()
+    cookieSlot.value = undefined
     handle = undefined
   })
 
@@ -150,7 +159,7 @@ describe('requireState', () => {
     handle = getDb()
     const id = await createAcct(handle, { slug: 'a', role: 'user', password: 'pw' })
     const sid = createSess(handle, id)
-    cookieGet.mockReturnValue({ value: sid })
+    cookieSlot.value = { value: sid }
 
     const { requireState } = await import('@/lib/session/guard')
     await requireState('/a')
@@ -167,7 +176,7 @@ describe('requireState', () => {
     const id = await createAcct(handle, { slug: 'a', role: 'user', password: 'pw' })
     const sid = createSess(handle, id)
     putK(sid, Buffer.alloc(32, 1))
-    cookieGet.mockReturnValue({ value: sid })
+    cookieSlot.value = { value: sid }
 
     const { requireState } = await import('@/lib/session/guard')
     await requireState('/a')
@@ -178,7 +187,7 @@ describe('requireState', () => {
   it('sends a request with no cookie at all to /login', async () => {
     const { getDb } = await import('@/lib/db/instance')
     handle = getDb()
-    cookieGet.mockReturnValue(undefined)
+    cookieSlot.value = undefined
 
     const { requireState } = await import('@/lib/session/guard')
     await requireState('/a')
