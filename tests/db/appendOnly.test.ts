@@ -74,6 +74,9 @@ describe('append-only tables', () => {
       }
     }
     walk('lib/db')
+    // An empty walk (e.g. a moved/renamed directory) would make the loop
+    // below assert nothing and pass silently. Guard against that.
+    expect(files.length).toBeGreaterThan(0)
     const offending = /(UPDATE|DELETE\s+FROM)\s+(transcripts|metrics)\b/i
     for (const f of files) {
       expect(readFileSync(f, 'utf8'), `${f} mutates a sacred table`).not.toMatch(

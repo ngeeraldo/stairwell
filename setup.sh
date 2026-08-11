@@ -13,6 +13,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")" || exit 2
 GUARD=".claude/hooks/deny-sensitive-files.sh"
 HARNESS=".claude/hooks/test-hooks.sh"
 GATE=".githooks/pre-commit"
+PUSH_GATE=".githooks/pre-push"
 
 problems=0
 
@@ -52,7 +53,7 @@ fi
 # If it is not, repair it — a non-executable gate fails silently, which is the
 # worst outcome for a guard.
 
-for script in "$GUARD" "$HARNESS" "$GATE"; do
+for script in "$GUARD" "$HARNESS" "$GATE" "$PUSH_GATE"; do
   if [ ! -f "$script" ]; then
     echo "  FAIL  missing: $script" >&2
     problems=$((problems + 1))

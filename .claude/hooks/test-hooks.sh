@@ -959,6 +959,56 @@ else
 fi
 echo
 
+echo "setup.sh: repairs the exec bit on all four hook scripts"
+SETUP_SCRIPT="$(cd "$HOOK_DIR/../.." && pwd)/setup.sh"
+if [ ! -f "$SETUP_SCRIPT" ]; then
+  printf '  %-6s %-34s %s\n' "FAIL" "setup.sh present" "missing $SETUP_SCRIPT"
+  fail=$((fail + 1))
+  failed_cases+=("setup.sh present")
+else
+  # A fully sandboxed fake repo — never touches the real .githooks/.claude
+  # in this checkout. setup.sh only needs: to be inside a git work tree,
+  # jq on PATH (already true in this environment), and the four scripts it
+  # checks to exist at their usual relative paths.
+  setup_sandbox=$(mktemp -d)
+  mkdir -p "$setup_sandbox/.claude/hooks" "$setup_sandbox/.githooks"
+  (cd "$setup_sandbox" && git init -q) >/dev/null 2>&1
+  cp "$SETUP_SCRIPT" "$setup_sandbox/setup.sh"
+
+  hook_files=(
+    .claude/hooks/deny-sensitive-files.sh
+    .claude/hooks/test-hooks.sh
+    .githooks/pre-commit
+    .githooks/pre-push
+  )
+  for f in "${hook_files[@]}"; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$setup_sandbox/$f"
+  done
+  # Strip the exec bit from all four to simulate a fresh clone that lost it
+  # (e.g. a zip download rather than a real git checkout) — this is the
+  # exact scenario setup.sh's repair step exists for.
+  chmod -x "${hook_files[@]/#/$setup_sandbox/}"
+
+  (cd "$setup_sandbox" && bash setup.sh) >/dev/null 2>&1
+
+  still_not_exec=()
+  for f in "${hook_files[@]}"; do
+    [ -x "$setup_sandbox/$f" ] || still_not_exec+=("$f")
+  done
+
+  if [ ${#still_not_exec[@]} -eq 0 ]; then
+    printf '  %-6s %-34s %s\n' "PASS" "repairs exec bit on all four, incl. pre-push" "all executable"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s still not executable: %s\n' "FAIL" "repairs exec bit on all four, incl. pre-push" "${still_not_exec[*]}"
+    fail=$((fail + 1))
+    failed_cases+=("repairs exec bit on all four, incl. pre-push")
+  fi
+
+  rm -rf "$setup_sandbox"
+fi
+echo
+
 total=$((pass + fail))
 if [ $fail -eq 0 ]; then
   echo "All $total checks passed."
