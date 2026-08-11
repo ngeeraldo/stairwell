@@ -81,6 +81,10 @@ architectural changes; do not relitigate decided items).
   skip when it actually would have blocked. When Claude uses either skip, it
   states the reason in the commit message.
 
+## Ledgers
+- Before working on a file, check docs/superpowers/ledgers/ for residual risks
+  touching it. Rulings made during fix rounds become tasks, not log entries.
+
 ## Sacred data
 - Metrics log and chat transcripts are append-only. Never migrate, rewrite,
   or "clean up" these files.
