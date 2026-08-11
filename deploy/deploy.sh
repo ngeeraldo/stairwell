@@ -47,6 +47,13 @@ main() {
   #     was still executing the pre-pull file. It passed. Every subsequent deploy
   #     ran the gate correctly, which is what makes this hole so easy to miss:
   #     it is invisible exactly once, on the run that matters most.
+  #
+  #     BOOTSTRAP CAVEAT, for whoever reads this after a confusing deploy: this
+  #     re-exec cannot apply to the deploy that first delivers it, because the
+  #     script running then is the one that predates it. The same property, one
+  #     level up. So the FIRST deploy after any change to this block still runs
+  #     the old logic; the second onwards is correct. If a contract change must
+  #     be enforced from its very first deploy, run deploy.sh twice.
   if [ "$before" != "$after" ] && [ -z "${DEPLOY_REEXECED:-}" ]; then
     if ! git diff --quiet "$before" "$after" -- deploy/deploy.sh deploy/smoke.sh; then
       echo

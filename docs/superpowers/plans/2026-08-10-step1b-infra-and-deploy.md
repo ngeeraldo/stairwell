@@ -554,6 +554,30 @@ git checkout tests/smoke.test.ts
 
 Expected: still `200` — the previous version kept serving throughout. This step is the whole reason the gate is ordered before the restart; do not skip it.
 
+Verify it by identity, not just by a 200: capture `systemctl show -p MainPID -p ActiveEnterTimestamp stairwell` before and after, and confirm both are unchanged. A 200 alone would also be produced by a service that restarted successfully.
+
+- [ ] **Step 6: The smoke gate (added during execution — Nico's ruling)**
+
+`deploy/smoke.sh` runs after the restart and gates success. **A deploy that starts the process but does not serve correctly is a failed deploy.** `systemctl is-active` goes true the moment systemd forks npm — measured, Caddy returns 502 for ~4s after every restart — so it cannot tell "serving" from "started".
+
+The check polls for a real 200 on `/login`, then asserts the redirect shape at both layers, which have **opposite** requirements:
+
+```
+GET  /          -> 3xx, aimed at /login; if absolute, its host must match this deployment
+POST /api/login -> 303 with a host-RELATIVE Location
+```
+
+There is no skip variable. Retarget it with an origin argument when DNS is not up yet:
+
+```bash
+deploy/smoke.sh http://localhost:3000
+```
+
+**Two properties of the deploy path worth knowing before you debug it:**
+
+1. `deploy.sh` replaces itself at step 2 (`git pull`). The whole body is inside `main()` so bash parses the file before executing it, and the script re-execs after a pull that changed `deploy/deploy.sh` or `deploy/smoke.sh`. Without that, the deploy introducing a contract change is the one deploy exempt from it — measured: the run that delivered `smoke.sh` skipped the smoke gate and reported success.
+2. That re-exec cannot apply to the deploy that first delivers it. If a contract change must bind from its very first deploy, run `deploy.sh` twice.
+
 ---
 
 ### Task 6: The live checkpoint

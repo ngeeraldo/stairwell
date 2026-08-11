@@ -160,6 +160,52 @@ to 3000 invalidates that and it should move to a configured allowlist.
   `toBe('http://localhost/nico')` passed throughout the entire broken period.
   Only `/^\//` and `not /^[a-z]+:\/\//` catch a regression to an absolute URL.
 
+--- THE DEPLOY CONTRACT (Nico's ruling, after the checkpoint) ---
+
+"A deploy that starts the process but does not serve correctly is a failed
+deploy." deploy/smoke.sh now gates success, with no skip variable.
+
+It polls for a real 200 on /login, then asserts the redirect shape at BOTH
+layers, because they have opposite requirements and a change that unified them
+would break one silently:
+  GET  /          -> 3xx, aimed at /login, and if absolute its host must match
+                     the deployment's host
+  POST /api/login -> 303 with a host-RELATIVE Location
+
+Neither step-1b outage is caught by liveness alone: the absolute-redirect bug
+returned a healthy 307, and the middleware ERR_INVALID_URL bug left /login (not
+matched by the failing branch) answering 200 while every cookie-less page 500ed.
+
+11 harness cases plus 5 integration cases. THREE were weak as first written and
+were caught by mutating the implementation, not by inspection:
+  - "permanent 502 blocks" returned 000 for all other paths, so it stayed green
+    against a mutant whose readiness check accepted any status — the root-redirect
+    check blocked instead and the case proved nothing about readiness. Now every
+    other path is healthy, so only readiness can block.
+  - "smoke failure aborts the deploy" grepped an unanchored pattern that matched
+    the COMMENTED-OUT `# if ! ./deploy/smoke.sh; then`, so it survived a mutant
+    with the gate commented out. Anchored with ^[^#]*.
+  - Nothing initially checked that deploy.sh CALLS smoke.sh — the exact Task 12G
+    blind spot, where 11 green cases coexisted with a hook that never invoked the
+    gate.
+
+DEFECT 8 — deploy.sh exempted its own contract changes. FOUND BY RUNNING IT.
+  The deploy that first delivered smoke.sh skipped the smoke gate and reported
+  success using the OLD script's message. `git pull` at step 2 replaces deploy.sh
+  while bash is executing it, and bash reads scripts incrementally by byte offset,
+  so the run continues from the pre-pull file — and a file that changes length
+  under it can splice old and new lines together.
+  Every subsequent deploy ran the gate correctly. Invisible exactly once, on the
+  run that matters most, which is why review would not have found it.
+  Fixed two ways, each of which fails silently alone: the body moved into main()
+  called on the last line, so bash parses the whole file before executing any of
+  it; and after the pull, if it touched deploy.sh or smoke.sh, re-exec once
+  (guarded by DEPLOY_REEXECED).
+  BOOTSTRAP CAVEAT, recorded in the script: the re-exec cannot apply to the
+  deploy that first delivers it. The same property one level up. First deploy
+  after changing that block still runs the old logic; run deploy.sh twice if a
+  contract change must bind from its first deploy.
+
 --- RESIDUALS — parked, Nico adjudicated ---
 
 1. ACCEPTED AS DOCUMENTED (Nico's ruling, no build-to-temp scope):
