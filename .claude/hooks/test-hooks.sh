@@ -536,6 +536,158 @@ else
 fi
 echo
 
+echo "Gate D: a broken build blocks the push"
+PUSH_GATE="$(cd "$HOOK_DIR/../.." && pwd)/.githooks/pre-push"
+if [ ! -f "$PUSH_GATE" ]; then
+  printf '  %-6s %-34s %s\n' "FAIL" "gate script present (D)" "missing $PUSH_GATE"
+  fail=$((fail + 1))
+  failed_cases+=("gate script present (D)")
+else
+  # Stub commands stand in for the real build via BUILD_CMD so this group
+  # runs in milliseconds instead of shelling out to `next build` (~1 min).
+  # The real, unstubbed build is exercised separately (see report).
+  _stub_build_pass() { return 0; }
+  _stub_build_fail() { echo "Module not found: Can't resolve 'node:crypto' FAKE_BUILD_STUB_MARKER" >&2; return 1; }
+  _MISSING_BUILD_CMD="___stairwell_gate_d_no_such_command___"
+
+  # build_check <expected BLOCK|PASS> <label> <BUILD_CMD stub>
+  build_check() {
+    local expected=$1 label=$2 cmd=$3
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE"
+      BUILD_CMD="$cmd" check_build
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # build_skip_check <expected BLOCK|PASS> <label> <cmd>
+  build_skip_check() {
+    local expected=$1 label=$2 cmd=$3
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE"
+      BUILD_CMD="$cmd" SKIP_BUILD_GATE=1 check_build
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # build_says <expected-substring> <label> <cmd>
+  build_says() {
+    local expected=$1 label=$2 cmd=$3
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE" >/dev/null 2>&1
+      BUILD_CMD="$cmd" check_build 2>&1 >/dev/null
+    )
+    if printf '%s' "$out" | grep -qF "$expected"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "says '$expected'"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s missing '\''%s'\''\n' "FAIL" "$label" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # build_skip_says <expected-substring> <label> <cmd>
+  build_skip_says() {
+    local expected=$1 label=$2 cmd=$3
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE" >/dev/null 2>&1
+      BUILD_CMD="$cmd" SKIP_BUILD_GATE=1 check_build 2>&1 >/dev/null
+    )
+    if printf '%s' "$out" | grep -qF "$expected"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "says '$expected'"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s missing '\''%s'\''\n' "FAIL" "$label" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # build_skip_silent <label> <cmd>
+  build_skip_silent() {
+    local label=$1 cmd=$2
+    local out
+    out=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE" >/dev/null 2>&1
+      BUILD_CMD="$cmd" SKIP_BUILD_GATE=1 check_build 2>&1 >/dev/null
+    )
+    if [ -z "$out" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "silent"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s expected silence, got output\n' "FAIL" "$label"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  # 1. Stubbed passing build -> allows the push.
+  build_check PASS  "stubbed passing build" \
+    _stub_build_pass
+  # 2. Stubbed FAILING build -> blocks the push.
+  build_check BLOCK "stubbed failing build" \
+    _stub_build_fail
+  # 3. Blocking output includes the build's own distinctive message.
+  build_says "FAKE_BUILD_STUB_MARKER" "blocking output includes build's own message" \
+    _stub_build_fail
+  # 4. SKIP_BUILD_GATE=1 with a failing build -> allows.
+  build_skip_check PASS "SKIP_BUILD_GATE turns block into pass" \
+    _stub_build_fail
+  # 5. The skip announces itself on stderr.
+  build_skip_says "Gate D SKIPPED" "skip announces itself" \
+    _stub_build_fail
+  # 6. The skip is SILENT when the build passed anyway.
+  build_skip_silent "skip is silent when the build passed" \
+    _stub_build_pass
+  # 7. Exit 127 (command not found) reports a missing-toolchain failure, not
+  # a build error, and still blocks (fails closed) when not skipped.
+  build_check BLOCK "BUILD_CMD not found (exit 127) still blocks" \
+    "$_MISSING_BUILD_CMD"
+  build_says "Gate D could not run the build" "exit 127 reports missing toolchain, not a build error" \
+    "$_MISSING_BUILD_CMD"
+  # 8. SKIP_BUILD_GATE=1 must not leak into any pre-commit gate — all three
+  # (A, B, C) must still block with it set. Task 8G's equivalent case
+  # initially covered only one of the two gates it should have; cover all
+  # three here.
+  SKIP_BUILD_GATE=1 gate_check BLOCK "SKIP_BUILD_GATE does not leak into Gate A" \
+    users/alice/schema.sql
+  SKIP_BUILD_GATE=1 coverage_check BLOCK "SKIP_BUILD_GATE does not leak into Gate B" \
+    lib/session/store.ts
+  SKIP_BUILD_GATE=1 typecheck_check BLOCK "SKIP_BUILD_GATE does not leak into Gate C" \
+    _stub_tsc_fail lib/auth/password.ts
+fi
+echo
+
 total=$((pass + fail))
 if [ $fail -eq 0 ]; then
   echo "All $total checks passed."

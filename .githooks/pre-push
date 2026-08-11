@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Pre-push build gate (Gate D).
+#
+# Why this exists: `npx next build` failed for two full tasks and nothing
+# noticed. middleware.ts imported a constant from lib/session/store.ts, which
+# imports node:crypto, which the edge runtime cannot bundle. Throughout that
+# window the suite was green and `tsc --noEmit` was clean. Gate C (pre-commit)
+# exists because "tests green" does not mean "compiles"; this gate exists
+# because "tsc green" does not mean "builds".
+#
+# Tier: pre-push, not pre-commit. A build takes about a minute and writes
+# .next/ as a side effect — the wrong cost and blast radius for a per-commit
+# hook. Task 14's checkpoint asserts the build separately, so the two tiers
+# together mean a break cannot leave the machine and cannot survive to "done".
+#
+# No fast path — deliberate. Gate C skips when no TypeScript is staged, but a
+# build break can originate anywhere in the module graph, including
+# next.config.ts, a dependency bump, or a file that itself looks innocent
+# (the original bug was exactly that shape: middleware.ts importing a
+# legitimate module). Correctly scoping a fast path here means parsing the
+# pushed ref range off stdin, which is a bug farm for a gate that runs a
+# handful of times a day. So: run unconditionally.
+#
+# Wired via:  git config core.hooksPath .githooks (set by setup.sh)
+#
+# The decision logic lives in check_build() so it can be sourced and
+# unit-tested against a stubbed BUILD_CMD with no real build and no real push:
+#   SCHEMA_GATE_SOURCE_ONLY=1 . .githooks/pre-push
+#   BUILD_CMD=... check_build
+set -uo pipefail
+
+# check_build
+#   exit 0 = allow push, exit 1 = block (message on stderr)
+check_build() {
+  # Indirected so the harness can substitute a stub and run this group in
+  # milliseconds instead of shelling out to a real `next build` (~1 min).
+  local BUILD_CMD="${BUILD_CMD:-npx next build}"
+
+  local out rc
+  out=$($BUILD_CMD 2>&1)
+  rc=$?
+  [ $rc -eq 0 ] && return 0
+
+  # Exit 127 means the shell could not find/run BUILD_CMD at all (e.g. no
+  # npx/next on PATH) — that is a broken environment, not a build error, and
+  # must not be reported to the developer as one.
+  local internal_failure=0
+  [ $rc -eq 127 ] && internal_failure=1
+
+  # An announced skip. Printed only when the gate WOULD have blocked, so a
+  # SKIP_BUILD_GATE exported in a shell profile cannot produce noise that
+  # trains the eye to ignore it.
+  if [ "${SKIP_BUILD_GATE:-0}" = "1" ]; then
+    {
+      echo
+      if [ $internal_failure -eq 1 ]; then
+        echo "Gate D SKIPPED (SKIP_BUILD_GATE=1) — could not run the build:"
+      else
+        echo "Gate D SKIPPED (SKIP_BUILD_GATE=1) — a build failure is being ignored:"
+      fi
+      echo
+      echo "$out"
+      echo
+      echo "CLAUDE.md > Testing: state the reason for the skip in the commit message."
+      echo
+    } >&2
+    return 0
+  fi
+
+  {
+    echo
+    if [ $internal_failure -eq 1 ]; then
+      echo "PUSH BLOCKED — Gate D could not run the build"
+      echo
+      echo "BUILD_CMD exited 127 (command not found). This is an environment"
+      echo "problem — e.g. no npx/next on PATH — not a build error."
+    else
+      echo "PUSH BLOCKED — build failed"
+      echo
+      echo "middleware.ts once imported node:crypto through lib/session/store.ts;"
+      echo "the edge runtime cannot bundle it. The suite was green and"
+      echo "'tsc --noEmit' was clean throughout that break. This gate exists"
+      echo "because 'tsc clean' does not mean 'builds'."
+    fi
+    echo
+    echo "$out"
+    echo
+    echo "SKIP_BUILD_GATE=1 git push ... bypasses this gate for genuine"
+    echo "exceptions, but that should be rare. Prefer fixing the underlying"
+    echo "problem instead."
+    echo
+  } >&2
+
+  return 1
+}
+
+# When sourced by the test harness, stop here and expose the function only.
+if [ "${SCHEMA_GATE_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Main.
+# ---------------------------------------------------------------------------
+
+# Git passes ref update information on stdin ("<local ref> <local sha1>
+# <remote ref> <remote sha1>" per line). This gate does not need it, but a
+# hook that leaves stdin unread can cause git to see a broken pipe in some
+# configurations, so drain it explicitly.
+cat >/dev/null
+
+check_build
+exit $?
