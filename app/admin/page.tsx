@@ -21,7 +21,9 @@ export default async function AdminPortal() {
       ) : (
         <ul>
           {users.map((u) => (
-            <li key={u.slug}>{u.slug}</li>
+            <li key={u.slug}>
+              <a href={`/admin/${u.slug}`}>{u.slug}</a>
+            </li>
           ))}
         </ul>
       )}

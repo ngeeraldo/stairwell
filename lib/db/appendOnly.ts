@@ -65,6 +65,34 @@ export function lastTranscriptRow(
     .get(accountId) as TranscriptRow | undefined
 }
 
+export type Conversation = { id: string; rows: TranscriptRow[] }
+
+/**
+ * One account's transcript, grouped into conversations.
+ *
+ * Newest conversation first (the admin pane wants the current one at the top);
+ * rows inside a conversation oldest-first, because that is reading order.
+ */
+export function readConversations(
+  db: PlatformDb,
+  accountId: number,
+): Conversation[] {
+  const groups = new Map<string, TranscriptRow[]>()
+  for (const row of readTranscript(db, accountId)) {
+    const existing = groups.get(row.conversation_id)
+    if (existing) existing.push(row)
+    else groups.set(row.conversation_id, [row])
+  }
+  return [...groups.entries()]
+    .map(([id, rows]) => ({ id, rows }))
+    .sort((a, b) => {
+      // Every group is seeded with at least one row in the loop above, so
+      // rows[0] always exists; the `!` only satisfies
+      // noUncheckedIndexedAccess, it doesn't add a new runtime guarantee.
+      return b.rows[0]!.at - a.rows[0]!.at
+    })
+}
+
 export function appendMetric(
   db: PlatformDb,
   row: {
