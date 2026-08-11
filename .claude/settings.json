@@ -2,6 +2,25 @@
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true
   },
+  "permissions": {
+    "allow": [
+      "Bash(npx vitest *)",
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(npm ci)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git checkout *)",
+      "Bash(mkdir *)",
+      "Bash(ls *)",
+      "Bash(python3 *)",
+      "Bash(bash .claude/hooks/test-hooks.sh)",
+      "Bash(.claude/hooks/test-hooks.sh)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
