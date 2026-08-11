@@ -1,0 +1,32 @@
+[Unit]
+Description=Stairwell (Personal Dashboard Pilot)
+After=network.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/home/deploy/stairwell
+Environment=NODE_ENV=production
+Environment=PORT=3000
+EnvironmentFile=/home/deploy/stairwell/.env
+
+# The loopback bind is load-bearing: it keeps Next.js unreachable except
+# through Caddy even if ufw were misconfigured. It MUST be the `-H` flag.
+#
+# Do NOT replace this with `Environment=HOSTNAME=127.0.0.1`. In Next 15,
+# `next start` declares --port with commander's .env('PORT') but declares
+# --hostname WITHOUT .env('HOSTNAME'), so the environment variable is read by
+# nothing and `server.listen(port, undefined)` binds every interface. Measured
+# on Next 15.5.23: with HOSTNAME=127.0.0.1 in the environment the socket is
+# `*:3000`; with `-H 127.0.0.1` it is `127.0.0.1:3000`.
+#
+# An external `curl <DROPLET_IP>:3000` cannot tell these apart, because ufw
+# allows only 22/80/443 and drops the probe either way. Verify the socket
+# itself on the droplet instead:  ss -ltnp | grep ':3000'
+ExecStart=/usr/bin/npm run start -- -H 127.0.0.1
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

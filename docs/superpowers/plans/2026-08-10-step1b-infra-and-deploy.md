@@ -243,9 +243,8 @@ User=deploy
 WorkingDirectory=/home/deploy/stairwell
 Environment=NODE_ENV=production
 Environment=PORT=3000
-Environment=HOSTNAME=127.0.0.1
 EnvironmentFile=/home/deploy/stairwell/.env
-ExecStart=/usr/bin/npm run start
+ExecStart=/usr/bin/npm run start -- -H 127.0.0.1
 Restart=on-failure
 RestartSec=5
 
@@ -253,7 +252,16 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-`HOSTNAME=127.0.0.1` is load-bearing: it keeps Next.js on loopback, so the app is unreachable except through Caddy even if `ufw` were misconfigured.
+The loopback bind is load-bearing: it keeps Next.js unreachable except through Caddy even if `ufw` were misconfigured. It must be the `-H` **flag**.
+
+**CORRECTED (was a real defect in this plan).** This step originally specified `Environment=HOSTNAME=127.0.0.1` with a plain `ExecStart=/usr/bin/npm run start`. That reads correctly and does nothing. In Next 15, `next start` declares `--port` with commander's `.env('PORT')` but declares `--hostname` **without** `.env('HOSTNAME')`, so nothing reads the variable and `server.listen(port, undefined)` binds every interface. Measured on Next 15.5.23:
+
+| `ExecStart` | actual socket |
+|---|---|
+| `npm run start` with `Environment=HOSTNAME=127.0.0.1` | `*:3000` — **all interfaces** |
+| `npm run start -- -H 127.0.0.1` | `127.0.0.1:3000` |
+
+Pinned by `tests/deploy/service.test.ts`, which fails against the original text. `deploy/**` is Gate B-exempt so no test was required here; the test exists because no other gate in the project can see this class of defect.
 
 - [ ] **Step 2: Write `deploy/Caddyfile`**
 
@@ -320,13 +328,23 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/login
 
 Expected: `200`.
 
-From your **laptop**:
+Now inspect the socket itself, **on the droplet**. This is the check that actually decides the question:
+
+```bash
+ss -ltnp | grep ':3000'
+```
+
+Expected: the local address is `127.0.0.1:3000`. If it is `0.0.0.0:3000` or `*:3000`, the app is bound to every interface and only `ufw` is protecting it — stop and fix `ExecStart` before adding DNS.
+
+Then, from your **laptop**:
 
 ```bash
 curl -sS --max-time 5 -o /dev/null -w '%{http_code}\n' http://<DROPLET_IP>:3000/login || echo "refused — correct"
 ```
 
-Expected: refused or timed out. If it answers, `HOSTNAME=127.0.0.1` did not take effect and the app is exposed. Stop and fix before adding DNS.
+Expected: refused or timed out.
+
+**This external probe is necessary but NOT sufficient, and must not be treated as the loopback proof.** `ufw` allows only 22/80/443, so it drops a probe to 3000 whether the bind is loopback or wide open — it passes identically in both cases. That is exactly how the original `Environment=HOSTNAME=` defect would have shipped. The `ss` check above is the discriminating one; run both.
 
 ---
 
@@ -355,7 +373,16 @@ dig +short app.stairwell.run
 dig +short kplife.stairwell.run
 ```
 
-Expected: the first returns the droplet IP directly, with no Cloudflare proxy addresses in front of it. The second still returns its tunnel target, unchanged.
+Expected: the first returns the droplet IP directly, with no Cloudflare proxy addresses in front of it.
+
+For the second, expect it to be **unchanged from whatever you recorded in step 1** — that is the whole assertion. Note that `kplife` is a *proxied* (orange-cloud) record, so `dig +short` returns Cloudflare edge IPs, **not** the `cfargotunnel.com` target. Measured 2026-08-11, before any change in this plan:
+
+```
+172.67.178.223
+104.21.17.241
+```
+
+Confirm the tunnel CNAME itself in the Cloudflare dashboard, not with `dig`. Cloudflare rotates edge IPs, so a *different* pair of Cloudflare-owned addresses is not by itself a problem; a non-Cloudflare answer, `NXDOMAIN`, or an empty result is.
 
 - [ ] **Step 4: Verify TLS is issued and served by Caddy**
 
@@ -559,7 +586,7 @@ Then log in through the browser and inspect the `stairwell_session` cookie in de
 dig +short kplife.stairwell.run
 ```
 
-Expected: unchanged from Task 4 step 1. Open it in a browser if it is currently being served, and confirm nothing about it changed.
+Expected: still Cloudflare edge IPs, unchanged in kind from Task 4 step 3 (`172.67.178.223` / `104.21.17.241` as measured 2026-08-11) — the record is proxied, so this never shows the tunnel target. Open it in a browser if it is currently being served, and confirm nothing about it changed.
 
 - [ ] **Step 5: Update the docs**
 
