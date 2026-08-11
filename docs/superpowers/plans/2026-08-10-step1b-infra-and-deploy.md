@@ -601,6 +601,64 @@ git push
 
 ---
 
+### Task 7: Collapse the fresh-login double prompt
+
+Carried in from step 1a. Nico's ruling after walking the local checkpoint: a
+brand-new login asks for the password twice — once at `/login`, then again at
+`/unlock` — because `login()` issues the session and redirects without deriving
+the key, even though it had the password in hand a moment earlier.
+
+**This is an implementation artifact, not an architectural change.**
+`architecture-overview.md` commits to the key living only in memory with a 4h
+idle TTL and 12h ceiling, so a restart leaves users logged in but locked. It does
+not require two prompts inside a single login. `/unlock` stays exactly as it is —
+it exists for the re-lock path (deploy, ceiling expiry), which is the common case
+and already a single prompt.
+
+**Files:**
+- Modify: `app/api/login/route.ts`, `tests/auth/routes.test.ts`
+
+**Interfaces:**
+- Consumes: `deriveDbKey` (step 1a Task 8), `putKey` (Task 9), `findAccountBySlug`.
+- Produces: no new exports.
+
+- [ ] **Step 1: Write the failing tests**
+
+Test-first, and assert both halves — the collapse AND what must not change:
+1. A successful `POST /api/login` redirects to `/${slug}`, not `/unlock`.
+2. After it, `getKey(sessionId)` is defined — the key was derived at login.
+3. A failed login still redirects to `/login?error=1` and sets no cookie and no key.
+4. **The re-lock path is untouched:** with a valid session row but no key in the
+   map, `/[user]` still redirects to `/unlock`, and `/api/unlock` still works.
+
+Assertion 4 is the one that matters. The two-tier lock's value is the restart
+case; a change that quietly broke it while making login smoother would be a bad
+trade, and only this assertion catches it.
+
+- [ ] **Step 2: Run them and watch them fail**
+
+- [ ] **Step 3: Derive the key in the login route**
+
+After `login()` returns a session id, look up the account's `salt_key`, call
+`deriveDbKey(password, salt_key)`, `putKey(sessionId, key)`, then redirect to
+`/${slug}`. The password is already in that POST body, so this crosses no new
+trust boundary. Cost is one extra Argon2 pass (~14ms).
+
+- [ ] **Step 4: Verify by hand**
+
+`npm run build && npm start`, then: fresh login lands straight on `/${slug}` with
+one password entry; restart the server without clearing cookies and confirm
+`/${slug}` still redirects to `/unlock`.
+
+- [ ] **Step 5: Commit**
+
+**Adjacent, and worth doing in the same pass if it is cheap:** residual #7 in
+`docs/superpowers/ledgers/step1a.md` — `/unlock` has no logout control and a
+locked session cannot reach `/login`, so a forgotten password is a dead end until
+cookies are cleared by hand. Both items are about that same screen.
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
