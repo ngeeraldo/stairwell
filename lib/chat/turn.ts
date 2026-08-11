@@ -70,8 +70,9 @@ export async function runTurn(
     context: CHAT_CONTEXT,
   }
 
+  let final: Usage
   try {
-    const final = await client.stream({
+    final = await client.stream({
       system,
       messages,
       signal: input.signal,
@@ -83,24 +84,16 @@ export async function runTurn(
         usage = { ...usage, ...partial }
       },
     })
-
-    appendTranscript(db, {
-      ...stamp,
-      role: 'assistant',
-      body: delivered,
-      at: now(),
-    })
-    appendMetric(db, {
-      accountId: input.accountId,
-      event: 'chat_turn',
-      at: now(),
-      data: { ...final, ...base },
-    })
-    return { kind: 'completed' }
   } catch (error) {
     // No assistant row on either branch. The two events are kept apart because
     // they are different facts: an abort has real token counts to record, an
     // error before first output has none.
+    //
+    // This catch wraps ONLY the stream call. A DB write failing after a
+    // successful stream must NOT land here — chat_error means the API call
+    // failed, not that a write failed afterward. Letting a post-stream write
+    // failure propagate instead of being reclassified is what keeps this
+    // append-only, uncorrectable label honest.
     if (input.signal.aborted) {
       appendMetric(db, {
         accountId: input.accountId,
@@ -123,4 +116,18 @@ export async function runTurn(
     })
     return { kind: 'error' }
   }
+
+  appendTranscript(db, {
+    ...stamp,
+    role: 'assistant',
+    body: delivered,
+    at: now(),
+  })
+  appendMetric(db, {
+    accountId: input.accountId,
+    event: 'chat_turn',
+    at: now(),
+    data: { ...final, ...base },
+  })
+  return { kind: 'completed' }
 }

@@ -58,6 +58,25 @@ function failingClient(): ChatClient {
   }
 }
 
+/**
+ * A client whose in-stream usage accumulator DELIBERATELY diverges from its
+ * resolved return value: `onUsage({ output: 99 })` fires after the last
+ * chunk, but `stream()` resolves with `output: 7`. runTurn must record the
+ * resolved value on `chat_turn`, not whatever the accumulator last saw — do
+ * not "simplify" this fake to make the two agree, that would silently
+ * remove the only coverage that pins `...final` over `...usage`.
+ */
+function divergingUsageClient(): ChatClient {
+  return {
+    async stream({ onText, onUsage }) {
+      onUsage({ input: 100, cache_read: 40, cache_creation: 0 })
+      onText('ok')
+      onUsage({ output: 99 })
+      return { input: 100, output: 7, cache_read: 40, cache_creation: 0 }
+    },
+  }
+}
+
 function metrics() {
   return (
     db.prepare('SELECT event, data FROM metrics ORDER BY id').all() as {
@@ -124,6 +143,15 @@ describe('runTurn — completion', () => {
     const deps = { db, client: fakeClient(['a', 'b']), now: () => 1_000 }
     await runTurn(deps, input({ onText: (t: string) => seen.push(t) }))
     expect(seen).toEqual(['a', 'b'])
+  })
+
+  it('records the resolved usage on completion, not the in-stream accumulator', async () => {
+    const deps = { db, client: divergingUsageClient(), now: () => 1_000 }
+    await runTurn(deps, input())
+
+    const [m] = metrics()
+    expect(m!.event).toBe('chat_turn')
+    expect(m!.data.output).toBe(7)
   })
 
   it('starts a new conversation after the gap and keeps one inside it', async () => {
