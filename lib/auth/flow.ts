@@ -19,9 +19,17 @@ const DUMMY_HASH =
   '$argon2id$v=19$m=19456,t=2,p=1$mZmZmZmZmZmZmZmZmZmZmQ$g5OANDJjXnwpUD9m4VxfTuBU//J2PhaxCX3zEteqjn8'
 
 /**
- * Login authenticates and issues a session. It deliberately does NOT unlock:
- * the two-tier model means the key is derived at /unlock, so a deploy leaves
- * users logged in but locked.
+ * Login authenticates and issues a session. It deliberately does not derive
+ * the key itself — that stays the caller's job, so this function has no reason
+ * to touch key material.
+ *
+ * Note this is narrower than "logging in leaves you locked", which is what
+ * this comment used to say. app/api/login/route.ts DOES derive the key right
+ * after calling this, because it already has the password and asking for it
+ * twice in one login was a pointless prompt. The two-tier model is unaffected:
+ * the key lives only in the in-process map (4h idle, 12h ceiling), so a
+ * restart still leaves users authenticated but locked, and `unlock` below is
+ * still the single-prompt path back in.
  *
  * The unknown-slug branch runs a dummy Argon2 verify before returning, so
  * that path costs the same as a real failed verify. Without it, a miss on

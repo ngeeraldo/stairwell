@@ -46,6 +46,10 @@ afterEach(() => {
   handle?.close()
   delete process.env.PLATFORM_DB
   rmSync(dir, { recursive: true, force: true })
+  // Undo the per-test keymap spy set up by the wrong-credentials test below.
+  // Unconditional because doUnmock on an unmocked path is a no-op, and leaving
+  // it registered would hand the spy to whichever test ran next.
+  vi.doUnmock('@/lib/session/keymap')
 })
 
 function loginRequest(slug: string, password: string) {
@@ -66,10 +70,21 @@ function logoutRequest() {
   return new Request('http://localhost/api/logout', { method: 'POST' })
 }
 
+// A brand-new login used to ask for the password twice — once here, then again
+// at /unlock — because this route issued the session and redirected without
+// deriving the key, despite having had the password in hand a moment earlier.
+// It now derives at login and goes straight to /<slug>.
+//
+// The collapse is only half of what these tests pin. The other half is that
+// /unlock is UNCHANGED: it exists for the re-lock path (a deploy, or the 12h
+// ceiling expiring), which is the common case and always was a single prompt.
+// A change that smoothed login while quietly breaking the two-tier lock would
+// be a bad trade, so the last test here is the one that matters most.
 describe('POST /api/login', () => {
-  it('redirects to /unlock and sets the session cookie with the real COOKIE_OPTIONS flags for correct credentials', async () => {
+  it('redirects straight to /<slug> with the key already derived — one password prompt, not two', async () => {
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount } = await import('@/lib/auth/accounts')
+    const { getKey } = await import('@/lib/session/keymap')
     handle = getDb()
     await createAccount(handle, { slug: 'nico', role: 'user', password: 'pw' })
 
@@ -77,7 +92,7 @@ describe('POST /api/login', () => {
     const response = await POST(loginRequest('nico', 'pw'))
 
     expect(response.status).toBe(303)
-    expect(response.headers.get('location')).toBe('http://localhost/unlock')
+    expect(response.headers.get('location')).toBe('http://localhost/nico')
 
     const cookie = response.cookies.get(SESSION_COOKIE)
     expect(cookie).toBeDefined()
@@ -89,9 +104,58 @@ describe('POST /api/login', () => {
     expect(cookie!.sameSite?.toString().toLowerCase()).toBe(COOKIE_OPTIONS.sameSite)
     expect(cookie!.path).toBe(COOKIE_OPTIONS.path)
     expect(cookie!.maxAge).toBe(COOKIE_OPTIONS.maxAge)
+
+    // The point of the whole change: the session issued above is already
+    // unlocked, so /unlock is not in the way of a fresh login.
+    expect(getKey(cookie!.value)).toBeDefined()
   })
 
-  it('redirects to /login?error=1 and sets NO session cookie for wrong credentials', async () => {
+  it('sends each account to its OWN space, so the redirect is not a hardcoded slug', async () => {
+    // Deliberately a different slug from every other test in this file. With
+    // only the 'nico' case above, an implementation redirecting to a literal
+    // '/nico' — or to a literal '/unlock' replaced by a literal '/nico' —
+    // would pass and the bug would ship.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    const { getKey } = await import('@/lib/session/keymap')
+    handle = getDb()
+    await createAccount(handle, {
+      slug: 'devtwo',
+      role: 'user',
+      password: 'pw2',
+    })
+
+    const { POST } = await import('@/app/api/login/route')
+    const response = await POST(loginRequest('devtwo', 'pw2'))
+
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('http://localhost/devtwo')
+    expect(getKey(response.cookies.get(SESSION_COOKIE)!.value)).toBeDefined()
+  })
+
+  it('redirects to /login?error=1, sets NO session cookie, and derives NO key for wrong credentials', async () => {
+    // A failed login creates no session, so there is no session id to probe
+    // getKey with — watching the putKey call itself is the only way to see
+    // that no derivation happened.
+    //
+    // Scoped with doMock rather than a file-level vi.mock deliberately.
+    // Measured: a file-level vi.mock factory SURVIVES vi.resetModules(), so
+    // the keymap module instance — and its key Map — would be shared by every
+    // test in this file, silently defeating the per-test isolation the header
+    // comment describes. doMock here plus doUnmock in afterEach keeps it:
+    // verified that the following test gets the real keymap back and sees no
+    // key left over from this one.
+    const realKeymap = await import('@/lib/session/keymap')
+    const putKeySpy = vi.fn(realKeymap.putKey)
+    vi.doMock('@/lib/session/keymap', () => ({
+      ...realKeymap,
+      putKey: putKeySpy,
+    }))
+    // Reset before any other module is imported, so getDb()'s singleton is
+    // created once after the mock is registered and the route handler shares
+    // this test's database handle rather than opening a second one.
+    vi.resetModules()
+
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount } = await import('@/lib/auth/accounts')
     handle = getDb()
@@ -108,6 +172,47 @@ describe('POST /api/login', () => {
     // credentials would still pass a redirect-only assertion.
     expect(response.headers.get('set-cookie')).toBeNull()
     expect(response.cookies.get(SESSION_COOKIE)).toBeUndefined()
+    // Now that login derives a key on the success path, the failure path must
+    // not. A wrong password reaching deriveDbKey would spend an Argon2 pass on
+    // key material for a request that is about to be rejected.
+    expect(putKeySpy).not.toHaveBeenCalled()
+  })
+
+  it('leaves the re-lock path intact: losing the key sends the still-valid session back to /unlock', async () => {
+    // THE assertion of this change. Deriving at login must not turn a session
+    // into a standing unlock: architecture-overview.md commits to the key
+    // living only in memory, so a restart has to leave the user logged in but
+    // locked. dropKey is what a process restart looks like from the keymap's
+    // point of view — the sessions row survives in SQLite, the key does not.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    const { dropKey, getKey } = await import('@/lib/session/keymap')
+    const { readSession } = await import('@/lib/session/store')
+    const { redirectTargetFor } = await import('@/lib/session/resolve')
+    handle = getDb()
+    await createAccount(handle, {
+      slug: 'devone',
+      role: 'user',
+      password: 'pw1',
+    })
+
+    const { POST } = await import('@/app/api/login/route')
+    const response = await POST(loginRequest('devone', 'pw1'))
+    const sid = response.cookies.get(SESSION_COOKIE)!.value
+
+    // Unlocked immediately after login: /devone is allowed straight through.
+    expect(getKey(sid)).toBeDefined()
+    expect(redirectTargetFor(handle, sid, '/devone')).toBeNull()
+
+    dropKey(sid)
+
+    // Still logged in — the session row is untouched by the key going away.
+    expect(readSession(handle, sid)).toBeDefined()
+    // But locked again, and bounced to /unlock rather than /login.
+    expect(getKey(sid)).toBeUndefined()
+    expect(redirectTargetFor(handle, sid, '/devone')).toBe('/unlock')
+    // And /unlock itself stays reachable, so the single re-lock prompt works.
+    expect(redirectTargetFor(handle, sid, '/unlock')).toBeNull()
   })
 })
 
