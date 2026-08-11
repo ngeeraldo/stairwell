@@ -52,6 +52,114 @@ MINOR, Task 4 step 3 / Task 6 step 4: the plan expected
   and a note that Cloudflare rotates edge IPs, so a different Cloudflare-owned
   pair is fine but a non-Cloudflare answer or NXDOMAIN is not.
 
+DEFECT 3, Task 1 step 2: `adduser --disabled-password` plus `usermod -aG sudo`
+  produces a user who is in the sudo group and cannot use sudo, because sudo
+  prompts for a password that does not exist. Every `sudo` in Tasks 1, 3 and 6
+  fails with `sudo: a password is required`. Nico set one with `passwd deploy`;
+  login stays key-only, since PasswordAuthentication no is enforced separately.
+  Recorded in PROVISION.md. Consequence for the execution order: Claude cannot
+  run sudo as deploy over non-interactive SSH (it does not have the password, by
+  design), so all privileged installs were done as root BEFORE closing root SSH
+  rather than at the plan's Task 1 step 2 position.
+
+DEFECT 4, Task 1 step 2: "edit /etc/ssh/sshd_config so it contains exactly these
+  values" is fragile. `Include /etc/ssh/sshd_config.d/*.conf` is at line 12 and
+  sshd takes the FIRST value it obtains for a keyword, so the DigitalOcean image's
+  50-cloud-init.conf and 60-cloudimg-settings.conf (both `PasswordAuthentication
+  no`) win over the main file. Editing line 42 works for PermitRootLogin today
+  only because no drop-in sets it. Replaced with a `10-` prefixed drop-in that
+  sorts first, and with `sshd -T` as the verification — reading the file cannot
+  tell you the effective config.
+  Incidental finding: `PasswordAuthentication no` was ALREADY effective on the
+  fresh image, so half of this step was a no-op from the start.
+
+DEFECT 5, Task 3 step 5: the Caddyfile is copied and Caddy is never told to
+  reload. `systemctl daemon-reload` reloads systemd's unit files, not Caddy's
+  config. Caddy kept serving its install-time default `:80` welcome site:
+  `<title>Caddy works!</title>`, admin API showing file_server on /usr/share/caddy,
+  443 never opening, and a log line — `server is listening only on the HTTP port,
+  so no automatic HTTPS will be applied` — that reads like an ACME failure and is
+  not one. `sudo systemctl reload caddy` added, plus a check of the RUNNING config
+  via the admin API rather than the file on disk.
+
+DEFECT 6, Task 4 step 4: expected a `Server: Caddy` header. Caddy 2 does not send
+  one; the only headers are `HTTP/2 200` and `alt-svc`. The check would fail on a
+  correctly configured Caddy. Replaced with the certificate comparison, which
+  actually discriminates:
+    app.stairwell.run  -> CN=app.stairwell.run, Let's Encrypt YE2   (our cert)
+    kplife.stairwell.run -> CN=stairwell.run, Google Trust Services WE1
+                            (Cloudflare's edge cert — the proxied control)
+  plus absence of cf-* headers and remote_ip=157.230.54.1.
+
+DEFECT 7 — IN THE APP, NOT THE PLAN. THE BIG ONE. See the redirect section below.
+
+--- THE REDIRECT BUG: absolute Locations behind a proxy ---
+
+Found only by requesting the live URL. Behind Caddy every absolute redirect named
+the internal origin, so the entire auth flow was unusable at app.stairwell.run:
+
+  GET /                    -> location: https://localhost:3000/login
+  GET /devone (no cookie)   -> location: https://localhost:3000/login
+  POST /api/login (bad pw)  -> location: https://localhost:3000/login?error=1
+
+Root cause: `new URL(path, request.url)` at six sites. Evidence gathered at each
+boundary on the droplet before any fix was proposed:
+
+  origin, no Host header             -> http://localhost:3000/login
+  origin, Host: app.stairwell.run    -> http://localhost:3000/login   <-- IGNORED
+  origin, Host + X-Forwarded-Proto   -> https://localhost:3000/login
+  through Caddy                      -> https://localhost:3000/login
+
+Boundary 2 is decisive: an explicit Host changes nothing, so this was never Caddy
+failing to forward it. Next honours X-Forwarded-Proto for the scheme but does not
+take the host from Host or X-Forwarded-Host.
+
+THEN THE FIX ITSELF HAD A BUG, which is the part worth remembering. Making every
+redirect relative fixed the route handlers and 500ed all middleware redirects:
+
+  TypeError: Invalid URL ... code: 'ERR_INVALID_URL', input: '/login'
+      at .next/server/middleware.js
+
+Next's middleware runtime parses the Location header as a URL, so a relative value
+throws before the response leaves the process. Route handlers have no such
+constraint. The layers genuinely differ:
+
+  middleware      -> Location MUST be absolute
+  route handlers  -> Location SHOULD be relative (needs no host, trusts nothing)
+
+Final shape: lib/http/redirect.ts holds both, one definition each, mirroring the
+lib/session/cookie.ts precedent. relativeRedirect for handlers; middlewareRedirect
+builds the origin from x-forwarded-host (falling back to Host) and
+x-forwarded-proto, refuses a host failing HOST_PATTERN rather than splicing it into
+the authority, and rejects protocol-relative paths so it cannot become an open
+redirect.
+
+Trusting the host header is safe behind THIS Caddyfile and the docstring records
+why and what would break it: one site block for app.stairwell.run, Caddy matches
+sites by Host so any other Host never reaches the app, ufw allows only 22/80/443,
+and Next binds 127.0.0.1. A second site block, a wildcard host, or a direct route
+to 3000 invalidates that and it should move to a configured allowlist.
+
+*** THE LESSON, one tier further out than the step1a ledger's version. ***
+  step1a established: tests green != tsc clean != next build succeeds.
+  step1b adds: none of those means "works behind the proxy it will run behind".
+  Both redirect bugs passed 160+ tests, tsc, next build, AND Gates D and E. The
+  first shipped to the droplet; the second was caught by a live request minutes
+  later. On localhost the internal origin IS the external one, so no local check
+  can distinguish them — only a proxy separates them.
+
+  HONEST COVERAGE LIMIT, stated in tests/http/redirect.test.ts too: no unit test
+  reproduces the ERR_INVALID_URL throw, because it happens inside Next's adapter
+  AFTER middleware() returns. The pre-existing middleware tests passed with the
+  broken relative Location, and they also could not distinguish fixed from broken
+  for the absolute case, because they construct a NextRequest with no proxy
+  headers at all. A new test supplies them. What the suite pins is the property
+  that avoids the throw, not the throw.
+
+  METHODOLOGY NOTE: the assertions now pin the SHAPE, not just the string.
+  `toBe('http://localhost/nico')` passed throughout the entire broken period.
+  Only `/^\//` and `not /^[a-z]+:\/\//` catch a regression to an absolute URL.
+
 --- RESIDUALS — parked, Nico adjudicated ---
 
 1. ACCEPTED AS DOCUMENTED (Nico's ruling, no build-to-temp scope):
@@ -68,6 +176,22 @@ MINOR, Task 4 step 3 / Task 6 step 4: the plan expected
    The fix, if ever wanted, is building to a temp directory and swapping.
    Ruled explicitly out of scope for 1b. Documented in deploy/deploy.sh itself
    so the next reader does not over-read the guarantee.
+
+3. NEW, unparked — `systemctl is-active` is not "serving". deploy.sh restarts,
+   sleeps 2, and checks `is-active`, which is true as soon as systemd has forked
+   npm — well before Next is listening. Measured: Caddy returns 502 for a short
+   window after every restart, and a readiness loop needed 2 polls (up to ~4s) to
+   see /login return 200. So a deploy that came back up broken in a way that
+   still keeps the process alive would be reported as "Service is active."
+   This bit the checkpoint run itself: the first attempt reported 502s for
+   checkpoint item 8 because `curl` exits 0 on a 502, so the wait loop broke out
+   immediately. That was a bug in the check, not the app — but it is exactly the
+   failure mode deploy.sh has.
+   RECOMMENDED (not done, needs Nico's call): a post-restart smoke check in
+   deploy.sh that polls for an actual 200 and asserts the redirect shape, so
+   deploy.sh cannot declare success while the site is broken. Both redirect bugs
+   above would have been caught by it. Deliberately not added unilaterally —
+   it changes the deploy contract.
 
 2. FIXED, not parked (Nico's ruling): the journalctl blind spot. deploy.sh
    prints `journalctl -u stairwell -n 30` on the service-did-not-come-back path,

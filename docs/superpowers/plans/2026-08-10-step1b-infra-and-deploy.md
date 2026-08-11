@@ -310,7 +310,18 @@ sudo apt-get update && sudo apt-get install -y caddy
 sudo cp /home/deploy/stairwell/deploy/Caddyfile /etc/caddy/Caddyfile
 sudo cp /home/deploy/stairwell/deploy/stairwell.service /etc/systemd/system/stairwell.service
 sudo systemctl daemon-reload
+sudo systemctl reload caddy
 ```
+
+**CORRECTED (real defect).** The `sudo systemctl reload caddy` line was missing. `systemctl daemon-reload` reloads *systemd's* unit files, not Caddy's config, so Caddy kept serving the config it was started with at install time — its default `:80` welcome site. Observed: `curl http://127.0.0.1/` returned `<title>Caddy works!</title>`, the admin API showed `{"listen":[":80"],...file_server...root:/usr/share/caddy}`, port 443 never opened, and the log said `server is listening only on the HTTP port, so no automatic HTTPS will be applied`. That last line reads like an ACME failure and is not one — nothing was wrong with DNS or the certificate.
+
+Verify the running config rather than the file on disk:
+
+```bash
+curl -sS http://localhost:2019/config/ | head -c 400
+```
+
+Expect a `reverse_proxy` to `127.0.0.1:3000` matched on `host: app.stairwell.run`. If you see `file_server` and `/usr/share/caddy`, the reload did not happen.
 
 - [ ] **Step 6: Build and start the app**
 
@@ -391,10 +402,31 @@ Confirm the tunnel CNAME itself in the Cloudflare dashboard, not with `dig`. Clo
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' https://app.stairwell.run/login
-curl -sSI https://app.stairwell.run/login | grep -i '^server:'
 ```
 
-Expected: `200`, and a `Server: Caddy` header. If the header names Cloudflare, the record is proxied — go back to step 2.
+Expected: `200`.
+
+**CORRECTED (real defect).** This step used to expect a `Server: Caddy` header. **Caddy 2 does not send one** — measured, the only response headers are `HTTP/2 200` and `alt-svc: h3=":443"`. The check would fail on a perfectly-configured Caddy and send you back to step 2 for nothing.
+
+The certificate is the check that actually discriminates, because a proxied record would present Cloudflare's certificate instead of ours:
+
+```bash
+echo | openssl s_client -connect app.stairwell.run:443 -servername app.stairwell.run 2>/dev/null \
+  | openssl x509 -noout -subject -issuer
+curl -sSI https://app.stairwell.run/login | grep -iE '^cf-' || echo "no cf-* headers — correct"
+curl -sS -o /dev/null -w 'remote_ip=%{remote_ip}\n' https://app.stairwell.run/login
+```
+
+Expected, measured 2026-08-11:
+
+```
+subject=CN=app.stairwell.run
+issuer=C=US, O=Let's Encrypt, CN=YE2
+no cf-* headers — correct
+remote_ip=157.230.54.1
+```
+
+Run the same `openssl` command against `kplife.stairwell.run` as a control. That record IS proxied, and returns `subject=CN=stairwell.run`, `issuer=C=US, O=Google Trust Services, CN=WE1` — Cloudflare's edge certificate. If `app` ever looks like that, it has been switched to orange cloud.
 
 Certificate issuance can take up to a minute on first request. If it fails, check `sudo journalctl -u caddy -n 50 --no-pager`.
 
