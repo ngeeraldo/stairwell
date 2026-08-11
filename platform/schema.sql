@@ -26,19 +26,25 @@ CREATE INDEX IF NOT EXISTS sessions_account ON sessions(account_id);
 -- rewritten, or cleaned up. Enforced below in the database itself rather
 -- than by convention in the data layer.
 CREATE TABLE IF NOT EXISTS transcripts (
-  id         INTEGER PRIMARY KEY,
-  account_id INTEGER NOT NULL,
-  role       TEXT    NOT NULL,
-  body       TEXT    NOT NULL,
-  at         INTEGER NOT NULL
+  id              INTEGER PRIMARY KEY,
+  account_id      INTEGER NOT NULL,
+  session_id      TEXT    NOT NULL,
+  conversation_id TEXT    NOT NULL,
+  prompt_sha      TEXT    NOT NULL,
+  role            TEXT    NOT NULL,
+  body            TEXT    NOT NULL,
+  at              INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS transcripts_account ON transcripts(account_id, at);
+CREATE INDEX IF NOT EXISTS transcripts_conversation
+  ON transcripts(conversation_id, at);
 
 CREATE TABLE IF NOT EXISTS metrics (
   id         INTEGER PRIMARY KEY,
   account_id INTEGER,
   event      TEXT    NOT NULL,
+  data       TEXT,
   at         INTEGER NOT NULL
 );
 
