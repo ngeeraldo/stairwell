@@ -505,12 +505,30 @@ Expected: still `200` — the previous version kept serving throughout. This ste
 
 - [ ] **Step 1: Create the dev accounts on the droplet**
 
+`scripts/create-dev-users.ts` requires `ADMIN_PASSWORD` and exits 1 without it —
+the admin password is never committed (CLAUDE.md > Data safety). Read it in at
+the prompt rather than typing it inline, so it does not land in shell history,
+and unset it afterwards:
+
 ```bash
 ssh deploy@app.stairwell.run
 cd /home/deploy/stairwell
-PLATFORM_DB=/home/deploy/stairwell/platform.db npx tsx scripts/create-dev-users.ts
+read -rsp 'Admin password for nico: ' ADMIN_PASSWORD; echo
+PLATFORM_DB=/home/deploy/stairwell/platform.db ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+  npx tsx scripts/create-dev-users.ts
+unset ADMIN_PASSWORD
 sudo systemctl restart stairwell
 ```
+
+Keep that password — Step 2's checkpoint 6 logs in as `nico` with it.
+
+`ADMIN_PASSWORD` does not belong in `.env`: the service never reads it, and
+`.env` outlives this one-shot run.
+
+The script is INSERT-only and refuses to run against a database that already
+has accounts, so it is safe to re-run by mistake but cannot repair a partial
+run. If it fails partway, inspect `platform.db` and create the missing accounts
+by hand rather than re-running.
 
 - [ ] **Step 2: Re-verify the step 1a checkpoint against the live URL**
 
@@ -521,7 +539,7 @@ In a browser at `https://app.stairwell.run`:
 3. Unlock → lands on `/devone`.
 4. `/devtwo` → **404**, not 403.
 5. `/admin` as `devone` → **404**.
-6. Log out; log in as `nico`; unlock; `/admin` loads and lists `devone` and `devtwo`.
+6. Log out; log in as `nico` with the `ADMIN_PASSWORD` set in Step 1; unlock; `/admin` loads and lists `devone` and `devtwo`.
 7. `/devone` as `nico` → **404**.
 8. `sudo systemctl restart stairwell`, then reload `/devone` without clearing cookies → redirects to `/unlock`, not `/login`.
 
