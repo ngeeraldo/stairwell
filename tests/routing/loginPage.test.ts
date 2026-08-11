@@ -2,23 +2,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import * as React from 'react'
 import type { PlatformDb } from '@/lib/db/platform'
 
-// '/' has no content of its own — it dispatches by session state
-// (fix wave, item 5). It used to redirect unconditionally to /login, which
-// let an already-unlocked user re-submit the login form and start a second
-// session while the first stayed alive. These tests exercise the real
-// per-state dispatch against a real database, the same pattern used for
-// lib/session/guard.ts's requireState in tests/routing/middleware.test.ts's
-// group A: a fresh PLATFORM_DB and vi.resetModules() per test so
-// lib/db/instance.ts's getDb() singleton never falls back to the repo's
-// own platform/dev/synthetic.db.
+// Fix wave item 5: routeFor's '/login' branch (authenticated -> /unlock,
+// unlocked -> '/') was dead code — nothing ever called requireState with
+// '/login' as the pathname, so tests asserting on it were exercising logic
+// no real request path reached. app/(auth)/login/page.tsx now calls
+// requireState('/login') for real, which is what these tests check. Same
+// idiom as tests/routing/middleware.test.ts's requireState group and
+// tests/routing/root.test.ts: a fresh PLATFORM_DB and vi.resetModules()
+// per test, and a redirect() mock that throws (tests/routing/userSpace.
+// test.ts's idiom) since real redirect() never returns.
 //
-// redirect() throws in real Next.js — it never returns — so the mock
-// throws too (tests/routing/userSpace.test.ts's idiom). A mock that just
-// records and returns would let a mis-guarded Home() "fall through" past a
-// redirect and a test checking only toHaveBeenCalledWith would not catch
-// it.
+// tsconfig.json's "jsx": "preserve" plus vitest's esbuild transform means
+// the anonymous case (the only one that actually renders JSX, since the
+// other two redirect before reaching it) needs `React` on the global
+// object — see the identical comment in tests/routing/userSpace.test.ts.
+beforeEach(() => {
+  vi.stubGlobal('React', React)
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
 const redirectMock = vi.fn((path: string) => {
   throw new Error(`NEXT_REDIRECT:${path}`)
 })
@@ -39,7 +47,7 @@ let dir: string
 let db: PlatformDb | undefined
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'stairwell-root-'))
+  dir = mkdtempSync(join(tmpdir(), 'stairwell-loginpage-'))
   process.env.PLATFORM_DB = join(dir, 'synthetic.db')
   vi.resetModules()
   redirectMock.mockClear()
@@ -54,18 +62,23 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-describe('app shell (/)', () => {
-  it('sends an anonymous visitor (no cookie) to /login', async () => {
+async function renderLoginPage() {
+  const { default: LoginPage } = await import('@/app/(auth)/login/page')
+  return LoginPage({ searchParams: Promise.resolve({}) })
+}
+
+describe('/login page guard', () => {
+  it('lets an anonymous visitor reach the form (no redirect)', async () => {
     const { getDb } = await import('@/lib/db/instance')
     db = getDb()
 
-    const { default: Home } = await import('@/app/page')
-    await expect(Home()).rejects.toThrow('NEXT_REDIRECT:/login')
+    const result = await renderLoginPage()
 
-    expect(redirectMock).toHaveBeenCalledWith('/login')
+    expect(redirectMock).not.toHaveBeenCalled()
+    expect(result).toBeTruthy()
   })
 
-  it('sends an authenticated-but-locked session to /unlock', async () => {
+  it('sends an authenticated-but-locked session to /unlock instead of re-showing the form', async () => {
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount } = await import('@/lib/auth/accounts')
     const { createSession } = await import('@/lib/session/store')
@@ -78,13 +91,12 @@ describe('app shell (/)', () => {
       name === SESSION_COOKIE ? cookieSlot.value : undefined,
     )
 
-    const { default: Home } = await import('@/app/page')
-    await expect(Home()).rejects.toThrow('NEXT_REDIRECT:/unlock')
+    await expect(renderLoginPage()).rejects.toThrow('NEXT_REDIRECT:/unlock')
 
     expect(redirectMock).toHaveBeenCalledWith('/unlock')
   })
 
-  it('sends an unlocked session to its own slug, not back to /login', async () => {
+  it("sends an unlocked session to '/', not back into a second login — and that resolves onward to the slug, not back to /login", async () => {
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount } = await import('@/lib/auth/accounts')
     const { createSession } = await import('@/lib/session/store')
@@ -99,12 +111,17 @@ describe('app shell (/)', () => {
       name === SESSION_COOKIE ? cookieSlot.value : undefined,
     )
 
+    // Hop 1: /login, unlocked -> routeFor sends it to '/'.
+    await expect(renderLoginPage()).rejects.toThrow('NEXT_REDIRECT:/')
+    expect(redirectMock).toHaveBeenCalledWith('/')
+    redirectMock.mockClear()
+
+    // Hop 2: '/' itself resolves the same unlocked session onward to its
+    // slug (app/page.tsx), not back to /login. If it went back to /login,
+    // hop 1 and hop 2 together would be an infinite loop; asserting the
+    // actual second hop's target proves it terminates instead.
     const { default: Home } = await import('@/app/page')
     await expect(Home()).rejects.toThrow('NEXT_REDIRECT:/devone')
-
-    // This is the exact bug: the old code redirected here unconditionally
-    // to /login, which would have let an unlocked user start a second
-    // session while the first one stayed alive.
     expect(redirectMock).not.toHaveBeenCalledWith('/login')
     expect(redirectMock).toHaveBeenCalledWith('/devone')
   })

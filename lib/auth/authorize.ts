@@ -37,3 +37,11 @@ export function isAdmin(
 ): boolean {
   return accountFor(db, sessionId)?.role === 'admin'
 }
+
+/** The slug of the account a session belongs to, or undefined if none. */
+export function slugFor(
+  db: PlatformDb,
+  sessionId: string | undefined,
+): string | undefined {
+  return accountFor(db, sessionId)?.slug
+}

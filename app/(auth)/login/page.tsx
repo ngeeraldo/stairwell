@@ -1,8 +1,18 @@
+import { requireState } from '@/lib/session/guard'
+
+// A session that is authenticated or unlocked must not be able to
+// re-submit the login form: routeFor sends authenticated sessions to
+// /unlock and unlocked sessions to '/' (which itself resolves onward to
+// the account's own slug — see app/page.tsx). Without this, an unlocked
+// user visiting /login directly (not just via '/') could start a second,
+// independent session while the first stayed alive (fix wave, item 5).
 export default async function LoginPage({
   searchParams,
 }: {
   searchParams: Promise<{ error?: string }>
 }) {
+  await requireState('/login')
+
   const { error } = await searchParams
   return (
     <main>
