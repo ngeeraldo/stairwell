@@ -9,6 +9,11 @@
  * The absolute ceiling exists because step 6 makes login the trigger for
  * Plaid sync. A key surviving overnight would turn "morning open -> sync"
  * into "morning open -> stale data".
+ *
+ * getKey returns the stored Buffer BY REFERENCE, and nothing here zeroes
+ * it. Callers must not mutate it and must not retain their own reference
+ * past the call that needed it — a retained reference keeps key material
+ * live in memory even after dropKey()/sweep() removes it from this map.
  */
 
 export const IDLE_TTL_MS = 4 * 60 * 60 * 1000

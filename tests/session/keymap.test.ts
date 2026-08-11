@@ -12,6 +12,7 @@ import {
 } from '@/lib/session/keymap'
 
 const KEY = Buffer.alloc(32, 7)
+const KEY2 = Buffer.alloc(32, 9)
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -68,21 +69,30 @@ describe('key map lifetime', () => {
 
   it('restarts the ceiling on re-unlock', () => {
     putKey('s1', KEY)
-    vi.advanceTimersByTime(1000)
-    putKey('s1', KEY)
-    // A re-unlock is a fresh unlock: the ceiling restarts. Re-entering the
-    // password is the thing that earns a new 12 hours, which is exactly the
-    // property getKey's refresh must NOT have.
+    vi.advanceTimersByTime(3_600_000)
+    getKey('s1')
+    putKey('s1', KEY2)
+    // A re-unlock is a fresh unlock: the ceiling restarts, AND the entry
+    // must become the buffer just handed to putKey, not whatever was
+    // stored before. Re-entering the password is the thing that earns a
+    // new 12 hours and a fresh key, which is exactly the property
+    // getKey's refresh must NOT have (see "refreshes the idle timer" and
+    // "expires at the absolute ceiling" above).
     //
-    // DEVIATION FROM BRIEF (documented in task-9-report.md): the brief's
-    // original body was a single `vi.advanceTimersByTime(ABSOLUTE_TTL_MS -
-    // 2000)` with no intervening getKey call. That starves the 4h idle TTL
-    // over a ~12h wait and fails against the verbatim module regardless of
-    // ceiling logic. This loop reaches the exact same final instant (2000ms
-    // before the new ceiling) via hourly touches, mirroring the idiom the
-    // brief itself uses one test above ("expires at the absolute ceiling
-    // even when constantly refreshed"), so idle expiry cannot mask the
-    // ceiling-restart property under test.
+    // DEVIATION FROM BRIEF (documented in task-9-report.md, Fix round 1):
+    // the brief's original body put the SAME KEY twice, 1000ms apart, then
+    // jumped straight to `ABSOLUTE_TTL_MS - 2000` with no intervening
+    // getKey call. That version is red against the verbatim module (idle
+    // starvation — fixed in the initial submission) AND, even once fixed,
+    // passes identically whether or not putKey restarts the ceiling: a
+    // 1000ms gap against a 2000ms margin, on a 12h scale, means the final
+    // checkpoint sits below the *original* (non-restarted) ceiling too. A
+    // putKey that silently never restarts the ceiling would have shipped
+    // green. Widening the gap to 1h and asserting a second, distinct
+    // buffer makes this test pull double duty: it goes red if the ceiling
+    // doesn't restart (proved in task-9-report.md's Fix round 1 mutant
+    // proof) and red if putKey doesn't overwrite the stored key on
+    // re-unlock.
     const target = ABSOLUTE_TTL_MS - 2000
     let elapsed = 0
     while (elapsed < target) {
@@ -91,7 +101,7 @@ describe('key map lifetime', () => {
       elapsed += step
       getKey('s1')
     }
-    expect(getKey('s1')).toEqual(KEY)
+    expect(getKey('s1')).toEqual(KEY2)
   })
 })
 
@@ -112,6 +122,19 @@ describe('sweep()', () => {
     // winding the clock back to before that entry's original timestamps
     // makes it read as alive again and getKey would incorrectly resurrect
     // it. Only a real deletion survives that rollback.
+    //
+    // FRAGILE ON PURPOSE, FLAGGED HERE: this trick depends on alive()
+    // treating a NEGATIVE elapsed (now before lastSeenAt/unlockedAt) as
+    // "alive" — i.e. on the module doing no clamping or monotonic-clock
+    // guard against a clock that moves backwards. If a later task hardens
+    // alive() against backwards clock steps (a real hardening item,
+    // currently out of scope — see task-9-report.md), the rollback below
+    // stops being able to resurrect a stale entry, and THIS TEST WOULD
+    // KEEP PASSING FOR A SILENTLY WRONG REASON: sweep-expired would stay
+    // undefined regardless of whether sweep() itself deleted it, because
+    // the hardened alive() would independently reject the stale entry at
+    // the rolled-back time too. Whoever adds that hardening MUST redesign
+    // this test in the same commit, or re-verify it's still diagnostic.
     putKey('sweep-expired', KEY)
     vi.advanceTimersByTime(IDLE_TTL_MS + 1) // sweep-expired is now idle-expired
     putKey('sweep-live', KEY) // put fresh at this later "now" — stays alive
@@ -138,6 +161,9 @@ describe('key material never leaves memory', () => {
       }
     }
     walk('lib/session')
+    // An empty walk (e.g. a moved/renamed directory) would make the loop
+    // below assert nothing and pass silently. Guard against that.
+    expect(files.length).toBeGreaterThan(0)
     const offending =
       /console\.|JSON\.stringify|writeFileSync|writeFile\(|createWriteStream|appendFileSync|appendFile\(|from ['"](?:node:)?fs['"]/
     for (const f of files) {
