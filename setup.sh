@@ -78,7 +78,36 @@ if [ $problems -ne 0 ]; then
   exit 1
 fi
 
-# --- 4. Run the regression harness -----------------------------------------
+# --- 4. Install dependencies ------------------------------------------------
+# Without this a fresh clone cannot run the test suite at all — `npm test` dies
+# with "vitest: command not found". Gates C, D and E shell out to npx tsc,
+# next build and vitest, so they are equally dead until this runs.
+# npm ci is used rather than npm install so the lockfile is authoritative and
+# the install is reproducible; it is idempotent, just not fast.
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "  FAIL  npm not found — the test suite and gates C/D/E cannot run" >&2
+  echo "        without it. Install Node 22 (see package.json engines)." >&2
+  exit 2
+fi
+
+if [ ! -f package-lock.json ]; then
+  echo "  FAIL  package-lock.json missing — npm ci needs it to install" >&2
+  echo "        reproducibly. Restore it before continuing." >&2
+  exit 2
+fi
+
+echo
+echo "Installing dependencies (npm ci)..."
+if npm ci; then
+  echo "  ok    dependencies installed"
+else
+  echo "  FAIL  npm ci failed — the suite and gates C/D/E cannot run" >&2
+  echo
+  exit 1
+fi
+
+# --- 5. Run the regression harness -----------------------------------------
 
 echo
 echo "Running guard + gate regression tests..."
