@@ -3,7 +3,19 @@
 DigitalOcean, Ubuntu 24.04 LTS, basic shared-CPU plan.
 
 1. Create with SSH key auth. Record the public IPv4.
-2. Create the `deploy` user, copy `authorized_keys`, add to `sudo`.
+2. Create the `deploy` user, copy `authorized_keys`, add to `sudo`, and add to
+   `systemd-journal`:
+
+   ```bash
+   sudo usermod -aG systemd-journal deploy
+   ```
+
+   Required, not cosmetic. `deploy/deploy.sh` prints
+   `journalctl -u stairwell -n 30` on its "service did not come back up" path,
+   and that is the one moment you need the logs. Without this group the
+   unprivileged `deploy` user gets a filtered view, and the `NOPASSWD` sudoers
+   grant is scoped to exactly `systemctl restart stairwell`, so `sudo
+   journalctl` will not work either. Group membership applies on the next login.
 3. `/etc/ssh/sshd_config`: `PermitRootLogin no`, `PasswordAuthentication no`.
    Verify `ssh deploy@<IP> whoami` from a second terminal BEFORE closing the
    root session.

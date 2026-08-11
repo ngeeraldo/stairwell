@@ -37,8 +37,14 @@ architectural changes; do not relitigate decided items).
 - Shared-module changes happen from repo root only, never inside /users/<name>/.
 
 ## Build contract
-- spec.md + mockup.html in the user's folder are the build contract.
+- spec.md + mockup.html in the user's folder are the build contract for
+  **user dashboards** (`users/<name>/`, `app/[user]/`).
   Build toward the mockup. Feasibility doubts → flag to Nico, don't guess.
+- **Platform auth pages** (`app/(auth)/login`, `app/(auth)/unlock`, `app/admin`)
+  are NOT covered by any mockup.html. Their contract is the step-1a design doc,
+  docs/superpowers/specs/2026-08-10-step1-auth-and-test-gate-design.md (§3 owns
+  this layout). Absence of a mockup is not a reason to leave an auth-page gap
+  unfixed — check the design doc instead.
 
 ## Testing
 - Changes to data logic (queries, panels, derived tables) require test

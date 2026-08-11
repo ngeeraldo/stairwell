@@ -60,7 +60,10 @@ chown -R deploy:deploy /home/deploy/.ssh
 chmod 700 /home/deploy/.ssh
 chmod 600 /home/deploy/.ssh/authorized_keys
 usermod -aG sudo deploy
+usermod -aG systemd-journal deploy
 ```
+
+The `systemd-journal` group is required, not cosmetic: `deploy/deploy.sh` prints `journalctl -u stairwell -n 30` on its "service did not come back up" path, and the `NOPASSWD` sudoers grant added in Task 5 step 3 covers only `systemctl restart stairwell`, so `sudo journalctl` is not available as a fallback.
 
 Then edit `/etc/ssh/sshd_config` so it contains exactly these values:
 

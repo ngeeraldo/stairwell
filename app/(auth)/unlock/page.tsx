@@ -21,6 +21,23 @@ export default async function UnlockPage({
         </label>
         <button type="submit">Unlock</button>
       </form>
+
+      {/*
+        Without this, a locked session is a dead end. routeFor sends an
+        'authenticated' state back here from every path except /unlock and
+        /admin, so a user who cannot remember their password has no way to
+        reach /login short of clearing the cookie by hand.
+
+        This works while locked because /api/logout is reachable in that
+        state: middleware.ts only bounces requests with NO session cookie,
+        and app/api/logout/route.ts deliberately does not call requireState.
+        It must stay a POST form rather than a link — the handler is
+        POST-only, so a GET <a> would 405.
+      */}
+      <p>Cannot remember it? Sign out and start over.</p>
+      <form method="post" action="/api/logout">
+        <button type="submit">Sign out</button>
+      </form>
     </main>
   )
 }
