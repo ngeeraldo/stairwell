@@ -234,7 +234,15 @@ describe('middleware', () => {
   it('redirects a cookie-less request to /login', () => {
     const request = new NextRequest('http://localhost/nico')
     const response = middleware(request)
-    expect(response.headers.get('location')).toBe('http://localhost/login')
+    // Relative, not absolute: an absolute Location is built from the
+    // server's own bind address, which behind Caddy is 127.0.0.1:3000.
+    // Measured live at app.stairwell.run before the fix:
+    // `location: https://localhost:3000/login`. See the long comment on
+    // expectRelativeRedirect in tests/auth/routes.test.ts.
+    const location = response.headers.get('location')
+    expect(location).toBe('/login')
+    expect(location).toMatch(/^\//)
+    expect(location).not.toMatch(/^[a-z]+:\/\//i)
   })
 
   it('does not redirect a cookie-less request already at /login', () => {
@@ -277,7 +285,15 @@ describe('middleware', () => {
     const request = new NextRequest('http://localhost/nico')
     const response = middleware(request)
     expect(response.status).toBe(307)
-    expect(response.headers.get('location')).toBe('http://localhost/login')
+    // Relative, not absolute: an absolute Location is built from the
+    // server's own bind address, which behind Caddy is 127.0.0.1:3000.
+    // Measured live at app.stairwell.run before the fix:
+    // `location: https://localhost:3000/login`. See the long comment on
+    // expectRelativeRedirect in tests/auth/routes.test.ts.
+    const location = response.headers.get('location')
+    expect(location).toBe('/login')
+    expect(location).toMatch(/^\//)
+    expect(location).not.toMatch(/^[a-z]+:\/\//i)
   })
 
   it('passes an API request through untouched when the session cookie is present', () => {

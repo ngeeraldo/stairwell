@@ -18,6 +18,19 @@ describe('cookie config', () => {
     expect(COOKIE_OPTIONS.maxAge).toBe(SESSION_TTL_MS / 1000)
   })
 
+  // lib/http/redirect.ts is on middleware.ts's allowlist above, so it reaches
+  // the edge bundle and needs the same scan cookie.ts gets. Without this, the
+  // allowlist entry would be a hole: an allowlisted module is trusted, and
+  // nothing else checks what it imports.
+  it('has no node: import and no require() anywhere in lib/http/redirect.ts', () => {
+    const source = readFileSync('lib/http/redirect.ts', 'utf8')
+    expect(source.length).toBeGreaterThan(0)
+    expect(
+      source,
+      'lib/http/redirect.ts must stay importable from the Edge Runtime',
+    ).not.toMatch(/from\s+['"]node:|require\(/)
+  })
+
   it('has no node: import and no require() anywhere in lib/session/cookie.ts', () => {
     const source = readFileSync('lib/session/cookie.ts', 'utf8')
     // Matches both `from 'node:x'` and bare-specifier Node builtins like
@@ -59,7 +72,15 @@ describe('middleware edge-safety', () => {
     // reformat to a different import style).
     expect(specifiers.length).toBeGreaterThan(0)
 
-    const allowlist = new Set(['next/server', '@/lib/session/cookie'])
+    const allowlist = new Set([
+      'next/server',
+      '@/lib/session/cookie',
+      // Added when middleware's absolute redirect was replaced by a relative
+      // one (see lib/http/redirect.ts for the live failure that motivated it).
+      // Edge-safe: its only import is next/server, and the node:-scan below
+      // covers it alongside cookie.ts.
+      '@/lib/http/redirect',
+    ])
     for (const spec of specifiers) {
       expect(
         allowlist.has(spec),

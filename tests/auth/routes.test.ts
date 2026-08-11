@@ -66,8 +66,39 @@ function unlockRequest(password: string) {
   })
 }
 
-function logoutRequest() {
-  return new Request('http://localhost/api/logout', { method: 'POST' })
+/**
+ * Redirect Locations must be RELATIVE, and that is a deployment requirement,
+ * not a style preference.
+ *
+ * These routes used to build `new URL(path, request.url)`. `request.url` is the
+ * server's own view of the request, which behind a reverse proxy is the
+ * loopback address it is bound to — NOT the host the browser asked for.
+ * Measured live at https://app.stairwell.run, proxied by Caddy to
+ * 127.0.0.1:3000: `GET /` answered `location: https://localhost:3000/login`,
+ * and `POST /api/login` answered `location: https://localhost:3000/...`. Every
+ * redirect in the auth flow sent the browser to a host that does not exist for
+ * it, so login, unlock and logout were all unusable through the proxy.
+ *
+ * Setting the Host header does not help — verified directly against the origin
+ * on the droplet, an explicit `Host: app.stairwell.run` still produced
+ * `localhost:3000`. Next honours `X-Forwarded-Proto` for the scheme but does
+ * not take the host from `Host` or `X-Forwarded-Host`, so there is no absolute
+ * form that is correct here.
+ *
+ * A relative Location (RFC 7231 section 7.1.2) is resolved by the client
+ * against the request URI, so it is correct behind any proxy, or none. Asserting
+ * the exact string alone would not pin this: `toBe('http://localhost/nico')`
+ * passed for years while the deployed behaviour was broken. The shape checks
+ * are what actually catch a regression to an absolute URL.
+ */
+function expectRelativeRedirect(response: Response, target: string) {
+  const location = response.headers.get('location')
+  expect(location).toBe(target)
+  expect(location, 'Location must be host-relative').toMatch(/^\//)
+  expect(
+    location,
+    'an absolute Location points at the internal bind address behind a proxy',
+  ).not.toMatch(/^[a-z]+:\/\//i)
 }
 
 // A brand-new login used to ask for the password twice — once here, then again
@@ -92,7 +123,7 @@ describe('POST /api/login', () => {
     const response = await POST(loginRequest('nico', 'pw'))
 
     expect(response.status).toBe(303)
-    expect(response.headers.get('location')).toBe('http://localhost/nico')
+    expectRelativeRedirect(response, '/nico')
 
     const cookie = response.cookies.get(SESSION_COOKIE)
     expect(cookie).toBeDefined()
@@ -129,7 +160,7 @@ describe('POST /api/login', () => {
     const response = await POST(loginRequest('devtwo', 'pw2'))
 
     expect(response.status).toBe(303)
-    expect(response.headers.get('location')).toBe('http://localhost/devtwo')
+    expectRelativeRedirect(response, '/devtwo')
     expect(getKey(response.cookies.get(SESSION_COOKIE)!.value)).toBeDefined()
   })
 
@@ -165,9 +196,7 @@ describe('POST /api/login', () => {
     const response = await POST(loginRequest('nico', 'wrong'))
 
     expect(response.status).toBe(303)
-    expect(response.headers.get('location')).toBe(
-      'http://localhost/login?error=1',
-    )
+    expectRelativeRedirect(response, '/login?error=1')
     // This half matters most: a handler that set the cookie before checking
     // credentials would still pass a redirect-only assertion.
     expect(response.headers.get('set-cookie')).toBeNull()
@@ -237,7 +266,7 @@ describe('POST /api/unlock', () => {
     const response = await POST(unlockRequest('pw'))
 
     expect(response.status).toBe(303)
-    expect(response.headers.get('location')).toBe('http://localhost/nico')
+    expectRelativeRedirect(response, '/nico')
     expect(getKey(sid)).toBeDefined()
   })
 
@@ -259,9 +288,7 @@ describe('POST /api/unlock', () => {
     const response = await POST(unlockRequest('wrong'))
 
     expect(response.status).toBe(303)
-    expect(response.headers.get('location')).toBe(
-      'http://localhost/unlock?error=1',
-    )
+    expectRelativeRedirect(response, '/unlock?error=1')
     expect(getKey(sid)).toBeUndefined()
   })
 })
@@ -286,10 +313,14 @@ describe('POST /api/logout', () => {
     expect(getKey(sid)).toBeDefined()
 
     const { POST } = await import('@/app/api/logout/route')
-    const response = await POST(logoutRequest())
+    // No argument: the logout handler no longer takes a Request. It only ever
+    // used it to build an absolute redirect from request.url, which is exactly
+    // what lib/http/redirect.ts exists to stop. Next still calls it with one
+    // at runtime; an extra argument to a zero-parameter function is harmless.
+    const response = await POST()
 
     expect(response.status).toBe(303)
-    expect(response.headers.get('location')).toBe('http://localhost/login')
+    expectRelativeRedirect(response, '/login')
     expect(readSession(handle, sid)).toBeUndefined()
     // The key drop is the one that protects a shared machine: a stale
     // in-memory key would let the next person at this browser skip /unlock.
