@@ -98,8 +98,8 @@ check_schema_drift() {
     done
     echo "A change to another scope does not satisfy this — the match is per-scope."
     echo
-    echo "git commit --no-verify bypasses this gate for genuine exceptions,"
-    echo "but that should be rare. Prefer staging the companion change."
+    echo "Stage the companion change (seed.py/seed.ts or a tests/ file) in"
+    echo "this same commit — that is the fix Gate A is asking for."
     echo
   } >&2
 

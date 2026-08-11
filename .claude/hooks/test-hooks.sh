@@ -204,6 +204,37 @@ else
     users/alice/schema.sql users/alice/tests/panels.test.ts
   gate_check PASS  "modules/plaid.sql is not a schema.sql" \
     modules/plaid.sql
+
+  # gate_a_block_output <staged paths...> -> the block message on stderr
+  gate_a_block_output() {
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+      check_schema_drift "$@" 2>&1 >/dev/null
+    )
+  }
+
+  # Gate A must not recommend --no-verify: it drops all three commit gates
+  # (A, B, C) for a developer who only tripped Gate A. It should instead say
+  # plainly to stage the companion change. No new skip variable — the fix
+  # is a reword, not a fourth bypass.
+  gate_a_out=$(gate_a_block_output users/alice/schema.sql)
+  if printf '%s' "$gate_a_out" | grep -qF -- "--no-verify"; then
+    printf '  %-6s %-34s %s\n' "FAIL" "Gate A does not recommend --no-verify" "found '--no-verify' in block output"
+    fail=$((fail + 1))
+    failed_cases+=("Gate A does not recommend --no-verify")
+  else
+    printf '  %-6s %-34s %s\n' "PASS" "Gate A does not recommend --no-verify" "no mention"
+    pass=$((pass + 1))
+  fi
+  if printf '%s' "$gate_a_out" | grep -qF "companion change"; then
+    printf '  %-6s %-34s %s\n' "PASS" "Gate A tells you to stage the companion change" "says 'companion change'"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s %s\n' "FAIL" "Gate A tells you to stage the companion change" "missing 'companion change'"
+    fail=$((fail + 1))
+    failed_cases+=("Gate A tells you to stage the companion change")
+  fi
 fi
 echo
 
