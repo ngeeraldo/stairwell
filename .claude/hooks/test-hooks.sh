@@ -538,8 +538,8 @@ echo
 
 echo "Gate D: a broken build blocks the push"
 PUSH_GATE="$(cd "$HOOK_DIR/../.." && pwd)/.githooks/pre-push"
-if [ ! -f "$PUSH_GATE" ]; then
-  printf '  %-6s %-34s %s\n' "FAIL" "gate script present (D)" "missing $PUSH_GATE"
+if [ ! -x "$PUSH_GATE" ]; then
+  printf '  %-6s %-34s %s\n' "FAIL" "gate script present (D)" "missing or not executable: $PUSH_GATE"
   fail=$((fail + 1))
   failed_cases+=("gate script present (D)")
 else
@@ -633,6 +633,13 @@ else
   }
 
   # build_skip_silent <label> <cmd>
+  #
+  # "Silent" here means the SKIP notice stays silent — check_build always
+  # prints a one-line progress notice before running the build (see
+  # pre-push), independent of pass/fail/skip, so the stub run is never
+  # byte-for-byte empty. What must stay silent specifically is the
+  # "Gate D SKIPPED" announcement, which is only correct to print when the
+  # gate would actually have blocked.
   build_skip_silent() {
     local label=$1 cmd=$2
     local out
@@ -641,11 +648,11 @@ else
       SCHEMA_GATE_SOURCE_ONLY=1 . "$PUSH_GATE" >/dev/null 2>&1
       BUILD_CMD="$cmd" SKIP_BUILD_GATE=1 check_build 2>&1 >/dev/null
     )
-    if [ -z "$out" ]; then
-      printf '  %-6s %-34s %s\n' "PASS" "$label" "silent"
+    if ! printf '%s' "$out" | grep -qF "Gate D SKIPPED"; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "no skip notice"
       pass=$((pass + 1))
     else
-      printf '  %-6s %-34s expected silence, got output\n' "FAIL" "$label"
+      printf '  %-6s %-34s expected no skip notice, got one\n' "FAIL" "$label"
       fail=$((fail + 1))
       failed_cases+=("$label")
     fi
@@ -685,6 +692,35 @@ else
     lib/session/store.ts
   SKIP_BUILD_GATE=1 typecheck_check BLOCK "SKIP_BUILD_GATE does not leak into Gate C" \
     _stub_tsc_fail lib/auth/password.ts
+
+  # 9. Sourcing check_build directly (cases 1-8 above) proves the decision
+  # logic is correct, but proves nothing about the file's main block — the
+  # stdin drain, the call to check_build, and `exit $?`. A hook whose main
+  # block never calls check_build would still pass every case above. Invoke
+  # the file AS A SCRIPT, both directions, so the harness would catch that
+  # exact class of bug (the same "green but doesn't run" failure this task
+  # exists to prevent, one level up).
+  as_script_out=$(printf '' | BUILD_CMD=false bash "$PUSH_GATE" origin http://x </dev/null 2>&1)
+  as_script_rc=$?
+  if [ $as_script_rc -eq 1 ]; then
+    printf '  %-6s %-34s %s\n' "PASS" "as-a-script: failing BUILD_CMD blocks" "exit 1"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s got exit %s, want 1\n' "FAIL" "as-a-script: failing BUILD_CMD blocks" "$as_script_rc"
+    fail=$((fail + 1))
+    failed_cases+=("as-a-script: failing BUILD_CMD blocks")
+  fi
+
+  as_script_out=$(printf '' | BUILD_CMD=true bash "$PUSH_GATE" origin http://x </dev/null 2>&1)
+  as_script_rc=$?
+  if [ $as_script_rc -eq 0 ]; then
+    printf '  %-6s %-34s %s\n' "PASS" "as-a-script: passing BUILD_CMD allows" "exit 0"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s got exit %s, want 0\n' "FAIL" "as-a-script: passing BUILD_CMD allows" "$as_script_rc"
+    fail=$((fail + 1))
+    failed_cases+=("as-a-script: passing BUILD_CMD allows")
+  fi
 fi
 echo
 

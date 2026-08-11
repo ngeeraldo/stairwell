@@ -36,6 +36,12 @@ check_build() {
   # milliseconds instead of shelling out to a real `next build` (~1 min).
   local BUILD_CMD="${BUILD_CMD:-npx next build}"
 
+  # A real build takes about a minute with no output until it finishes. A
+  # silent push hook that just sits there for a minute reads as a hang and
+  # invites a Ctrl-C, which kills the gate outright — so say something before
+  # the wait starts, not just on the way out.
+  echo "Gate D: running the build (this can take about a minute)..." >&2
+
   local out rc
   out=$($BUILD_CMD 2>&1)
   rc=$?
