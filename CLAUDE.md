@@ -81,6 +81,11 @@ architectural changes; do not relitigate decided items).
   skip when it actually would have blocked. When Claude uses either skip, it
   states the reason in the commit message.
 
+## Local dev
+- Running the app, the dev account credentials, and how to reset the local
+  database: docs/local-dev.md. The admin password is never recorded in the
+  repo — it comes from ADMIN_PASSWORD at seed time.
+
 ## Ledgers
 - Before working on a file, check docs/superpowers/ledgers/ for residual risks
   touching it. Rulings made during fix rounds become tasks, not log entries.
