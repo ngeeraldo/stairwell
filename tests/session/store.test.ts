@@ -7,6 +7,7 @@ import { openPlatformDb } from '@/lib/db/platform'
 import { checkPassword, createAccount, findAccountBySlug } from '@/lib/auth/accounts'
 import {
   COOKIE_OPTIONS,
+  SESSION_COOKIE,
   SESSION_TTL_MS,
   createSession,
   destroySession,
@@ -79,6 +80,31 @@ describe('sessions', () => {
     expect(readSession(db, sid)).toBeUndefined()
   })
 
+  it('drops the key when the session expires', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const id = await createAccount(db, {
+      slug: 'a',
+      role: 'user',
+      password: 'pw',
+    })
+    const sid = createSession(db, id)
+    putKey(sid, Buffer.alloc(32, 9))
+    // Do NOT advance the clock by SESSION_TTL_MS (30 days) to reach expiry:
+    // that also blows past the keymap's own internal TTLs (4h idle / 12h
+    // absolute, lib/session/keymap.ts), so getKey(sid) would already be
+    // undefined from the keymap's OWN expiry regardless of whether
+    // readSession drops it — non-diagnostic by construction, since
+    // ABSOLUTE_TTL_MS << SESSION_TTL_MS. Force the session row itself past
+    // its expiry directly instead, with the clock left at t=0 so the
+    // keymap entry stays alive under its own rules. This isolates exactly
+    // the behavior under test: whether readSession's expiry branch drops
+    // the key.
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(-1, sid)
+    expect(readSession(db, sid)).toBeUndefined()
+    expect(getKey(sid)).toBeUndefined()
+  })
+
   it('never writes key material into the sessions table', async () => {
     const id = await createAccount(db, {
       slug: 'a',
@@ -102,6 +128,11 @@ describe('sessions', () => {
     // values directly, in every representation the key could plausibly take.
     const keyHex = key.toString('hex')
     const keyBase64 = key.toString('base64')
+    // Buffer's own toJSON() renders as {"type":"Buffer","data":[9,9,...]} —
+    // a decimal-byte-sequence representation with no hex/base64 substring,
+    // so a key serialized this way into a TEXT column would escape every
+    // check above it.
+    const keyJson = JSON.stringify(key)
     expect(rows.length).toBeGreaterThan(0)
     for (const r of rows) {
       for (const value of Object.values(r)) {
@@ -112,6 +143,8 @@ describe('sessions', () => {
           expect(value).not.toBe(keyBase64)
           expect(value).not.toContain(keyHex)
           expect(value).not.toContain(keyBase64)
+          expect(value).not.toBe(keyJson)
+          expect(value).not.toContain(keyJson)
         }
       }
     }
@@ -149,5 +182,33 @@ describe('sessions', () => {
     expect(COOKIE_OPTIONS.sameSite).toBe('lax')
     expect(COOKIE_OPTIONS.path).toBe('/')
     expect(COOKIE_OPTIONS.maxAge).toBe(SESSION_TTL_MS / 1000)
+  })
+
+  it('pins the session TTL to 30 days', () => {
+    expect(SESSION_TTL_MS).toBe(30 * 24 * 60 * 60 * 1000)
+  })
+
+  it('pins the session cookie name', () => {
+    expect(SESSION_COOKIE).toBe('stairwell_session')
+  })
+
+  it('treats a session at exactly the TTL boundary as already expired', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const id = await createAccount(db, {
+      slug: 'a',
+      role: 'user',
+      password: 'pw',
+    })
+    const sid = createSession(db, id)
+    vi.setSystemTime(SESSION_TTL_MS)
+    expect(readSession(db, sid)).toBeUndefined()
+  })
+
+  it('throws on a duplicate slug', async () => {
+    await createAccount(db, { slug: 'dupe', role: 'user', password: 'pw' })
+    await expect(
+      createAccount(db, { slug: 'dupe', role: 'user', password: 'pw2' }),
+    ).rejects.toThrow()
   })
 })

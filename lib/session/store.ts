@@ -34,7 +34,10 @@ export function readSession(
     | Session
     | undefined
   if (!row) return undefined
-  if (row.expires_at <= Date.now()) return undefined
+  if (row.expires_at <= Date.now()) {
+    dropKey(sessionId)
+    return undefined
+  }
   return row
 }
 
