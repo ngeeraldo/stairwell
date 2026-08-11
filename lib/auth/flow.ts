@@ -4,10 +4,27 @@ import { deriveDbKey, verifyPassword } from './password'
 import { putKey } from '@/lib/session/keymap'
 import { createSession, readSession } from '@/lib/session/store'
 
+// A real Argon2id hash (same OPTS as lib/auth/password.ts: algorithm 2,
+// memoryCost 19456, timeCost 2, parallelism 1, outputLen 32) of a loudly
+// fake password, generated once via hashPassword. Its only job is to give
+// `verifyPassword` real Argon2 work to do on the unknown-slug branch below,
+// so that branch costs the same as a real verify and an attacker cannot use
+// wall-clock time to learn whether a slug exists (Task 13G). It verifies
+// deterministically to `false` against any guess and is not a secret.
+const DUMMY_HASH =
+  '$argon2id$v=19$m=19456,t=2,p=1$mZmZmZmZmZmZmZmZmZmZmQ$g5OANDJjXnwpUD9m4VxfTuBU//J2PhaxCX3zEteqjn8'
+
 /**
  * Login authenticates and issues a session. It deliberately does NOT unlock:
  * the two-tier model means the key is derived at /unlock, so a deploy leaves
  * users logged in but locked.
+ *
+ * The unknown-slug branch runs a dummy Argon2 verify before returning, so
+ * that path costs the same as a real failed verify. Without it, a miss on
+ * findAccountBySlug returns in microseconds while a real account costs a
+ * full Argon2id verify (~14-19ms on dev hardware) — a ~1000x timing gap an
+ * unauthenticated caller of /api/login can use to learn which slugs exist,
+ * defeating the 404-never-403 blindness Task 13 built for `/[user]/…`.
  */
 export async function login(
   db: PlatformDb,
@@ -15,7 +32,10 @@ export async function login(
   password: string,
 ): Promise<string | null> {
   const account = findAccountBySlug(db, slug)
-  if (!account) return null
+  if (!account) {
+    await verifyPassword(DUMMY_HASH, password)
+    return null
+  }
   if (!(await checkPassword(account, password))) return null
   return createSession(db, account.id)
 }
