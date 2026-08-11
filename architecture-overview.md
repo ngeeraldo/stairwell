@@ -53,6 +53,17 @@ Server (single VPS)
 - **One SQLite file per user** (`/users/<name>/<name>.db`). No shared DB, no per-user Postgres. Deletion = `rm`.
 - **Encrypted at rest with SQLCipher; key derived from the user's login password via KDF.** Key stored nowhere. DB unlocks in memory during their session only. You cannot open it accidentally or casually — requires their password.
 - **Consequence: no background jobs.** Sync **runs at login** — morning open triggers: unlock → Plaid sync pulls new transactions → dashboard renders fresh. Matches the ritual; simpler than cron.
+- **Two-tier session (step 1a).** The session row persists in the platform
+  database; the derived key lives only in an in-process map with a 4h idle TTL
+  and a 12h absolute ceiling. A deploy therefore leaves users logged in but
+  locked — the chat surface keeps working across the tweak loop, and data
+  panels ask for the password again. The key cannot survive overnight, which is
+  what keeps login-triggered sync from serving stale data.
+- **Platform database.** Accounts, sessions, transcripts, metrics, and the
+  request queue live in a single unencrypted `platform.db`, separate from the
+  per-user encrypted files. Transcript visibility here is already covered by
+  the onboarding promise. `transcripts` and `metrics` reject UPDATE and DELETE
+  via SQLite triggers.
 - **Schemas are fully bespoke per user, assembled from optional modules.** No mandatory layers — the interview decides what exists; some users will have no finance data at all. You maintain a small library of reusable schema modules (first: `plaid.sql`, since Plaid dictates its shape and the sync job writes into it; workout/sleep modules emerge once hand-built twice). A user who wants finance includes the module; one who doesn't has no Plaid connection or sync job at all. **Rule: shared-module internals are never forked per user** — user-specific needs are met with views/derived tables on top, so shared sync code and each module's synthetic faker keep working for everyone. Custom tables outside modules are unlimited.
 
 ### 3. Bank connection = Plaid (production, already approved)
