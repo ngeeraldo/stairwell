@@ -112,6 +112,11 @@ describe('parseSpecPayload', () => {
     const json = JSON.stringify(malformedPayload)
     expect(() => parseSpecPayload(json)).toThrow(SpecShapeError)
   })
+
+  it('throws SpecShapeError specifically when JSON is malformed', () => {
+    const invalidJson = '{"title": "broken'
+    expect(() => parseSpecPayload(invalidJson)).toThrow(SpecShapeError)
+  })
 })
 
 describe('SPEC_JSON_SCHEMA', () => {

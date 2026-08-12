@@ -155,6 +155,13 @@ export function parseSpecInput(raw: unknown): SpecInput {
 
 /** Re-validate a stored payload on the way out of the database. */
 export function parseSpecPayload(json: string): SpecPayload {
-  const input = asRecord(JSON.parse(json), 'payload')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(json)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new SpecShapeError(`JSON parse error: ${message}`)
+  }
+  const input = asRecord(parsed, 'payload')
   return validatePayload(input)
 }
