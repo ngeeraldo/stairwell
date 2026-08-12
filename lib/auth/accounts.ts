@@ -68,6 +68,15 @@ export function findAccountBySlug(
     | undefined
 }
 
+export function findAccountById(
+  db: PlatformDb,
+  id: number,
+): Account | undefined {
+  return db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as
+    | Account
+    | undefined
+}
+
 export async function checkPassword(
   account: Account,
   password: string,
