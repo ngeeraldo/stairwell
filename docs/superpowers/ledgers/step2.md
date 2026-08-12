@@ -130,3 +130,60 @@ before that review ran; these are what survived it.
     redeploy and a live chat turn confirming the new sha serves. Any read of
     interview quality must filter on `prompt_sha != 'e274e1d89eae'`; that is
     exactly the query the per-row sha exists to make possible.
+
+---
+
+## Operational findings from the first step-2 deploy (2026-08-11)
+
+15. A DEPLOY REPORTED SUCCESS WHILE DEPLOYING NOTHING. The first run of
+    `deploy.sh` after `main` moved to 705901a printed
+    "Deployed 73971b8. Service is active and serving." Its `git pull
+    --ff-only` fetched nothing and did not error, so every downstream gate —
+    build, 243 tests, restart, smoke — passed truthfully against the OLD
+    code. A later manual `git fetch` on the droplet retrieved
+    `73971b8..705901a` without complaint, and the droplet's config was
+    correct throughout (branch main, upstream origin/main, standard refspec,
+    not shallow, no url rewrites). Root cause never proven — the original
+    pull's output was not captured. Leading explanation is a stale ref
+    advertisement served to an anonymous HTTPS fetch, which is transient.
+    MITIGATION, cheap and reliable: read the `Deployed <sha>` line at
+    deploy.sh:118 and confirm it matches the sha you pushed. That line is
+    the only thing that distinguished "deployed successfully" from
+    "successfully deployed nothing", and it is why this was caught at all.
+
+16. THE FIRST LIVE CHAT TURN FAILED ON A MISSING `ANTHROPIC_API_KEY`, which
+    was flagged twice before the deploy and believed already present. The
+    deploy reported success regardless, because `smoke.sh` does not exercise
+    `/api/chat`. Same failure class as item 15: a green deploy over a
+    non-functional app. See the queued task below.
+
+## Queued task — required-env presence check
+
+Ruled by Nico on 2026-08-11, to run through the normal brainstorm -> spec ->
+plan cycle as its own small task. NOT a blocker for the step-2 checkpoint.
+
+Scope IN:
+  - `deploy/required-env`: committed list of variable NAMES with one-line
+    purposes, never values. One source of truth, replacing the separate
+    lists that docs/local-dev.md and deploy/PROVISION.md maintain today and
+    which will drift.
+  - A check in `deploy.sh`, positioned AFTER the pull (so a deploy that
+    introduces a requirement enforces it on itself — the same reasoning as
+    the re-exec block at deploy.sh:51-56) and BEFORE `npm ci` (so a missing
+    variable costs seconds, not a full build and test cycle). Reports
+    missing NAMES only.
+  - The equivalent check on local `npm run dev`, so a missing variable
+    surfaces there rather than at a chat turn.
+
+Scope OUT, deliberately:
+  - Any sync of a local .env to the server. Rejected by Nico: it would cross
+    the local/server boundary the privacy model keeps deliberate, and would
+    put key material on a path that does not currently exist.
+  - Validity checking. This verifies PRESENCE only; an expired or wrong key
+    still passes and still fails at the first real request. Closing that gap
+    means a live API call on every deploy — real money and a real session
+    per deploy, for a rarer failure than a missing variable. Accepted limit.
+
+Note: this modifies the deploy contract, which CLAUDE.md governs explicitly
+and which has already produced one self-exempting bug (the deploy that first
+shipped smoke.sh skipped its own gate). Design cycle, not improvisation.
