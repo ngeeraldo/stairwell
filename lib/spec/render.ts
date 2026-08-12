@@ -12,20 +12,41 @@ export function renderSpecMarkdown(
   payload: SpecPayload,
   meta: { slug: string; version: number; confirmedAt: number },
 ): string {
+  /**
+   * Neutralise line-leading markdown structure to prevent unterminated code
+   * blocks or spurious headings from user-supplied text. Lines beginning with
+   * fence sequences (```) or # are prefixed with a space. Inline punctuation
+   * is left alone: escaping every * and _ would mangle ordinary prose for no
+   * benefit, and the failure mode there is cosmetic rather than structural.
+   */
+  const safeMarkdown = (text: string): string =>
+    text
+      .split('\n')
+      .map((line) => {
+        const trimmed = line.trimStart()
+        if (trimmed.startsWith('#') || trimmed.startsWith('```')) {
+          return ' ' + line
+        }
+        return line
+      })
+      .join('\n')
+
   const list = (items: string[]) =>
-    items.length === 0 ? '_None._' : items.map((i) => `- ${i}`).join('\n')
+    items.length === 0
+      ? '_None._'
+      : items.map((i) => `- ${safeMarkdown(i)}`).join('\n')
 
   const panels = payload.panels
     .map(
       (panel, index) =>
-        `### ${index + 1}. ${panel.name}\n\n` +
-        `- **Shows:** ${panel.shows}\n` +
-        `- **Why:** ${panel.why}\n` +
-        `- **Source:** ${panel.source}`,
+        `### ${index + 1}. ${safeMarkdown(panel.name)}\n\n` +
+        `- **Shows:** ${safeMarkdown(panel.shows)}\n` +
+        `- **Why:** ${safeMarkdown(panel.why)}\n` +
+        `- **Source:** ${safeMarkdown(panel.source)}`,
     )
     .join('\n\n')
 
-  return `# ${payload.title}
+  return `# ${safeMarkdown(payload.title)}
 
 <!-- Generated from the confirmed spec record by scripts/pull-spec.sh.
      Do not hand-edit: the next pull overwrites this file. -->
@@ -36,11 +57,11 @@ export function renderSpecMarkdown(
 
 ## Summary
 
-${payload.summary}
+${safeMarkdown(payload.summary)}
 
 ## Background
 
-${payload.background}
+${safeMarkdown(payload.background)}
 
 ## Panels
 

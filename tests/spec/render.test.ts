@@ -26,28 +26,54 @@ const PAYLOAD: SpecPayload = {
 
 describe('renderSpecMarkdown', () => {
   it('renders every field, deterministically', () => {
+    // Pin the exact bytes of the output, not just self-consistency. This catches
+    // nondeterminism that reaches the output (e.g., reading the clock at second
+    // granularity) AND unintended format drift. A self-comparison would not catch
+    // a regression that read time at second granularity.
     const out = renderSpecMarkdown(PAYLOAD, {
       slug: 'devtwo',
       version: 2,
       confirmedAt: 1_760_000_000_000,
     })
-    expect(out).toBe(renderSpecMarkdown(PAYLOAD, {
-      slug: 'devtwo',
-      version: 2,
-      confirmedAt: 1_760_000_000_000,
-    }))
+    expect(out).toBe(`# Eating out and the car fund
 
-    expect(out).toContain('# Eating out and the car fund')
-    expect(out).toContain('devtwo')
-    expect(out).toContain('v2')
-    expect(out).toContain('2025-10-09')
-    expect(out).toContain('So mornings stop being a surprise.')
-    expect(out).toContain('Checks the banking app most days')
-    expect(out).toContain('### 1. Eating out')
-    expect(out).toContain('### 2. Car fund')
-    expect(out).toContain('plaid')
-    expect(out).toContain('Car fund top-ups, when they happen')
-    expect(out).toContain('is that reachable?')
+<!-- Generated from the confirmed spec record by scripts/pull-spec.sh.
+     Do not hand-edit: the next pull overwrites this file. -->
+
+- **User:** devtwo
+- **Spec version:** v2
+- **Confirmed:** 2025-10-09T08:53:20.000Z
+
+## Summary
+
+So mornings stop being a surprise.
+
+## Background
+
+Checks the banking app most days, does not trust it.
+
+## Panels
+
+### 1. Eating out
+
+- **Shows:** This month against last month
+- **Why:** Said it is where the money goes
+- **Source:** plaid
+
+### 2. Car fund
+
+- **Shows:** Saved so far against the target
+- **Why:** Wants the number visible
+- **Source:** manual
+
+## Manual logging
+
+- Car fund top-ups, when they happen
+
+## Open questions
+
+- Wants a Monzo pot balance — is that reachable?
+`)
   })
 
   it('warns against hand-editing, because pull-spec.sh overwrites', () => {
@@ -69,5 +95,32 @@ describe('renderSpecMarkdown', () => {
     expect(out).toContain('## Manual logging')
     expect(out).toContain('## Open questions')
     expect(out.match(/_None\._/g)).toHaveLength(2)
+  })
+
+  it('escapes line-leading markdown structure to prevent unterminated code blocks and spurious headings', () => {
+    // A field containing an unterminated ``` fence should not swallow all
+    // following sections into inert code text. A field containing ## or # at
+    // line start should not spoof real headings. Verify that Panels, Manual
+    // logging, and Open questions render as real headings after the background.
+    const out = renderSpecMarkdown(
+      {
+        ...PAYLOAD,
+        background: `Checks the banking app most days.
+Here is an unterminated fence:
+\`\`\`
+
+And a line starting with hash:
+# This should not be a real heading`,
+      },
+      { slug: 'devtwo', version: 1, confirmedAt: 0 },
+    )
+    // Verify the real section headings are still there and not inside code.
+    expect(out).toContain('## Panels')
+    expect(out).toContain('## Manual logging')
+    expect(out).toContain('## Open questions')
+    // Verify the dangerous fence is prefixed with a space (escaped).
+    expect(out).toContain(' ```')
+    // Verify the dangerous # is prefixed with a space (escaped).
+    expect(out).toContain(' # This should not be a real heading')
   })
 })
