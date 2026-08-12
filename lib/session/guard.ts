@@ -8,9 +8,13 @@ import { redirectTargetFor } from './resolve'
  * Server-side state guard for protected pages.
  *
  * middleware.ts cannot do this job: the edge runtime cannot open SQLite, so
- * it can only check that a cookie exists. This is where the two-tier lock is
- * actually enforced — an authenticated-but-locked session gets sent to
- * /unlock rather than reaching a dashboard.
+ * it can only check that a cookie exists. This still enforces the anonymous
+ * case (no session -> /login) and admin/deeper-path cases, but it is no
+ * longer where the two-tier lock lives for user-space pages: an
+ * authenticated-but-locked session now reaches its own space here, and the
+ * page itself withholds the data region until unlock (see
+ * app/[user]/page.tsx and tests/routing/userSpace.test.ts's locked-owner
+ * test and its unlocked-owner companion).
  *
  * A thin adapter by design; the decision it delegates to is tested in
  * tests/routing/middleware.test.ts.

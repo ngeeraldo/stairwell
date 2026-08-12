@@ -291,6 +291,7 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     const json = JSON.stringify(element)
     expect(json).toContain('devone')
     expect(json).toContain('Locked')
+    expect(json).not.toContain('Nothing here yet')
   })
 
   it('does not render the data region locked for an unlocked owner', async () => {
@@ -312,7 +313,9 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
 
     const { default: UserSpace } = await import('@/app/[user]/page')
     const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
-    expect(JSON.stringify(element)).not.toContain('Locked')
+    const json = JSON.stringify(element)
+    expect(json).not.toContain('Locked')
+    expect(json).toContain('Nothing here yet')
   })
 
   it('404s an unlocked admin session browsing a user space — admin is not an override, at the page layer', async () => {

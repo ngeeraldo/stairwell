@@ -238,12 +238,15 @@ describe('requireState', () => {
     expect(redirectMock).toHaveBeenCalledWith('/login')
   })
 
-  it('lets a locked session reach /unlock itself', async () => {
-    // All the tests above pass '/a' as the pathname, so on their own they
-    // cannot tell a correct requireState from one that ignores its
-    // argument and hardcodes '/a'. This exercises the pathname plumbing:
-    // the same locked session that gets bounced from '/a' must NOT be
-    // bounced from '/unlock'.
+  it('lets a locked session reach /unlock itself, but not a deeper user-space path', async () => {
+    // A locked session is now let through at the user-space page itself, so
+    // '/a' no longer diverges from '/unlock' the way it used to — reusing
+    // '/a' here would let a requireState that ignores its pathname argument
+    // and hardcodes '/unlock' pass unnoticed, the same defect class the
+    // '/adminbob' regression guard exists to catch. '/a/settings' still
+    // diverges: it is one segment deeper than the user-space page, so it
+    // still bounces to /unlock, proving the pathname argument is actually
+    // plumbed through.
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount: createAcct } = await import('@/lib/auth/accounts')
     const { createSession: createSess } = await import('@/lib/session/store')
@@ -253,8 +256,11 @@ describe('requireState', () => {
     cookieSlot.value = { value: sid }
 
     const { requireState } = await import('@/lib/session/guard')
-    await requireState('/unlock')
+    await requireState('/a/settings')
+    expect(redirectMock).toHaveBeenCalledWith('/unlock')
 
+    redirectMock.mockClear()
+    await requireState('/unlock')
     expect(redirectMock).not.toHaveBeenCalled()
   })
 })

@@ -24,9 +24,12 @@ export default async function UnlockPage({
 
       {/*
         Without this, a locked session is a dead end. routeFor sends an
-        'authenticated' state back here from every path except /unlock and
-        /admin, so a user who cannot remember their password has no way to
-        reach /login short of clearing the cookie by hand.
+        'authenticated' state back here for a deeper path within a user
+        space (e.g. /devone/settings) and for anything else that isn't
+        /unlock, /admin, or the user's own space page — and the user's own
+        space page, while reachable, still withholds its data region until
+        unlock. Either way, a user who cannot remember their password has no
+        way to reach /login short of clearing the cookie by hand.
 
         This works while locked because /api/logout is reachable in that
         state: middleware.ts only bounces requests with NO session cookie,
