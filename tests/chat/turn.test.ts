@@ -821,4 +821,163 @@ describe('the completion rule with propose_spec', () => {
     expect(outcome.kind).toBe('empty')
     expect(outcome.proposal).toBeUndefined()
   })
+
+  it('still records the interview turn cost when it proposed without a usable reply', async () => {
+    // A tool call with no text (or a tool-calling turn that got truncated)
+    // writes no chat_turn and no chat_empty_reply — but real input and
+    // thinking tokens were billed for the interview turn itself, separate
+    // from whatever authorSpec bills for the authoring call. Those tokens
+    // must not vanish from an append-only log just because the reply text
+    // was empty.
+    const outcome = await runTurn(
+      {
+        db,
+        client: toolClient('', ['propose_spec']),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async () => PROPOSAL,
+      },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+    )
+    // No usable reply was delivered — `kind` reflects reply usability, not
+    // proposal success, same as an ordinary text-less tool call.
+    expect(outcome.kind).toBe('empty')
+
+    const rows = metrics()
+    expect(rows.map((r) => r.event)).toEqual(['chat_proposed_no_reply'])
+    expect(rows[0]!.data).toMatchObject({
+      // final.usage — the resolved USAGE constant toolClient() returns —
+      // not the in-stream onUsage accumulator, same rule as chat_turn.
+      input: USAGE.input,
+      cache_read: USAGE.cache_read,
+      cache_creation: USAGE.cache_creation,
+      stop_reason: 'tool_use',
+      delivered_chars: 0,
+    })
+  })
+
+  it('uses a name distinct from both chat_turn and chat_empty_reply — three different facts', async () => {
+    // A completed reply, a genuinely empty turn, and a text-less proposal
+    // are three different facts about what happened. Grouping any two of
+    // them under the same event name would make the metrics log unable to
+    // tell them apart, permanently.
+    await runTurn(
+      { db, client: toolClient('', ['propose_spec']), now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: async () => PROPOSAL },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+    )
+    const [event] = metrics().map((r) => r.event)
+    expect(event).not.toBe('chat_turn')
+    expect(event).not.toBe('chat_empty_reply')
+  })
+
+  it('still records the missing arm even when the reply text was truncated, not merely absent', async () => {
+    // The other trigger the reviewer named: a tool-calling turn whose
+    // stop_reason is not end_turn/tool_use (e.g. max_tokens) is `proposed
+    // && !usable` even though text WAS delivered. Same missing-metric
+    // hazard, different cause.
+    const truncatedToolClient: ChatClient = {
+      async stream({ onText, onUsage, onServed }) {
+        onUsage({ input: 200, cache_read: 0, cache_creation: 0 })
+        onServed({ model_served: CHAT_MODEL })
+        onText('one mom')
+        return {
+          usage: USAGE,
+          stop_reason: 'max_tokens',
+          served: SERVED,
+          tools_called: ['propose_spec'],
+        }
+      },
+      async propose() {
+        throw new Error('unused')
+      },
+    }
+    const outcome = await runTurn(
+      { db, client: truncatedToolClient, now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: async () => PROPOSAL },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+    )
+    expect(outcome.kind).toBe('empty') // not usable: stop_reason is max_tokens
+    expect(readTranscript(db, 1).filter((r) => r.role === 'assistant')).toHaveLength(0)
+
+    const [row] = metrics()
+    expect(row!.event).toBe('chat_proposed_no_reply')
+    expect(row!.data).toMatchObject({ stop_reason: 'max_tokens', delivered_chars: 'one mom'.length })
+  })
+
+  describe('proposalFailed', () => {
+    it('is true when the tool was called and authoring failed', async () => {
+      const outcome = await runTurn(
+        { db, client: toolClient('one moment', ['propose_spec']), now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: async () => undefined },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      )
+      expect(outcome.proposal).toBeUndefined()
+      expect(outcome.proposalFailed).toBe(true)
+    })
+
+    it('is false (or absent) when authoring succeeded', async () => {
+      const outcome = await runTurn(
+        { db, client: toolClient('one moment', ['propose_spec']), now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: async () => PROPOSAL },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      )
+      expect(outcome.proposal).toEqual(PROPOSAL)
+      expect(outcome.proposalFailed ?? false).toBe(false)
+    })
+
+    it('is false (or absent) on an ordinary turn that never called the tool', async () => {
+      const outcome = await runTurn(
+        { db, client: fakeClient(['ok']), now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: fakeAuthorSpec },
+        input(),
+      )
+      expect(outcome.kind).toBe('completed')
+      expect(outcome.proposalFailed ?? false).toBe(false)
+    })
+  })
+
+  describe('the belt-and-braces call-site guard', () => {
+    // authorSpec's own contract (lib/spec/author.ts) is to never throw. This
+    // guard exists for the case that contract does not hold — a bug in
+    // authorSpec, or (as exercised here) a misbehaving dependency — so an
+    // unanticipated throw still cannot kill a turn whose reply was already
+    // delivered and appended to transcripts above.
+    it('does not propagate when authorSpec throws, and still returns the delivered reply as completed', async () => {
+      const outcome = await runTurn(
+        {
+          db,
+          client: toolClient('one moment', ['propose_spec']),
+          now: () => 1_000,
+          context: 'interview',
+          alert: noAlert,
+          authorSpec: async () => {
+            throw new Error('unexpectedly broken dependency')
+          },
+        },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      )
+      expect(outcome.kind).toBe('completed')
+      expect(outcome.proposal).toBeUndefined()
+      expect(outcome.proposalFailed).toBe(true)
+      // The reply text was real and must still be saved — a broken
+      // authoring dependency must not retroactively erase a delivered turn.
+      expect(readTranscript(db, 1).filter((r) => r.role === 'assistant')).toHaveLength(1)
+    })
+
+    it('does not propagate when authorSpec throws on the no-usable-text path either', async () => {
+      const outcome = await runTurn(
+        {
+          db,
+          client: toolClient('', ['propose_spec']),
+          now: () => 1_000,
+          context: 'interview',
+          alert: noAlert,
+          authorSpec: async () => {
+            throw new Error('unexpectedly broken dependency')
+          },
+        },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      )
+      expect(outcome.kind).toBe('empty')
+      expect(outcome.proposal).toBeUndefined()
+      expect(outcome.proposalFailed).toBe(true)
+    })
+  })
 })

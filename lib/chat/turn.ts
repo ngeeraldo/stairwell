@@ -54,6 +54,15 @@ export type TurnInput = {
 export type TurnOutcome = {
   kind: 'completed' | 'aborted' | 'error' | 'empty'
   proposal?: Proposal
+  /**
+   * True when the tool was called but no proposal came back — a genuine
+   * authoring failure (already recorded by authorSpec's own spec_error /
+   * spec_aborted metric) or an unanticipated throw caught here as a last
+   * resort. Absent or false whenever the tool was never called, or when it
+   * was called and a proposal was returned. Task 10 uses this to emit a
+   * proposal-failure line to the friend.
+   */
+  proposalFailed?: boolean
 }
 
 /**
@@ -227,15 +236,51 @@ export async function runTurn(
       at: now(),
       data: { ...final.usage, ...base, ...final.served },
     })
+  } else if (proposed) {
+    // proposed && !usable: the agent raised its hand without delivering a
+    // usable reply — either it said nothing before calling the tool, or the
+    // tool-calling turn itself was truncated (stop_reason neither end_turn
+    // nor tool_use). No assistant row either way, same as chat_empty_reply —
+    // an empty body would break every later turn for this account. But real
+    // input and thinking tokens were billed for THIS interview turn,
+    // separate from whatever authorSpec bills for the authoring call below,
+    // and those tokens must not vanish from an append-only log just because
+    // the reply text was empty. A distinct event name — not chat_turn, not
+    // chat_empty_reply — because a completed reply, a genuinely empty turn,
+    // and a text-less proposal are three different facts.
+    appendMetric(db, {
+      accountId: input.accountId,
+      event: 'chat_proposed_no_reply',
+      at: now(),
+      data: {
+        ...final.usage,
+        ...base,
+        ...final.served,
+        stop_reason: final.stop_reason,
+        delivered_chars: delivered.length,
+      },
+    })
   }
 
-  const proposal = proposed
-    ? await authorSpec({
+  let proposal: Proposal | undefined
+  if (proposed) {
+    try {
+      proposal = await authorSpec({
         accountId: input.accountId,
         conversationId,
         signal: input.signal,
       })
-    : undefined
+    } catch {
+      // Defense in depth. authorSpec's own contract (lib/spec/author.ts) is
+      // to never throw and to record its own failure metric on every path —
+      // this catch exists only for the case that contract does not hold (a
+      // bug, or a misbehaving dependency), so an unanticipated throw still
+      // cannot kill a turn whose reply was already delivered and appended
+      // above.
+      proposal = undefined
+    }
+  }
+  const proposalFailed = proposed && proposal === undefined
 
-  return { kind: usable ? 'completed' : 'empty', proposal }
+  return { kind: usable ? 'completed' : 'empty', proposal, proposalFailed }
 }

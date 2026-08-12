@@ -163,6 +163,15 @@ export type ErrorShape = {
   status: number | null
   /** The API's own `error.type` discriminator, where the response carried one. */
   type: string | null
+  /**
+   * Set ONLY for a failure that occurred AFTER a complete response came
+   * back — propose()'s `truncated_spec` and `unparsable_spec`. Those tokens
+   * were real and billed; a spec_error row that reports zero for them is
+   * fiction. Absent for every failure before any response (rate limit,
+   * connection, auth, ...), where there genuinely is nothing to report.
+   */
+  usage?: Usage
+  served?: Served
 }
 
 export const UNKNOWN_ERROR: ErrorShape = {
@@ -349,6 +358,25 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
           { signal, timeout: SPEC_TIMEOUT_MS },
         )
 
+        // Extracted once and reused by the truncated/unparsable failure
+        // throws below AND the success return: a call that hit either
+        // failure still got a complete response back and cost real, billed
+        // tokens. A spec_error row that reports zero for them would be
+        // fiction (lib/spec/author.ts carries this onto the metrics row).
+        const usageOf = (): Usage => ({
+          input: message.usage.input_tokens,
+          output: message.usage.output_tokens,
+          cache_read: message.usage.cache_read_input_tokens ?? 0,
+          cache_creation: message.usage.cache_creation_input_tokens ?? 0,
+        })
+        const servedOf = (): Served => ({
+          model_served: message.model,
+          fallback_fired:
+            (message.usage.iterations ?? []).some(
+              (entry) => entry.type === 'fallback_message',
+            ) || message.content.some((block) => block.type === 'fallback'),
+        })
+
         // Checked BEFORE parsing, and deliberately not folded into the parse
         // failure below: a max_tokens cutoff can land on a syntactically
         // complete object that is simply missing later fields, so "JSON.parse
@@ -357,7 +385,13 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
         // reply and refuses to write it.
         if (message.stop_reason !== 'end_turn') {
           throw new ChatStreamError(
-            { kind: 'truncated_spec', status: null, type: null },
+            {
+              kind: 'truncated_spec',
+              status: null,
+              type: null,
+              usage: usageOf(),
+              served: servedOf(),
+            },
             `authoring call did not complete (stop_reason ${message.stop_reason})`,
           )
         }
@@ -375,27 +409,22 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
           // isn't valid JSON. Failing here is what keeps junk out of an
           // append-only table.
           throw new ChatStreamError(
-            { kind: 'unparsable_spec', status: null, type: null },
+            {
+              kind: 'unparsable_spec',
+              status: null,
+              type: null,
+              usage: usageOf(),
+              served: servedOf(),
+            },
             `authoring call returned unparsable output (stop_reason ${message.stop_reason})`,
           )
         }
 
         return {
           input,
-          usage: {
-            input: message.usage.input_tokens,
-            output: message.usage.output_tokens,
-            cache_read: message.usage.cache_read_input_tokens ?? 0,
-            cache_creation: message.usage.cache_creation_input_tokens ?? 0,
-          },
+          usage: usageOf(),
           stop_reason: message.stop_reason,
-          served: {
-            model_served: message.model,
-            fallback_fired:
-              (message.usage.iterations ?? []).some(
-                (entry) => entry.type === 'fallback_message',
-              ) || message.content.some((block) => block.type === 'fallback'),
-          },
+          served: servedOf(),
         }
       } catch (error) {
         if (error instanceof ChatStreamError) throw error

@@ -38,111 +38,176 @@ export type AuthorInput = {
 
 /** Honest defaults for a call that failed before the API reported anything. */
 const NO_USAGE: Usage = { input: 0, output: 0, cache_read: 0, cache_creation: 0 }
+const NO_SERVED: Served = { model_served: CHAT_MODEL, fallback_fired: false }
 
 /**
  * Write one proposal, or record why it could not be written.
  *
- * Returns undefined on every failure path rather than throwing: this runs
- * AFTER the chat turn's assistant row is already appended, and a failed
- * preview must not retroactively turn a delivered reply into a failed turn.
+ * Returns undefined on EVERY failure path, expected or not — this function
+ * never throws. It runs AFTER the chat turn's assistant row is already
+ * appended, and a failed preview must not retroactively turn a delivered
+ * reply into a failed turn: a throw here would propagate out of runTurn into
+ * the route's ReadableStream AFTER the reply was already saved, killing the
+ * stream with no `{done:true}`, no `controller.close()`, and no failure
+ * metric anywhere to explain why.
+ *
+ * The whole body sits inside one outer try/catch specifically so a failure
+ * with no dedicated branch — loadPrompt (PROMPT_DIR resolves against
+ * process.cwd(), not guaranteed to be the repo root under systemd),
+ * insertSpec, the version read-back, or the spec_proposed write itself —
+ * still records a metric and returns undefined rather than escaping.
+ * turn.ts additionally wraps its own call to this function as a second,
+ * belt-and-braces layer.
  */
 export async function authorSpec(
   deps: AuthorDeps,
   input: AuthorInput,
 ): Promise<Proposal | undefined> {
   const { db, client, now, context } = deps
-  const { text: system, sha: promptSha } = loadPrompt(SPEC_PROMPT)
+  // Populated once loadPrompt succeeds, and read by the outer catch too, so a
+  // later failure's metric row still carries the real prompt sha instead of
+  // an unknown placeholder.
+  let promptSha: string | null = null
 
-  const base = {
-    model: CHAT_MODEL,
-    effort: CHAT_EFFORT,
-    prompt_sha: promptSha,
-    context,
-  }
-  const served: Served = { model_served: CHAT_MODEL, fallback_fired: false }
-
-  const history = toMessages(readTranscript(db, input.accountId))
-  const last = history[history.length - 1]
-  // Appended ONLY when the last message is an assistant turn. On the usual
-  // path the agent said something before calling the tool, so the call needs
-  // a user message to answer. On the no-text path the friend's own message is
-  // already last and a second user turn buys nothing. Ending on a user
-  // message is the only invariant this needs.
-  //
-  // Never written to transcripts: it is a call-time construct, not a thing
-  // the friend said (design spec section 4.4).
-  const messages =
-    last?.role === 'assistant'
-      ? [...history, { role: 'user' as const, content: 'Write the spec now.' }]
-      : history
-
-  let result
   try {
-    result = await client.propose({ system, messages, signal: input.signal })
-  } catch (error) {
-    if (input.signal.aborted) {
+    const loaded = loadPrompt(SPEC_PROMPT)
+    promptSha = loaded.sha
+    const system = loaded.text
+
+    const base = {
+      model: CHAT_MODEL,
+      effort: CHAT_EFFORT,
+      prompt_sha: promptSha,
+      context,
+    }
+
+    const history = toMessages(readTranscript(db, input.accountId))
+    const last = history[history.length - 1]
+    // Appended ONLY when the last message is an assistant turn. On the usual
+    // path the agent said something before calling the tool, so the call needs
+    // a user message to answer. On the no-text path the friend's own message is
+    // already last and a second user turn buys nothing. Ending on a user
+    // message is the only invariant this needs.
+    //
+    // Never written to transcripts: it is a call-time construct, not a thing
+    // the friend said (design spec section 4.4).
+    const messages =
+      last?.role === 'assistant'
+        ? [...history, { role: 'user' as const, content: 'Write the spec now.' }]
+        : history
+
+    let result
+    try {
+      result = await client.propose({ system, messages, signal: input.signal })
+    } catch (error) {
+      if (input.signal.aborted) {
+        appendMetric(db, {
+          accountId: input.accountId,
+          event: 'spec_aborted',
+          at: now(),
+          data: { ...NO_USAGE, ...base, ...NO_SERVED },
+        })
+        return undefined
+      }
+      // truncated_spec and unparsable_spec fire AFTER a complete response —
+      // hitting SPEC_MAX_TOKENS is the single most expensive failure this
+      // call has, and propose() carries the real usage/served on the error
+      // shape for exactly those two kinds (lib/chat/client.ts). Every other
+      // kind — rate limit, connection, auth, ... — failed before any
+      // response came back, so shape.usage/shape.served are genuinely
+      // absent there and NO_USAGE/NO_SERVED are the honest values, not a
+      // shortcut. Do not fabricate in either direction.
+      const shape = error instanceof ChatStreamError ? error.shape : UNKNOWN_ERROR
       appendMetric(db, {
         accountId: input.accountId,
-        event: 'spec_aborted',
+        event: 'spec_error',
         at: now(),
-        data: { ...NO_USAGE, ...base, ...served },
+        data: {
+          ...(shape.usage ?? NO_USAGE),
+          ...base,
+          ...(shape.served ?? NO_SERVED),
+          kind: shape.kind,
+          status: shape.status,
+          type: shape.type,
+        },
       })
       return undefined
     }
+
+    let parsed
+    try {
+      parsed = parseSpecInput(result.input)
+    } catch (error) {
+      // A schema-constrained REQUEST is not a guarantee about the row that
+      // reaches an append-only table. This validator is the last gate.
+      //
+      // `type` stays null here on purpose: everywhere else in this codebase
+      // `type` is the API's own error.type discriminator, and the
+      // validator's prose message is not that — putting it there would mix
+      // discriminators with sentences for any query that groups spec_error
+      // rows by type, permanently. The message goes in its own field.
+      appendMetric(db, {
+        accountId: input.accountId,
+        event: 'spec_error',
+        at: now(),
+        data: {
+          ...result.usage,
+          ...base,
+          ...result.served,
+          kind: 'malformed_spec',
+          status: null,
+          type: null,
+          message: error instanceof Error ? error.message : null,
+        },
+      })
+      return undefined
+    }
+
+    const id = insertSpec(db, {
+      accountId: input.accountId,
+      conversationId: input.conversationId,
+      promptSha,
+      payload: parsed.payload,
+      mockupHtml: parsed.mockupHtml,
+      at: now(),
+    })
+    // Read back rather than counting: version is derived from position, and
+    // this is the one place that must agree with what the admin pane
+    // renders. No non-null assertion: a miss here is exactly the kind of
+    // "should never happen" case the outer catch below exists to catch.
+    const version = readSpecs(db, input.accountId).find((s) => s.id === id)?.version
+    if (version === undefined) {
+      throw new Error(`spec ${id} was inserted but not found in readSpecs`)
+    }
+
+    appendMetric(db, {
+      accountId: input.accountId,
+      event: 'spec_proposed',
+      at: now(),
+      data: { ...result.usage, ...base, ...result.served, spec_id: id, version },
+    })
+
+    return { id, version, payload: parsed.payload, mockup_html: parsed.mockupHtml }
+  } catch (error) {
+    // Anything with no dedicated branch above. promptSha may or may not be
+    // known depending on where this fired.
     appendMetric(db, {
       accountId: input.accountId,
       event: 'spec_error',
       at: now(),
       data: {
         ...NO_USAGE,
-        ...base,
-        ...served,
-        ...(error instanceof ChatStreamError ? error.shape : UNKNOWN_ERROR),
-      },
-    })
-    return undefined
-  }
-
-  let parsed
-  try {
-    parsed = parseSpecInput(result.input)
-  } catch (error) {
-    // A schema-constrained REQUEST is not a guarantee about the row that
-    // reaches an append-only table. This validator is the last gate.
-    appendMetric(db, {
-      accountId: input.accountId,
-      event: 'spec_error',
-      at: now(),
-      data: {
-        ...result.usage,
-        ...base,
-        ...result.served,
-        kind: 'malformed_spec',
+        model: CHAT_MODEL,
+        effort: CHAT_EFFORT,
+        prompt_sha: promptSha,
+        context,
+        ...NO_SERVED,
+        kind: 'unexpected_error',
         status: null,
-        type: error instanceof Error ? error.message : null,
+        type: null,
+        message: error instanceof Error ? error.message : String(error),
       },
     })
     return undefined
   }
-
-  const id = insertSpec(db, {
-    accountId: input.accountId,
-    conversationId: input.conversationId,
-    promptSha,
-    payload: parsed.payload,
-    mockupHtml: parsed.mockupHtml,
-    at: now(),
-  })
-  // Read back rather than counting: version is derived from position, and
-  // this is the one place that must agree with what the admin pane renders.
-  const version = readSpecs(db, input.accountId).find((s) => s.id === id)!.version
-
-  appendMetric(db, {
-    accountId: input.accountId,
-    event: 'spec_proposed',
-    at: now(),
-    data: { ...result.usage, ...base, ...result.served, spec_id: id, version },
-  })
-
-  return { id, version, payload: parsed.payload, mockup_html: parsed.mockupHtml }
 }

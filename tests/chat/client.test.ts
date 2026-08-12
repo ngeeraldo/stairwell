@@ -110,6 +110,43 @@ describe('propose()', () => {
     ).rejects.toMatchObject({ name: 'ChatStreamError', shape: { kind: 'unparsable_spec' } })
   })
 
+  it('carries the real usage and served model on an unparsable reply — the response was complete and billed', async () => {
+    // The whole point of these two fields on ErrorShape: a reply that came
+    // back complete and unparsable still cost real, billed tokens. A
+    // spec_error row that reports zero for them would be fiction.
+    const sdk = fakeSdk({
+      beta: {
+        messages: {
+          create: async () => ({
+            content: [{ type: 'text', text: 'sorry, no' }],
+            stop_reason: 'end_turn',
+            model: 'claude-opus-4-8',
+            usage: {
+              input_tokens: 123,
+              output_tokens: 45,
+              cache_read_input_tokens: 6,
+              cache_creation_input_tokens: 7,
+            },
+          }),
+          stream: () => ({}),
+        },
+      },
+    })
+    await expect(
+      anthropicClient(sdk as never).propose({
+        system: 's',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({
+      shape: {
+        kind: 'unparsable_spec',
+        usage: { input: 123, output: 45, cache_read: 6, cache_creation: 7 },
+        served: { model_served: 'claude-opus-4-8', fallback_fired: false },
+      },
+    })
+  })
+
   it('fails on a truncated reply even when the truncated JSON happens to parse', async () => {
     // The gate cannot be "JSON.parse didn't throw": a max_tokens cutoff can
     // land on a syntactically complete object that is simply missing later
@@ -136,6 +173,70 @@ describe('propose()', () => {
         signal: new AbortController().signal,
       }),
     ).rejects.toMatchObject({ name: 'ChatStreamError', shape: { kind: 'truncated_spec' } })
+  })
+
+  it('carries the real usage and served model on a truncated reply — max_tokens is the most expensive failure', async () => {
+    const sdk = fakeSdk({
+      beta: {
+        messages: {
+          create: async () => ({
+            content: [{ type: 'text', text: '{"title":"TEST"}' }],
+            stop_reason: 'max_tokens',
+            model: 'claude-opus-4-8',
+            usage: {
+              input_tokens: 500,
+              output_tokens: 32000,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          }),
+          stream: () => ({}),
+        },
+      },
+    })
+    await expect(
+      anthropicClient(sdk as never).propose({
+        system: 's',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({
+      shape: {
+        kind: 'truncated_spec',
+        usage: { input: 500, output: 32000, cache_read: 0, cache_creation: 0 },
+        served: { model_served: 'claude-opus-4-8', fallback_fired: false },
+      },
+    })
+  })
+
+  it('carries no usage on a pre-response failure — nothing was actually known', async () => {
+    // The other half of the honesty rule: a failure with no response at all
+    // (rate limit, connection, auth, ...) must NOT fabricate a usage or
+    // served value. describeError never sets these fields, so this pins
+    // that ChatStreamError does not invent them either.
+    const sdk = fakeSdk({
+      beta: {
+        messages: {
+          create: async () => {
+            throw new Error('boom')
+          },
+          stream: () => ({}),
+        },
+      },
+    })
+    let caught: unknown
+    try {
+      await anthropicClient(sdk as never).propose({
+        system: 's',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: new AbortController().signal,
+      })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toMatchObject({ shape: { kind: 'unknown_error' } })
+    expect((caught as { shape: { usage?: unknown } }).shape.usage).toBeUndefined()
+    expect((caught as { shape: { served?: unknown } }).shape.served).toBeUndefined()
   })
 })
 
