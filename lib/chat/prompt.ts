@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 
 const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
 
@@ -16,9 +16,21 @@ export const SPEC_PROMPT = 'spec-v1.md'
 
 export type LoadedPrompt = { text: string; sha: string }
 
-/** A bare filename resolved under platform/prompts. */
+/**
+ * A bare filename resolved under platform/prompts.
+ *
+ * Throws if the name contains path traversal (e.g., `../../.env`). This project
+ * denies reading `.env` files and non-synthetic databases at the tool layer —
+ * this guard prevents a way around those boundaries.
+ */
 export function promptPath(name: string): string {
-  return resolve(PROMPT_DIR, name)
+  const path = resolve(PROMPT_DIR, name)
+  const rel = relative(PROMPT_DIR, path)
+  // If relative path starts with "..", the resolved path escapes the directory
+  if (rel.startsWith('..')) {
+    throw new Error(`Path traversal not allowed: ${name}`)
+  }
+  return path
 }
 
 /**

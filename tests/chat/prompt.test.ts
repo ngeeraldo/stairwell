@@ -110,6 +110,14 @@ describe('loadPrompt', () => {
     )
   })
 
+  it('prevents path traversal escapes to sensitive files', () => {
+    // This project denies reading .env files at the tool layer. A path
+    // traversal here would be a way around that boundary. Assert that
+    // promptPath throws on traversing names, using ../.env as a test case
+    // that would access the project root .env if the guard were deleted.
+    expect(() => promptPath('../../.env')).toThrow(/Path traversal not allowed/)
+  })
+
   it('flags 401(k) — the parenthesised form a rewrite is most likely to use', () => {
     // Ledger item 11: the old pattern (/\b401\s?-?\s?k\b/i) matched "401k",
     // "401-k", and "401 k" but not "401(k)", which is how the term is almost
