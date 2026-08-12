@@ -4,16 +4,20 @@
 // path is untestable here by design (CLAUDE.md > Testing: tests must not
 // attempt any ssh), and pull-spec.sh's own header says --local is the only
 // form an agent runs.
+//
+// This file covers the WRAPPER end to end (a real subprocess, a real tsx
+// invocation chain, a real synthetic platform db). The atomic-write
+// guarantee itself — precondition / write / move-aside / commit, and what
+// happens when each throws — moved into scripts/write-spec-pair.ts and is
+// covered precisely there, in tests/scripts/writeSpecPair.test.ts, via
+// dependency-injected fault points rather than filesystem contortions
+// against this shell script. That move happened because a fault aimed at
+// pull-spec.sh from outside (a pre-created directory at a specific path)
+// could not reliably tell two adjacent guards apart — round 3 of the
+// step-4 review caught a case where a test named for the commit-rename
+// guard was, in fact, only ever reaching the guard before it.
 import { execFileSync } from 'node:child_process'
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-} from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -195,117 +199,5 @@ describe('scripts/pull-spec.sh --local', () => {
 
     expect(status).toBe(2)
     expect(output).toMatch(/usage/)
-  })
-
-  describe('atomic write (no half-written pair)', () => {
-    // Three separate guards in pull-spec.sh's node -e block, each with its
-    // own fault-injection path so each test exercises the block it names
-    // (and only that block — confirmed by deleting each block in turn and
-    // watching its own test, and only its own test, go red):
-    //   1. an upfront precondition check (final path wrong-typed)
-    //   2. write-temp-then-cleanup-on-throw (the writeFileSync pair)
-    //   3. move-aside-then-restore-on-throw around the commit renames
-
-    it('refuses upfront, before touching anything, when a final path exists and is not a plain file', async () => {
-      // Targets guard #1: occupy the FINAL mockup.html path (not a temp or
-      // backup path) with a directory. The precondition check inspects
-      // exactly this path before any write/rename is attempted.
-      const sandbox = makeSandbox()
-      const dbPath = await makeDb({
-        slug: CONFIRMED_SLUG,
-        confirm: true,
-        title: 'Should never land TEST',
-        mockupHtml: '<!doctype html><html><body>SHOULD NEVER LAND TEST</body></html>',
-      })
-
-      const dir = userDir(sandbox, CONFIRMED_SLUG)
-      mkdirSync(dir, { recursive: true })
-      mkdirSync(join(dir, 'mockup.html'))
-
-      const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], dbPath)
-
-      expect(status).not.toBe(0)
-      expect(existsSync(join(dir, 'spec.md'))).toBe(false)
-      // mockup.html is still the directory we made, never replaced by a file.
-      expect(existsSync(join(dir, 'mockup.html'))).toBe(true)
-      expect(statSync(join(dir, 'mockup.html')).isDirectory()).toBe(true)
-    })
-
-    it('cleans up its temp file and writes neither final file when the second write throws', async () => {
-      // Targets guard #2: occupy the TEMP path .mockup.html.tmp — not the
-      // final mockup.html path, which stays absent so the precondition
-      // check (guard #1) passes clean and never fires. The second
-      // writeFileSync call itself must throw for this test to mean
-      // anything; it is what forces that.
-      const sandbox = makeSandbox()
-      const dbPath = await makeDb({
-        slug: CONFIRMED_SLUG,
-        confirm: true,
-        title: 'Should never land, write-phase TEST',
-        mockupHtml: '<!doctype html><html><body>SHOULD NEVER LAND, WRITE PHASE TEST</body></html>',
-      })
-
-      const dir = userDir(sandbox, CONFIRMED_SLUG)
-      mkdirSync(dir, { recursive: true })
-      mkdirSync(join(dir, '.mockup.html.tmp'))
-
-      const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], dbPath)
-
-      expect(status).not.toBe(0)
-      expect(existsSync(join(dir, 'spec.md'))).toBe(false)
-      expect(existsSync(join(dir, 'mockup.html'))).toBe(false)
-      // The successfully-written spec temp file must have been cleaned up
-      // by the catch block, not left behind.
-      expect(existsSync(join(dir, '.spec.md.tmp'))).toBe(false)
-    })
-
-    it('restores the original pair, byte-for-byte, when the commit-rename phase throws partway', async () => {
-      // Targets guard #3: run one real successful pull first (a genuine
-      // pre-existing pair, not a synthetic fixture), then occupy the
-      // BACKUP path .mockup.html.bak with a directory before the second
-      // pull. This path is internal to the rename-phase guard — untouched
-      // by guards #1 and #2 — so the write phase completes normally and
-      // spec.md's move-aside succeeds, and it is specifically the SECOND
-      // move-aside (mockup.html -> .mockup.html.bak) that fails. Because
-      // that failed rename leaves mockup.html completely untouched at its
-      // original location (a failed rename() has no partial effect on
-      // either side), both files can be asserted byte-for-byte unchanged —
-      // not just spec.md, which round 1's version of this test had to
-      // settle for.
-      const sandbox = makeSandbox()
-      const first = await makeDb({
-        slug: CONFIRMED_SLUG,
-        confirm: true,
-        title: 'Earlier successful pull TEST',
-        mockupHtml: '<!doctype html><html><body>EARLIER PULL TEST</body></html>',
-      })
-      const { status: firstStatus } = run(sandbox, [CONFIRMED_SLUG, '--local'], first)
-      expect(firstStatus).toBe(0)
-
-      const dir = userDir(sandbox, CONFIRMED_SLUG)
-      const specBefore = readFileSync(join(dir, 'spec.md'), 'utf8')
-      const mockupBefore = readFileSync(join(dir, 'mockup.html'), 'utf8')
-
-      const second = await makeDb({
-        slug: CONFIRMED_SLUG,
-        confirm: true,
-        title: 'Should not replace the earlier pull TEST',
-        mockupHtml: '<!doctype html><html><body>SHOULD NOT REPLACE TEST</body></html>',
-      })
-      mkdirSync(join(dir, '.mockup.html.bak'))
-
-      const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], second)
-
-      expect(status).not.toBe(0)
-      expect(readFileSync(join(dir, 'spec.md'), 'utf8')).toBe(specBefore)
-      expect(readFileSync(join(dir, 'mockup.html'), 'utf8')).toBe(mockupBefore)
-      expect(readFileSync(join(dir, 'spec.md'), 'utf8')).not.toContain(
-        'Should not replace the earlier pull TEST',
-      )
-      // The commit-rename guard restores from backup and then must not
-      // leave stray .tmp/.bak files behind either.
-      expect(existsSync(join(dir, '.spec.md.tmp'))).toBe(false)
-      expect(existsSync(join(dir, '.spec.md.bak'))).toBe(false)
-    })
   })
 })
