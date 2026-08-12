@@ -30,6 +30,24 @@ function isAdminPath(pathname: string): boolean {
   return pathname === '/admin' || pathname.startsWith('/admin/')
 }
 
+/**
+ * Paths that are never a user slug. `createAccount` validates slugs against
+ * SLUG_PATTERN, so a real account can never be named one of these — this set
+ * is about classifying the URL, not about trusting it.
+ */
+const RESERVED_SEGMENTS = new Set(['login', 'unlock', 'admin', 'api'])
+
+/**
+ * A single non-reserved segment: '/devone', not '/devone/settings' and not
+ * '/admin'. Exactly one segment, because a locked session is allowed the
+ * user-space page itself (which carries the chat surface) and nothing deeper.
+ */
+export function isUserSpacePath(pathname: string): boolean {
+  const segments = pathname.split('/').filter(Boolean)
+  const [only] = segments
+  return segments.length === 1 && only !== undefined && !RESERVED_SEGMENTS.has(only)
+}
+
 /** The path to redirect to, or null to allow the request through. */
 export function routeFor(state: AuthState, pathname: string): string | null {
   if (state === 'anonymous') {
@@ -39,7 +57,16 @@ export function routeFor(state: AuthState, pathname: string): string | null {
     return state === 'unlocked' ? '/' : '/unlock'
   }
   if (state === 'authenticated') {
-    return LOCKED_OK.has(pathname) || isAdminPath(pathname) ? null : '/unlock'
+    // architecture-overview.md line 59: a deploy leaves users logged in but
+    // locked, and "the chat surface keeps working across the tweak loop,
+    // and data panels ask for the password again". The user-space page
+    // carries that chat surface, so the lock is enforced at the panel layer
+    // inside the page rather than by bouncing the whole route.
+    return LOCKED_OK.has(pathname) ||
+      isAdminPath(pathname) ||
+      isUserSpacePath(pathname)
+      ? null
+      : '/unlock'
   }
   return null
 }

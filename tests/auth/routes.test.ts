@@ -237,9 +237,13 @@ describe('POST /api/login', () => {
 
     // Still logged in — the session row is untouched by the key going away.
     expect(readSession(handle, sid)).toBeDefined()
-    // But locked again, and bounced to /unlock rather than /login.
+    // But locked again — and now reaches its own space anyway: routeFor
+    // lets a locked session through to /devone, and it's the page's data
+    // region (see tests/routing/userSpace.test.ts's locked-owner test and
+    // its unlocked-owner companion) that asks for the password again, not
+    // this redirect.
     expect(getKey(sid)).toBeUndefined()
-    expect(redirectTargetFor(handle, sid, '/devone')).toBe('/unlock')
+    expect(redirectTargetFor(handle, sid, '/devone')).toBeNull()
     // And /unlock itself stays reachable, so the single re-lock prompt works.
     expect(redirectTargetFor(handle, sid, '/unlock')).toBeNull()
   })

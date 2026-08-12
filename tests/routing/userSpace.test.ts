@@ -240,12 +240,11 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     expect(redirectMock).not.toHaveBeenCalled()
   })
 
-  it('sends a locked non-owner to /unlock before ever checking ownership', async () => {
-    // Locked (authenticated, no key) session for devone, requesting
-    // devtwo's space. requireState must bounce this to /unlock — the
-    // two-tier lock is enforced upstream of canSeeUserSpace, so a locked
-    // session never even gets to find out whether it owns the slug it
-    // asked for.
+  it('404s a locked non-owner, the same as an unlocked one', async () => {
+    // The lock no longer intercepts upstream of the ownership check, so a
+    // locked session asking for someone else's space now falls through to
+    // canSeeUserSpace and 404s. No new information leaks: an unlocked
+    // non-owner already got exactly this 404.
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount: createAcct } = await import('@/lib/auth/accounts')
     const { createSession: createSess, SESSION_COOKIE } = await import(
@@ -261,18 +260,18 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     const { default: UserSpace } = await import('@/app/[user]/page')
     await expect(
       UserSpace({ params: Promise.resolve({ user: 'devtwo' }) }),
-    ).rejects.toThrow('NEXT_REDIRECT:/unlock')
+    ).rejects.toThrow('NEXT_NOT_FOUND')
 
-    expect(redirectMock).toHaveBeenCalledWith('/unlock')
-    expect(notFoundMock).not.toHaveBeenCalled()
+    expect(notFoundMock).toHaveBeenCalledTimes(1)
+    expect(redirectMock).not.toHaveBeenCalled()
   })
 
-  it('sends a locked owner to /unlock too — the lock does not care whether you own the slug', async () => {
-    // Same locked state, but this time the requester DOES own the slug.
-    // Without this test, "locked non-owner -> /unlock" alone can't rule out
-    // a component that only bounces locked sessions when they're *not* the
-    // owner (which would silently let a locked owner reach their own
-    // dashboard without ever unlocking).
+  it('renders a locked owner\'s own space, with the data region locked', async () => {
+    // This inverts the pre-step-2 behaviour deliberately. architecture-
+    // overview.md line 59 is the spec: the chat surface keeps working across
+    // the tweak loop, and data panels ask for the password again. Both halves
+    // are asserted — reaching the page is only correct if the data region is
+    // still withheld.
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount: createAcct } = await import('@/lib/auth/accounts')
     const { createSession: createSess, SESSION_COOKIE } = await import(
@@ -285,12 +284,35 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     cookieSlot.value = { value: sid }
 
     const { default: UserSpace } = await import('@/app/[user]/page')
-    await expect(
-      UserSpace({ params: Promise.resolve({ user: 'devone' }) }),
-    ).rejects.toThrow('NEXT_REDIRECT:/unlock')
+    const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
 
-    expect(redirectMock).toHaveBeenCalledWith('/unlock')
+    expect(redirectMock).not.toHaveBeenCalled()
     expect(notFoundMock).not.toHaveBeenCalled()
+    const json = JSON.stringify(element)
+    expect(json).toContain('devone')
+    expect(json).toContain('Locked')
+  })
+
+  it('does not render the data region locked for an unlocked owner', async () => {
+    // Without this, the test above passes for a page that shows "Locked" to
+    // everybody — which would satisfy the letter of "data panels ask for the
+    // password" while breaking the product.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    putK(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+    expect(JSON.stringify(element)).not.toContain('Locked')
   })
 
   it('404s an unlocked admin session browsing a user space — admin is not an override, at the page layer', async () => {

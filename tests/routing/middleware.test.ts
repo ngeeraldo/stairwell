@@ -7,7 +7,12 @@ import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { createSession, SESSION_COOKIE } from '@/lib/session/store'
 import { putKey } from '@/lib/session/keymap'
-import { resolveState, routeFor, redirectTargetFor } from '@/lib/session/resolve'
+import {
+  resolveState,
+  routeFor,
+  redirectTargetFor,
+  isUserSpacePath,
+} from '@/lib/session/resolve'
 import { middleware, config } from '@/middleware'
 
 // Mocks for lib/session/guard.ts's requireState (group A below). Following
@@ -78,8 +83,12 @@ describe('routeFor', () => {
     expect(routeFor('anonymous', '/login')).toBeNull()
   })
 
-  it('sends authenticated users to unlock', () => {
-    expect(routeFor('authenticated', '/nico')).toBe('/unlock')
+  it('lets a locked session reach a user space, but not a deeper path', () => {
+    // architecture-overview.md line 59: the chat surface keeps working across
+    // the tweak loop while data panels ask for the password again. The lock
+    // moved down to the panel layer, so the page itself is reachable.
+    expect(routeFor('authenticated', '/nico')).toBeNull()
+    expect(routeFor('authenticated', '/nico/settings')).toBe('/unlock')
   })
 
   it('lets authenticated users reach unlock and admin', () => {
@@ -97,12 +106,25 @@ describe('routeFor', () => {
     expect(routeFor('unlocked', '/login')).toBe('/')
   })
 
-  it('does not treat a slug that merely starts with "admin" as the admin space', () => {
-    // Regression: '/adminbob'.startsWith('/admin') is true, which used to
-    // let an authenticated-but-locked session reach a same-named user slug
-    // without ever passing /unlock. This is the exact leak the two-tier
-    // lock exists to prevent.
-    expect(routeFor('authenticated', '/adminbob')).toBe('/unlock')
+  it('still distinguishes an admin path from a same-named user slug', () => {
+    // Regression guard for the '/adminbob' bug. It used to be expressible as
+    // "/adminbob -> /unlock", but now that locked sessions may reach a user
+    // space BOTH return null at one segment, so that assertion would pass
+    // without distinguishing anything. Two segments still separates them:
+    // '/admin/settings' is an admin subpath, '/adminbob/settings' is neither
+    // admin nor a user space.
+    expect(routeFor('authenticated', '/admin/settings')).toBeNull()
+    expect(routeFor('authenticated', '/adminbob/settings')).toBe('/unlock')
+    expect(routeFor('anonymous', '/adminbob')).toBe('/login')
+  })
+
+  it('does not treat reserved paths as user spaces', () => {
+    expect(isUserSpacePath('/login')).toBe(false)
+    expect(isUserSpacePath('/unlock')).toBe(false)
+    expect(isUserSpacePath('/admin')).toBe(false)
+    expect(isUserSpacePath('/api')).toBe(false)
+    expect(isUserSpacePath('/')).toBe(false)
+    expect(isUserSpacePath('/devone')).toBe(true)
   })
 
   it('still lets locked users reach real admin subpaths', () => {
@@ -111,12 +133,17 @@ describe('routeFor', () => {
 })
 
 describe('redirectTargetFor', () => {
-  it('sends a locked session away from a user space', async () => {
+  it('lets a locked session reach a user space', async () => {
     const id = await createAccount(db, { slug: 'a', role: 'user', password: 'pw' })
     const sid = createSession(db, id)
-    // This is the two-tier lock holding. Without it, a session that survived
-    // a deploy reaches the dashboard without re-entering the password.
-    expect(redirectTargetFor(db, sid, '/a')).toBe('/unlock')
+    // The two-tier lock still holds, but it no longer lives at this layer.
+    // A session that survived a deploy now reaches the page — routeFor lets
+    // it through — and it's the page's data region, not the route, that
+    // re-asks for the password. See tests/routing/userSpace.test.ts:
+    // "renders a locked owner's own space, with the data region locked" and
+    // its companion "does not render the data region locked for an
+    // unlocked owner", which together hold the property this test used to.
+    expect(redirectTargetFor(db, sid, '/a')).toBeNull()
   })
 
   it('lets an unlocked session into a user space', async () => {
@@ -164,7 +191,11 @@ describe('requireState', () => {
     rmSync(guardDir, { recursive: true, force: true })
   })
 
-  it('sends a locked (authenticated, no key) session asking for a user space to /unlock', async () => {
+  it('lets a locked session through to its own user space', async () => {
+    // architecture-overview.md line 59: the chat surface keeps working across
+    // the tweak loop while data panels ask for the password again. The lock
+    // moved down to the panel layer, so requireState no longer bounces a
+    // locked session away from its own user space.
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount: createAcct } = await import('@/lib/auth/accounts')
     const { createSession: createSess } = await import('@/lib/session/store')
@@ -176,7 +207,7 @@ describe('requireState', () => {
     const { requireState } = await import('@/lib/session/guard')
     await requireState('/a')
 
-    expect(redirectMock).toHaveBeenCalledWith('/unlock')
+    expect(redirectMock).not.toHaveBeenCalled()
   })
 
   it('does not redirect an unlocked session asking for the same path', async () => {
