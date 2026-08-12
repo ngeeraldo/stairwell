@@ -45,3 +45,12 @@ export function slugFor(
 ): string | undefined {
   return accountFor(db, sessionId)?.slug
 }
+
+/** The account id a session belongs to, or undefined if none. */
+export function accountIdFor(
+  db: PlatformDb,
+  sessionId: string | undefined,
+): number | undefined {
+  if (!sessionId) return undefined
+  return readSession(db, sessionId)?.account_id
+}
