@@ -1,0 +1,26 @@
+# Environment variables this deployment requires, by NAME only. Never values.
+#
+# Format:   NAME  SEVERITY  # purpose
+#
+# SEVERITY
+#   REQUIRED   Absence BLOCKS the deploy. The app would be wrong, not merely
+#              reduced — a false green nobody goes looking for.
+#   DEGRADED   Absence WARNS loudly at deploy time. One feature stops working
+#              and its own error path carries it; everything else is fine.
+#
+# VARIABLES READ BY DEPENDENCIES BELONG HERE TOO. ANTHROPIC_API_KEY appears
+# nowhere in this repo's source — the Anthropic SDK reads it internally — and
+# its absence is what took chat down on the first live deploy. A list derived
+# by scanning our own code would have missed exactly the variable that mattered.
+#
+# OUT OF SCOPE, deliberately:
+#   NODE_ENV, PORT   supplied by deploy/stairwell.service's own Environment=
+#                    lines, not by the EnvironmentFile this check reads.
+#   ADMIN_PASSWORD   needed once by scripts/create-dev-users.ts at seed time,
+#                    never by the running server. Listing it would block every
+#                    deploy over a variable the service does not use.
+#   CHAT_MODEL       has an intended default (claude-opus-5). Absence is not a
+#                    failure.
+
+PLATFORM_DB        REQUIRED  # Path to the platform database. Absent, lib/db/instance.ts falls back to the SYNTHETIC dev database and production serves loudly-fake data with every health check green.
+ANTHROPIC_API_KEY  DEGRADED  # Read by @anthropic-ai/sdk. Absent, POST /api/chat returns 503 and logs a chat_error; the rest of the site is unaffected.
