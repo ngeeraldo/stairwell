@@ -69,7 +69,7 @@ export async function POST(request: Request) {
   } catch {
     // Aligned to the chat_error shape documented in the step-2 design spec
     // section 2.5 (step-2 ledger residual 8). It used to carry six fields
-    // where every other chat_error carries fifteen, so anyone grouping
+    // where every other chat_error carries fourteen, so anyone grouping
     // chat_error rows by prompt_sha silently dropped these. metrics is
     // append-only, so this only gets more expensive with every row.
     appendMetric(db, {

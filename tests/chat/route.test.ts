@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PlatformDb } from '@/lib/db/platform'
+import { CHAT_EFFORT, CHAT_MODEL } from '@/lib/chat/client'
+import { AGENT_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
 let sessionCookieName = 'sid'
@@ -245,6 +247,12 @@ describe('POST /api/chat — no credential', () => {
   it('records a no_api_key chat_error carrying the full documented shape', async () => {
     // Residual 8: this row used to be a second, narrower chat_error shape.
     // Anyone grouping chat_error by prompt_sha silently dropped it.
+    //
+    // Asserts every field's VALUE, not merely its presence: a presence-only
+    // check would pass for a flipped fallback_fired, swapped status/type, or
+    // a non-zero placeholder counter — exactly the failure mode this task
+    // exists to close for the previous (narrower) shape. metrics is
+    // append-only, so a defect like that would ship permanently.
     await signIn(false)
     behaviour.value = 'no-credential'
     await post({ body: 'hi' })
@@ -253,16 +261,23 @@ describe('POST /api/chat — no credential', () => {
       .prepare("SELECT data FROM metrics WHERE event = 'chat_error' ORDER BY id DESC LIMIT 1")
       .get() as { data: string }
     const data = JSON.parse(row.data) as Record<string, unknown>
-    for (const key of [
-      'input', 'output', 'cache_read', 'cache_creation',
-      'model', 'effort', 'prompt_sha', 'context',
-      'model_served', 'fallback_fired', 'kind', 'status', 'type',
-      'delivered_chars',
-    ]) {
-      expect(data, key).toHaveProperty(key)
-    }
-    expect(data.kind).toBe('no_api_key')
-    expect(data.context).toBe('interview')
+    expect(data).toEqual({
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_creation: 0,
+      model: CHAT_MODEL,
+      effort: CHAT_EFFORT,
+      // The agent prompt's hash specifically, not merely hex-shaped.
+      prompt_sha: loadPrompt(AGENT_PROMPT).sha,
+      context: 'interview',
+      model_served: CHAT_MODEL,
+      fallback_fired: false,
+      kind: 'no_api_key',
+      status: null,
+      type: null,
+      delivered_chars: 0,
+    })
   })
 
   it('retries construction on the next request rather than caching the failure', async () => {
