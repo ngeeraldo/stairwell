@@ -10,6 +10,7 @@ import {
   type ChatClient,
 } from '@/lib/chat/client'
 import { CHAT_CONTEXT, runTurn } from '@/lib/chat/turn'
+import { conversationAlerter } from '@/lib/alerts/ntfy'
 
 const encoder = new TextEncoder()
 const line = (value: unknown) => encoder.encode(`${JSON.stringify(value)}\n`)
@@ -83,7 +84,21 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const outcome = await runTurn(
-        { db, client: turnClient, now: Date.now },
+        {
+          db,
+          client: turnClient,
+          now: Date.now,
+          // Built per request, and NTFY_TOPIC read at call time rather than
+          // at module scope — the same reason chatClient() is deferred: a
+          // configuration problem should fail the request that needed it,
+          // not the module import that also serves the 401 and 400 paths.
+          alert: conversationAlerter({
+            topic: process.env.NTFY_TOPIC,
+            fetch: globalThis.fetch,
+            db,
+            now: Date.now,
+          }),
+        },
         {
           accountId: session.account_id,
           sessionId: sessionId!,

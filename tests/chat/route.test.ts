@@ -57,6 +57,9 @@ let handle: PlatformDb | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-chatroute-'))
   process.env.PLATFORM_DB = join(dir, 'synthetic.db')
+  // No test may push to a real topic. A developer with NTFY_TOPIC set in
+  // their shell would otherwise buzz their own phone on every suite run.
+  delete process.env.NTFY_TOPIC
   vi.resetModules()
   cookieGet.mockClear()
   cookieSlot.value = undefined
@@ -118,6 +121,29 @@ describe('POST /api/chat', () => {
 
     const res = await post({ body: 'hi' })
     expect(res.status).toBe(401)
+  })
+
+  it('wires a real alerter, evidenced by the no_topic row on a fresh conversation', async () => {
+    // With NTFY_TOPIC deleted in beforeEach, the alerter's no_topic branch is
+    // the observable proof that the route built one at all. A route that
+    // passed a no-op would produce no row here and every other test in this
+    // file would stay green.
+    await signIn(true)
+    const res = await post({ body: 'hi' })
+    await res.text()
+
+    const rows = handle!
+      .prepare(
+        "SELECT event, data FROM metrics WHERE event LIKE 'alert%' ORDER BY id",
+      )
+      .all() as { event: string; data: string }[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.event).toBe('alert_failed')
+    expect(JSON.parse(rows[0]!.data)).toEqual({
+      kind: 'conversation_started',
+      reason: 'no_topic',
+      status: null,
+    })
   })
 
   it('answers a LOCKED session — the chat surface survives the lock', async () => {
