@@ -101,6 +101,25 @@ describe('reportMissingEnv', () => {
     ).not.toThrow()
   })
 
+  it('still returns the missing list when the metric write fails', () => {
+    // The finding this test pins: parsing/diffing already computed the
+    // answer before appendMetric ever runs. A metric-write failure (a
+    // transient lock, a disk error) must not throw away an answer that was
+    // already correct — the caller (instrumentation.ts) still needs it to
+    // log its console.warn lines. A single try wrapping everything, as
+    // opposed to two separately-guarded regions, would return [] here
+    // instead.
+    const missing = reportMissingEnv({
+      listText: LIST,
+      env: {},
+      db: () => {
+        throw new Error('database unavailable')
+      },
+      now: () => 1,
+    })
+    expect(missing.map((v) => v.name)).toEqual(['A', 'B'])
+  })
+
   it('never throws when the list itself is malformed', () => {
     expect(() =>
       reportMissingEnv({

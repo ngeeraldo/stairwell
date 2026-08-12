@@ -7,6 +7,16 @@
 // startup, which meets systemd's Restart=on-failure and becomes a crash loop
 // — against a deploy path with no rollback (ledger I3). Crash-looping in front
 // of a friend over a config typo is the wrong failure.
+//
+// Two separately-guarded regions, not one try wrapping everything. Parsing
+// and diffing already compute the answer (`missing`) before the metric write
+// ever runs. If that write throws — a transient lock, a disk error — the
+// answer that was already correct must not be thrown away with it: the
+// caller (instrumentation.ts) still needs `missing` to log its console.warn
+// lines even when the database is what's having trouble. So: one try around
+// parsing/diffing (nothing to report if the list itself can't be read), and
+// a second, independent try around the metric write alone (its failure
+// costs only the metric, never the returned list).
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric } from '@/lib/db/appendOnly'
 import { missingFrom, parseRequiredEnv, type RequiredVar } from './required'
@@ -25,6 +35,8 @@ export type ReportDeps = {
 }
 
 export function reportMissingEnv(deps: ReportDeps): RequiredVar[] {
+  let missing: RequiredVar[]
+
   try {
     const vars = parseRequiredEnv(deps.listText)
     const present = new Set(
@@ -32,9 +44,17 @@ export function reportMissingEnv(deps: ReportDeps): RequiredVar[] {
         .filter(([, value]) => value !== undefined && value !== '')
         .map(([name]) => name),
     )
-    const missing = missingFrom(vars, present)
-    if (missing.length === 0) return []
+    missing = missingFrom(vars, present)
+  } catch {
+    // A malformed or unreadable list tells us nothing about the environment,
+    // so there is nothing to report. Still never throws: the deploy-time
+    // gate is what catches a broken list.
+    return []
+  }
 
+  if (missing.length === 0) return []
+
+  try {
     appendMetric(deps.db(), {
       accountId: null,
       event: 'env_missing',
@@ -46,10 +66,11 @@ export function reportMissingEnv(deps: ReportDeps): RequiredVar[] {
         degraded: missing.filter((v) => v.severity === 'DEGRADED').length,
       },
     })
-    return missing
   } catch {
-    // Deliberately swallowed. See the file comment: this function reporting a
-    // problem must never become a bigger problem than the one it reports.
-    return []
+    // The metric write failing must not cost the caller the answer. It
+    // still gets `missing` below and can warn, which is the more important
+    // of the two signals when the database is the thing having trouble.
   }
+
+  return missing
 }
