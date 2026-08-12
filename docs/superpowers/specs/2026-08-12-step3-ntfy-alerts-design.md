@@ -102,6 +102,39 @@ it.
 alert therefore reduces to **"a `conversation_id` was minted"** — one primitive,
 no second rule that can drift from the first.
 
+**The minting rule, restated here rather than referenced.** From the step-2
+design spec §2.3, `conversationIdFor(db, accountId, now)`:
+
+- No prior transcript row for the account → fresh random hex.
+- `now - last.at > 30 minutes` → fresh random hex.
+- Otherwise → reuse the last row's `conversation_id`.
+
+Written out because step 3 now depends on the *exact* shape of a rule it does
+not own, and three details in it are load-bearing for alerting:
+
+1. **`last.at` is the last transcript row of EITHER role.** Silence is
+   therefore measured from the end of the last exchange — the assistant's
+   reply — not from the user's last message. Architecture §7 says "first
+   message after 30+ min silence", which this approximates rather than
+   implements literally. The two diverge only when a reply lands far from the
+   message that prompted it, which at pilot latencies is seconds.
+
+2. **The comparison is strictly `>`.** Exactly 30:00.000 of silence reuses the
+   existing conversation and does not alert. Pinned by a test, because an
+   off-by-one here re-cuts every conversation in the retention analysis and
+   the rows are not rewritable afterwards.
+
+3. **The "debounce" in §7 is the reuse branch, not a timer.** There is no
+   separate debounce mechanism anywhere in this step. Every message inside a
+   live conversation returns `started: false`, so exactly one alert fires per
+   `conversation_id`, per account — a friend can send twenty messages in a
+   burst and the phone buzzes once. That is the whole of it.
+
+One consequence worth stating because it looks like a bug and is not: a turn
+that errors, aborts, or comes back empty still writes the **user** row, so the
+silence clock restarts from that row. A friend who hits an outage, waits ten
+minutes, and retries is inside the same conversation and does not re-alert.
+
 What is missing is only that the minting is not *reported*.
 `conversationIdFor` returns a string whether it minted or reused, so nothing
 downstream can tell the two apart.

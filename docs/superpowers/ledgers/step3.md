@@ -69,12 +69,19 @@ work also paid out as designed: declaring `NTFY_TOPIC` needed **no code change
 at all**, because `deploy/check-env.sh` and `lib/env/report.ts` both read the
 list.
 
-One deviation from the plan, taken under the standing "adopt the stronger test"
-policy: the plan's metric-write test asserted only that the alerter resolved.
-That assertion passes with every inner guard deleted, because the outer
-backstop catches everything — it could not have failed for the reason its own
-comment gave. It now also asserts the send still happened, which is the claim
-that actually distinguishes "the metric failed" from "the alert failed".
+Two deviations from the plan, **both accepted by Nico on 2026-08-12**:
+
+- **The metric-write test was strengthened**, under the standing "adopt the
+  stronger test" policy. The plan's version asserted only that the alerter
+  resolved — which passes with every inner guard deleted, because the outer
+  backstop catches everything. It could not have failed for the reason its own
+  comment gave. It now also asserts the send still happened, which is the claim
+  that distinguishes "the metric failed" from "the alert failed". Ruled: this
+  is what the policy exists for.
+
+- **An alert-on-empty-reply test was added**, beyond the plan's error case.
+  Ruled a correct derivation of the at-mint decision rather than a new one: the
+  alert asserts presence, and a refusal is still a friend who showed up.
 
 **NOT DEPLOYED.** See "Go-live" below — the remaining steps are Nico's.
 
@@ -84,16 +91,29 @@ that actually distinguishes "the metric failed" from "the alert failed".
    validity. ntfy.sh accepts a publish to a topic with no subscribers and
    returns 200, so the alerter records `alert_sent`. Deploy green, metric
    green, phone silent — the exact shape this step was built to prevent,
-   surviving one level up. Only a real test push catches it, which is why
-   go-live step 4 below is a step and not an assumption.
+   surviving one level up.
+
+   **MITIGATION RULED (2026-08-12): the step-3 checkpoint, run twice.** Once
+   now, locally, against the dev topic; once at go-live against the production
+   topic. Both are Nico's, both are below. The second is a **blocking** item:
+   `check-env.sh` proves presence, only a subscribed phone proves the topic,
+   and **a deploy is not complete until a phone physically buzzes** — the same
+   rule `deploy/smoke.sh` already applies to serving ("started" is not
+   "serving"), applied to alerting.
 
 2. **A CONCURRENT FIRST MESSAGE CAN DOUBLE-BUZZ.** `started` is derived from
    `lastTranscriptRow`, with no lock between the read and the insert. Two
    requests racing on one account can both see no prior row, both mint, and
-   both alert. Pre-existing in step 2's `conversation_id` minting; step 3 gives
-   it a visible symptom for the first time. Harmless (two notifications), and
-   the fix — a transaction around read-and-insert — costs more than the
-   symptom.
+   both alert. Pre-existing in step 2's `conversation_id` minting — the step-2
+   design spec §8 "Known-unhandled" documents the same race for *grouping*,
+   with the same "revisit only if observed" disposition. Step 3 gives it a
+   visible symptom for the first time.
+
+   **DEFERRED, ruled 2026-08-12.** At N=3 friends a duplicate notification is
+   cosmetic, and the fix — a transaction around read-and-insert — costs more
+   than the symptom. Revisit only if observed in practice. The evidence would
+   be two `alert_sent` rows for one account with near-identical `at` values,
+   or two conversations in the admin pane that should have been one.
 
 3. **AN IN-FLIGHT ALERT IS LOST SILENTLY ON RESTART.** The send is
    fire-and-forget and nothing tracks it at shutdown, so a deploy landing
@@ -116,19 +136,48 @@ that actually distinguishes "the metric failed" from "the alert failed".
    pinning them. Residual 7 in `required-env.md`, widened by one as predicted
    in the design spec. Accepted, not closed.
 
-## Go-live — Nico's, in this order
+## The step-3 checkpoint — Nico's, run twice
 
-Values live only in `.env`, which the guard hook denies reading, so none of
-this can be done from here.
+Values live only in `.env` files, which the guard hook denies reading, so none
+of this can be done from here.
 
-1. Pick a topic name and add `NTFY_TOPIC=<topic>` to the droplet's `.env`.
-   Unguessable: the topic is a shared secret with no auth around it.
-2. Install the ntfy app and subscribe to that topic.
-3. Run `deploy/deploy.sh`. Attempted before step 1, it aborts before `npm ci` —
-   that is the gate working, not a failure.
-4. Send a real message from a `user` account (**not** `nico` — admin accounts
-   are suppressed by design) and confirm the phone buzzes. This is the only
-   check that catches residual 1.
-5. Locally, add `NTFY_TOPIC` to `.env.local` with a *different* topic you do
-   not subscribe to. Until then, every local conversation start writes an
+The checkpoint is the same four moves both times, and it is the only thing that
+catches residual 1. Presence checks cannot: a typo'd topic is present.
+
+> **The checkpoint.** Subscribe the phone to the topic → send a message as a
+> **non-admin** account → the phone physically buzzes → an `alert_sent` row
+> exists for that account in `metrics`.
+>
+> `nico` is an admin account and is suppressed by design. Testing as yourself
+> looks *identical* to a broken alerter: no push, no row, everything green.
+
+### Checkpoint 1 — local, against the dev topic (do now)
+
+1. Pick an unguessable dev topic and add `NTFY_TOPIC=<dev-topic>` to
+   `.env.local`. Until this exists, every local conversation start writes an
    `alert_failed`/`no_topic` row and `npm run dev` warns at startup.
+2. Subscribe the phone to the **dev** topic.
+3. Log in as `devone` or `devtwo` and send a message. If the last local message
+   was under 30 minutes ago, this is a continuation and will *not* alert —
+   wait, or use the other dev account.
+4. Confirm the buzz, then confirm the row:
+   `sqlite3 platform/dev/synthetic.db "SELECT * FROM metrics WHERE event LIKE 'alert%' ORDER BY id DESC LIMIT 5;"`
+
+Unsubscribe from the dev topic afterwards if you would rather not be buzzed by
+local testing — the send still happens either way, which is the point of D4.
+
+### Checkpoint 2 — production, against the prod topic (BLOCKING)
+
+1. Pick a **different**, unguessable production topic and add
+   `NTFY_TOPIC=<prod-topic>` to the droplet's `.env`. The topic is a shared
+   secret with no auth around it: anyone who knows it can subscribe *and*
+   publish.
+2. Push `main`, then run `deploy/deploy.sh`. Attempted before step 1 it aborts
+   before `npm ci` — that is the gate working, not a failure.
+3. Subscribe the phone to the **production** topic.
+4. Run the checkpoint against `app.stairwell.run` with a real `user` account.
+
+**Until that phone buzzes, the deploy is not complete.** A green
+`deploy/smoke.sh` proves the site serves; it says nothing about whether a
+notification will ever arrive. Treat a silent phone here exactly like a failed
+smoke check: the deploy did not succeed, whatever every other layer reports.
