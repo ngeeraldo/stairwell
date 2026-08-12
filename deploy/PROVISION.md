@@ -130,3 +130,58 @@ install failure.
    is absent from this file — the running version is left untouched. A
    missing `DEGRADED` name only warns; the feature it powers carries the
    failure from there.
+
+   **Runbook — changing the droplet's `.env`.** Adding a variable and
+   rotating one are **different commands**, and each is
+   a silent no-op in the other's situation: appending over an existing key
+   leaves a duplicate, and `sed`-rotating a key that is absent exits 0 having
+   changed nothing. Neither complains. `grep -c` printing exactly `1` is what
+   catches both, and it costs a second against a failed deploy.
+
+   ```bash
+   ssh deploy@app.stairwell.run
+   cd /home/deploy/stairwell
+
+   # 1. ALWAYS FIRST — which situation are you in?
+   grep -n 'NAME' .env || echo "not present — append it"
+
+   # 2a. NOT PRESENT: append. Do not use sed here; it would match nothing.
+   printf 'NAME=%s\n' 'value' >> .env
+
+   # 2b. ALREADY PRESENT: rotate in place. Do not append here; it would
+   #     leave a stale line that last-wins resolves invisibly.
+   sed -i "s|^NAME=.*|NAME=newvalue|" .env
+
+   # 3. Confirm. Exactly 1. A 0 means the write missed; a 2 means a duplicate.
+   grep -c '^NAME=' .env
+
+   # 4. Deploy. A restart alone suffices for a value change, but new code
+   #    needs the full run.
+   ./deploy/deploy.sh
+   ```
+
+   **For a secret** (an ntfy topic, an API key), generate it without ever
+   printing it, and read it back only at the moment you need to type it
+   somewhere:
+
+   ```bash
+   printf 'NTFY_TOPIC=stairwell-%s\n' "$(openssl rand -hex 12)" >> .env
+   grep -c '^NTFY_TOPIC=' .env      # safe to share: prints 1
+   grep '^NTFY_TOPIC=' .env         # the value — do not paste this anywhere
+   ```
+
+   Generated, not chosen. A memorable topic — the project name plus an
+   obvious suffix — is guessable by anyone who knows the project exists, and
+   an ntfy topic has no auth: knowing it grants both subscribe and publish. See
+   `docs/superpowers/ledgers/step3.md` for why that matters more than it
+   looks — the alert body carries a user's slug.
+
+   Two failure modes seen in practice, both recorded in
+   `docs/superpowers/ledgers/required-env.md`:
+
+   - **A variable set in the wrong `.env`.** The local repo has one too. The
+     gate reads the droplet's, so this presents as `MISSING (REQUIRED)` for a
+     name you are certain you just set.
+   - **A failed deploy leaves the checkout ahead of the running service**,
+     because `check-env.sh` runs after `git pull` by design. Re-run
+     `deploy.sh` once `.env` is fixed; do not `git reset`.
