@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /** Every file under app/ that renders mockup_html into the DOM. */
-const SITES = ['app/[user]/ChatPanel.tsx']
+const SITES = ['app/[user]/ChatPanel.tsx', 'app/admin/[user]/page.tsx']
 
 /**
  * Files that mention mockup_html without rendering it — they read it, pass it
