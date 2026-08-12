@@ -27,7 +27,8 @@ const SEVERITIES: readonly string[] = ['REQUIRED', 'DEGRADED']
 export function parseRequiredEnv(text: string): RequiredVar[] {
   const out: RequiredVar[] = []
 
-  for (const raw of text.split('\n')) {
+  for (const [i, raw] of text.split('\n').entries()) {
+    const lineNumber = i + 1
     const line = raw.trim()
     if (line === '' || line.startsWith('#')) continue
 
@@ -39,17 +40,27 @@ export function parseRequiredEnv(text: string): RequiredVar[] {
     const name = parts[0]
     const severity = parts[1]
 
+    // Never interpolate unvalidated line content into a thrown message —
+    // NAME SEVERITY has no slot for a value, but a line that violates the
+    // format could still carry one (`FOO=secret REQUIRED`), and a caller
+    // that logs a caught parse error must not be able to print it. Report
+    // the line number instead, so a human can open the file and look.
     if (parts.length !== 2 || name === undefined || severity === undefined) {
       throw new Error(
-        `deploy/required-env: expected "NAME SEVERITY", got: ${raw.trim()}`,
+        `deploy/required-env: line ${lineNumber}: expected "NAME SEVERITY"`,
       )
     }
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      throw new Error(`deploy/required-env: not a variable name: ${name}`)
+      throw new Error(
+        `deploy/required-env: line ${lineNumber}: first field is not a valid variable name`,
+      )
     }
     if (!SEVERITIES.includes(severity)) {
+      // The name has already passed the identifier check above, so it is
+      // safe to print. The severity token has not been validated — do not
+      // print it.
       throw new Error(
-        `deploy/required-env: unknown severity "${severity}" for ${name} ` +
+        `deploy/required-env: line ${lineNumber}: unknown severity for ${name} ` +
           `(expected REQUIRED or DEGRADED)`,
       )
     }

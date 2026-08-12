@@ -38,6 +38,54 @@ describe('parseRequiredEnv', () => {
     // something carrying the secret.
     expect(() => parseRequiredEnv('FOO=supersecret REQUIRED')).toThrow()
   })
+
+  it('rejects a name with a hyphen', () => {
+    expect(() => parseRequiredEnv('FOO-BAR REQUIRED')).toThrow()
+  })
+
+  it('rejects a name starting with a digit', () => {
+    expect(() => parseRequiredEnv('1FOO REQUIRED')).toThrow()
+  })
+
+  it('does not leak the line content when the field count is wrong', () => {
+    // A well-meaning edit could add an extra field carrying a value
+    // (`FOO REQUIRED SUPERSECRET-VALUE`). The thrown message must not
+    // reproduce it — only the line number and expected format.
+    let message = ''
+    try {
+      parseRequiredEnv('FOO REQUIRED SUPERSECRET-VALUE')
+    } catch (err) {
+      message = String(err)
+    }
+    expect(message).toMatch(/NAME SEVERITY/)
+    expect(message).not.toContain('SUPERSECRET-VALUE')
+  })
+
+  it('does not leak the name field when it fails the identifier check', () => {
+    // `FOO=secret` fails the identifier regex; the thrown message must not
+    // print the field, since it may be exactly the smuggled value.
+    let message = ''
+    try {
+      parseRequiredEnv('FOO=SUPERSECRET-VALUE REQUIRED')
+    } catch (err) {
+      message = String(err)
+    }
+    expect(message).not.toContain('SUPERSECRET-VALUE')
+  })
+
+  it('does not leak the severity token when it is unknown', () => {
+    // The name has already been validated by this point, so it is safe to
+    // print — but the severity token has not been, and could itself be a
+    // smuggled value.
+    let message = ''
+    try {
+      parseRequiredEnv('FOO SUPERSECRET-VALUE')
+    } catch (err) {
+      message = String(err)
+    }
+    expect(message).toMatch(/severity/i)
+    expect(message).not.toContain('SUPERSECRET-VALUE')
+  })
 })
 
 describe('missingFrom', () => {
@@ -53,6 +101,10 @@ describe('missingFrom', () => {
 
   it('returns everything when the set is empty', () => {
     expect(missingFrom(vars, new Set()).map((v) => v.name)).toEqual(['A', 'B'])
+  })
+
+  it('returns nothing when there are no vars to check', () => {
+    expect(missingFrom([], new Set(['A']))).toEqual([])
   })
 })
 
