@@ -14,6 +14,29 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+/**
+ * Plaid products/synonyms this project does not enable (architecture-overview.md
+ * section 3). Named once so the "does it flag a rewrite" test below cannot drift
+ * from the list the real assertion uses.
+ *
+ * The 401(k) pattern: `[-(]` is a character class matching either a literal
+ * hyphen or a literal `(` — neither needs escaping inside `[...]`. `\b` sits
+ * right after `k`, before the optional trailing `\)?`, because a `\b` placed
+ * after an already-consumed `)` fails: `)` is a non-word char, so if the
+ * following character is also non-word (space, end of string), there is no
+ * word/non-word transition for `\b` to match. Checking the boundary at `k`
+ * itself, then optionally swallowing a trailing `)`, sidesteps that.
+ */
+const FORBIDDEN_TERMS = [
+  /\binvestments?\b/i,
+  /\bliabilit(y|ies)\b/i,
+  /\bbrokerages?\b/i,
+  /\bportfolios?\b/i,
+  /\b401\s?[-(]?\s?k\b\)?/i,
+  /\bmortgages?\b/i,
+  /\bloans?\b/i,
+]
+
 describe('loadPrompt', () => {
   it('returns the file text and a 12-hex-char sha', () => {
     const p = join(dir, 'p.md')
@@ -58,16 +81,19 @@ describe('loadPrompt', () => {
     // "brokerage" or "mortgage" instead of "investments" or "liabilities"
     // makes exactly the same promise while passing a two-word check.
     const { text } = loadPrompt(PROMPT_PATH)
-    for (const forbidden of [
-      /\binvestments?\b/i,
-      /\bliabilit(y|ies)\b/i,
-      /\bbrokerages?\b/i,
-      /\bportfolios?\b/i,
-      /\b401\s?-?\s?k\b/i,
-      /\bmortgages?\b/i,
-      /\bloans?\b/i,
-    ]) {
+    for (const forbidden of FORBIDDEN_TERMS) {
       expect(text).not.toMatch(forbidden)
     }
+  })
+
+  it('flags 401(k) — the parenthesised form a rewrite is most likely to use', () => {
+    // Ledger item 11: the old pattern (/\b401\s?-?\s?k\b/i) matched "401k",
+    // "401-k", and "401 k" but not "401(k)", which is how the term is almost
+    // always written. Proving the widened pattern matches directly, rather
+    // than trusting that the real prompt still passes (it contains none of
+    // these terms today, so it would pass either way and prove nothing).
+    const sample = 'We can help you track your 401(k) balance.'
+    const matched = FORBIDDEN_TERMS.some((pattern) => pattern.test(sample))
+    expect(matched).toBe(true)
   })
 })
