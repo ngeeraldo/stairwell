@@ -112,6 +112,18 @@ describe('deploy/deploy.sh env gate', () => {
     expect(after).toMatch(/exit 1/)
   })
 
+  it('distinguishes a missing variable from a broken list when it aborts', () => {
+    // check-env.sh exits 1 for "a variable is missing from .env" and 2 for
+    // "deploy/required-env is itself unreadable or malformed". Both abort —
+    // fail-closed is right — but collapsing them reports a broken checklist
+    // as "configuration missing" and sends the reader to the wrong file.
+    const check = commands.indexOf('check-env.sh')
+    const after = commands.slice(check, check + 600)
+    expect(after).toMatch(/env_status=\$\?/)
+    expect(after).toMatch(/-eq 2/)
+    expect(after).toMatch(/unreadable or malformed/)
+  })
+
   it('checks the same file the systemd unit loads', () => {
     // The unit's EnvironmentFile and the path deploy.sh checks must be the
     // same file, or the gate validates something the service never reads.

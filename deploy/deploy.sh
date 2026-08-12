@@ -78,9 +78,18 @@ main() {
   #     `.env` here is the same file the systemd unit loads as its
   #     EnvironmentFile — main() cds to the repo root, which is the unit's
   #     WorkingDirectory. tests/deploy/service.test.ts pins that coupling.
-  if ! ./deploy/check-env.sh deploy/required-env .env; then
+  #
+  #     Exit 1 and exit 2 both abort, but they are different problems and the
+  #     message has to say which: 1 means a variable is missing from .env, 2
+  #     means deploy/required-env itself is unreadable or malformed. Reporting
+  #     a broken checklist as "configuration missing" sends whoever is reading
+  #     the deploy log to the wrong file.
+  local env_status=0 env_reason="required configuration missing"
+  ./deploy/check-env.sh deploy/required-env .env || env_status=$?
+  if [ "$env_status" -ne 0 ]; then
+    if [ "$env_status" -eq 2 ]; then env_reason="deploy/required-env is unreadable or malformed"; fi
     echo >&2
-    echo "DEPLOY ABORTED — required configuration missing." >&2
+    echo "DEPLOY ABORTED — $env_reason." >&2
     echo "The running version is untouched." >&2
     echo >&2
     exit 1
