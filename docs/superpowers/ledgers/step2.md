@@ -216,3 +216,51 @@ everything after; and the minimum cacheable prefix on claude-opus-5 is 512
 tokens, which the system prompt already clears on its own. Verify with
 `usage.cache_read_input_tokens` — if it does not rise with conversation
 length after the change, the breakpoint is in the wrong place.
+
+---
+
+## Step 2 checkpoint: SIGNED OFF COMPLETE (2026-08-11, Nico)
+
+architecture-overview.md line 146 — "Dev user chats with the bot; transcript
+appears in admin" — both halves verified live on app.stairwell.run at
+commit 705901a:
+  - dev user chatted, reply streamed, two turns persisted
+  - transcript renders in the admin pane, grouped under conversation
+    2ef318b3, prompt_sha on every turn
+Plus, confirmed live rather than only in tests: prompt caching
+(cache_creation 731 -> cache_read 731), the C1 empty-reply fix (a second
+turn succeeded, so no poisoning row), I5 (two chat_error rows with
+kind: no_api_key recorded a total outage that would previously have written
+nothing), and the two-tier lock across a real service restart.
+
+### Waiver: prompt pass no longer gates sign-off
+
+Nico's earlier condition was that his substantive agent-v1.md pass land
+before checkpoint sign-off. WAIVED by him on 2026-08-11. The pass moves to
+a holistic prompt strategy session, to happen before test user #1 at the
+latest. The structural draft stays live in the meantime.
+
+This is safe because item 14 already marks every draft-era transcript
+(prompt_sha e274e1d89eae) as plumbing evidence and explicitly not evidence
+about interview quality. The waiver changes when the prompt is written, not
+whether the record can tell the two eras apart — which is what the per-row
+content hash was for.
+
+### Deliberately deferred: plumbing checks 3 and 5
+
+Check 3, ABORT. Close the tab mid-stream and confirm a stream_aborted row
+appears. Deferred, and folded into the verification turn of whichever
+deploy comes next: tab-close mid-stream, then a fresh turn. The open
+question is whether Next propagates client disconnect to request.signal at
+all. If it does not, stream_aborted never fires in production and the event
+is dead code — worth knowing, but it changes nothing today, and an event
+that never fires cannot write a wrong row.
+
+Check 5, THE 30-MINUTE BOUNDARY. Send, wait 31 real minutes, send again,
+confirm two conversations. Deferred on cost/benefit: the rule is unit-tested
+including the exactly-at-the-gap case that an off-by-one would break, and
+production has already confirmed the same-conversation half (four rows, one
+conversation_id). Only the new-conversation half is untested live, and it
+costs 31 minutes of wall clock to test. Step 3 will exercise it incidentally
+and continuously, because its alert fires precisely when a new
+conversation_id is minted.
