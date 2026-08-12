@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PROMPT_PATH, loadPrompt } from '@/lib/chat/prompt'
+import {
+  AGENT_PROMPT,
+  SPEC_PROMPT,
+  loadPrompt,
+  promptPath,
+} from '@/lib/chat/prompt'
 
 let dir: string
 
@@ -64,26 +69,45 @@ describe('loadPrompt', () => {
     expect(loadPrompt(p).sha).not.toBe(before)
   })
 
-  it('loads the real shipped prompt and it is not empty', () => {
-    const { text, sha } = loadPrompt(PROMPT_PATH)
-    expect(text.trim().length).toBeGreaterThan(0)
-    expect(sha).toMatch(/^[0-9a-f]{12}$/)
+  it('loads a shipped prompt by bare name and it is not empty', () => {
+    for (const name of [AGENT_PROMPT, SPEC_PROMPT, 'agent-v2.md']) {
+      const { text, sha } = loadPrompt(name)
+      expect(text.trim().length, name).toBeGreaterThan(0)
+      expect(sha, name).toMatch(/^[0-9a-f]{12}$/)
+    }
   })
 
-  it('does not promise Plaid products that are not enabled', () => {
+  it('defaults to the agent prompt when given no name', () => {
+    expect(loadPrompt().sha).toBe(loadPrompt(AGENT_PROMPT).sha)
+  })
+
+  it('gives every shipped prompt a distinct sha', () => {
+    // The whole point of a per-file content hash: two prompts that share a
+    // sha would be indistinguishable in the transcript and metrics rows.
+    const shas = [AGENT_PROMPT, 'agent-v2.md', SPEC_PROMPT].map(
+      (n) => loadPrompt(n).sha,
+    )
+    expect(new Set(shas).size).toBe(3)
+  })
+
+  it('does not promise Plaid products that are not enabled, in ANY prompt', () => {
     // architecture-overview.md section 3: Investments and Liabilities are NOT
-    // enabled, and line 98 requires checking before promising a panel. A
-    // prompt that mentions them will make promises the product cannot keep,
-    // to a real friend, in the first conversation.
-    //
-    // The synonyms matter as much as the product names. This test exists to
-    // survive a substantive rewrite of agent-v1.md, and a rewrite that says
-    // "brokerage" or "mortgage" instead of "investments" or "liabilities"
-    // makes exactly the same promise while passing a two-word check.
-    const { text } = loadPrompt(PROMPT_PATH)
-    for (const forbidden of FORBIDDEN_TERMS) {
-      expect(text).not.toMatch(forbidden)
+    // enabled, and line 98 requires checking before promising a panel. This
+    // now covers spec-v1.md too, which is the call that actually writes the
+    // panels — a panel naming an un-enabled product is a promise to a friend
+    // that step 6 cannot keep.
+    for (const name of [AGENT_PROMPT, 'agent-v2.md', SPEC_PROMPT]) {
+      const { text } = loadPrompt(name)
+      for (const forbidden of FORBIDDEN_TERMS) {
+        expect(text, `${name} matched ${forbidden}`).not.toMatch(forbidden)
+      }
     }
+  })
+
+  it('resolves a bare name under platform/prompts', () => {
+    expect(promptPath('agent-v1.md')).toMatch(
+      /platform[/\\]prompts[/\\]agent-v1\.md$/,
+    )
   })
 
   it('flags 401(k) — the parenthesised form a rewrite is most likely to use', () => {
