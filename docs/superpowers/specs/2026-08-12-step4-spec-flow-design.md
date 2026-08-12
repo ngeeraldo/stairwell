@@ -24,7 +24,7 @@ devtwo`. See §11 for why the checkpoint is not run as `nico`.
 |---|---|
 | Where the confirmed spec lives | Platform DB is the record; the repo files are an export (§2, §9) |
 | How the spec is emitted | Tool use, not sentinels in prose (§4) |
-| Threading | Zero-payload hand-raise in the chat call, then a dedicated forced-tool authoring call (§4) |
+| Threading | Zero-payload hand-raise in the chat call, then a dedicated structured-output authoring call (§4) |
 | What confirms | A button on the proposal card, never the agent's reading of a reply (§5) |
 | Mockup containment | `<iframe srcdoc sandbox="">` — no scripts, no same-origin, everywhere it renders (§6) |
 | Spec fields | Six, frozen: `title`, `summary`, `background`, `panels`, `manual_logging`, `open_questions` (§3) |
@@ -169,14 +169,21 @@ called* — it never has to accumulate a large JSON body out of
 `input_json_delta` events alongside the text it is already streaming to a
 friend's screen.
 
-**`write_spec`** is the real schema (§3), used on a separate non-streaming call
-with `tool_choice: {type: 'tool', name: 'write_spec'}`. Forcing the tool is
-what makes a well-formed proposal guaranteed rather than hoped for, and it is
-the single largest reliability difference between this design and emitting the
-payload inline.
+**The authoring call uses structured outputs, not a second tool.**
+`output_config.format` with a `json_schema` (§3) constrains the response
+itself, so the model cannot return anything but a schema-valid object. That is
+the same guarantee a forced `tool_choice` would buy, with no `tool_use` block
+to extract and no tool/thinking interaction to reason about — and it is the
+single largest reliability difference between this design and emitting the
+payload inline through the chat stream.
 
-Two names, not one, so a log line or a stack trace always says which half of
-the flow it came from.
+`propose_spec` stays a tool because it is genuine tool use: the agent choosing
+to act. The authoring call is not choosing anything; it is being told to emit
+one shape.
+
+Checked against the current API rather than assumed: structured outputs are
+supported on `claude-opus-5` and work with extended thinking, and
+`output_config` carries `effort` and `format` together.
 
 The authoring call gets its own system prompt file, `platform/prompts/spec-v1.md`,
 and therefore its own `prompt_sha` — so the output contract and the mockup
@@ -201,12 +208,24 @@ are not comparable.
 message's `tool_use` blocks.
 
 A new `propose()` method issues the authoring call: non-streaming
-`messages.create`, forced `tool_choice`, `MAX_TOKENS` unchanged. It returns the
-validated tool input, `mockup_html`, and the same `usage` / `served` /
-`stop_reason` shape `stream()` already returns, so the metrics rows stay
-comparable across both calls. Errors are wrapped in `ChatStreamError` by the
-same `describeError` path, so `kind` / `status` / `type` mean the same thing for
-an authoring failure as for a chat failure.
+`messages.create` with `output_config: {effort, format}`. It returns the raw
+parsed object, and the same `usage` / `served` / `stop_reason` shape `stream()`
+already returns, so the metrics rows stay comparable across both calls. Errors
+are wrapped in `ChatStreamError` by the same `describeError` path, so `kind` /
+`status` / `type` mean the same thing for an authoring failure as for a chat
+failure.
+
+**It does not reuse `MAX_TOKENS`, and it sets an explicit timeout.** `stream()`
+runs at 64000 because streaming makes a high ceiling free. A non-streaming call
+at that ceiling is the opposite: the SDK scales its own timeout *up* for large
+non-streaming `max_tokens`, so a wedged authoring call could hold a friend on
+"putting together a preview…" for the better part of an hour with no way out.
+
+`SPEC_MAX_TOKENS = 32000` and a 180-second per-request timeout. The ceiling is
+still far above a spec plus a mockup plus adaptive thinking; the timeout is
+what bounds the wait. A timeout surfaces through the existing error path as a
+`spec_error` with `kind: 'connection_timeout'`, which is a visible failure
+rather than a hang.
 
 `turn.ts` still does not import the SDK. `propose()` crosses that boundary as
 plain data, exactly as `stream()` does.
@@ -584,7 +603,7 @@ is, and the suite supplies a fake.
 
 | File | Pins |
 |---|---|
-| `tests/spec/schema.test.ts` | The `write_spec` schema accepts a good payload and rejects each malformed shape |
+| `tests/spec/schema.test.ts` | The spec schema accepts a good payload and rejects each malformed shape; the JSON Schema sent to the API stays in sync with the validator |
 | `tests/spec/render.test.ts` | Payload → markdown is deterministic and covers all six fields |
 | `tests/spec/author.test.ts` | Success inserts one row; failure inserts none and records `spec_error`; abort records `spec_aborted`; the synthetic trailing message never reaches `transcripts` |
 | `tests/spec/confirm.test.ts` | 401 anonymous; 404 cross-account; 409 superseded; double-confirm appends once; the alert fires; works while locked |
