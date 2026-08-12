@@ -65,3 +65,55 @@ describe('deploy/stairwell.service', () => {
     expect(unit).toMatch(/^\s*WorkingDirectory=\/home\/deploy\/stairwell\s*$/m)
   })
 })
+
+describe('deploy/deploy.sh env gate', () => {
+  const script = readFileSync('deploy/deploy.sh', 'utf8')
+
+  it('calls check-env.sh', () => {
+    expect(script).toMatch(/check-env\.sh/)
+  })
+
+  it('calls it AFTER the pull and BEFORE npm ci', () => {
+    // Ordering is the whole design. After the pull, so a deploy that
+    // introduces a new requirement enforces it on itself — the same
+    // reasoning as the re-exec block. Before npm ci, so a missing variable
+    // costs seconds rather than a full build and test cycle.
+    const pull = script.indexOf('git pull --ff-only')
+    const check = script.indexOf('check-env.sh')
+    const install = script.indexOf('npm ci')
+    expect(pull).toBeGreaterThan(-1)
+    expect(check).toBeGreaterThan(-1)
+    expect(install).toBeGreaterThan(-1)
+    expect(check).toBeGreaterThan(pull)
+    expect(check).toBeLessThan(install)
+  })
+
+  it('aborts the deploy when the check fails', () => {
+    const check = script.indexOf('check-env.sh')
+    const after = script.slice(check, check + 400)
+    expect(after).toMatch(/exit 1/)
+  })
+
+  it('checks the same file the systemd unit loads', () => {
+    // The unit's EnvironmentFile and the path deploy.sh checks must be the
+    // same file, or the gate validates something the service never reads.
+    // deploy.sh cds to the repo root, which IS the unit's WorkingDirectory.
+    const envFileLine = unit
+      .split('\n')
+      .find((l) => l.trimStart().startsWith('EnvironmentFile='))
+    expect(envFileLine).toBeDefined()
+    const unitPath = envFileLine!.split('=').slice(1).join('=').trim()
+    expect(unitPath.endsWith('/.env')).toBe(true)
+
+    const workingDir = unit
+      .split('\n')
+      .find((l) => l.trimStart().startsWith('WorkingDirectory='))
+    expect(workingDir).toBeDefined()
+    const wd = workingDir!.split('=').slice(1).join('=').trim()
+    expect(unitPath).toBe(`${wd}/.env`)
+
+    // And deploy.sh must pass a path that resolves to that same file from
+    // the repo root it cds into.
+    expect(script).toMatch(/check-env\.sh\s+deploy\/required-env\s+\.env/)
+  })
+})

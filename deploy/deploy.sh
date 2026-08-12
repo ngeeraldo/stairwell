@@ -64,6 +64,28 @@ main() {
     fi
   fi
 
+  # 2b. Required configuration must be present before anything expensive
+  #     happens, and before the restart that would make a gap live.
+  #
+  #     Placed AFTER the pull so a deploy that introduces a new requirement
+  #     enforces it on itself — the same reasoning as the re-exec above —
+  #     and BEFORE the install below so a missing variable costs seconds
+  #     rather than a full install, build and test cycle.
+  #
+  #     Names only. This check never prints a value, and must not be changed
+  #     to: this output goes straight into a deploy log.
+  #
+  #     `.env` here is the same file the systemd unit loads as its
+  #     EnvironmentFile — main() cds to the repo root, which is the unit's
+  #     WorkingDirectory. tests/deploy/service.test.ts pins that coupling.
+  if ! ./deploy/check-env.sh deploy/required-env .env; then
+    echo >&2
+    echo "DEPLOY ABORTED — required configuration missing." >&2
+    echo "The running version is untouched." >&2
+    echo >&2
+    exit 1
+  fi
+
   # 3. Install. Full install, NOT --omit=dev: step 5 needs Vitest.
   npm ci
 
