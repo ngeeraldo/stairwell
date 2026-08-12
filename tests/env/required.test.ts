@@ -134,6 +134,15 @@ describe('the shipped deploy/required-env', () => {
     expect(shipped.find((v) => v.name === 'ANTHROPIC_API_KEY')?.severity).toBe('DEGRADED')
   })
 
+  it('lists NTFY_TOPIC as REQUIRED', () => {
+    // By the letter of the list, one broken feature with everything else fine
+    // reads DEGRADED. That reading is wrong here and the list says why:
+    // DEGRADED is for absences where "its own error path carries it". This
+    // absence has no error path a human meets — no 503, no error page, just a
+    // phone that never buzzes. See the step-3 design spec §3 D3.
+    expect(shipped.find((v) => v.name === 'NTFY_TOPIC')?.severity).toBe('REQUIRED')
+  })
+
   it('gives every entry a purpose', () => {
     for (const v of shipped) {
       expect(v.purpose, `${v.name} has no purpose comment`).not.toBe('')

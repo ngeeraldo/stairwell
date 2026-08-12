@@ -53,11 +53,19 @@ REQUIRED: PLATFORM_DB`, it means `.env.local` doesn't have it set yet — see
 First-time setup below for the one-line fix. That warning means something;
 it is not expected noise on a healthy start.
 
+`NTFY_TOPIC` is the same kind of name. Set it to a topic you do **not**
+subscribe to on your phone — local development sends real pushes to
+`ntfy.sh` on every conversation start, deliberately, so the send path is
+exercised continuously instead of debuting in production. Pick something
+unguessable: an ntfy topic is a shared secret with no auth around it, and
+anyone who knows it can both subscribe and publish.
+
 ## First-time setup
 
 ```bash
 ./setup.sh                      # installs deps, wires the git hooks, runs the harness
 echo 'PLATFORM_DB=platform/dev/synthetic.db' >> .env.local
+echo 'NTFY_TOPIC=stairwell-dev-<something-unguessable>' >> .env.local
 ADMIN_PASSWORD='something-you-will-remember' npx tsx scripts/create-dev-users.ts
 ```
 
