@@ -1,7 +1,7 @@
 // app/[user]/ChatPanel.tsx
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const TOGGLE_KEY = 'stairwell:chat-open'
 
@@ -10,6 +10,28 @@ type Turn = {
   body: string
   /** True when the stream ended without a {done:true} line — nothing saved. */
   interrupted?: boolean
+  /**
+   * The message that produced this turn, carried so its own retry button
+   * re-sends it. See pendingTurns.
+   */
+  source?: string
+}
+
+/**
+ * The two turns a send appends: the user's message, and the empty assistant
+ * turn that streams into it.
+ *
+ * `source` rides on the assistant Turn rather than a component-level ref
+ * because every interrupted turn renders its own retry button. A single ref
+ * holds only the most recent send, so with two interrupted turns on screen the
+ * OLDER button re-sent the NEWER message — writing a permanent transcript row
+ * the user never asked to send, to a table that cannot be corrected.
+ */
+export function pendingTurns(text: string): Turn[] {
+  return [
+    { role: 'user', body: text },
+    { role: 'assistant', body: '', source: text },
+  ]
 }
 
 /**
@@ -33,7 +55,6 @@ export default function ChatPanel({ initial }: { initial: Turn[] }) {
   const [turns, setTurns] = useState<Turn[]>(initial)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
-  const lastSent = useRef('')
 
   useEffect(() => {
     setOpen(window.localStorage.getItem(TOGGLE_KEY) !== 'closed')
@@ -60,9 +81,8 @@ export default function ChatPanel({ initial }: { initial: Turn[] }) {
 
   async function send(text: string) {
     if (!text.trim() || busy) return
-    lastSent.current = text
     setBusy(true)
-    setTurns((t) => [...t, { role: 'user', body: text }, { role: 'assistant', body: '' }])
+    setTurns((t) => [...t, ...pendingTurns(text)])
     setDraft('')
 
     let done = false
@@ -126,7 +146,11 @@ export default function ChatPanel({ initial }: { initial: Turn[] }) {
                     interrupted exchange was already written and cannot be
                     amended, so the transcript honestly shows the message
                     twice. Design spec section 6.1. */}
-                <button type="button" onClick={() => send(lastSent.current)}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => send(turn.source ?? '')}
+                >
                   retry
                 </button>
               </p>
