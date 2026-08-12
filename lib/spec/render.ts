@@ -14,18 +14,23 @@ export function renderSpecMarkdown(
 ): string {
   /**
    * Neutralise line-leading markdown structure to prevent unterminated code
-   * blocks or spurious headings from user-supplied text. Lines beginning with
-   * fence sequences (```) or # are prefixed with a space. Inline punctuation
-   * is left alone: escaping every * and _ would mangle ordinary prose for no
-   * benefit, and the failure mode there is cosmetic rather than structural.
+   * blocks or spurious headings from user-supplied text. Backslash-escape
+   * the leading # or the first backtick of a leading fence. CommonMark honours
+   * backslash escapes for both, and unlike indentation does not turn the line
+   * into a code block — the friend's sentence keeps looking like a sentence.
+   * Preserve the line's original leading whitespace; insert the backslash
+   * before the first non-whitespace character.
    */
   const safeMarkdown = (text: string): string =>
     text
       .split('\n')
       .map((line) => {
-        const trimmed = line.trimStart()
-        if (trimmed.startsWith('#') || trimmed.startsWith('```')) {
-          return ' ' + line
+        const match = line.match(/^(\s*)(.*)$/)
+        if (!match || match[2] === undefined) return line
+        const leadingWhitespace = match[1] ?? ''
+        const rest = match[2]
+        if (rest.startsWith('#') || rest.startsWith('```')) {
+          return leadingWhitespace + '\\' + rest
         }
         return line
       })

@@ -99,9 +99,9 @@ Checks the banking app most days, does not trust it.
 
   it('escapes line-leading markdown structure to prevent unterminated code blocks and spurious headings', () => {
     // A field containing an unterminated ``` fence should not swallow all
-    // following sections into inert code text. A field containing ## or # at
-    // line start should not spoof real headings. Verify that Panels, Manual
-    // logging, and Open questions render as real headings after the background.
+    // following sections into inert code text. A field containing # at
+    // line start should not spoof real headings. Use backslash escaping to
+    // neutralise user-supplied structure while preserving readability.
     const out = renderSpecMarkdown(
       {
         ...PAYLOAD,
@@ -118,9 +118,41 @@ And a line starting with hash:
     expect(out).toContain('## Panels')
     expect(out).toContain('## Manual logging')
     expect(out).toContain('## Open questions')
-    // Verify the dangerous fence is prefixed with a space (escaped).
-    expect(out).toContain(' ```')
-    // Verify the dangerous # is prefixed with a space (escaped).
-    expect(out).toContain(' # This should not be a real heading')
+
+    // Structural assertion: CommonMark rule violation check. After stripping
+    // up to 3 leading spaces, no line should start with # (which would be a
+    // heading) or ``` (which would be a fence), UNLESS it's a heading created
+    // by the renderer. The renderer creates headings with #, ##, ###, and they
+    // appear at known structural positions.
+    const rendererHeadingPatterns = [
+      /^# /, // h1: title
+      /^## Summary$/,
+      /^## Background$/,
+      /^## Panels$/,
+      /^### \d+\./, // h3: panel heading
+      /^## Manual logging$/,
+      /^## Open questions$/,
+    ]
+
+    const lines = out.split('\n')
+    for (const line of lines) {
+      const stripped = line.replace(/^ {0,3}/, '')
+
+      // Check for dangerous # (user-supplied heading)
+      if (stripped.startsWith('#')) {
+        const isRendererHeading = rendererHeadingPatterns.some((pattern) =>
+          pattern.test(stripped),
+        )
+        expect(
+          isRendererHeading,
+          `User content should not create headings: ${stripped}`,
+        ).toBe(true)
+      }
+
+      // Check for dangerous ``` (user-supplied fence)
+      if (stripped.startsWith('```')) {
+        expect.fail(`User content should not create fences: ${stripped}`)
+      }
+    }
   })
 })
