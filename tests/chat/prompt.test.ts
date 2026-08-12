@@ -84,7 +84,12 @@ describe('loadPrompt', () => {
   it('gives every shipped prompt a distinct sha', () => {
     // The whole point of a per-file content hash: two prompts that share a
     // sha would be indistinguishable in the transcript and metrics rows.
-    const shas = [AGENT_PROMPT, 'agent-v2.md', SPEC_PROMPT].map(
+    //
+    // Named literally rather than via AGENT_PROMPT: AGENT_PROMPT now points
+    // at agent-v2.md (this is the commit that flips it), so comparing
+    // AGENT_PROMPT against a separate 'agent-v2.md' literal would compare a
+    // file against itself and assert nothing about agent-v1.md.
+    const shas = ['agent-v1.md', 'agent-v2.md', SPEC_PROMPT].map(
       (n) => loadPrompt(n).sha,
     )
     expect(new Set(shas).size).toBe(3)

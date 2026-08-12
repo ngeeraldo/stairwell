@@ -9,12 +9,14 @@ import {
   CHAT_EFFORT,
   CHAT_MODEL,
   ChatStreamError,
+  PROPOSE_TOOL_NAME,
   UNKNOWN_ERROR,
   type ChatClient,
   type Served,
   type StreamResult,
   type Usage,
 } from './client'
+import type { AuthorInput, Proposal } from '@/lib/spec/author'
 
 export type TurnDeps = {
   db: PlatformDb
@@ -34,6 +36,11 @@ export type TurnDeps = {
    * friend's chat turn.
    */
   alert: (accountId: number) => void
+  /**
+   * Injected so the suite can drive the completion rule without a second
+   * fake client — the same reason `client` is a parameter.
+   */
+  authorSpec: (input: AuthorInput) => Promise<Proposal | undefined>
 }
 
 export type TurnInput = {
@@ -46,6 +53,7 @@ export type TurnInput = {
 
 export type TurnOutcome = {
   kind: 'completed' | 'aborted' | 'error' | 'empty'
+  proposal?: Proposal
 }
 
 /**
@@ -62,7 +70,7 @@ export async function runTurn(
   deps: TurnDeps,
   input: TurnInput,
 ): Promise<TurnOutcome> {
-  const { db, client, now, context, alert } = deps
+  const { db, client, now, context, alert, authorSpec } = deps
   const at = now()
   const { text: system, sha: promptSha } = loadPrompt()
 
@@ -178,15 +186,24 @@ export async function runTurn(
     return { kind: 'error' }
   }
 
-  // A refusal is NOT an exception: it returns HTTP 200 with an empty content
-  // array and stop_reason "refusal", so the stream resolves normally having
-  // delivered nothing. Writing that as an assistant row would put an empty
-  // body in an append-only table, and toMessages would then send
-  // {role:'assistant', content:''} on every later turn — which the Messages
-  // API rejects, breaking the account permanently. A max_tokens stop is the
-  // same hazard from the other direction: truncated output is not a complete
-  // reply and must not be recorded as one.
-  if (delivered.trim() === '' || final.stop_reason !== 'end_turn') {
+  // THE COMPLETION RULE, restated in full because transcripts is append-only
+  // and this cannot be corrected later (design spec section 4.3).
+  //
+  // Step 2's rule — anything other than end_turn is chat_empty_reply — was
+  // correct only in a world with no tools. A propose_spec call stops with
+  // 'tool_use' and lands squarely on it.
+  //
+  // Text and proposal are evaluated INDEPENDENTLY. A turn that calls the tool
+  // without saying anything first still proposes, and still writes no
+  // assistant row: an empty body in an append-only table breaks every later
+  // turn for that account, and that hazard does not soften because a tool was
+  // also called.
+  const proposed = final.tools_called.includes(PROPOSE_TOOL_NAME)
+  const usable =
+    delivered.trim() !== '' &&
+    (final.stop_reason === 'end_turn' || final.stop_reason === 'tool_use')
+
+  if (!usable && !proposed) {
     appendMetric(db, {
       accountId: input.accountId,
       event: 'chat_empty_reply',
@@ -202,17 +219,23 @@ export async function runTurn(
     return { kind: 'empty' }
   }
 
-  appendTranscript(db, {
-    ...stamp,
-    role: 'assistant',
-    body: delivered,
-    at: now(),
-  })
-  appendMetric(db, {
-    accountId: input.accountId,
-    event: 'chat_turn',
-    at: now(),
-    data: { ...final.usage, ...base, ...final.served },
-  })
-  return { kind: 'completed' }
+  if (usable) {
+    appendTranscript(db, { ...stamp, role: 'assistant', body: delivered, at: now() })
+    appendMetric(db, {
+      accountId: input.accountId,
+      event: 'chat_turn',
+      at: now(),
+      data: { ...final.usage, ...base, ...final.served },
+    })
+  }
+
+  const proposal = proposed
+    ? await authorSpec({
+        accountId: input.accountId,
+        conversationId,
+        signal: input.signal,
+      })
+    : undefined
+
+  return { kind: usable ? 'completed' : 'empty', proposal }
 }

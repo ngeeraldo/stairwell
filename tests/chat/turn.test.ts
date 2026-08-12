@@ -34,6 +34,12 @@ const SERVED = { model_served: CHAT_MODEL, fallback_fired: false }
 /** Most tests do not care about alerting; this keeps their deps honest. */
 const noAlert = () => {}
 
+/**
+ * Most tests do not call propose_spec, so this must never be invoked. Tests
+ * that DO exercise the propose_spec path supply their own authorSpec.
+ */
+const fakeAuthorSpec = async () => undefined
+
 /** A client that replies with fixed chunks and reports usage as it goes. */
 function fakeClient(chunks: string[]): ChatClient {
   return {
@@ -203,7 +209,7 @@ const input = (over: Partial<Parameters<typeof runTurn>[1]> = {}) => ({
 
 describe('runTurn — completion', () => {
   it('appends the user turn and then the assistant turn', async () => {
-    const deps = { db, client: fakeClient(['Keep an ', 'eye on rent.']), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: fakeClient(['Keep an ', 'eye on rent.']), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     const outcome = await runTurn(deps, input())
 
     expect(outcome.kind).toBe('completed')
@@ -215,7 +221,7 @@ describe('runTurn — completion', () => {
   })
 
   it('stamps both rows with the same conversation_id and the prompt sha', async () => {
-    const deps = { db, client: fakeClient(['ok']), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: fakeClient(['ok']), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input())
 
     const rows = readTranscript(db, 1)
@@ -226,7 +232,7 @@ describe('runTurn — completion', () => {
   })
 
   it('logs one chat_turn metric carrying all four counters', async () => {
-    const deps = { db, client: fakeClient(['ok']), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: fakeClient(['ok']), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input())
 
     expect(metrics()).toHaveLength(1)
@@ -246,13 +252,13 @@ describe('runTurn — completion', () => {
 
   it('streams text to the caller as it arrives', async () => {
     const seen: string[] = []
-    const deps = { db, client: fakeClient(['a', 'b']), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: fakeClient(['a', 'b']), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input({ onText: (t: string) => seen.push(t) }))
     expect(seen).toEqual(['a', 'b'])
   })
 
   it('records the resolved usage on completion, not the in-stream accumulator', async () => {
-    const deps = { db, client: divergingUsageClient(), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: divergingUsageClient(), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input())
 
     const [m] = metrics()
@@ -262,9 +268,9 @@ describe('runTurn — completion', () => {
 
   it('starts a new conversation after the gap and keeps one inside it', async () => {
     const client = fakeClient(['ok'])
-    await runTurn({ db, client, now: () => 0, context: 'interview' as const, alert: noAlert }, input())
-    await runTurn({ db, client, now: () => 60_000, context: 'interview' as const, alert: noAlert }, input())
-    await runTurn({ db, client, now: () => 60_000 + 31 * 60 * 1000, context: 'interview' as const, alert: noAlert }, input())
+    await runTurn({ db, client, now: () => 0, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
+    await runTurn({ db, client, now: () => 60_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
+    await runTurn({ db, client, now: () => 60_000 + 31 * 60 * 1000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
 
     const ids = readTranscript(db, 1).map((r) => r.conversation_id)
     expect(new Set(ids).size).toBe(2)
@@ -276,7 +282,7 @@ describe('runTurn — completion', () => {
 describe('runTurn — abort', () => {
   it('appends NO assistant row', async () => {
     const controller = new AbortController()
-    const deps = { db, client: abortingClient(controller), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: abortingClient(controller), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     const outcome = await runTurn(deps, input({ signal: controller.signal }))
 
     expect(outcome.kind).toBe('aborted')
@@ -290,7 +296,7 @@ describe('runTurn — abort', () => {
     // the end: an aborted turn still cost input tokens, and a cost log that
     // records zero for it is fiction.
     const controller = new AbortController()
-    const deps = { db, client: abortingClient(controller), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: abortingClient(controller), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input({ signal: controller.signal }))
 
     const [m] = metrics()
@@ -311,7 +317,7 @@ describe('runTurn — abort', () => {
     // the caller aborted. Those billed tokens were priced at the FALLBACK
     // model's rate, not CHAT_MODEL's, so the row must say so.
     const controller = new AbortController()
-    const deps = { db, client: abortingClientAfterFallback(controller), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: abortingClientAfterFallback(controller), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input({ signal: controller.signal }))
 
     const [m] = metrics()
@@ -324,7 +330,7 @@ describe('runTurn — abort', () => {
 
 describe('runTurn — API error', () => {
   it('appends no assistant row and logs chat_error, not stream_aborted', async () => {
-    const deps = { db, client: failingClient(429, 'rate_limit_error'), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: failingClient(429, 'rate_limit_error'), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     const outcome = await runTurn(deps, input())
 
     expect(outcome.kind).toBe('error')
@@ -338,7 +344,7 @@ describe('runTurn — API error', () => {
     // The whole purpose of this field (design spec section 2.5): it is what
     // distinguishes a rate limit from a refusal from a timeout when the
     // week-3 numbers get read.
-    const deps = { db, client: failingClient(429, 'rate_limit_error'), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: failingClient(429, 'rate_limit_error'), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input())
 
     const [m] = metrics()
@@ -354,11 +360,11 @@ describe('runTurn — API error', () => {
     // A single-case test cannot catch a constant. These two must disagree, or
     // the field distinguishes nothing.
     await runTurn(
-      { db, client: failingClient(429, 'rate_limit_error'), now: () => 1_000, context: 'interview' as const, alert: noAlert },
+      { db, client: failingClient(429, 'rate_limit_error'), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec },
       input(),
     )
     await runTurn(
-      { db, client: failingClient(529, 'overloaded_error'), now: () => 2_000, context: 'interview' as const, alert: noAlert },
+      { db, client: failingClient(529, 'overloaded_error'), now: () => 2_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec },
       input(),
     )
 
@@ -374,7 +380,7 @@ describe('runTurn — API error', () => {
       db,
       client: failingClient(529, 'overloaded_error', { after: 'partial answer' }),
       now: () => 1_000,
-      context: 'interview' as const, alert: noAlert,
+      context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec,
     }
     await runTurn(deps, input())
 
@@ -457,7 +463,7 @@ describe('runTurn — empty or incomplete reply', () => {
     // A refusal returns HTTP 200 with an empty content array. Writing an
     // empty assistant body into an append-only table would 400 every later
     // turn for this account, forever, with no way to delete the row.
-    const deps = { db, client: silentClient(), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: silentClient(), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     const outcome = await runTurn(deps, input())
 
     expect(outcome.kind).not.toBe('completed')
@@ -467,7 +473,7 @@ describe('runTurn — empty or incomplete reply', () => {
   })
 
   it('logs chat_empty_reply carrying the stop reason and all four counters', async () => {
-    const deps = { db, client: silentClient(), now: () => 1_000, context: 'interview' as const, alert: noAlert}
+    const deps = { db, client: silentClient(), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input())
 
     expect(metrics()).toHaveLength(1)
@@ -490,7 +496,7 @@ describe('runTurn — empty or incomplete reply', () => {
       db,
       client: silentClient({ text: '   \n  ', stop_reason: 'end_turn' }),
       now: () => 1_000,
-      context: 'interview' as const, alert: noAlert,
+      context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec,
     }
     const outcome = await runTurn(deps, input())
 
@@ -505,7 +511,7 @@ describe('runTurn — empty or incomplete reply', () => {
       db,
       client: silentClient({ text: 'I was cut off mid-', stop_reason: 'max_tokens' }),
       now: () => 1_000,
-      context: 'interview' as const, alert: noAlert,
+      context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec,
     }
     const outcome = await runTurn(deps, input())
 
@@ -550,7 +556,7 @@ describe('runTurn — empty or incomplete reply', () => {
       },
     }
 
-    const outcome = await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert }, input())
+    const outcome = await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
 
     expect(outcome.kind).toBe('completed')
     expect(sent.every((m) => m.content.trim() !== '')).toBe(true)
@@ -584,7 +590,7 @@ describe('runTurn — served model and fallback', () => {
       },
     }
 
-    await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert }, input())
+    await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
 
     const [m] = metrics()
     expect(m!.event).toBe('chat_turn')
@@ -609,7 +615,7 @@ describe('runTurn — served model and fallback', () => {
       },
     }
 
-    await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert }, input())
+    await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
 
     const [m] = metrics()
     expect(m!.event).toBe('chat_error')
@@ -632,7 +638,7 @@ describe('runTurn — served model and fallback', () => {
       },
     }
 
-    await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert }, input())
+    await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
 
     const [m] = metrics()
     expect(m!.data).toMatchObject({
@@ -650,6 +656,7 @@ describe('conversation-start alerting', () => {
       client: over.client ?? fakeClient(['ok']),
       now: over.now ?? (() => 1_000),
       context: 'interview' as const, alert: (accountId: number) => calls.push(accountId),
+      authorSpec: fakeAuthorSpec,
     }
     return { deps, calls }
   }
@@ -698,6 +705,7 @@ describe('conversation-start alerting', () => {
       client,
       now: () => 1_000,
       context: 'interview' as const, alert: () => order.push('alert'),
+      authorSpec: fakeAuthorSpec,
     }
     await runTurn(deps, input())
     expect(order).toEqual(['alert', 'stream'])
@@ -722,5 +730,95 @@ describe('conversation-start alerting', () => {
     const outcome = await runTurn(deps, input())
     expect(outcome.kind).toBe('empty')
     expect(calls).toEqual([1])
+  })
+})
+
+describe('the completion rule with propose_spec', () => {
+  function toolClient(text: string, tools: string[]): ChatClient {
+    return {
+      async stream({ onText, onUsage, onServed }) {
+        onUsage({ input: 100, cache_read: 0, cache_creation: 0 })
+        onServed({ model_served: CHAT_MODEL })
+        if (text) onText(text)
+        return {
+          usage: USAGE,
+          stop_reason: tools.length > 0 ? 'tool_use' : 'end_turn',
+          served: SERVED,
+          tools_called: tools,
+        }
+      },
+      async propose() {
+        throw new Error('unused')
+      },
+    }
+  }
+
+  const PROPOSAL = {
+    id: 7,
+    version: 1,
+    payload: {
+      title: 'T', summary: 's', background: 'b',
+      panels: [{ name: 'n', shows: 's', why: 'w', source: 'plaid' as const }],
+      manual_logging: [], open_questions: [],
+    },
+    mockup_html: '<!doctype html>',
+  }
+
+  it('appends the assistant row AND proposes when both happened', async () => {
+    let called = false
+    const outcome = await runTurn(
+      {
+        db,
+        client: toolClient('one moment', ['propose_spec']),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async () => {
+          called = true
+          return PROPOSAL
+        },
+      },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+    )
+    expect(outcome.kind).toBe('completed')
+    expect(outcome.proposal).toEqual(PROPOSAL)
+    expect(called).toBe(true)
+    expect(readTranscript(db, 1).filter((r) => r.role === 'assistant')).toHaveLength(1)
+  })
+
+  it('proposes with NO assistant row when the tool call carried no text', async () => {
+    // An empty body in an append-only table would 400 every later turn for
+    // this account. That hazard does not soften because a tool was called.
+    const outcome = await runTurn(
+      {
+        db,
+        client: toolClient('', ['propose_spec']),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async () => PROPOSAL,
+      },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+    )
+    expect(outcome.proposal).toEqual(PROPOSAL)
+    expect(readTranscript(db, 1).filter((r) => r.role === 'assistant')).toHaveLength(0)
+  })
+
+  it('still records chat_empty_reply when there is neither text nor a tool', async () => {
+    const outcome = await runTurn(
+      {
+        db,
+        client: toolClient('', []),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async () => {
+          throw new Error('must not be called')
+        },
+      },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+    )
+    expect(outcome.kind).toBe('empty')
+    expect(outcome.proposal).toBeUndefined()
   })
 })

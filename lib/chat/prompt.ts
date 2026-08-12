@@ -5,7 +5,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
 
 /** The interview prompt. New versions are new FILES, never edits. */
-export const AGENT_PROMPT = 'agent-v1.md'
+export const AGENT_PROMPT = 'agent-v2.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output

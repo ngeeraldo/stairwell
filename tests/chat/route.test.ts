@@ -41,12 +41,15 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
           const usage = { input: 5, output: 2, cache_read: 0, cache_creation: 0 }
           if (behaviour.value === 'refusal') {
             // HTTP 200, nothing delivered — see runTurn's empty-reply path.
-            return { usage, stop_reason: 'refusal', served }
+            return { usage, stop_reason: 'refusal', served, tools_called: [] }
           }
           onText('hello ')
           onText('friend')
           onUsage({ output: 2 })
-          return { usage, stop_reason: 'end_turn', served }
+          return { usage, stop_reason: 'end_turn', served, tools_called: [] }
+        },
+        async propose(): Promise<never> {
+          throw new Error('unused')
         },
       }
     },

@@ -80,6 +80,7 @@ describe('no message text reaches ntfy.sh', () => {
         alert: (id) => {
           pending.push(send(id))
         },
+        authorSpec: async () => undefined,
       },
       {
         accountId,

@@ -13,6 +13,7 @@ import { contextFor } from '@/lib/chat/context'
 import { AGENT_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import { runTurn } from '@/lib/chat/turn'
 import { conversationAlerter } from '@/lib/alerts/ntfy'
+import { authorSpec as authorSpecImpl } from '@/lib/spec/author'
 
 const encoder = new TextEncoder()
 const line = (value: unknown) => encoder.encode(`${JSON.stringify(value)}\n`)
@@ -98,12 +99,16 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      // Computed once, here: both runTurn's own metrics and the authoring
+      // call's metrics should reflect the same "kind of run" for this
+      // request, not two reads of a value that could change between them.
+      const context = contextFor(db, session.account_id)
       const outcome = await runTurn(
         {
           db,
           client: turnClient,
           now: Date.now,
-          context: contextFor(db, session.account_id),
+          context,
           // Built per request, and NTFY_TOPIC read at call time rather than
           // at module scope — the same reason chatClient() is deferred: a
           // configuration problem should fail the request that needed it,
@@ -114,6 +119,8 @@ export async function POST(request: Request) {
             db,
             now: Date.now,
           }),
+          authorSpec: (proposeInput) =>
+            authorSpecImpl({ db, client: turnClient, now: Date.now, context }, proposeInput),
         },
         {
           accountId: session.account_id,
