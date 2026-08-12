@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { SpecPayload } from '@/lib/spec/schema'
+import type { Panel, SpecPayload } from '@/lib/spec/schema'
 import { renderSpecMarkdown } from '@/lib/spec/render'
 
 const PAYLOAD: SpecPayload = {
@@ -124,27 +124,62 @@ Checks the banking app most days, does not trust it.
         return stripped.startsWith('#') || stripped.startsWith('```')
       }).length
 
+    // `safeMarkdown()` is applied at 8 interpolation sites in render.ts:
+    // list() items (manual_logging, open_questions), panel.name,
+    // panel.shows, panel.why, panel.source, payload.title, payload.summary,
+    // payload.background. A fixture confined to only some of them proves
+    // nothing about the rest — round 4's DANGEROUS_PAYLOAD only attacked
+    // title/summary/background, so an escaping bug isolated to, say,
+    // panel.shows or the list() helper would have shipped silently. Every
+    // site below carries an attack, and the shape (panel count, list
+    // lengths) stays identical to PAYLOAD so the differential count stays
+    // meaningful. Attack forms are varied rather than repeated: a bare `#`
+    // heading, a `## ` heading, a no-space `##` heading, an unterminated
+    // fence, and the exact `## Summary` collision that defeated round 3
+    // all appear somewhere below.
     const DANGEROUS_PAYLOAD: SpecPayload = {
-      ...PAYLOAD,
-      // Fixture 1: an unterminated fence followed by a spoofed heading,
-      // in `background`.
+      // Site: payload.title. Exact-string collision — the case that
+      // defeated round 3: text equal to one of the renderer's own fixed
+      // heading strings, indistinguishable from the real one by content.
+      title: `${PAYLOAD.title}\n## Summary`,
+      // Site: payload.summary. A heading with no space after the hashes.
+      summary: `So mornings stop being a surprise.
+##Sneaky heading with no space`,
+      // Site: payload.background. An unterminated fence followed by a
+      // bare `# ` heading — two attack forms in one field.
       background: `Checks the banking app most days.
 Here is an unterminated fence:
 \`\`\`
 
 And a line starting with hash:
 # This should not be a real heading`,
-      // Fixture 2: a heading with no space after the hashes, in
-      // `summary` — a different field from fixture 1.
-      summary: `So mornings stop being a surprise.
-##Sneaky heading with no space`,
-      // Fixture 3: text EXACTLY equal to one of the renderer's own fixed
-      // heading strings, in `title` — a different field again. This is
-      // the case that defeated round 3: a content-keyed allow-list
-      // exempts this exact string regardless of which field produced it.
-      // A count does not care what the text says, only that it is one
-      // more structural-looking line than the safe render has.
-      title: `${PAYLOAD.title}\n## Summary`,
+      panels: [
+        {
+          // Site: panel.name. Bare `#` heading.
+          name: 'Eating out\n# Not a real heading either',
+          // Site: panel.shows. `## ` heading (with a space, unlike summary's).
+          shows: 'This month against last month\n## Also not a heading',
+          // Site: panel.why. Unterminated fence.
+          why: 'Said it is where the money goes\n```',
+          // Site: panel.source. The schema constrains a real payload's
+          // source to plaid/manual/derived, so this text could never
+          // arrive through the validator — construct it directly and cast
+          // past the type, because the escaping call exists at this site
+          // regardless, and the test should hold it to the same standard.
+          // Exact-string collision again, at a fifth different site.
+          source: 'plaid\n## Summary' as unknown as Panel['source'],
+        },
+        {
+          name: 'Car fund',
+          shows: 'Saved so far against the target',
+          why: 'Wants the number visible',
+          source: 'manual',
+        },
+      ],
+      // Site: list() — shared by manual_logging and open_questions.
+      // Different attack form in each so both call sites are exercised.
+      manual_logging: ['Car fund top-ups, when they happen\n# List item heading'],
+      open_questions: ['Wants a Monzo pot balance — is that reachable?\n```'],
     }
 
     const safeCount = countStructuralLines(
