@@ -12,6 +12,7 @@ import {
   pendingTurns,
   ProposalRegion,
   SpecCard,
+  startTurn,
   TurnRow,
   withLiveness,
   type CardProposal,
@@ -95,7 +96,13 @@ const PROPOSAL: CardProposal = {
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
 
-const EMPTY_PANEL: PanelState = { turns: [], proposals: [], authoring: false, proposalError: false }
+const EMPTY_PANEL: PanelState = {
+  turns: [],
+  proposals: [],
+  authoring: false,
+  proposalError: false,
+  confirmError: false,
+}
 
 /** A React element as produced by createElement — enough shape to walk. */
 type Elem = { type: unknown; props: Record<string, unknown> }
@@ -293,6 +300,33 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
     expect(json).not.toContain('aria-label="Proposed dashboard"')
     expect(json).not.toContain('data-spec-id')
   })
+
+  it('renders the older of two proposals inert and only the newer one confirmable', () => {
+    // Fix round 2: this is finding 2's original mutation (live={live} ->
+    // live={true} in ProposalRegion's JSX) at its structural home. The
+    // withLiveness describe block above already proves the computation is
+    // right; this proves ProposalRegion actually WIRES that computed value
+    // into each SpecCard, which is a separate fact — JSX plumbing that a
+    // correct helper function does not, by itself, guarantee is used.
+    const older = { ...PROPOSAL, id: 42 }
+    const newer = { ...PROPOSAL, id: 43 }
+    const html = renderToStaticMarkup(
+      ProposalRegion({
+        authoring: false,
+        proposalError: false,
+        proposals: [older, newer],
+        confirming: false,
+        confirmError: false,
+        onConfirm: () => {},
+      }),
+    )
+    // Two <section> cards; split on the marker so each half's assertions
+    // can't accidentally match content that belongs to the OTHER card.
+    const sections = html.split('<section aria-label="Proposed dashboard"').slice(1)
+    expect(sections).toHaveLength(2)
+    expect(sections[0]).not.toContain('Build this')
+    expect(sections[1]).toContain('Build this')
+  })
 })
 
 describe('TurnRow', () => {
@@ -337,6 +371,24 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
     const state: PanelState = { ...EMPTY_PANEL, turns: [{ role: 'assistant', body: 'partial' }] }
     expect(finishTurn(state, false).turns[0]?.interrupted).toBe(true)
     expect(finishTurn(state, true).turns[0]?.interrupted).toBeUndefined()
+  })
+
+  describe('a stale confirmError does not bleed onto an untouched card (fix round 2)', () => {
+    // Scenario: press "Build this" on spec 42, the server 409s, confirmError
+    // becomes true. Rather than retrying, the friend keeps talking and spec
+    // 43 streams in. Without clearing confirmError at both of these points,
+    // the brand-new card — which nobody has touched — would render "That
+    // didn't go through" before any confirm attempt was ever made on it.
+
+    it('startTurn clears a stale confirmError when a new turn begins', () => {
+      const stale: PanelState = { ...EMPTY_PANEL, confirmError: true }
+      expect(startTurn(stale, 'anything else').confirmError).toBe(false)
+    })
+
+    it('applyLine clears a stale confirmError the moment a new proposal card arrives', () => {
+      const stale: PanelState = { ...EMPTY_PANEL, confirmError: true }
+      expect(applyLine(stale, { proposal: PROPOSAL }).confirmError).toBe(false)
+    })
   })
 
   it('a proposal line with no following done renders the card AND the interrupted marker — neither swallowed', () => {

@@ -95,6 +95,13 @@ export type PanelState = {
    * the turn simply ending) resolves the wait. */
   authoring: boolean
   proposalError: boolean
+  /** Set when a confirm attempt resolved false (see attemptConfirm) — a
+   * plain, brief failure shown on the live card. Cleared by startTurn (a
+   * new turn starting) and by applyLine's proposal branch (a new card
+   * arriving) — fix round 2: without both of those, a stale failure from an
+   * OLDER, already-superseded card kept showing on a brand-new one that
+   * nobody had touched yet. */
+  confirmError: boolean
 }
 
 /**
@@ -134,6 +141,11 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
       ...state,
       authoring: false,
       proposalError: false,
+      // Fix round 2: a confirmError from an OLDER card must not bleed onto
+      // this brand-new one — nobody has touched it yet, so "That didn't go
+      // through" would be a false failure at the exact decision moment this
+      // feature exists to make honest.
+      confirmError: false,
       proposals: [...state.proposals, message.proposal],
     }
   }
@@ -141,6 +153,24 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
     return { ...state, authoring: false, proposalError: true }
   }
   return state
+}
+
+/**
+ * What starts a new turn: append the pending user/assistant exchange, and
+ * clear anything that belonged to the PREVIOUS turn or a previous confirm
+ * attempt so it can't bleed into this one — a stale authoring wait, a stale
+ * proposal_error, or (fix round 2) a stale confirmError left over from a
+ * confirm attempt on a now-irrelevant card. Pure: the literal function
+ * send() calls to begin a turn.
+ */
+export function startTurn(state: PanelState, text: string): PanelState {
+  return {
+    ...state,
+    turns: [...state.turns, ...pendingTurns(text)],
+    authoring: false,
+    proposalError: false,
+    confirmError: false,
+  }
 }
 
 /**
@@ -163,20 +193,40 @@ export function finishTurn(state: PanelState, done: boolean): PanelState {
 }
 
 /**
- * Fold a full NDJSON line sequence into the resulting panel state, exactly
- * as send()'s read loop + its post-loop finishTurn call would, but
- * synchronously and without a fetch. Built from applyLine and finishTurn —
- * the same two functions send() calls — so this is a convenience for
- * driving that real logic with a fixed line sequence, not a parallel
- * reimplementation of it. Exported for tests that need to assert on a
- * complete turn (e.g. the coexistence of a proposal card with an
- * interrupted marker) rather than one line at a time.
+ * Whether a raw NDJSON line is the turn's terminal `{done:true}` line.
+ * Pulled out to its own function — rather than inlined separately in
+ * send()'s read loop and in applyTurn below — specifically because fix
+ * round 1 shipped both with the SAME inline check by hand, and fix round 2
+ * flagged that as a duplication risk: a mutation to how "this is the done
+ * line" is decided could diverge silently between the copy send() runs and
+ * the copy tests exercise. Now there is exactly one copy, and both call it.
+ */
+function isDoneLine(raw: unknown): boolean {
+  return Boolean((raw as { done?: boolean }).done)
+}
+
+/**
+ * Fold a full NDJSON line sequence into the resulting panel state,
+ * synchronously and without a fetch. Built from isDoneLine, applyLine, and
+ * finishTurn — the SAME three primitives send()'s read loop calls for a
+ * live stream (see send() below) — so the done-peeling decision and the
+ * per-line state update are defined in exactly one place each, not
+ * duplicated between a "real" copy and a "test" copy that could diverge.
+ *
+ * What is genuinely NOT shared, and cannot be without a DOM: send()
+ * accumulates `done` across MULTIPLE `reader.read()` chunks one line array
+ * at a time, rather than folding one fixed array like this function does,
+ * and it is send() itself — a hook-bearing component body this suite
+ * cannot drive — that decides when to call finishTurn with the accumulated
+ * value. That orchestration is the residual gap; everything else this
+ * function does is the literal code send() runs. See task-11-report.md's
+ * residual-mutations list for the full accounting.
  */
 export function applyTurn(state: PanelState, lines: unknown[]): PanelState {
   let next = state
   let done = false
   for (const raw of lines) {
-    if ((raw as { done?: boolean }).done) {
+    if (isDoneLine(raw)) {
       done = true
       continue
     }
@@ -424,21 +474,18 @@ export default function ChatPanel({
     proposals: proposal ? [proposal] : [],
     authoring: false,
     proposalError: false,
+    confirmError: false,
   })
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   // Guards the confirm buttons across ALL cards, not just the live one — a
   // second click while the first POST is in flight must not fire twice.
   const [confirming, setConfirming] = useState(false)
-  // Set when a confirm attempt resolved false (bad request, 404, 409, or a
-  // network failure) — see attemptConfirm. Reset at the start of the next
-  // attempt so a stale failure doesn't linger after a successful retry.
-  const [confirmError, setConfirmError] = useState(false)
 
   async function onConfirm(specId: number) {
     if (confirming) return
     setConfirming(true)
-    setConfirmError(false)
+    setPanel((p) => ({ ...p, confirmError: false }))
     const ok = await attemptConfirm(specId, fetch)
     if (ok) {
       setPanel((p) => ({
@@ -450,7 +497,9 @@ export default function ChatPanel({
       // network failure means nothing was learned either way. Either way
       // the friend is told, plainly, rather than the button just quietly
       // re-enabling with no explanation at the moment they decided.
-      setConfirmError(true)
+      // Cleared by startTurn/applyLine's proposal branch (see PanelState),
+      // not here — see fix round 2.
+      setPanel((p) => ({ ...p, confirmError: true }))
     }
     setConfirming(false)
   }
@@ -469,14 +518,7 @@ export default function ChatPanel({
   async function send(text: string) {
     if (!text.trim() || busy) return
     setBusy(true)
-    setPanel((p) => ({
-      ...p,
-      turns: [...p.turns, ...pendingTurns(text)],
-      // Fresh turn, fresh authoring state — a leftover wait/error from a
-      // previous turn must not bleed into this one.
-      authoring: false,
-      proposalError: false,
-    }))
+    setPanel((p) => startTurn(p, text))
     setDraft('')
 
     let done = false
@@ -498,7 +540,7 @@ export default function ChatPanel({
         const { lines, rest } = parseNdjson(buffer)
         buffer = rest
         for (const raw of lines) {
-          if ((raw as { done?: boolean }).done) {
+          if (isDoneLine(raw)) {
             done = true
             continue
           }
@@ -535,7 +577,7 @@ export default function ChatPanel({
         proposalError={panel.proposalError}
         proposals={panel.proposals}
         confirming={confirming}
-        confirmError={confirmError}
+        confirmError={panel.confirmError}
         onConfirm={onConfirm}
       />
 
