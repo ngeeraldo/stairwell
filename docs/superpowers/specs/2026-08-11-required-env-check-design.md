@@ -213,9 +213,15 @@ Recorded rather than assumed, because it narrows D3's wording.
   value ever appears in the output.
 - The runtime caller extends `tests/instrumentation.test.ts`, which already
   manipulates `NEXT_RUNTIME` and restores it.
-- A change to `deploy.sh` requires a case in `.claude/hooks/test-hooks.sh`
-  under the project's own gate rules, and `test-hooks.sh` must be run and its
-  output reported.
+- ~~A change to `deploy.sh` requires a case in `.claude/hooks/test-hooks.sh`
+  under the project's own gate rules.~~ **Wrong — corrected 2026-08-12.**
+  CLAUDE.md's Gate B scopes are `app/`, `lib/`, `platform/`, `middleware.ts`,
+  `modules/`, `users/<name>/`, `.githooks/` and `.claude/hooks/`. None of them
+  covers `deploy/`, and `test-hooks.sh` tests the guard hooks, not the deploy
+  script. The plan itself noted `deploy/*` is exempt from Gate B, and the
+  implementation was right to ignore this line. `deploy.sh` is covered by
+  `tests/deploy/service.test.ts` instead. Left struck through rather than
+  deleted so a reader who remembers the rule can see it was retracted.
 
 **One test that must exist, from step 2's lesson:** the check must be observed
 FAILING against a deliberately missing variable before it is trusted. A guard

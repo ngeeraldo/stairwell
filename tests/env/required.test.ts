@@ -70,6 +70,11 @@ describe('parseRequiredEnv', () => {
     } catch (err) {
       message = String(err)
     }
+    // The positive half matters as much as the negative one: without it, a
+    // change that made this input parse SUCCESSFULLY would leave message ===
+    // '' and the not.toContain would still pass — a test that cannot fail in
+    // the direction it exists to watch. Parity with its two siblings.
+    expect(message).toMatch(/variable name/)
     expect(message).not.toContain('SUPERSECRET-VALUE')
   })
 

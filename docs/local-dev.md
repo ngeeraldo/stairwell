@@ -34,12 +34,17 @@ files by design (CLAUDE.md > Data safety) — that includes `.env.local`, so
 Claude cannot open it to check what's in it; set it yourself.
 
 ```bash
-<VAR>='<value>' npm run build && npm start
+# Repeat the assignment on BOTH commands. A `VAR=x cmd` prefix binds to that
+# one command only, so `VAR=x npm run build && npm start` runs npm start
+# without it — and these names are needed at RUNTIME, not at build time, so
+# that form fails in exactly the way it looks like it should work.
+<VAR>='<value>' npm run build
+<VAR>='<value>' npm start
 ```
 
-or put `<VAR>=<value>` in `.env.local` instead of the command line. Check
-`deploy/required-env` for which `<VAR>` names apply here and what each is
-for.
+`.env.local` is the less error-prone option: put `<VAR>=<value>` there once
+and both commands pick it up. Check `deploy/required-env` for which `<VAR>`
+names apply here and what each is for.
 
 A missing `REQUIRED` or `DEGRADED` name now surfaces as a `[env] missing …`
 warning in the console at `npm run dev` (or `npm start`) startup, rather
