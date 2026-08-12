@@ -107,6 +107,20 @@ export function confirmSpec(
   db: PlatformDb,
   row: { specId: number; accountId: number; at: number },
 ): void {
+  // Look up the spec to validate it belongs to the provided account. Without this
+  // check, readSpecs and hasConfirmedSpec would disagree forever on a mismatched
+  // (specId, accountId) pair: readSpecs ignores confirmation.account_id and joins
+  // only on spec_id, while hasConfirmedSpec requires both account_ids to match.
+  // Since spec_confirmations is append-only, a bad row cannot be deleted later.
+  const spec = db
+    .prepare('SELECT account_id FROM specs WHERE id = ?')
+    .get(row.specId) as { account_id: number } | undefined
+  if (!spec || spec.account_id !== row.accountId) {
+    throw new Error(
+      `Cannot confirm spec ${row.specId}: does not belong to account ${row.accountId}`,
+    )
+  }
+
   db.prepare(
     'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
   ).run(row.specId, row.accountId, row.at)

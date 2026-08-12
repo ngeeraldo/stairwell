@@ -99,6 +99,16 @@ describe('confirmation', () => {
     write(1, 'draft', 1_000)
     expect(currentSpec(db, 1)).toBeUndefined()
   })
+
+  it('rejects confirming another account\'s spec and writes nothing', () => {
+    const ownerSpec = write(1, 'owned by account 1', 1_000)
+    expect(() =>
+      confirmSpec(db, { specId: ownerSpec, accountId: 2, at: 5_000 }),
+    ).toThrow(/does not belong to account/)
+
+    // Verify the spec is still unconfirmed; no partial write occurred.
+    expect(readSpecs(db, 1)[0]!.confirmed_at).toBeNull()
+  })
 })
 
 describe('append-only enforcement', () => {
