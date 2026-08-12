@@ -1,7 +1,13 @@
 # Step 3 ledger — ntfy.sh alerts
 
+Spec: `docs/superpowers/specs/2026-08-12-step3-ntfy-alerts-design.md`
+
 Opened before step 3 begins, to hold decisions Nico made in advance on
 2026-08-11 while closing step 2. No implementation has started.
+
+Four further decisions were ruled during the 2026-08-12 brainstorm — alert
+timing, admin suppression, `NTFY_TOPIC` severity, and local-dev behaviour.
+They live in §3 of the spec rather than being duplicated here.
 
 ## Decisions already made — do not relitigate
 
