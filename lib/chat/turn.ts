@@ -117,11 +117,19 @@ export async function runTurn(
     // failure propagate instead of being reclassified is what keeps this
     // append-only, uncorrectable label honest.
     if (input.signal.aborted) {
+      // `served` is the same in-stream accumulator as `usage`: on this path
+      // there is no resolved StreamResult (the stream threw), so this is the
+      // only place the answering model is available. If onServed already
+      // reported before the abort — the stream had started delivering and a
+      // fallback may have already fired — this carries the real values. If
+      // nothing was reported yet, this carries the seeded default (the
+      // requested model, no fallback), which is the honest value for "not
+      // known" rather than a fabricated one.
       appendMetric(db, {
         accountId: input.accountId,
         event: 'stream_aborted',
         at: now(),
-        data: { ...usage, ...base, delivered_chars: delivered.length },
+        data: { ...usage, ...base, ...served, delivered_chars: delivered.length },
       })
       return { kind: 'aborted' }
     }

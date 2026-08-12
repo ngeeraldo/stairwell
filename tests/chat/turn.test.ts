@@ -72,7 +72,8 @@ function silentClient(
   }
 }
 
-/** A client that streams one chunk, then the caller aborts. */
+/** A client that streams one chunk, then the caller aborts. Never reports
+ * `onServed` — the abort happens before any model information arrived. */
 function abortingClient(controller: AbortController): ChatClient {
   return {
     async stream({ onText, onUsage, signal }) {
@@ -82,6 +83,26 @@ function abortingClient(controller: AbortController): ChatClient {
       controller.abort()
       throw Object.assign(new Error('aborted'), { name: 'AbortError' })
       // `signal` is deliberately unused here; runTurn reads signal.aborted.
+      void signal
+    },
+  }
+}
+
+/**
+ * A client that reports a fallback model via `onServed` — the same way
+ * message_start / a fallback content block would mid-stream — and THEN the
+ * caller aborts. Proves the abort path carries whatever was already known,
+ * not the seeded default.
+ */
+function abortingClientAfterFallback(controller: AbortController): ChatClient {
+  return {
+    async stream({ onText, onUsage, onServed, signal }) {
+      onUsage({ input: 100, cache_read: 0, cache_creation: 0 })
+      onServed({ model_served: 'claude-opus-4-8', fallback_fired: true })
+      onText('half a rep')
+      onUsage({ output: 3 })
+      controller.abort()
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' })
       void signal
     },
   }
@@ -254,6 +275,28 @@ describe('runTurn — abort', () => {
     expect(m!.event).toBe('stream_aborted')
     expect(m!.data).toMatchObject({ input: 100, output: 3, context: 'interview' })
     expect(m!.data.delivered_chars).toBe('half a rep'.length)
+    // Ledger item 9, honest-default case: onServed never fired before the
+    // abort, so nothing about the answering model is actually known yet.
+    // Recording the seeded default (the requested model, no fallback) is the
+    // honest value for "not known" — not a fabricated one.
+    expect(m!.data.model_served).toBe(CHAT_MODEL)
+    expect(m!.data.fallback_fired).toBe(false)
+  })
+
+  it('logs stream_aborted with model_served and fallback_fired reported before the abort', async () => {
+    // Ledger item 9, known case: a fallback already fired mid-stream (reported
+    // via onServed, the same in-stream accumulator usage/onUsage uses) before
+    // the caller aborted. Those billed tokens were priced at the FALLBACK
+    // model's rate, not CHAT_MODEL's, so the row must say so.
+    const controller = new AbortController()
+    const deps = { db, client: abortingClientAfterFallback(controller), now: () => 1_000 }
+    await runTurn(deps, input({ signal: controller.signal }))
+
+    const [m] = metrics()
+    expect(m!.event).toBe('stream_aborted')
+    expect(m!.data.model_served).toBe('claude-opus-4-8')
+    expect(m!.data.fallback_fired).toBe(true)
+    expect(m!.data.model_served).not.toBe(m!.data.model)
   })
 })
 

@@ -153,6 +153,7 @@ sacred table. Four events ship in step 2:
 
 { event: 'stream_aborted',   data: { input, output, cache_read, cache_creation,
                                      model, effort, prompt_sha, context,
+                                     model_served, fallback_fired,
                                      delivered_chars } }
 
 { event: 'chat_error',       data: { input, output, cache_read, cache_creation,
@@ -198,7 +199,16 @@ recorded so the two causes stay distinguishable.
 `model_served` and `fallback_fired` record which model actually answered and
 whether a server-side refusal fallback fired (§3.2). Without them a fallback
 would silently change the answering model and corrupt exactly the cost
-retrospective the four counters exist to support.
+retrospective the four counters exist to support. All four events carry them,
+including `stream_aborted`: an aborted turn has real billed tokens (that is
+why it carries the four counters at all), and if a fallback served it, those
+tokens were billed at a different model's rate. `stream_aborted` has no
+resolved `StreamResult` to read them from — the stream threw — so
+`lib/chat/turn.ts` reads the same in-stream accumulator `onServed` feeds that
+`onUsage`/the counters use. If a fallback had already fired before the abort,
+this carries the real values; if nothing was reported yet, it carries the
+seeded default (the requested model, no fallback fired), which is the honest
+value for "not known" rather than a fabricated one.
 
 `context` is the run kind from `architecture-overview.md` line 136 —
 "interview, planning, tweak runs". In step 2 no spec exists yet, so every turn
