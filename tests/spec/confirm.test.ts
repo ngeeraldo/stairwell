@@ -47,15 +47,19 @@ let handle: PlatformDb | undefined
 // except the route wires the alerter to globalThis.fetch directly, so here
 // the capture point is a stubbed global rather than a constructor argument.
 //
-// Resolves on a macrotask (setTimeout), not immediately: the route never
-// awaits the alerter (CLAUDE.md — a friend's confirmation must not fail
-// because a phone did not buzz), so `post()` returns as soon as the
-// microtask queue drains. A same-tick-resolving fake would let the alert's
-// OWN metrics write (alert_sent/alert_failed, appended to the same table)
-// race ahead of the assertions and land "after" spec_confirmed — a race a
-// real network call, which is always slower than a microtask, would never
-// lose. The capture into `seenFetch` still happens synchronously at call
-// time, so alertBodies() is correct immediately after `post()` resolves.
+// Resolves on a macrotask (setTimeout), not a same-tick microtask. This is
+// NOT what makes lastMetric()'s assertions correct — that is now the job of
+// lastMetric() filtering by event (see below), and is proven
+// timing-independent because it also passes with a same-tick resolve. This
+// timing is kept only because it is the more faithful double on its own
+// terms: a real ntfy.sh round trip is always slower than the microtask
+// chain `post()`'s own awaits drain through, and there IS no production
+// race for the macrotask choice to paper over — the route appends
+// `spec_confirmed` with a synchronous better-sqlite3 `.run()` before
+// `alerter(...)` is even invoked, so the metric is always written first
+// regardless of how fast the alert's own write lands. The capture into
+// `seenFetch` still happens synchronously at call time, so alertBodies()
+// is correct immediately after `post()` resolves either way.
 let seenFetch: { url: string; init: RequestInit | undefined }[] = []
 const fakeFetch = ((url: string | URL | Request, init?: RequestInit) => {
   seenFetch.push({ url: String(url), init })
@@ -184,11 +188,20 @@ function confirmationCount(specId: number): number {
   return row.n
 }
 
-function lastMetric(): { event: string; data: Record<string, unknown> } {
+/**
+ * The most recent metric row FOR THE GIVEN EVENT, not the last row in the
+ * whole table. `spec_confirmed` and the alerter's own `alert_sent` /
+ * `alert_failed` land in the same append-only table, and the alerter's
+ * write is fire-and-forget — nothing in the route orders it relative to
+ * when a test's assertions run. A query that ignored `event` would read
+ * whichever metric happened to land last, which depends on alert timing
+ * that this endpoint explicitly does not control.
+ */
+function lastMetric(event: string): { event: string; data: Record<string, unknown> } {
   const row = handle!
-    .prepare('SELECT event, data FROM metrics ORDER BY id DESC LIMIT 1')
-    .get() as { event: string; data: string | null } | undefined
-  if (!row) throw new Error('lastMetric: metrics table is empty')
+    .prepare('SELECT event, data FROM metrics WHERE event = ? ORDER BY id DESC LIMIT 1')
+    .get(event) as { event: string; data: string | null } | undefined
+  if (!row) throw new Error(`lastMetric: no '${event}' row in metrics`)
   return { event: row.event, data: row.data ? JSON.parse(row.data) : {} }
 }
 
@@ -227,8 +240,8 @@ describe('POST /api/spec/confirm', () => {
     const id = await seedSpec('devtwo')
     expect((await post({ specId: id })).status).toBe(200)
     expect(confirmationCount(id)).toBe(1)
-    expect(lastMetric().event).toBe('spec_confirmed')
-    expect(lastMetric().data.spec_id).toBe(id)
+    expect(lastMetric('spec_confirmed').event).toBe('spec_confirmed')
+    expect(lastMetric('spec_confirmed').data.spec_id).toBe(id)
     expect(alertBodies()).toEqual(['devtwo confirmed a spec'])
   })
 
@@ -249,16 +262,20 @@ describe('POST /api/spec/confirm', () => {
     expect((await post({ specId: id }, { locked: true })).status).toBe(200)
   })
 
-  it('does not 500 when confirmSpec throws on a pair the 404 check should have caught', async () => {
+  it('404s (not 500) when confirmSpec throws on a pair the 404 check should have caught', async () => {
     // Carried finding from Task 1: confirmSpec throws for a mismatched
     // (specId, accountId) pair. The route's own 404 check makes that
     // unreachable in practice, but the handler must not assume confirmSpec
     // is infallible — an unhandled throw here is a 500 to the friend at the
-    // exact moment they press "Build this".
+    // exact moment they press "Build this". The route's own comment treats
+    // this path as "not found" (the mismatch's actual meaning), so pin the
+    // specific status rather than merely "not 500" — a 400 or 200 here
+    // would satisfy a looser assertion while contradicting the code's
+    // stated intent.
     const id = await seedSpec('devtwo')
     forceConfirmThrow.value = true
     const res = await post({ specId: id })
-    expect(res.status).not.toBe(500)
+    expect(res.status).toBe(404)
     expect(confirmationCount(id)).toBe(0)
   })
 })
