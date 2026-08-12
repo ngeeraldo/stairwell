@@ -42,4 +42,26 @@ describe('instrumentation.ts', () => {
 
     expect(setIntervalSpy).not.toHaveBeenCalled()
   })
+
+  it('reports missing env without throwing, and not on the edge runtime', async () => {
+    process.env.NEXT_RUNTIME = 'edge'
+    const { register } = await import('@/instrumentation')
+    // The edge isolate has no keymap and no database handle; register() must
+    // return without touching either.
+    await expect(register()).resolves.toBeUndefined()
+  })
+
+  it('never rejects even if the required-env list cannot be read', async () => {
+    // Startup must survive a missing list. A server that will not boot
+    // because it could not find its own checklist is worse than the gap.
+    process.env.NEXT_RUNTIME = 'nodejs'
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue('/nonexistent-path-for-test')
+    vi.spyOn(global, 'setInterval').mockReturnValue({
+      unref: vi.fn(),
+    } as unknown as NodeJS.Timeout)
+
+    const { register } = await import('@/instrumentation')
+    await expect(register()).resolves.toBeUndefined()
+    cwd.mockRestore()
+  })
 })
