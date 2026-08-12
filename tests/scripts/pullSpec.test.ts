@@ -198,17 +198,18 @@ describe('scripts/pull-spec.sh --local', () => {
   })
 
   describe('atomic write (no half-written pair)', () => {
-    // pull-spec.sh's node -e block writes spec.md then mockup.html. Forcing
-    // a real filesystem failure on the SECOND file — by pre-occupying its
-    // final path with a directory, the same shape a disk-full or
-    // permission failure produces from the script's point of view — is
-    // exactly the case that leaves spec.md written and mockup.html missing
-    // if the two writes are not guarded. This is the classic historical
-    // bug shape, not a synthetic one: against the pre-fix script (direct
-    // writeFileSync to each final path, in order), spec.md WOULD land on
-    // disk before the second writeFileSync hit EISDIR on the directory.
+    // Three separate guards in pull-spec.sh's node -e block, each with its
+    // own fault-injection path so each test exercises the block it names
+    // (and only that block — confirmed by deleting each block in turn and
+    // watching its own test, and only its own test, go red):
+    //   1. an upfront precondition check (final path wrong-typed)
+    //   2. write-temp-then-cleanup-on-throw (the writeFileSync pair)
+    //   3. move-aside-then-restore-on-throw around the commit renames
 
-    it('leaves NEITHER file on a fresh pull when the second write fails partway', async () => {
+    it('refuses upfront, before touching anything, when a final path exists and is not a plain file', async () => {
+      // Targets guard #1: occupy the FINAL mockup.html path (not a temp or
+      // backup path) with a directory. The precondition check inspects
+      // exactly this path before any write/rename is attempted.
       const sandbox = makeSandbox()
       const dbPath = await makeDb({
         slug: CONFIRMED_SLUG,
@@ -219,8 +220,6 @@ describe('scripts/pull-spec.sh --local', () => {
 
       const dir = userDir(sandbox, CONFIRMED_SLUG)
       mkdirSync(dir, { recursive: true })
-      // Occupy mockup.html's final path with a directory, so writing to it
-      // fails no matter what the write step looks like.
       mkdirSync(join(dir, 'mockup.html'))
 
       const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], dbPath)
@@ -229,9 +228,50 @@ describe('scripts/pull-spec.sh --local', () => {
       expect(existsSync(join(dir, 'spec.md'))).toBe(false)
       // mockup.html is still the directory we made, never replaced by a file.
       expect(existsSync(join(dir, 'mockup.html'))).toBe(true)
+      expect(statSync(join(dir, 'mockup.html')).isDirectory()).toBe(true)
     })
 
-    it('does not half-overwrite a pre-existing pair from an earlier successful pull', async () => {
+    it('cleans up its temp file and writes neither final file when the second write throws', async () => {
+      // Targets guard #2: occupy the TEMP path .mockup.html.tmp — not the
+      // final mockup.html path, which stays absent so the precondition
+      // check (guard #1) passes clean and never fires. The second
+      // writeFileSync call itself must throw for this test to mean
+      // anything; it is what forces that.
+      const sandbox = makeSandbox()
+      const dbPath = await makeDb({
+        slug: CONFIRMED_SLUG,
+        confirm: true,
+        title: 'Should never land, write-phase TEST',
+        mockupHtml: '<!doctype html><html><body>SHOULD NEVER LAND, WRITE PHASE TEST</body></html>',
+      })
+
+      const dir = userDir(sandbox, CONFIRMED_SLUG)
+      mkdirSync(dir, { recursive: true })
+      mkdirSync(join(dir, '.mockup.html.tmp'))
+
+      const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], dbPath)
+
+      expect(status).not.toBe(0)
+      expect(existsSync(join(dir, 'spec.md'))).toBe(false)
+      expect(existsSync(join(dir, 'mockup.html'))).toBe(false)
+      // The successfully-written spec temp file must have been cleaned up
+      // by the catch block, not left behind.
+      expect(existsSync(join(dir, '.spec.md.tmp'))).toBe(false)
+    })
+
+    it('restores the original pair, byte-for-byte, when the commit-rename phase throws partway', async () => {
+      // Targets guard #3: run one real successful pull first (a genuine
+      // pre-existing pair, not a synthetic fixture), then occupy the
+      // BACKUP path .mockup.html.bak with a directory before the second
+      // pull. This path is internal to the rename-phase guard — untouched
+      // by guards #1 and #2 — so the write phase completes normally and
+      // spec.md's move-aside succeeds, and it is specifically the SECOND
+      // move-aside (mockup.html -> .mockup.html.bak) that fails. Because
+      // that failed rename leaves mockup.html completely untouched at its
+      // original location (a failed rename() has no partial effect on
+      // either side), both files can be asserted byte-for-byte unchanged —
+      // not just spec.md, which round 1's version of this test had to
+      // settle for.
       const sandbox = makeSandbox()
       const first = await makeDb({
         slug: CONFIRMED_SLUG,
@@ -244,6 +284,7 @@ describe('scripts/pull-spec.sh --local', () => {
 
       const dir = userDir(sandbox, CONFIRMED_SLUG)
       const specBefore = readFileSync(join(dir, 'spec.md'), 'utf8')
+      const mockupBefore = readFileSync(join(dir, 'mockup.html'), 'utf8')
 
       const second = await makeDb({
         slug: CONFIRMED_SLUG,
@@ -251,29 +292,20 @@ describe('scripts/pull-spec.sh --local', () => {
         title: 'Should not replace the earlier pull TEST',
         mockupHtml: '<!doctype html><html><body>SHOULD NOT REPLACE TEST</body></html>',
       })
-      // Replace the existing mockup.html FILE with a directory to force a
-      // real filesystem failure on the second file for the re-pull too.
-      // This necessarily destroys the ability to assert mockup.html's own
-      // content is untouched (the test itself just removed it) — the
-      // meaningful assertion here is spec.md, which this setup step never
-      // touches, still holding the FIRST pull's content rather than the
-      // second (failed) pull's.
-      rmSync(join(dir, 'mockup.html'))
-      mkdirSync(join(dir, 'mockup.html'))
+      mkdirSync(join(dir, '.mockup.html.bak'))
 
       const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], second)
 
       expect(status).not.toBe(0)
-      // spec.md must still hold the FIRST pull's content, not the second's
-      // — the fix must refuse before EITHER file is touched, not just
-      // before mockup.html specifically.
       expect(readFileSync(join(dir, 'spec.md'), 'utf8')).toBe(specBefore)
+      expect(readFileSync(join(dir, 'mockup.html'), 'utf8')).toBe(mockupBefore)
       expect(readFileSync(join(dir, 'spec.md'), 'utf8')).not.toContain(
         'Should not replace the earlier pull TEST',
       )
-      // mockup.html must still be the directory this test made, never
-      // replaced by a file — proves the write did not partially succeed.
-      expect(statSync(join(dir, 'mockup.html')).isDirectory()).toBe(true)
+      // The commit-rename guard restores from backup and then must not
+      // leave stray .tmp/.bak files behind either.
+      expect(existsSync(join(dir, '.spec.md.tmp'))).toBe(false)
+      expect(existsSync(join(dir, '.spec.md.bak'))).toBe(false)
     })
   })
 })

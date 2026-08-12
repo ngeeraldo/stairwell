@@ -20,12 +20,14 @@
 # below, a failure there aborts this script before mkdir/write ever run — no
 # half-written spec.md/mockup.html pair.
 #
-# The write step below is itself write-temp-then-rename, not two direct
-# writes: two independent writeFileSync calls left a real gap where the
-# first could land and the second fail (disk full, a permission change, the
-# process killed between them), leaving spec.md on disk with no
-# mockup.html or a stale one. See the comments in that block for what is
-# and is not covered.
+# The write step below is write-temp-then-rename with the old pair moved
+# aside and restored on any ordinary, catchable failure (ENOENT, EPERM, a
+# quota error) at any point in the write/backup/commit sequence — not two
+# direct writes and two unguarded renames, which left real gaps where one
+# half of the pair could land while the other failed or stayed stale. The
+# one thing this does NOT cover, and cannot: a kill signal (SIGKILL) landing
+# mid-sequence, or an ordinary failure happening again during the rollback
+# itself — both are named explicitly in the comments in that block.
 set -euo pipefail
 
 main() {
@@ -54,6 +56,8 @@ main() {
     const mockupPath = path.join(dir, "mockup.html");
     const specTmp = path.join(dir, ".spec.md.tmp");
     const mockupTmp = path.join(dir, ".mockup.html.tmp");
+    const specBackup = path.join(dir, ".spec.md.bak");
+    const mockupBackup = path.join(dir, ".mockup.html.bak");
 
     // Refuse upfront, before touching anything, if a final path is
     // occupied by something that is not a plain file (most plausibly: a
@@ -82,17 +86,61 @@ main() {
       throw err;
     }
 
-    // Both payloads are safely on disk under temp names. Commit by
-    // renaming into place: each rename is a single, near-instant syscall
-    // in the same directory (no data copy), so this pair is about as
-    // close to a joint commit as fs gives us without hand-rolled
-    // two-phase-commit machinery this single-operator tool does not need.
-    // A kill signal landing in the gap between these two renames is not
-    // recoverable by any in-process cleanup no matter how this is written
-    // — the process would be dead before a catch block could run — so the
-    // goal here is minimizing that window, not pretending to eliminate it.
-    fs.renameSync(specTmp, specPath);
-    fs.renameSync(mockupTmp, mockupPath);
+    // Both payloads are safely on disk under temp names. Move any EXISTING
+    // pair aside before committing the new one, so a failure below can put
+    // it straight back. Track success with booleans, not existsSync on the
+    // backup path afterward — a backup path can exist for reasons that have
+    // nothing to do with whether the rename onto it, this run, succeeded.
+    const hadSpec = fs.existsSync(specPath);
+    const hadMockup = fs.existsSync(mockupPath);
+    let specBackedUp = false;
+    let mockupBackedUp = false;
+
+    try {
+      if (hadSpec) { fs.renameSync(specPath, specBackup); specBackedUp = true; }
+      if (hadMockup) { fs.renameSync(mockupPath, mockupBackup); mockupBackedUp = true; }
+    } catch (err) {
+      // Nothing new has been committed yet — just put back what this step
+      // already moved, then clean up the temp files and fail.
+      if (specBackedUp) fs.renameSync(specBackup, specPath);
+      if (mockupBackedUp) fs.renameSync(mockupBackup, mockupPath);
+      for (const p of [specTmp, mockupTmp]) {
+        try { fs.unlinkSync(p); } catch {}
+      }
+      throw err;
+    }
+
+    // Commit: rename each temp file into place. Each call is a single,
+    // near-instant same-directory syscall (no data copy) — about as small
+    // a window as fs gives without hand-rolled two-phase-commit machinery
+    // this single-operator tool does not need. If the SECOND rename throws
+    // for an ordinary, catchable reason (ENOENT, EPERM, a quota error),
+    // undo whichever of the two already landed and restore the old pair
+    // from its backup — an ordinary failure here must not leave spec.md
+    // holding the new proposal next to a stale (or missing) mockup.html,
+    // which is worse than either being absent: nothing about the pair
+    // LOOKS wrong.
+    //
+    // What this does not and cannot cover: a kill signal (SIGKILL) landing
+    // anywhere in this sequence — the process is dead before any catch
+    // block runs, no matter how this is written — and an ordinary failure
+    // striking AGAIN during this very rollback (e.g. the same disk-full
+    // condition blocking the restore too). Both are accepted residuals,
+    // not silently pretended away.
+    try {
+      fs.renameSync(specTmp, specPath);
+      fs.renameSync(mockupTmp, mockupPath);
+    } catch (err) {
+      try { fs.unlinkSync(specPath); } catch {}
+      try { fs.unlinkSync(mockupPath); } catch {}
+      if (specBackedUp) fs.renameSync(specBackup, specPath);
+      if (mockupBackedUp) fs.renameSync(mockupBackup, mockupPath);
+      throw err;
+    }
+
+    // Success: nothing left to restore.
+    if (specBackedUp) { try { fs.unlinkSync(specBackup); } catch {} }
+    if (mockupBackedUp) { try { fs.unlinkSync(mockupBackup); } catch {} }
   ' "$json" "$user"
 
   echo "Wrote users/$user/spec.md and users/$user/mockup.html"
