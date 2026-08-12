@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 
 const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
 
@@ -34,23 +34,38 @@ export function promptPath(name: string): string {
 }
 
 /**
- * Read a prompt and hash its bytes.
+ * Read and hash a file at an already-resolved path, no containment guard.
+ *
+ * Test-only entry point: every production call site passes a bare name
+ * through loadPrompt below. This exists so the suite can hash disposable
+ * temp files (for the sha-stability and sha-changes-on-edit assertions)
+ * without loadPrompt itself accepting an absolute path — an escape hatch
+ * there would skip promptPath's traversal guard for a real bare name too,
+ * which is exactly the hole this project's own guard-hook rule (CLAUDE.md >
+ * Data safety) exists to prevent for `.env` and non-synthetic databases.
+ */
+export function loadPromptAtPath(path: string): LoadedPrompt {
+  const text = readFileSync(path, 'utf8')
+  const sha = createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12)
+  return { text, sha }
+}
+
+/**
+ * Read a shipped prompt by bare name and hash its bytes.
  *
  * The sha is stamped on every transcript row and every spec row so a row is
  * tied to the exact prompt text that produced it — a content hash rather than
  * a human label, because a label can be reused across a quiet edit and a hash
  * cannot.
  *
- * Absolute paths are used as-is, which is what lets the suite hash temp files
- * without a second entry point.
+ * Only ever resolves under platform/prompts, via promptPath's traversal
+ * guard — no absolute-path bypass. Callers that need to hash an arbitrary
+ * file (tests, only) use loadPromptAtPath above instead.
  *
  * Read per call rather than memoized: the files are a few KB next to a
  * multi-second API call, and a module-level cache would need a test-only reset
  * hook to stay testable.
  */
 export function loadPrompt(name: string = AGENT_PROMPT): LoadedPrompt {
-  const path = isAbsolute(name) ? name : promptPath(name)
-  const text = readFileSync(path, 'utf8')
-  const sha = createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12)
-  return { text, sha }
+  return loadPromptAtPath(promptPath(name))
 }

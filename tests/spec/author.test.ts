@@ -211,6 +211,17 @@ describe('authorSpec', () => {
     expect(row!.event).toBe('spec_error')
     expect(row!.data.kind).toBe('unexpected_error')
     expect(row!.data.message).toBeTruthy()
+    // The call to propose() actually SUCCEEDED here — client() always
+    // returns USAGE/SERVED — and insertSpec is what threw, after real,
+    // billed tokens were already spent. A cost log that reports zero for
+    // them is fiction (lib/chat/turn.ts states this rule in its own words).
+    // 950 billed tokens logged as free is the exact defect this guards.
+    expect(row!.data.input).toBe(USAGE.input)
+    expect(row!.data.output).toBe(USAGE.output)
+    expect(row!.data.cache_read).toBe(USAGE.cache_read)
+    expect(row!.data.cache_creation).toBe(USAGE.cache_creation)
+    expect(row!.data.model_served).toBe(SERVED.model_served)
+    expect(row!.data.fallback_fired).toBe(SERVED.fallback_fired)
   })
 
   it('writes NO spec and records spec_aborted when the friend walks away', async () => {

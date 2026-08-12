@@ -48,7 +48,6 @@ main() {
 
   npx tsx scripts/write-spec-pair.ts "users/$user" "$json"
 
-  echo "Wrote users/$user/spec.md and users/$user/mockup.html"
   echo "Both are Gate B exempt — commit them when you are ready."
 }
 

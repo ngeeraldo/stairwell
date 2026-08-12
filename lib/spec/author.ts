@@ -11,6 +11,7 @@ import {
   ChatStreamError,
   UNKNOWN_ERROR,
   type ChatClient,
+  type ProposeResult,
   type Served,
   type Usage,
 } from '@/lib/chat/client'
@@ -68,6 +69,14 @@ export async function authorSpec(
   // later failure's metric row still carries the real prompt sha instead of
   // an unknown placeholder.
   let promptSha: string | null = null
+  // Populated once client.propose() actually returns, and read by the outer
+  // catch too: a call that returned already spent real, billed tokens, even
+  // if insertSpec, the version read-back, or the spec_proposed append itself
+  // throws afterward. Declared here (not `let result` inside the inner try)
+  // specifically so the outer catch can see it — that scoping bug was the
+  // whole defect: a successful, billed propose() followed by a later throw
+  // used to log NO_USAGE/NO_SERVED, zeroing out tokens that were real.
+  let result: ProposeResult | undefined
 
   try {
     const loaded = loadPrompt(SPEC_PROMPT)
@@ -96,7 +105,6 @@ export async function authorSpec(
         ? [...history, { role: 'user' as const, content: 'Write the spec now.' }]
         : history
 
-    let result
     try {
       result = await client.propose({ system, messages, signal: input.signal })
     } catch (error) {
@@ -190,18 +198,23 @@ export async function authorSpec(
     return { id, version, payload: parsed.payload, mockup_html: parsed.mockupHtml }
   } catch (error) {
     // Anything with no dedicated branch above. promptSha may or may not be
-    // known depending on where this fired.
+    // known depending on where this fired. result may or may not be known
+    // too: NO_USAGE/NO_SERVED are honest only for a failure that struck
+    // before client.propose() returned anything. If propose() already
+    // succeeded — insertSpec, the version read-back, or the spec_proposed
+    // append itself is what threw — result carries the real, billed
+    // counters and those are what must be reported, not zero.
     appendMetric(db, {
       accountId: input.accountId,
       event: 'spec_error',
       at: now(),
       data: {
-        ...NO_USAGE,
+        ...(result?.usage ?? NO_USAGE),
         model: CHAT_MODEL,
         effort: CHAT_EFFORT,
         prompt_sha: promptSha,
         context,
-        ...NO_SERVED,
+        ...(result?.served ?? NO_SERVED),
         kind: 'unexpected_error',
         status: null,
         type: null,

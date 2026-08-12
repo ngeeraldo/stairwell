@@ -6,6 +6,7 @@ import {
   AGENT_PROMPT,
   SPEC_PROMPT,
   loadPrompt,
+  loadPromptAtPath,
   promptPath,
 } from '@/lib/chat/prompt'
 
@@ -44,9 +45,13 @@ const FORBIDDEN_TERMS = [
 
 describe('loadPrompt', () => {
   it('returns the file text and a 12-hex-char sha', () => {
+    // loadPromptAtPath, not loadPrompt: loadPrompt only ever resolves a bare
+    // name under platform/prompts (via promptPath's traversal guard) — it
+    // does not accept an absolute path. loadPromptAtPath is the tests' own
+    // entry point for hashing an arbitrary temp file.
     const p = join(dir, 'p.md')
     writeFileSync(p, 'hello prompt')
-    const { text, sha } = loadPrompt(p)
+    const { text, sha } = loadPromptAtPath(p)
     expect(text).toBe('hello prompt')
     expect(sha).toMatch(/^[0-9a-f]{12}$/)
   })
@@ -56,7 +61,7 @@ describe('loadPrompt', () => {
     const b = join(dir, 'b.md')
     writeFileSync(a, 'identical')
     writeFileSync(b, 'identical')
-    expect(loadPrompt(a).sha).toBe(loadPrompt(b).sha)
+    expect(loadPromptAtPath(a).sha).toBe(loadPromptAtPath(b).sha)
   })
 
   it('changes the sha when a single byte changes', () => {
@@ -64,9 +69,9 @@ describe('loadPrompt', () => {
     // pass itself off as the version that came before it.
     const p = join(dir, 'p.md')
     writeFileSync(p, 'version one')
-    const before = loadPrompt(p).sha
+    const before = loadPromptAtPath(p).sha
     writeFileSync(p, 'version onE')
-    expect(loadPrompt(p).sha).not.toBe(before)
+    expect(loadPromptAtPath(p).sha).not.toBe(before)
   })
 
   it('loads a shipped prompt by bare name and it is not empty', () => {
@@ -121,6 +126,19 @@ describe('loadPrompt', () => {
     // promptPath throws on traversing names, using ../.env as a test case
     // that would access the project root .env if the guard were deleted.
     expect(() => promptPath('../../.env')).toThrow(/Path traversal not allowed/)
+  })
+
+  it('refuses an absolute path too — the guard has no bypass', () => {
+    // loadPrompt used to accept an absolute path as-is (`isAbsolute(name) ?
+    // name : promptPath(name)`), which meant promptPath's containment check
+    // never ran for one. That escape hatch existed only so tests could hash
+    // temp files, but every production call site passes a module constant —
+    // an absolute path reaching loadPrompt is never legitimate input, only
+    // ever a bug or an attacker-controlled value. A file outside
+    // platform/prompts, addressed absolutely, must still be refused.
+    const outside = join(dir, 'outside-prompts.md')
+    writeFileSync(outside, 'should never be readable via loadPrompt')
+    expect(() => loadPrompt(outside)).toThrow(/Path traversal not allowed/)
   })
 
   it('flags 401(k) — the parenthesised form a rewrite is most likely to use', () => {

@@ -338,6 +338,42 @@ They are separate events from `chat_turn` rather than a variant of it, so that
 log — `architecture-overview.md` §9 asks for token costs split by run kind, and
 this is that split at the event level.
 
+**Amended during implementation (2026-08-12).** The rule above described a
+single `spec_error` shape. `lib/spec/author.ts` ships three, and all three are
+correct and intentional — recorded here because `spec_error` rows are
+append-only and this cannot be corrected later:
+
+```
+// A propose() failure the SDK reported directly (rate limit, connection,
+// auth, truncated_spec, unparsable_spec, ...). Exactly the shape above.
+{ event: 'spec_error', data: { …counters, …base, kind, status, type } }
+
+// The response parsed as JSON but failed lib/spec/schema.ts validation —
+// a schema-constrained REQUEST is not a guarantee about the RESPONSE.
+// `type` stays null: it is the API's own error.type discriminator
+// everywhere else in this log, and the validator's prose message is not
+// that. The message goes in its own field instead.
+{ event: 'spec_error', data: { …counters, …base, kind: 'malformed_spec',
+                                status: null, type: null, message } }
+
+// Anything with no dedicated branch — insertSpec, the version read-back,
+// or the spec_proposed append itself throwing after a real, billed
+// propose() call; loadPrompt failing before one. `…counters` and `…base`
+// are the REAL values when propose() already returned (a cost log that
+// reports zero for a billed call is fiction — this project's own rule,
+// stated in these words in lib/chat/turn.ts), and honest zeroes/nulls
+// otherwise. `prompt_sha` is the one field that can be null here — every
+// other spec_error/spec_proposed/spec_aborted row carries a real sha,
+// because in this row alone loadPrompt itself may be what failed.
+{ event: 'spec_error', data: { …counters, …base, kind: 'unexpected_error',
+                                status: null, type: null, message } }
+```
+
+The second and third shapes add a `message` field the first does not carry;
+only the third can carry a null `prompt_sha`. Each is honest about what is
+actually known at the point it fired, which is the same principle §4.3's
+amendment restates for `chat_proposed_no_reply`.
+
 `spec_confirmed` (§5.3) is **not** a model call and carries none of that:
 
 ```

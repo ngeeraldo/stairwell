@@ -145,8 +145,16 @@ describe('content-freeness holds for EVERY alert kind', () => {
     // "this module has no path for it". The alerter takes a KIND, and the
     // kind indexes a fixed table.
     expect(alerter({ topic: 't', fetch: globalThis.fetch, db, now: () => 0 }).length).toBe(2)
+    // Falsifiable, unlike `expect(typeof phrase).toBe('string')` — ALERT_TEXT
+    // is `as const` with string literals, so TypeScript already guarantees
+    // that and no runtime input could violate it. This project has shipped a
+    // leak test that could not fail once before (see the sweep above); a
+    // vacuous assertion in THIS file specifically is the one place it must
+    // never recur. An interpolation marker left in a phrase is the concrete
+    // way a fixed table could stop being fixed — e.g. a careless edit
+    // turning a literal into a template that captures caller-supplied text.
     for (const phrase of Object.values(ALERT_TEXT)) {
-      expect(typeof phrase).toBe('string')
+      expect(phrase).not.toContain('${')
     }
   })
 })
