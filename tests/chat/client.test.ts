@@ -76,17 +76,51 @@ describe('propose()', () => {
         messages: [{ role: 'user', content: 'hi' }],
         signal: new AbortController().signal,
       }),
-    ).rejects.toMatchObject({ name: 'ChatStreamError' })
+      // The real discriminator must survive the catch, not be flattened to a
+      // single label — the metrics log depends on telling a rate limit from
+      // a refusal from a timeout, and `describeError` maps a bare Error to
+      // 'unknown_error'.
+    ).rejects.toMatchObject({ name: 'ChatStreamError', shape: { kind: 'unknown_error' } })
   })
 
   it('fails rather than returning junk when the reply is not JSON', async () => {
-    // A truncated or non-JSON reply must surface as spec_error, not be
-    // written to an append-only table as a spec.
+    // A non-JSON reply must surface as unparsable, not be written to an
+    // append-only table as a spec. stop_reason is 'end_turn' so this
+    // exercises the parse-failure branch specifically, not the truncation
+    // check above it.
     const sdk = fakeSdk({
       beta: {
         messages: {
           create: async () => ({
             content: [{ type: 'text', text: 'sorry, no' }],
+            stop_reason: 'end_turn',
+            model: 'claude-opus-5',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          stream: () => ({}),
+        },
+      },
+    })
+    await expect(
+      anthropicClient(sdk as never).propose({
+        system: 's',
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ name: 'ChatStreamError', shape: { kind: 'unparsable_spec' } })
+  })
+
+  it('fails on a truncated reply even when the truncated JSON happens to parse', async () => {
+    // The gate cannot be "JSON.parse didn't throw": a max_tokens cutoff can
+    // land on a syntactically complete object that is simply missing later
+    // fields. stop_reason must be checked BEFORE attempting to parse, so
+    // this is reported as truncated rather than silently accepted or
+    // mis-reported as a parse failure.
+    const sdk = fakeSdk({
+      beta: {
+        messages: {
+          create: async () => ({
+            content: [{ type: 'text', text: '{"title":"TEST"}' }],
             stop_reason: 'max_tokens',
             model: 'claude-opus-5',
             usage: { input_tokens: 1, output_tokens: 1 },
@@ -101,7 +135,7 @@ describe('propose()', () => {
         messages: [{ role: 'user', content: 'hi' }],
         signal: new AbortController().signal,
       }),
-    ).rejects.toMatchObject({ name: 'ChatStreamError' })
+    ).rejects.toMatchObject({ name: 'ChatStreamError', shape: { kind: 'truncated_spec' } })
   })
 })
 

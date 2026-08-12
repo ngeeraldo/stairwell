@@ -349,6 +349,19 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
           { signal, timeout: SPEC_TIMEOUT_MS },
         )
 
+        // Checked BEFORE parsing, and deliberately not folded into the parse
+        // failure below: a max_tokens cutoff can land on a syntactically
+        // complete object that is simply missing later fields, so "JSON.parse
+        // didn't throw" cannot stand in for "the reply is complete". Mirrors
+        // how lib/chat/turn.ts treats any non-end_turn stop as not a full
+        // reply and refuses to write it.
+        if (message.stop_reason !== 'end_turn') {
+          throw new ChatStreamError(
+            { kind: 'truncated_spec', status: null, type: null },
+            `authoring call did not complete (stop_reason ${message.stop_reason})`,
+          )
+        }
+
         const text = message.content
           .filter((block) => block.type === 'text')
           .map((block) => (block as { text: string }).text)
@@ -358,8 +371,9 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
         try {
           input = JSON.parse(text)
         } catch {
-          // A truncated or refused reply is NOT a spec. Failing here is what
-          // keeps junk out of an append-only table.
+          // Reached only for a complete (end_turn) reply whose text still
+          // isn't valid JSON. Failing here is what keeps junk out of an
+          // append-only table.
           throw new ChatStreamError(
             { kind: 'unparsable_spec', status: null, type: null },
             `authoring call returned unparsable output (stop_reason ${message.stop_reason})`,
