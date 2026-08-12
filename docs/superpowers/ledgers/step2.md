@@ -116,3 +116,17 @@ before that review ran; these are what survived it.
     blocks can trigger ordering/signature 400s. Not exercised today because
     `display` defaults to `"omitted"`, but raising `MAX_TOKENS` to 64000
     makes long thinking turns more likely. Worth checking before step 3.
+
+14. PRE-PASS TRANSCRIPTS ARE PLUMBING EVIDENCE ONLY, NOT PRODUCT EVIDENCE.
+    `platform/prompts/agent-v1.md` is still the structural draft. Its sha is
+    `e274e1d89eae`, and every transcript row written before the substantive
+    pass carries that value — including the local checkpoint turn on
+    2026-08-11 and anything produced by the droplet deploy that follows.
+    Those rows are valid evidence that the plumbing works: streaming,
+    conversation grouping, prompt-sha stamping, metrics shape, the admin
+    pane. They are NOT evidence about the interview itself — the wording
+    that decides whether a friend answers usefully has not been written yet.
+    Nico's substantive pass lands before checkpoint sign-off, followed by one
+    redeploy and a live chat turn confirming the new sha serves. Any read of
+    interview quality must filter on `prompt_sha != 'e274e1d89eae'`; that is
+    exactly the query the per-row sha exists to make possible.
