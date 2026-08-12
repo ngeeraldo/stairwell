@@ -78,6 +78,11 @@ before that review ran; these are what survived it.
    means adding the field later creates two eras of `stream_aborted` rows
    that cannot be reconciled. Cheapest to fix before the first real traffic.
 
+   CLOSED — commit 1478481. `stream_aborted` now spreads the same `served`
+   in-stream accumulator `chat_error` already reads, so it carries the real
+   values if a fallback fired before the abort, or the honest seeded default
+   (requested model, no fallback) if nothing was known yet.
+
 10. `lib/chat/client.ts` — THE MODULE HAS NO TESTS OF ITS OWN. `anthropicClient`
     takes an injectable `sdk`, so this is cheap to close. Three fix-critical
     seams are uncovered: the `MissingCredentialError` condition (deleting the
@@ -92,6 +97,9 @@ before that review ran; these are what survived it.
     substantive rewrite of `platform/prompts/agent-v1.md`, and that rewrite
     is more likely to produce `401(k)` than `401k`. Worth widening before the
     rewrite rather than after.
+
+    CLOSED — commit 1d9506e. Pattern widened to also match `401(k)`, proven
+    by a test that asserts the pattern itself matches the parenthesised form.
 
 12. THE REFUSAL-FALLBACK PATH HAS NEVER RUN LIVE. `fallbacks: 'default'` and
     the `server-side-fallback-2026-07-01` beta flag are typed and fake-tested,
