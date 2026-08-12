@@ -1,8 +1,7 @@
 # Required-env presence check — design
 
 **Date:** 2026-08-11
-**Status:** DRAFT — four decisions queued for Nico (§5). Not approved, not
-planned, no implementation.
+**Status:** APPROVED — all four decisions ruled by Nico on 2026-08-12 (§5).
 **Covers:** A guard that makes a missing environment variable fail loudly and
 early, instead of surfacing as a green deploy over a broken feature.
 
@@ -99,7 +98,7 @@ the rest of the site keeps working. Conversely, treating a missing
 `PLATFORM_DB` as a warning leaves production silently reading a synthetic
 database.
 
-So the list needs a severity axis. What the axis should be is queued (§5).
+So the list needs a severity axis. It has two levels — see D2.
 
 ---
 
@@ -128,7 +127,8 @@ the two callers, where it can differ.
 aborts the deploy listing the missing names. Never prints a value.
 
 **Caller B, runtime** (`instrumentation.ts`): compares the list against
-`process.env` at startup. Behaviour on a miss depends on severity — queued.
+`process.env` at startup. Never throws (D3). On a miss it records a metric and
+continues; a healthy boot writes nothing and touches no database (D5).
 
 ---
 
@@ -142,65 +142,67 @@ aborts the deploy listing the missing names. Never prints a value.
 
 ---
 
-## 5. QUEUED FOR NICO — four decisions
+## 5. Decisions — all four ruled
 
-Standing policy: CONFIRM-tier taken and logged; DECISION-tier and anything
-touching the deploy contract's shape queued. All four below are the latter.
+Ruled by Nico on 2026-08-12.
 
-### Q1. What does the deploy-time check read?
+### D1. The deploy-time check reads the `.env` file
 
-The systemd unit supplies `NODE_ENV` and `PORT` via `Environment=` lines and
-the rest via `EnvironmentFile=/home/deploy/stairwell/.env`. So:
+Not systemd's resolved environment. The check validates what gets hand-edited,
+and nothing at issue lives in the unit's `Environment=` lines. `deploy/required-env`
+documents that unit-supplied variables (`NODE_ENV`, `PORT`) are out of its scope.
 
-- **(a) The `.env` file only.** Simple, no privilege needed. Blind to anything
-  set by the unit — if a unit-supplied variable ever joined the list it would
-  be reported missing when it is fine.
-- **(b) systemd's resolved environment** (`systemctl show stairwell -p Environment`
-  plus the file). Accurate about what the service will actually receive. More
-  moving parts, and needs the unit to be installed — which it is.
+### D2. Two severities
 
-**Recommendation: (a), with the list documenting that unit-supplied variables
-are out of its scope.** Every variable at issue today lives in the file, and
-(b) buys accuracy about a case that has not occurred. But this is exactly the
-"deploy contract's shape" question, so it is yours.
+| Severity | Deploy | Runtime |
+|---|---|---|
+| `REQUIRED` | **Blocks.** | Logs. |
+| `DEGRADED` | **Warns, loudly.** | Logs. |
 
-### Q2. What is the severity taxonomy, and what does each level do?
+`PLATFORM_DB` is `REQUIRED`, and is the reason the tier exists: its absence
+falls back to the *synthetic* database, so production would serve loudly-fake
+data while every health check stayed green. A false green is worse than a
+crash, because nobody goes looking.
 
-Proposal: two levels.
-- **`required`** — the deploy aborts, and the runtime check throws at startup.
-  For variables whose absence makes the app wrong rather than degraded
-  (`PLATFORM_DB` in production).
-- **`feature`** — the deploy aborts, but the runtime check only logs. The
-  feature's own error path handles it. `ANTHROPIC_API_KEY` is the case: I5
-  deliberately makes it a clean 503, and a startup throw would undo that.
+`ANTHROPIC_API_KEY` is `DEGRADED` — ledger I5 already makes its absence a clean
+503 with a logged `chat_error`, and that designed degradation should carry it.
+It is still flagged loudly at deploy time, because "chat is down" is not a
+thing to discover from a friend.
 
-The asymmetry is intentional — a deploy is a moment when a human is watching
-and nothing is lost by stopping; a running server is not.
+### D3. The runtime check never throws
 
-### Q3. Should the runtime check ever throw at all?
+Crash-looping in front of a friend over a config typo is the wrong failure.
+`Restart=on-failure` plus `RestartSec=5` would turn a throw into a loop against
+a deploy path with no rollback (ledger I3).
 
-A throw in `instrumentation.ts` fails startup, and `Restart=on-failure` with
-`RestartSec=5` turns that into a crash loop. The deploy would catch it —
-`smoke.sh` would fail — but the site is down while it does, and there is no
-rollback (ledger I3).
+**Deploy-time is the hard gate; runtime is the loud witness.** On a miss the
+runtime check records a metric and continues, letting the feature's own
+degradation path handle the consequence.
 
-The alternative is log-and-continue at every severity, leaving the deploy-time
-check as the only hard gate. Safer; loses the guarantee for anything that
-bypasses `deploy.sh`, such as a manual `systemctl restart` after hand-editing
-`.env` — which is exactly what happened when the key was added.
+### D4. `docs/local-dev.md` points at `deploy/required-env`
 
-**No recommendation. This is the trade-off you should pick**, because it is a
-judgement about how the pilot should fail in front of a friend, not a technical
-one.
+One source of truth. No parallel list to drift.
 
-### Q4. Does `docs/local-dev.md` keep its own variable list?
+### D5. Consequence of D3, taken under standing policy — flag for veto
 
-The duplication is the drift risk that motivates a single source of truth. But
-`deploy/required-env` is terse by design, and `local-dev.md` explains *how* to
-set things for a human reading it for the first time. Replace the list with a
-pointer, or keep both and accept the drift?
+D3 says the runtime check records a metric. `metrics` is a database table, so a
+naive implementation would open the database inside `instrumentation.ts` — at
+boot, on every start, including healthy ones.
 
----
+That would change documented behaviour. `getDb()` is deliberately lazy today,
+and ledger I3 and §2.4 of the step-2 spec both rest on it: a reshape failure
+currently surfaces as a per-request 500 *after* boot, which is what lets
+`smoke.sh` fail the deploy. Opening the database at boot would move that
+failure into startup — and a reshape throw inside `instrumentation.ts` is
+exactly the crash loop D3 exists to prevent.
+
+**Resolution: write the metric only when something is missing.** A healthy boot
+touches no database and behaves exactly as today; a misconfigured boot writes
+one row. The write is wrapped so it cannot propagate — an instrumentation hook
+that crashes the server while reporting a config problem would be its own
+punchline.
+
+Recorded rather than assumed, because it narrows D3's wording.
 
 ## 6. Testing
 
