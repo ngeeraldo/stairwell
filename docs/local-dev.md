@@ -113,6 +113,30 @@ time. Warm the routes first if you do use `npm run dev`.
 8. Restart the server without clearing cookies → `/devone` redirects to
    `/unlock`, not `/login`. The session survived; the key did not.
 
+## Pulling a confirmed spec into the repo
+
+Once a friend confirms a spec in chat, it lives in the platform database, not
+in the repo — `users/<name>/spec.md` and `users/<name>/mockup.html` are a
+projection of that record, pulled explicitly. `scripts/pull-spec.sh` writes
+both files; it **overwrites both on every pull**, so hand edits to either
+file do not survive the next run.
+
+```bash
+./scripts/pull-spec.sh devtwo
+```
+
+The droplet form above needs ssh access (`deploy@app.stairwell.run`) — it
+reads the real, non-synthetic platform database there, which is consistent
+with CLAUDE.md but is not something to run against anything but synthetic
+data locally. For that:
+
+```bash
+./scripts/pull-spec.sh devtwo --local
+```
+
+`--local` reads `PLATFORM_DB` (falling back to `platform/dev/synthetic.db`,
+same as everything else in this doc) and is the only form Claude runs.
+
 ## Reset
 
 ```bash
