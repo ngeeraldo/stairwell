@@ -114,14 +114,16 @@ describe('deploy/deploy.sh env gate', () => {
 
   it('distinguishes a missing variable from a broken list when it aborts', () => {
     // check-env.sh exits 1 for "a variable is missing from .env" and 2 for
-    // "deploy/required-env is itself unreadable or malformed". Both abort —
-    // fail-closed is right — but collapsing them reports a broken checklist
-    // as "configuration missing" and sends the reader to the wrong file.
+    // "deploy/required-env is itself unreadable, empty, or malformed". Both
+    // abort — fail-closed is right — but collapsing them reports a broken
+    // checklist as "configuration missing" and sends the reader to the wrong
+    // file. "Empty" is in that second bucket by construction: a checklist
+    // with no entries is a broken checklist, never a pass.
     const check = commands.indexOf('check-env.sh')
     const after = commands.slice(check, check + 600)
     expect(after).toMatch(/env_status=\$\?/)
     expect(after).toMatch(/-eq 2/)
-    expect(after).toMatch(/unreadable or malformed/)
+    expect(after).toMatch(/unreadable, empty, or malformed/)
   })
 
   it('checks the same file the systemd unit loads', () => {

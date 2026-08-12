@@ -5,9 +5,15 @@
 #
 # Exit 0  no REQUIRED name missing (DEGRADED ones may be, and warn)
 # Exit 1  at least one REQUIRED name missing
-# Exit 2  usage error, the list is unreadable, or a line of the list is
-#         malformed (a broken list is a different condition from a missing
-#         variable; deploy.sh aborts on both, so this stays fail-closed)
+# Exit 2  usage error, the list is unreadable, the list has NO ENTRIES, or a
+#         line of the list is malformed (a broken list is a different
+#         condition from a missing variable; deploy.sh aborts on both, so
+#         this stays fail-closed)
+#
+# "No checklist" and "nothing missing" must never share an exit code. A
+# truncated or accidentally blanked list would otherwise disable the gate
+# entirely and report success — the same false-green class as the two deploys
+# that motivated this script, one level up.
 #
 # NAMES ONLY. This script must never read, print, or log a VALUE. Two separate
 # things make that true, and BOTH are load-bearing:
@@ -46,19 +52,45 @@ main() {
     exit 2
   fi
 
-  local present=""
+  # An env file is NOT a union of the names it mentions. systemd's
+  # EnvironmentFile and dotenv both take the LAST assignment of a repeated
+  # key, so
+  #
+  #     PLATFORM_DB=platform/dev/synthetic.db
+  #     PLATFORM_DB=
+  #
+  # yields PLATFORM_DB='' — and asking only whether the name appears on SOME
+  # line reports it present while the process gets nothing. That shape is
+  # reachable by exactly the workflow deploy/PROVISION.md prescribes:
+  # appending KEY=value below an existing key.
+  #
+  # So each assignment is reduced to a FLAG and a NAME, in file order:
+  #
+  #     1 NAME   this assignment yields a non-empty value
+  #     0 NAME   this assignment yields the EMPTY STRING
+  #
+  # and the last line mentioning a name is the one that decides. Three shapes
+  # yield the empty string, all of them hand-edit slips that look fine in a
+  # `cat`: `NAME=`, `NAME=   ` (systemd strips surrounding whitespace from an
+  # unquoted value) and `NAME=""` / `NAME=''` (systemd strips surrounding
+  # quotes). An empty string is not the documented fallback either: lib/db's
+  # `process.env.PLATFORM_DB ?? '...'` uses `??`, so `''` is passed straight
+  # through. lib/env/report.ts already counts an empty value as missing; this
+  # is the half that has to agree with it.
+  #
+  # NAMES ONLY still holds, and this is where it is easiest to lose: every
+  # branch below substitutes the WHOLE line with `<flag> \2`, so the value is
+  # discarded inside sed and never reaches a shell variable. The `t` after
+  # each branch stops the line being reconsidered by a later, looser one.
+  local assigned="" lhs
+  lhs='^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)='
   if [ -r "$envfile" ]; then
-    # Names only: optional leading `export `, then NAME, then everything from
-    # `=` onward dropped. A commented line never matches, so it reads as absent.
-    #
-    # `=..*` — at least one character after the `=` — not `=.*`. `NAME=` with
-    # nothing after it is a hand-edit slip that systemd turns into an EMPTY
-    # STRING, and an empty string is not the documented fallback: lib/db's
-    # `process.env.PLATFORM_DB ?? '...'` uses `??`, so `''` is passed straight
-    # through rather than defaulted. lib/env/report.ts already counts an empty
-    # value as missing; this is the half that has to agree with it.
-    present=$(sed -n \
-      's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=..*/\2/p' \
+    # A commented line matches nothing here, so it reads as absent.
+    assigned=$(sed -n \
+      -e "s/${lhs}[[:space:]]*\$/0 \\2/p" -e t \
+      -e "s/${lhs}[[:space:]]*\"\"[[:space:]]*\$/0 \\2/p" -e t \
+      -e "s/${lhs}[[:space:]]*''[[:space:]]*\$/0 \\2/p" -e t \
+      -e "s/${lhs}.*/1 \\2/p" \
       "$envfile")
   else
     echo "check-env: $envfile is not readable — treating every variable as missing" >&2
@@ -73,7 +105,7 @@ main() {
   # which is what lib/env/required.ts does (it throws before returning any
   # entry). A half-list of MISSING lines followed by a parse error would read
   # as a complete answer.
-  local blocked=0 warned=0 n=0 report="" raw decl name severity extra
+  local blocked=0 warned=0 n=0 entries=0 report="" raw decl name severity extra last
   while IFS= read -r raw || [ -n "$raw" ]; do
     n=$((n + 1))
     decl=${raw%%#*}
@@ -90,12 +122,22 @@ main() {
       echo "check-env: $list line $n: expected \"NAME SEVERITY\"" >&2
       exit 2
     fi
+    entries=$((entries + 1))
 
+    # LAST ASSIGNMENT WINS. Both flag forms for this name are selected, in
+    # file order, and only the last of them decides — `1 ` means that
+    # assignment yields a value, `0 ` means it yields the empty string.
+    #
     # -F: the name is a literal, never a pattern. A name containing a regex
     # metacharacter would otherwise match a DIFFERENT variable and report an
     # absent one as present. The identifier check above already excludes such
     # names; both guards stay, because they fail independently and -F is free.
-    if printf '%s\n' "$present" | grep -qxF -- "$name"; then
+    #
+    # `|| true`: grep exits 1 when the name is assigned nowhere, and under
+    # `set -o pipefail` that would kill the script instead of reporting the
+    # variable missing — the loudest possible way to fail open.
+    last=$(printf '%s\n' "$assigned" | grep -xF -e "1 $name" -e "0 $name" | tail -n 1 || true)
+    if [ "$last" = "1 $name" ]; then
       continue
     fi
 
@@ -120,6 +162,19 @@ main() {
     esac
   done < "$list"
 
+  # A list with no entries is a BROKEN LIST, not a clean bill of health: an
+  # empty file, a file of comments, a file of blank lines. Checked after the
+  # loop rather than by pre-scanning the file, so it counts exactly the lines
+  # the loop accepted as entries — the two can never disagree. Nothing from
+  # the file is echoed here, only its path.
+  if [ "$entries" -eq 0 ]; then
+    echo "check-env: $list: checklist missing or empty — no variables to check." >&2
+    echo "A blank or truncated list would otherwise report success and let the" >&2
+    echo "deploy through. \"No checklist\" and \"nothing missing\" are not the" >&2
+    echo "same answer." >&2
+    exit 2
+  fi
+
   if [ -n "$report" ]; then
     printf '%s' "$report" >&2
   fi
@@ -127,8 +182,10 @@ main() {
   if [ "$blocked" -gt 0 ]; then
     echo >&2
     echo "check-env: $blocked required variable(s) missing from $envfile." >&2
-    echo "Add each as KEY=value — no 'export', no quotes; systemd parses the" >&2
-    echo "file literally and both end up inside the name or the value." >&2
+    echo "Add each as KEY=value — no 'export', no quotes. systemd parses the" >&2
+    echo "file itself with no shell, so 'export FOO=x' names a variable called" >&2
+    echo "'export FOO'; and it strips surrounding quotes, so KEY=\"\" is the" >&2
+    echo "EMPTY STRING, which this check counts as missing." >&2
     return 1
   fi
 

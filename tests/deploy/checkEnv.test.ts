@@ -189,6 +189,78 @@ describe('deploy/check-env.sh cannot fail open', () => {
     expect(r.status).toBe(2)
     expect(r.stderr).not.toMatch(/MISSING/)
   })
+
+  it('derives presence from the LAST assignment, not from any line (R1)', () => {
+    // Before the fix: exit 0. The script asked whether the name appeared on
+    // SOME line; systemd's EnvironmentFile and dotenv both take the LAST
+    // assignment. So the process receives PLATFORM_DB='' while the guard
+    // reports it present — and lib/db/instance.ts uses `??`, so '' is passed
+    // straight to openPlatformDb rather than falling back. Reachable by
+    // exactly the workflow deploy/PROVISION.md prescribes: append KEY=value
+    // below an existing key.
+    const r = run(
+      'PLATFORM_DB REQUIRED  # p',
+      'PLATFORM_DB=SUPERSECRET-VALUE\nPLATFORM_DB=\n',
+    )
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/MISSING \(REQUIRED\): PLATFORM_DB/)
+    // Last-wins parsing must not have brought a value anywhere near output.
+    expect(r.stdout + r.stderr).not.toContain('SUPERSECRET-VALUE')
+  })
+
+  it('lets a LATER real assignment win over an earlier empty one', () => {
+    // The mirror of R1: last-wins has to work in both directions, or the fix
+    // becomes "any empty line anywhere marks the variable missing" and the
+    // guard starts blocking healthy deploys.
+    expect(run('A REQUIRED', 'A=\nA=x\n').status).toBe(0)
+  })
+
+  it('counts a whitespace-only value as missing', () => {
+    // systemd strips surrounding whitespace from an unquoted value, so this
+    // yields A='' — the same shape as I2, one space further along.
+    expect(run('A REQUIRED', 'A=   \n').status).toBe(1)
+  })
+
+  it('counts a quoted-empty value as missing', () => {
+    // systemd strips surrounding quotes (ledger residual 6 corrected the
+    // comment that claimed otherwise), so both of these yield ''.
+    expect(run('A REQUIRED', 'A=""\n').status).toBe(1)
+    expect(run('A REQUIRED', "A=''\n").status).toBe(1)
+  })
+
+  it('still counts a quoted NON-empty value as present', () => {
+    // The quoted-empty rule must not swallow every quoted value. A=" " is a
+    // one-space value under systemd, which lib/env/report.ts counts present.
+    expect(run('A REQUIRED', 'A="x"\n').status).toBe(0)
+    expect(run('A REQUIRED', 'A=" "\n').status).toBe(0)
+  })
+})
+
+describe('deploy/check-env.sh rejects a checklist with no entries', () => {
+  // "No checklist" and "nothing missing" must never share an exit code — the
+  // same false-green class as the two deploys that motivated this branch, one
+  // level up. Exit 2, not 1: this is a broken-list condition, matching how the
+  // script already reports a malformed line and an unreadable list. deploy.sh
+  // branches on the status and aborts on both, so it stays fail-closed.
+
+  it('exits 2 on an empty list', () => {
+    const r = run('', 'A=x')
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/checklist missing or empty/i)
+  })
+
+  it('exits 2 on a comments-only list, without echoing the comments', () => {
+    const r = run('# nothing to see here SUPERSECRET-VALUE\n# more\n', 'A=x')
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/checklist missing or empty/i)
+    expect(r.stdout + r.stderr).not.toContain('SUPERSECRET-VALUE')
+  })
+
+  it('exits 2 on a blank-lines-only list', () => {
+    const r = run('\n\n   \n\t\n', 'A=x')
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/checklist missing or empty/i)
+  })
 })
 
 describe('the bash and TypeScript halves agree', () => {
@@ -303,11 +375,105 @@ describe('the bash and TypeScript halves agree', () => {
       missing: [{ name: 'A', severity: 'REQUIRED' }],
     },
     {
+      // Residual 1. The `env` column is the point of this row: systemd and
+      // dotenv both take the LAST assignment, so the process receives A=''
+      // even though A=x appears in the file. Declaring the union of lines
+      // here instead ({ A: 'x' }) is precisely the wrong belief that let the
+      // bash half report present while the app got an empty string.
+      what: 'a key assigned twice, empty last (last-wins)',
+      list: 'A REQUIRED',
+      envFile: 'A=x\nA=\n',
+      env: { A: '' },
+      bashExit: 1,
+      tsThrows: false,
+      missing: [{ name: 'A', severity: 'REQUIRED' }],
+    },
+    {
+      what: 'a key assigned twice, real value last (last-wins)',
+      list: 'A REQUIRED',
+      envFile: 'A=\nA=x\n',
+      env: { A: 'x' },
+      bashExit: 0,
+      tsThrows: false,
+      missing: [],
+    },
+    {
+      // systemd strips surrounding whitespace from an unquoted value.
+      what: 'a whitespace-only value',
+      list: 'A REQUIRED',
+      envFile: 'A=   \n',
+      env: { A: '' },
+      bashExit: 1,
+      tsThrows: false,
+      missing: [{ name: 'A', severity: 'REQUIRED' }],
+    },
+    {
+      // systemd strips surrounding quotes, so this is the empty string too
+      // (ledger residual 6 corrected the comment that said otherwise).
+      what: 'a quoted-empty value',
+      list: 'A REQUIRED',
+      envFile: 'A=""\n',
+      env: { A: '' },
+      bashExit: 1,
+      tsThrows: false,
+      missing: [{ name: 'A', severity: 'REQUIRED' }],
+    },
+    {
+      what: 'a quoted value that is a single space',
+      list: 'A REQUIRED',
+      envFile: 'A=" "\n',
+      env: { A: ' ' },
+      bashExit: 0,
+      tsThrows: false,
+      missing: [],
+    },
+    {
+      // Residual 3. DESIGNED DIVERGENCE: bash is the gate and exits 2 on a
+      // checklist with no entries, because "no checklist" and "nothing
+      // missing" must not share an exit code. lib/env/report.ts is the
+      // runtime witness and reports nothing for an empty list — it has no
+      // list to diff against and must never throw. Same split as the
+      // tsThrows rows below.
+      what: 'an empty list',
+      list: '',
+      envFile: 'A=x\n',
+      env: { A: 'x' },
+      bashExit: 2,
+      tsThrows: false,
+      missing: [],
+    },
+    {
+      what: 'a comments-and-blank-lines-only list',
+      list: '# heading\n\n   \n',
+      envFile: 'A=x\n',
+      env: { A: 'x' },
+      bashExit: 2,
+      tsThrows: false,
+      missing: [],
+    },
+    {
       what: "a typo'd severity",
       list: 'A REQUIRD',
       envFile: 'OTHER=1\n',
       env: { OTHER: '1' },
       bashExit: 2,
+      tsThrows: true,
+    },
+    {
+      // Residual 2, PINNED AS-IS, not endorsed. Every other malformed-line
+      // row pairs the bad line with an ABSENT variable; this is the untested
+      // cell the ledger names. bash's presence `continue` runs before the
+      // severity `case`, so a malformed severity on a PRESENT variable is
+      // never noticed and the deploy proceeds — while the TypeScript parser
+      // rejects the same list outright. Fail-closed (it becomes an exit 2 the
+      // moment A goes absent), which is why it was parked. If someone moves
+      // the `continue` below the `case`, this row turns red and the change is
+      // visible rather than silent — change the 0 to a 2 then.
+      what: "a typo'd severity on a PRESENT variable",
+      list: 'A REQUIRD',
+      envFile: 'A=x\n',
+      env: { A: 'x' },
+      bashExit: 0,
       tsThrows: true,
     },
     {

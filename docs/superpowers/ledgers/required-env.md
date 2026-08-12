@@ -39,6 +39,19 @@ follows is what survived.
    **Fix when taken:** derive presence from the LAST matching assignment
    rather than from any matching line.
 
+   **CLOSED.** `deploy/check-env.sh` now reduces each assignment to a flag
+   and a name in file order (`1 NAME` yields a value, `0 NAME` yields the
+   empty string) and judges only the LAST line mentioning the name. All
+   three empty-yielding shapes are covered: `NAME=`, whitespace-only, and
+   `NAME=""` / `NAME=''` — the quoted pair is no longer "probably", because
+   residual 6 established that systemd does strip surrounding quotes. Value
+   text is discarded inside sed and never reaches a shell variable, so
+   NAMES-ONLY is unchanged. Reproduced failing first (the duplicate-key file
+   above exited 0), then passing. Agreement rows added for both duplicate-key
+   orders, whitespace-only, quoted-empty, and a quoted single space (present,
+   not missing) — with the `env` column declaring last-wins semantics, which
+   is the belief the row exists to pin.
+
 2. **SEVERITY IS VALIDATED ONLY ON THE MISSING PATH.** The presence `continue`
    in `deploy/check-env.sh` runs before the severity `case`, so a malformed
    severity on a variable that happens to be *present* is never noticed.
@@ -55,11 +68,29 @@ follows is what survived.
    here because a wrong claim about a guard's coverage is the class of thing
    this branch exists to stop trusting.
 
+   **STILL OPEN, now PINNED.** The residual-1 and -3 fix left the ordering
+   alone — the presence `continue` still runs before the severity `case` —
+   but the untested cell is no longer untested: the agreement table has a row
+   `a typo'd severity on a PRESENT variable` asserting bash exit 0 against a
+   TypeScript throw. It records today's behaviour rather than endorsing it,
+   so moving the `continue` below the `case` turns that row red and the
+   change is visible instead of silent.
+
 3. **AN EMPTY OR COMMENTS-ONLY LIST EXITS 0.** A truncated or accidentally
    blanked `deploy/required-env` disables the gate entirely and reports
    success. Both halves agree, so the agreement table structurally cannot
    catch it. "The checklist is empty" and "nothing is missing" are the same
    green.
+
+   **CLOSED.** `deploy/check-env.sh` counts the entries the loop accepted and
+   exits 2 — the broken-list code, alongside a malformed line and an
+   unreadable list — when there are none, printing only the list's path.
+   `deploy.sh` already branches on 2 and aborts, so this is fail-closed; its
+   operator message now reads "unreadable, empty, or malformed". The
+   agreement table gained an empty-list row and a comments-and-blank-lines
+   row, both recording a DESIGNED divergence: bash is the gate and exits 2,
+   while `lib/env/report.ts` is the runtime witness, has no list to diff
+   against, and must never throw.
 
 4. **`-qxF`'s `-F` IS NO LONGER INDEPENDENTLY OBSERVABLE.** The identifier
    check rejects a regex metacharacter in a name before the grep is reached,
@@ -83,6 +114,14 @@ follows is what survived.
    is why residual 1's quoted variants are only probable rather than
    confirmed.
 
+   **CLOSED as wording.** Both texts were corrected while fixing residual 1,
+   which depends on the true behaviour: quotes are stripped, so `KEY=""` is
+   the empty string and the checker counts it MISSING. The advice — bare
+   `KEY=value`, no `export`, no quotes — is unchanged, now with the reason
+   that actually holds. `deploy/PROVISION.md` also gained the last-wins
+   warning about appending a key that is already in the file, which is the
+   workflow residual 1 was reachable through.
+
 7. **`docs/local-dev.md` NAMES `PLATFORM_DB` IN TWO PLACES** with nothing
    pinning it. A small drift channel against the one-source-of-truth rule (a
    name is not a list, so this was accepted) — if the name or its severity
@@ -102,10 +141,13 @@ follows is what survived.
   not. The mitigation is the agreement table in
   `tests/deploy/checkEnv.test.ts`, which now feeds both halves a matrix of
   malformed shapes and asserts the pair (bash exit code, TypeScript
-  throws/missing-names). It constrains list-shape divergences. It does **not**
-  yet constrain env-file-semantics divergences, because its `env` column is a
-  hand-declared belief about what systemd yields rather than something derived
-  — which is exactly where residual 1 lives.
+  throws/missing-names). It constrains list-shape divergences. Its `env`
+  column is still a hand-declared belief about what systemd yields rather than
+  something derived — that is unchanged and unfixable from here — but the
+  belief is now written down for the shapes that matter: duplicate keys in
+  both orders, whitespace-only, quoted-empty, and a quoted single space. A
+  wrong belief in that column is now a visible claim in a row rather than an
+  unstated assumption, which is what closing residual 1 turned on.
 
 - **The runtime check never throws** (spec D3), and a healthy boot touches no
   database (D5). A throw in `instrumentation.ts` meets systemd's

@@ -104,15 +104,26 @@ install failure.
    `/home/deploy/stairwell/.env` — the file `deploy/stairwell.service:11`
    already loads via `EnvironmentFile` — one `KEY=value` per line, no
    `export`, no quotes. `EnvironmentFile` is parsed by systemd itself with
-   no shell involved: `export FOO=x` becomes a variable literally named
-   `export FOO`, and a quoted value keeps the quote characters as part of
-   the value. Both mistakes look correct when you `cat` the file and both
-   fail silently at runtime instead. That file lives outside the repo and
-   is never checked in; create or edit it by hand on the droplet, over SSH,
-   readable only by `deploy`. This does not change the deploy contract:
-   `deploy/deploy.sh` remains the only way changes reach the droplet, and a
-   restart is enough to pick up a new or changed `.env` value — no redeploy
-   required.
+   no shell involved, so `export FOO=x` becomes a variable literally named
+   `export FOO` — a mistake that looks correct when you `cat` the file and
+   fails silently at runtime instead. Quotes are stripped rather than kept,
+   which makes `KEY=""` the empty string; write the value bare so there is
+   nothing to strip. Two further shapes are the empty string too — `KEY=`
+   and `KEY=` followed by spaces. `deploy/check-env.sh` counts all three as
+   MISSING, because an empty value is not a value. The `.env` file lives
+   outside the repo and is never checked in; create or edit it by hand on the
+   droplet, over SSH, readable only by `deploy`. This does not change the
+   deploy contract: `deploy/deploy.sh` remains the only way changes reach the
+   droplet, and a restart is enough to pick up a new or changed `.env` value
+   — no redeploy required.
+
+   **Appending is where this bites.** Before adding a key, check it is not
+   already in the file: systemd takes the LAST assignment of a repeated key,
+   so appending `PLATFORM_DB=` below an existing `PLATFORM_DB=/srv/…`
+   silently replaces it with the empty string. `deploy/check-env.sh` reads
+   the file the same way — last assignment wins, and the last one is the only
+   one it judges — so the gate agrees with what the service will actually
+   receive rather than with what the file appears to say.
 
    `deploy/deploy.sh` now runs `deploy/check-env.sh` right after `git pull`
    and aborts before `npm ci` if a `REQUIRED` name from `deploy/required-env`
