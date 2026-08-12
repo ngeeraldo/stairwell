@@ -9,7 +9,9 @@ import {
   anthropicClient,
   type ChatClient,
 } from '@/lib/chat/client'
-import { CHAT_CONTEXT, runTurn } from '@/lib/chat/turn'
+import { contextFor } from '@/lib/chat/context'
+import { AGENT_PROMPT, loadPrompt } from '@/lib/chat/prompt'
+import { runTurn } from '@/lib/chat/turn'
 import { conversationAlerter } from '@/lib/alerts/ntfy'
 
 const encoder = new TextEncoder()
@@ -65,17 +67,30 @@ export async function POST(request: Request) {
   try {
     turnClient = chatClient()
   } catch {
+    // Aligned to the chat_error shape documented in the step-2 design spec
+    // section 2.5 (step-2 ledger residual 8). It used to carry six fields
+    // where every other chat_error carries fifteen, so anyone grouping
+    // chat_error rows by prompt_sha silently dropped these. metrics is
+    // append-only, so this only gets more expensive with every row.
     appendMetric(db, {
       accountId: session.account_id,
       event: 'chat_error',
       at: Date.now(),
       data: {
+        input: 0,
+        output: 0,
+        cache_read: 0,
+        cache_creation: 0,
         model: CHAT_MODEL,
         effort: CHAT_EFFORT,
-        context: CHAT_CONTEXT,
+        prompt_sha: loadPrompt(AGENT_PROMPT).sha,
+        context: contextFor(db, session.account_id),
+        model_served: CHAT_MODEL,
+        fallback_fired: false,
         kind: 'no_api_key',
         status: null,
         type: null,
+        delivered_chars: 0,
       },
     })
     return new Response(null, { status: 503 })
@@ -88,6 +103,7 @@ export async function POST(request: Request) {
           db,
           client: turnClient,
           now: Date.now,
+          context: contextFor(db, session.account_id),
           // Built per request, and NTFY_TOPIC read at call time rather than
           // at module scope — the same reason chatClient() is deferred: a
           // configuration problem should fail the request that needed it,

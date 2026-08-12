@@ -1,6 +1,7 @@
 // lib/chat/turn.ts
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, appendTranscript, readTranscript } from '@/lib/db/appendOnly'
+import type { ChatContext } from './context'
 import { conversationIdFor } from './conversation'
 import { toMessages } from './history'
 import { loadPrompt } from './prompt'
@@ -15,17 +16,16 @@ import {
   type Usage,
 } from './client'
 
-/**
- * The run kind recorded on every metrics row (architecture-overview.md line
- * 136: "interview, planning, tweak runs"). No spec exists until step 4, so
- * every turn in step 2 is an interview turn.
- */
-export const CHAT_CONTEXT = 'interview' as const
-
 export type TurnDeps = {
   db: PlatformDb
   client: ChatClient
   now: () => number
+  /**
+   * Resolved by the caller and passed in, not computed here: turn.ts takes
+   * its collaborators as parameters so the suite can drive every path, and
+   * this is one of them.
+   */
+  context: ChatContext
   /**
    * Fired when this turn STARTS a conversation. Declared as returning void
    * on purpose: the real implementation is async and fire-and-forget
@@ -62,7 +62,7 @@ export async function runTurn(
   deps: TurnDeps,
   input: TurnInput,
 ): Promise<TurnOutcome> {
-  const { db, client, now, alert } = deps
+  const { db, client, now, context, alert } = deps
   const at = now()
   const { text: system, sha: promptSha } = loadPrompt()
 
@@ -107,7 +107,7 @@ export async function runTurn(
     model: CHAT_MODEL,
     effort: CHAT_EFFORT,
     prompt_sha: promptSha,
-    context: CHAT_CONTEXT,
+    context,
   }
 
   let final: StreamResult

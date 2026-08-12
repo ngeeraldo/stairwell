@@ -242,6 +242,29 @@ describe('POST /api/chat — no credential', () => {
     expect(readTranscript(handle!, accountId)).toHaveLength(0)
   })
 
+  it('records a no_api_key chat_error carrying the full documented shape', async () => {
+    // Residual 8: this row used to be a second, narrower chat_error shape.
+    // Anyone grouping chat_error by prompt_sha silently dropped it.
+    await signIn(false)
+    behaviour.value = 'no-credential'
+    await post({ body: 'hi' })
+
+    const row = handle!
+      .prepare("SELECT data FROM metrics WHERE event = 'chat_error' ORDER BY id DESC LIMIT 1")
+      .get() as { data: string }
+    const data = JSON.parse(row.data) as Record<string, unknown>
+    for (const key of [
+      'input', 'output', 'cache_read', 'cache_creation',
+      'model', 'effort', 'prompt_sha', 'context',
+      'model_served', 'fallback_fired', 'kind', 'status', 'type',
+      'delivered_chars',
+    ]) {
+      expect(data, key).toHaveProperty(key)
+    }
+    expect(data.kind).toBe('no_api_key')
+    expect(data.context).toBe('interview')
+  })
+
   it('retries construction on the next request rather than caching the failure', async () => {
     await signIn(false)
     behaviour.value = 'no-credential'

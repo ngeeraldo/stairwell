@@ -72,6 +72,7 @@ describe('no message text reaches ntfy.sh', () => {
         db,
         client,
         now: () => 1_000,
+        context: 'interview',
         alert: (id) => {
           pending.push(send(id))
         },
