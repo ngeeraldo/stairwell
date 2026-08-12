@@ -60,7 +60,7 @@ export async function runTurn(
 
   // Computed once, here. The assistant row reuses it rather than recomputing
   // the gap against a clock that has moved.
-  const conversationId = conversationIdFor(db, input.accountId, at)
+  const { id: conversationId } = conversationIdFor(db, input.accountId, at)
 
   const stamp = {
     accountId: input.accountId,

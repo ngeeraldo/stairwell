@@ -33,34 +33,46 @@ function write(accountId: number, conversationId: string, at: number) {
 
 describe('conversationIdFor', () => {
   it('mints a fresh id for an account with no history', () => {
-    const id = conversationIdFor(db, 1, 1_000)
-    expect(id).toMatch(/^[0-9a-f]{32}$/)
+    const ref = conversationIdFor(db, 1, 1_000)
+    expect(ref.id).toMatch(/^[0-9a-f]{32}$/)
+    expect(ref.started).toBe(true)
   })
 
   it('reuses the last id inside the gap', () => {
     write(1, 'conv-a', 1_000)
-    expect(conversationIdFor(db, 1, 1_000 + CONVERSATION_GAP_MS)).toBe('conv-a')
+    const ref = conversationIdFor(db, 1, 1_000 + CONVERSATION_GAP_MS)
+    expect(ref.id).toBe('conv-a')
+    expect(ref.started).toBe(false)
   })
 
   it('mints a fresh id past the gap', () => {
     write(1, 'conv-a', 1_000)
-    const id = conversationIdFor(db, 1, 1_000 + CONVERSATION_GAP_MS + 1)
-    expect(id).not.toBe('conv-a')
-    expect(id).toMatch(/^[0-9a-f]{32}$/)
+    const ref = conversationIdFor(db, 1, 1_000 + CONVERSATION_GAP_MS + 1)
+    expect(ref.id).not.toBe('conv-a')
+    expect(ref.id).toMatch(/^[0-9a-f]{32}$/)
+    expect(ref.started).toBe(true)
   })
 
   it('treats exactly the gap as still the same conversation', () => {
     // The boundary is "> 30 minutes", so 30:00.000 exactly stays. Pinned
     // because an off-by-one here silently re-cuts every conversation in the
-    // retention analysis, and the rows are not rewritable afterwards.
+    // retention analysis, and the rows are not rewritable afterwards. Now
+    // also the boundary the step-3 alert fires on, so an off-by-one is a
+    // phone that buzzes at the wrong moment as well.
     write(1, 'conv-a', 0)
-    expect(conversationIdFor(db, 1, CONVERSATION_GAP_MS)).toBe('conv-a')
-    expect(conversationIdFor(db, 1, CONVERSATION_GAP_MS + 1)).not.toBe('conv-a')
+    expect(conversationIdFor(db, 1, CONVERSATION_GAP_MS).id).toBe('conv-a')
+    expect(conversationIdFor(db, 1, CONVERSATION_GAP_MS).started).toBe(false)
+    expect(conversationIdFor(db, 1, CONVERSATION_GAP_MS + 1).id).not.toBe('conv-a')
+    expect(conversationIdFor(db, 1, CONVERSATION_GAP_MS + 1).started).toBe(true)
   })
 
   it('does not borrow another account\'s conversation', () => {
     write(2, 'conv-other', 1_000)
-    expect(conversationIdFor(db, 1, 1_100)).not.toBe('conv-other')
+    const ref = conversationIdFor(db, 1, 1_100)
+    expect(ref.id).not.toBe('conv-other')
+    // Account 1 has never written, so this is a start even though account 2
+    // is mid-conversation. Two friends chatting at once must alert twice.
+    expect(ref.started).toBe(true)
   })
 
   it('is 30 minutes, matching the step-3 alert boundary', () => {

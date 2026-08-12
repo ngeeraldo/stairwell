@@ -13,8 +13,20 @@ import { lastTranscriptRow } from '@/lib/db/appendOnly'
  */
 export const CONVERSATION_GAP_MS = 30 * 60 * 1000
 
+export type ConversationRef = {
+  id: string
+  /**
+   * True when this call MINTED the id rather than reusing one. This is the
+   * step-3 alert trigger in its entirety: "a conversation started" and "a
+   * conversation_id was minted" are the same event, deliberately, so there is
+   * no second rule that can drift from this one (design spec §4.1).
+   */
+  started: boolean
+}
+
 /**
- * The conversation a message written at `now` belongs to.
+ * The conversation a message written at `now` belongs to, and whether that
+ * conversation is new.
  *
  * Called ONCE per exchange, when the user turn is appended. The assistant turn
  * reuses the returned value verbatim rather than recomputing — see the design
@@ -24,9 +36,13 @@ export function conversationIdFor(
   db: PlatformDb,
   accountId: number,
   now: number,
-): string {
+): ConversationRef {
   const last = lastTranscriptRow(db, accountId)
-  if (!last) return randomBytes(16).toString('hex')
-  if (now - last.at > CONVERSATION_GAP_MS) return randomBytes(16).toString('hex')
-  return last.conversation_id
+  const fresh = (): ConversationRef => ({
+    id: randomBytes(16).toString('hex'),
+    started: true,
+  })
+  if (!last) return fresh()
+  if (now - last.at > CONVERSATION_GAP_MS) return fresh()
+  return { id: last.conversation_id, started: false }
 }
