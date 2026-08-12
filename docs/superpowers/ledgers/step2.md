@@ -191,3 +191,28 @@ shipped smoke.sh skipped its own gate). Design cycle, not improvisation.
 17. deploy sudo password unconfirmed after failed attempts through a
     no-terminal SSH path; verify with ssh -t + sudo -v at next maintenance;
     deploys unaffected (NOPASSWD grant).
+
+## Queued task — cache the conversation history, not just the system prompt
+
+Ruled by Nico on 2026-08-11 after the first live turns. To be done at some
+point; explicitly NOT a blocker for the step-2 checkpoint.
+
+`cache_control: ephemeral` currently sits on the system block only, so the
+page-length prompt rides at cache-read rates while the entire conversation
+history is resent uncached on every turn. Measured on the droplet's first
+two turns: turn one ~743 total input tokens (12 uncached + 731 cache write),
+turn two ~916 (185 uncached + 731 cache read). The 185 is the turn-one
+exchange plus the turn-two message, at full price.
+
+That is a linear cost curve against conversation length, and the pilot's
+whole thesis is friends still chatting at week three — so the curve matters
+exactly where the product is trying to succeed.
+
+Likely shape: a second cache breakpoint on the last message of the history,
+so the growing prefix caches too. Constraints to respect when designing it:
+the API allows at most 4 breakpoints per request; the cached prefix must be
+byte-stable, so anything volatile placed ahead of it silently invalidates
+everything after; and the minimum cacheable prefix on claude-opus-5 is 512
+tokens, which the system prompt already clears on its own. Verify with
+`usage.cache_read_input_tokens` — if it does not rise with conversation
+length after the change, the breakpoint is in the wrong place.

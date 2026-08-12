@@ -264,6 +264,15 @@ the context window.
 - `output_config.effort`: `medium`.
 - `cache_control: ephemeral` on the system block.
 
+Only the system block is cached. The conversation history is resent
+uncached on every turn, so input cost grows linearly as a conversation
+accumulates — measured on the droplet's first two turns: ~743 total input
+tokens on turn one, ~916 on turn two, the difference being history at full
+price while the 731-token prompt rode at cache rates. Acceptable for a
+pilot and cheap to improve later with a second breakpoint on the last
+message. Recorded as a queued task in
+`docs/superpowers/ledgers/step2.md`.
+
 ### 3.3 Wire format
 
 NDJSON. One JSON object per line: `{"t":"…"}` per text delta, then a terminal
