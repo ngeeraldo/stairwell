@@ -26,6 +26,14 @@ export type TurnDeps = {
   db: PlatformDb
   client: ChatClient
   now: () => number
+  /**
+   * Fired when this turn STARTS a conversation. Declared as returning void
+   * on purpose: the real implementation is async and fire-and-forget
+   * (lib/alerts/ntfy.ts), and this type is what stops a future edit from
+   * awaiting it and putting a push notification on the critical path of a
+   * friend's chat turn.
+   */
+  alert: (accountId: number) => void
 }
 
 export type TurnInput = {
@@ -54,13 +62,17 @@ export async function runTurn(
   deps: TurnDeps,
   input: TurnInput,
 ): Promise<TurnOutcome> {
-  const { db, client, now } = deps
+  const { db, client, now, alert } = deps
   const at = now()
   const { text: system, sha: promptSha } = loadPrompt()
 
   // Computed once, here. The assistant row reuses it rather than recomputing
   // the gap against a clock that has moved.
-  const { id: conversationId } = conversationIdFor(db, input.accountId, at)
+  const { id: conversationId, started } = conversationIdFor(
+    db,
+    input.accountId,
+    at,
+  )
 
   const stamp = {
     accountId: input.accountId,
@@ -70,6 +82,18 @@ export async function runTurn(
   }
 
   appendTranscript(db, { ...stamp, role: 'user', body: input.body, at })
+
+  // AFTER the write, because the alert asserts a conversation started and an
+  // insert that threw means none did. BEFORE the stream, because the model's
+  // latency is not something a phone should wait on — and because a turn that
+  // errors still means a friend showed up, which is when the signal is worth
+  // the most.
+  //
+  // Deliberately not wrapped in a try: the alerter owns its own safety and
+  // provably neither throws nor rejects. A try here would instead swallow a
+  // wiring mistake — an alert that never fires would look exactly like an
+  // alert that fired.
+  if (started) alert(input.accountId)
 
   const messages = toMessages(readTranscript(db, input.accountId))
 
