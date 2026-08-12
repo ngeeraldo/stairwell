@@ -69,11 +69,11 @@ main() {
   #
   #     Placed AFTER the pull so a deploy that introduces a new requirement
   #     enforces it on itself — the same reasoning as the re-exec above —
-  #     and BEFORE the install below so a missing variable costs seconds
-  #     rather than a full install, build and test cycle.
+  #     and BEFORE npm ci so a missing variable costs seconds rather than a
+  #     full install, build and test cycle.
   #
-  #     Names only. This check never prints a value, and must not be changed
-  #     to: this output goes straight into a deploy log.
+  #     Names only. deploy/check-env.sh never prints a value, and must not
+  #     be changed to: this output goes straight into a deploy log.
   #
   #     `.env` here is the same file the systemd unit loads as its
   #     EnvironmentFile — main() cds to the repo root, which is the unit's

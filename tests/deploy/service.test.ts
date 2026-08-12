@@ -69,8 +69,26 @@ describe('deploy/stairwell.service', () => {
 describe('deploy/deploy.sh env gate', () => {
   const script = readFileSync('deploy/deploy.sh', 'utf8')
 
+  // Assertions below are about COMMANDS, not comments. The block that invokes
+  // check-env.sh deliberately mentions `npm ci` and the script's own name in
+  // its explanatory comment, so a naive indexOf over the raw file matches the
+  // prose and not the code — in both directions: it can fail on a harmless
+  // comment, and it can pass while the real invocation has moved.
+  const commands = script
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n')
+
   it('calls check-env.sh', () => {
     expect(script).toMatch(/check-env\.sh/)
+  })
+
+  it('stripping comments does not strip the invocation itself', () => {
+    // Pins the property the stripping above relies on: if the real call
+    // ever gets commented out (or otherwise stops being a command), this
+    // fails loudly instead of the position tests below silently passing
+    // against nothing.
+    expect(commands).toMatch(/check-env\.sh/)
   })
 
   it('calls it AFTER the pull and BEFORE npm ci', () => {
@@ -78,9 +96,9 @@ describe('deploy/deploy.sh env gate', () => {
     // introduces a new requirement enforces it on itself — the same
     // reasoning as the re-exec block. Before npm ci, so a missing variable
     // costs seconds rather than a full build and test cycle.
-    const pull = script.indexOf('git pull --ff-only')
-    const check = script.indexOf('check-env.sh')
-    const install = script.indexOf('npm ci')
+    const pull = commands.indexOf('git pull --ff-only')
+    const check = commands.indexOf('check-env.sh')
+    const install = commands.indexOf('npm ci')
     expect(pull).toBeGreaterThan(-1)
     expect(check).toBeGreaterThan(-1)
     expect(install).toBeGreaterThan(-1)
@@ -89,8 +107,8 @@ describe('deploy/deploy.sh env gate', () => {
   })
 
   it('aborts the deploy when the check fails', () => {
-    const check = script.indexOf('check-env.sh')
-    const after = script.slice(check, check + 400)
+    const check = commands.indexOf('check-env.sh')
+    const after = commands.slice(check, check + 400)
     expect(after).toMatch(/exit 1/)
   })
 
