@@ -19,7 +19,7 @@ vi.mock('next/headers', () => ({
 
 // The route builds a real Anthropic client. Replace the module so no test can
 // construct one, and so each test can choose what that construction does.
-type Behaviour = 'ok' | 'refusal' | 'no-credential'
+type Behaviour = 'ok' | 'refusal' | 'no-credential' | 'propose-ok' | 'propose-fail'
 const behaviour: { value: Behaviour } = { value: 'ok' }
 
 vi.mock('@/lib/chat/client', async (importOriginal) => {
@@ -43,6 +43,14 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
             // HTTP 200, nothing delivered — see runTurn's empty-reply path.
             return { usage, stop_reason: 'refusal', served, tools_called: [] }
           }
+          if (behaviour.value === 'propose-ok' || behaviour.value === 'propose-fail') {
+            // The agent raised its hand: one text chunk, then a tool_use stop
+            // with propose_spec in tools_called, which is what makes runTurn
+            // call authorSpec at all.
+            onText('sure, ')
+            onUsage({ output: 2 })
+            return { usage, stop_reason: 'tool_use', served, tools_called: ['propose_spec'] }
+          }
           onText('hello ')
           onText('friend')
           onUsage({ output: 2 })
@@ -52,6 +60,35 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
           throw new Error('unused')
         },
       }
+    },
+  }
+})
+
+// authorSpec is a real dependency of the route (lib/spec/author.ts), not part
+// of the chat client. Mocked separately so tests can choose success/failure
+// without having to satisfy the real spec schema.
+const PROPOSAL_FIXTURE = {
+  id: 7,
+  version: 1,
+  payload: {
+    title: 'T',
+    summary: 's',
+    background: 'b',
+    panels: [{ name: 'n', shows: 's', why: 'w', source: 'plaid' as const }],
+    manual_logging: [],
+    open_questions: [],
+  },
+  mockup_html: '<!doctype html>',
+}
+
+vi.mock('@/lib/spec/author', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/spec/author')>()
+  return {
+    ...actual,
+    authorSpec: async () => {
+      if (behaviour.value === 'propose-ok') return PROPOSAL_FIXTURE
+      if (behaviour.value === 'propose-fail') return undefined
+      throw new Error('authorSpec called on a turn that never proposed')
     },
   }
 })
@@ -221,6 +258,53 @@ describe('POST /api/chat', () => {
     const { readTranscript } = await import('@/lib/db/appendOnly')
     const rows = readTranscript(handle!, accountId)
     expect(rows.map((r) => r.role)).toEqual(['user'])
+  })
+})
+
+describe('POST /api/chat — the proposal lines', () => {
+  it('emits authoring, then proposal, then done', async () => {
+    await signIn(false)
+    behaviour.value = 'propose-ok'
+
+    const res = await post({ body: 'help me build a dashboard' })
+    const seen = await lines(res)
+    expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual([
+      't',
+      'authoring',
+      'proposal',
+      'done',
+    ])
+
+    const proposalLine = seen.find((l) => 'proposal' in (l as object)) as {
+      proposal: { version: number }
+    }
+    expect(proposalLine.proposal.version).toBe(1)
+  })
+
+  it('emits proposal_error when authoring fails, and STILL emits done', async () => {
+    // A completed chat turn whose preview failed is still a completed chat
+    // turn: the assistant row for it exists, and the friend really did
+    // receive that reply. done must not be suppressed.
+    await signIn(false)
+    behaviour.value = 'propose-fail'
+
+    const res = await post({ body: 'help me build a dashboard' })
+    const seen = await lines(res)
+    expect(seen).toContainEqual({ authoring: true })
+    expect(seen).toContainEqual({ proposal_error: true })
+    expect(seen).toContainEqual({ done: true })
+    expect(seen.some((l) => 'proposal' in (l as object))).toBe(false)
+  })
+
+  it('emits neither authoring nor proposal lines on an ordinary turn', async () => {
+    await signIn(false)
+    behaviour.value = 'ok'
+
+    const res = await post({ body: 'hi' })
+    const seen = await lines(res)
+    expect(
+      seen.some((l) => 'authoring' in (l as object) || 'proposal' in (l as object) || 'proposal_error' in (l as object)),
+    ).toBe(false)
   })
 })
 

@@ -119,8 +119,15 @@ export async function POST(request: Request) {
             db,
             now: Date.now,
           }),
-          authorSpec: (proposeInput) =>
-            authorSpecImpl({ db, client: turnClient, now: Date.now, context }, proposeInput),
+          authorSpec: (proposeInput) => {
+            // Emitted here, not before runTurn: the waiting state is only
+            // true once the reply has finished streaming and the authoring
+            // call actually starts — this callback fires exactly then.
+            if (!request.signal.aborted) {
+              controller.enqueue(line({ authoring: true }))
+            }
+            return authorSpecImpl({ db, client: turnClient, now: Date.now, context }, proposeInput)
+          },
         },
         {
           accountId: session.account_id,
@@ -136,12 +143,26 @@ export async function POST(request: Request) {
         },
       )
 
+      // Only when a proposal was ATTEMPTED. An ordinary turn — the tool was
+      // never called — emits neither line, distinct from an attempt that
+      // failed.
+      if (!request.signal.aborted) {
+        if (outcome.proposal) {
+          controller.enqueue(line({ proposal: outcome.proposal }))
+        } else if (outcome.proposalFailed) {
+          controller.enqueue(line({ proposal_error: true }))
+        }
+      }
+
       // The terminal line is what tells the browser the reply is complete and
       // therefore saved. Its ABSENCE is the interrupted case — see the panel.
       // Gated on 'completed' specifically, not on "not an error": 'empty' is
       // also a turn with no assistant row, so it must not emit this line
       // either. Any new outcome kind that does not append a row must stay
-      // outside this branch.
+      // outside this branch. NOT suppressed by a failed proposal: a completed
+      // chat turn whose preview failed is still a completed chat turn — the
+      // assistant row for it exists and the friend really did receive that
+      // reply.
       if (outcome.kind === 'completed' && !request.signal.aborted) {
         controller.enqueue(line({ done: true }))
       }
