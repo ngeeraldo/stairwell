@@ -176,3 +176,26 @@ follows is what survived.
   place.** `metrics` is append-only by rule; rows recording what actually
   happened are what the table is for. The fix stops the growth rather than
   cleaning up after it.
+
+---
+
+## Shipped
+
+Merged to `main` as a fast-forward (no merge commit, task SHAs preserved) and
+deployed to `app.stairwell.run` on 2026-08-12. The deploy succeeded, which is
+the guard's first live evidence: `deploy/check-env.sh` ran between the pull and
+`npm ci`, found `PLATFORM_DB` and `ANTHROPIC_API_KEY` in the droplet's `.env`,
+and exited 0.
+
+That also settles a question that was open at merge time. `PLATFORM_DB` was
+never in the systemd unit and could not be read from here, so its presence was
+inferred from evidence rather than checked: the live chat rows sat in
+`/home/deploy/stairwell/platform.db`, and since `lib/db/instance.ts` falls back
+to a *relative* `platform/dev/synthetic.db`, an unset variable would have sent
+those writes to a different file. The green deploy confirms the inference.
+
+Worth remembering for the next variable: the checker reads the `.env` FILE, not
+the process environment (spec D1). The deploy shell does not have systemd's
+`EnvironmentFile` loaded, so a check that read `process.env` would have failed
+on a correctly-configured droplet. That choice is why the first live run passed
+rather than debuting with a false alarm.
