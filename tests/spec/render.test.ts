@@ -102,6 +102,7 @@ Checks the banking app most days, does not trust it.
     // following sections into inert code text. A field containing # at
     // line start should not spoof real headings. Use backslash escaping to
     // neutralise user-supplied structure while preserving readability.
+    // Test with TWO attack patterns to cover multiple interpolation sites.
     const out = renderSpecMarkdown(
       {
         ...PAYLOAD,
@@ -111,6 +112,8 @@ Here is an unterminated fence:
 
 And a line starting with hash:
 # This should not be a real heading`,
+        summary: `So mornings stop being a surprise.
+##Sneaky heading with no space`,
       },
       { slug: 'devtwo', version: 1, confirmedAt: 0 },
     )
@@ -120,19 +123,21 @@ And a line starting with hash:
     expect(out).toContain('## Open questions')
 
     // Structural assertion: CommonMark rule violation check. After stripping
-    // up to 3 leading spaces, no line should start with # (which would be a
-    // heading) or ``` (which would be a fence), UNLESS it's a heading created
-    // by the renderer. The renderer creates headings with #, ##, ###, and they
-    // appear at known structural positions.
-    const rendererHeadingPatterns = [
-      /^# /, // h1: title
-      /^## Summary$/,
-      /^## Background$/,
-      /^## Panels$/,
-      /^### \d+\./, // h3: panel heading
-      /^## Manual logging$/,
-      /^## Open questions$/,
-    ]
+    // up to 3 leading spaces, no line should start with # or ``` UNLESS it's
+    // a heading created by the renderer. Exempt by identity, not pattern shape:
+    // the renderer produces exactly these headings with no variables or
+    // attacker-controlled text. If a line matches one of these EXACT strings,
+    // it came from the renderer. Anything else starting with # is a finding.
+    const rendererHeadings = new Set([
+      '# Eating out and the car fund', // Payload title
+      '## Summary',
+      '## Background',
+      '## Panels',
+      '### 1. Eating out', // Payload panel
+      '### 2. Car fund', // Payload panel
+      '## Manual logging',
+      '## Open questions',
+    ])
 
     const lines = out.split('\n')
     for (const line of lines) {
@@ -140,18 +145,16 @@ And a line starting with hash:
 
       // Check for dangerous # (user-supplied heading)
       if (stripped.startsWith('#')) {
-        const isRendererHeading = rendererHeadingPatterns.some((pattern) =>
-          pattern.test(stripped),
-        )
+        const isRendererHeading = rendererHeadings.has(stripped)
         expect(
           isRendererHeading,
-          `User content should not create headings: ${stripped}`,
+          `User content should not create headings: "${stripped}"`,
         ).toBe(true)
       }
 
       // Check for dangerous ``` (user-supplied fence)
       if (stripped.startsWith('```')) {
-        expect.fail(`User content should not create fences: ${stripped}`)
+        expect.fail(`User content should not create fences: "${stripped}"`)
       }
     }
   })
