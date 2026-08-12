@@ -30,3 +30,81 @@ Spec: docs/superpowers/specs/2026-08-11-step2-chat-and-transcripts-design.md
    `'interview'`, permanently: transcripts are sacred data (CLAUDE.md >
    Sacred data) and are never migrated or rewritten to backfill the correct
    value. Step 4 must set `context` going forward; it cannot correct history.
+
+---
+
+## Residual risks from the final whole-branch review
+
+Added after the final review and its fix wave. Items 1-5 above were recorded
+before that review ran; these are what survived it.
+
+6. `lib/chat/client.ts` — THE MISSING-CREDENTIAL GUARD HAS UNDISCLOSED FALSE
+   POSITIVES. It raises `MissingCredentialError` when both `sdk.apiKey` and
+   `sdk.authToken` are null. Three legitimate credential paths leave both
+   fields null and would wrongly 503: an `ant auth login` OAuth profile,
+   Workload Identity Federation (`ANTHROPIC_FEDERATION_RULE_ID` +
+   `ANTHROPIC_IDENTITY_TOKEN[_FILE]`), and the function form of `apiKey`
+   (`ApiKeySetter`), whose value the SDK constructor stores as null. None
+   fires for this deployment, which authenticates with `ANTHROPIC_API_KEY`
+   from the systemd EnvironmentFile. The realistic trip is a developer who
+   authenticated with `ant auth login` and has no env var set: chat 503s for
+   them where it previously worked.
+
+7. `lib/chat/client.ts` — TWO COMMENTS STATE MECHANISMS THAT ARE FALSE.
+   (a) The credential guard's comment says an unauthenticated request "goes
+   out and fails 401 mid-stream". It does not: the SDK throws locally in
+   `validateHeaders` before any request is sent. The 503 behaviour is right;
+   the explanation is not, and it is the only record of why the guard exists.
+   (b) The fallback-signal comment claims sticky routing is not consulted on
+   streams so the block and `usage.iterations` always agree. The SDK's own
+   docs say a fallback with no preceding declining model carries no block.
+   Completed-turn metrics are still correct because the code ORs both
+   signals; the consequence is confined to `chat_error`, where a mid-stream
+   failure after a block-less fallback records `fallback_fired: false`.
+
+8. `app/api/chat/route.ts` — THE `no_api_key` ROW IS A SECOND `chat_error`
+   SHAPE. It emits `{model, effort, context, kind, status, type}` while spec
+   §2.5 documents `chat_error` as also carrying the four counters,
+   `prompt_sha`, `model_served`, `fallback_fired`, and `delivered_chars`.
+   Because `metrics` is append-only, anyone later grouping `chat_error` rows
+   by `prompt_sha` silently drops these. Aligning the shape only gets more
+   expensive as rows accumulate.
+
+9. `metrics` — `stream_aborted` DOES NOT CARRY `model_served` OR
+   `fallback_fired`, while the other three chat events do. An aborted turn
+   has real billed tokens (that is why it carries counters at all), and if a
+   fallback served it those tokens were billed at a different model's rate;
+   without the field they are silently priced as `CHAT_MODEL`. Append-only
+   means adding the field later creates two eras of `stream_aborted` rows
+   that cannot be reconciled. Cheapest to fix before the first real traffic.
+
+10. `lib/chat/client.ts` — THE MODULE HAS NO TESTS OF ITS OWN. `anthropicClient`
+    takes an injectable `sdk`, so this is cheap to close. Three fix-critical
+    seams are uncovered: the `MissingCredentialError` condition (deleting the
+    guard breaks no test, because the route test throws it from a mock), the
+    `catch` that wraps SDK errors into `ChatStreamError`, and the extraction
+    of `model_served` / `fallback_fired`. C2's error MAPPING is well covered;
+    the seam that calls it is not.
+
+11. `tests/chat/prompt.test.ts` — THE FORBIDDEN-TERM REGEX MISSES `401(k)`.
+    It matches `401k`, `401-k`, and `401 k`, but not the parenthesised form,
+    which is how the term is usually written. This test exists to survive a
+    substantive rewrite of `platform/prompts/agent-v1.md`, and that rewrite
+    is more likely to produce `401(k)` than `401k`. Worth widening before the
+    rewrite rather than after.
+
+12. THE REFUSAL-FALLBACK PATH HAS NEVER RUN LIVE. `fallbacks: 'default'` and
+    the `server-side-fallback-2026-07-01` beta flag are typed and fake-tested,
+    but `AnthropicBeta` is `(string & {}) | 'literal' | …`, so ANY string
+    typechecks as a beta flag — `tsc` clean is not evidence the flag string is
+    right. `deploy/smoke.sh` does not exercise `/api/chat`, so a malformed
+    pairing would 400 only on a real user's turn. One manual chat turn after
+    deploy, watching for a `chat_error` with `kind: 'bad_request'`, is a
+    required post-deploy step, not a suggestion.
+
+13. `lib/chat/history.ts` — HISTORY IS REBUILT AS PLAIN TEXT, so thinking
+    blocks are never echoed back on same-model continuation. Thinking is on
+    by default on `claude-opus-5`, and the SDK warns that stripping thinking
+    blocks can trigger ordering/signature 400s. Not exercised today because
+    `display` defaults to `"omitted"`, but raising `MAX_TOKENS` to 64000
+    makes long thinking turns more likely. Worth checking before step 3.
