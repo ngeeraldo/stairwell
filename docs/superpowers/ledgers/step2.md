@@ -188,6 +188,25 @@ Note: this modifies the deploy contract, which CLAUDE.md governs explicitly
 and which has already produced one self-exempting bug (the deploy that first
 shipped smoke.sh skipped its own gate). Design cycle, not improvisation.
 
+CLOSED — commits b91fde5, c7939b5 (the list and its parser), cbb82d8 (the
+deploy-time bash checker), 75cc1e5, 2f77f21 (deploy.sh gate, positioned
+after the pull and before `npm ci`), c1170fc, e6e52be (the startup witness
+in `instrumentation.ts`), and the docs commit that closes this entry
+(`deploy/required-env` made the single source of truth in local-dev.md,
+PROVISION.md, and CLAUDE.md, replacing the separate lists those two docs
+used to maintain).
+
+Items 15 and 16 above are two deploys that reported success over an app
+that did not actually work. This task guards the configuration half of
+that failure class. Item 16's cause — a missing `ANTHROPIC_API_KEY` —
+is listed in `deploy/required-env` as `DEGRADED`, so a droplet that starts
+without it now logs a `[env] missing DEGRADED: ANTHROPIC_API_KEY …` warning
+at boot instead of staying silent until the first chat turn 503s; had it
+been `REQUIRED`, the deploy itself would have aborted before `npm ci`.
+Item 15's cause — a stale git ref that made `git pull` fetch nothing — is a
+different failure class, unrelated to configuration, and is not addressed
+by this task; it remains open on the mitigation already recorded there.
+
 17. deploy sudo password unconfirmed after failed attempts through a
     no-terminal SSH path; verify with ssh -t + sudo -v at next maintenance;
     deploys unaffected (NOPASSWD grant).

@@ -96,11 +96,26 @@ hook cannot parse tool payloads and would fail open.
 Node 22 must match local — `better-sqlite3-multiple-ciphers` compiles natively,
 and a version skew surfaces as a confusing runtime failure rather than an
 install failure.
-7. Secrets, including `ANTHROPIC_API_KEY=sk-ant-...`, go in
+7. `deploy/required-env` names every environment variable the service
+   needs, by severity and purpose — including names read by a dependency
+   rather than by our own code; see the comment block at the top of that
+   file for why that category exists and why grepping this repo for
+   `process.env` would miss it. Values for those names go in
    `/home/deploy/stairwell/.env` — the file `deploy/stairwell.service:11`
-   already loads via `EnvironmentFile`. That file lives outside the repo and
+   already loads via `EnvironmentFile` — one `KEY=value` per line, no
+   `export`, no quotes. `EnvironmentFile` is parsed by systemd itself with
+   no shell involved: `export FOO=x` becomes a variable literally named
+   `export FOO`, and a quoted value keeps the quote characters as part of
+   the value. Both mistakes look correct when you `cat` the file and both
+   fail silently at runtime instead. That file lives outside the repo and
    is never checked in; create or edit it by hand on the droplet, over SSH,
    readable only by `deploy`. This does not change the deploy contract:
    `deploy/deploy.sh` remains the only way changes reach the droplet, and a
    restart is enough to pick up a new or changed `.env` value — no redeploy
    required.
+
+   `deploy/deploy.sh` now runs `deploy/check-env.sh` right after `git pull`
+   and aborts before `npm ci` if a `REQUIRED` name from `deploy/required-env`
+   is absent from this file — the running version is left untouched. A
+   missing `DEGRADED` name only warns; the feature it powers carries the
+   failure from there.

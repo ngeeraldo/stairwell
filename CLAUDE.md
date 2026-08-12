@@ -57,6 +57,13 @@ architectural changes; do not relitigate decided items).
   asserts the redirect shape at both layers. It has no skip variable by design —
   retarget it with an origin argument (`deploy/smoke.sh http://localhost:3000`)
   if DNS is not up yet, but do not add a way to switch it off.
+- Every environment variable the deployed service needs is listed by NAME in
+  `deploy/required-env`, with a severity. `deploy/deploy.sh` aborts before
+  `npm ci` if a `REQUIRED` one is missing from the droplet's `.env`;
+  `instrumentation.ts` records an `env_missing` metric at startup but never
+  throws. Values live only in `.env` files, which the guard hook denies
+  reading. Adding a variable means adding it to that list — including
+  variables read by dependencies rather than by our own code.
 - The app runs behind a reverse proxy, so `request.url` is NOT the URL the
   browser asked for. Redirects use lib/http/redirect.ts: host-relative in route
   handlers, absolute in middleware (Next rejects a relative Location there).

@@ -23,18 +23,22 @@ no password-reset path yet.
 
 ## Chat
 
-Chat needs `ANTHROPIC_API_KEY`, in the same shape as `ADMIN_PASSWORD` above:
-supplied at the command line or in an untracked `.env.local`, never committed.
+`deploy/required-env` is the source of truth for which environment
+variables the running app needs, by name and severity — including names a
+dependency reads internally rather than our own code, so do not expect to
+find them all by grepping for `process.env`. Locally, supply a value the
+same way you would `ADMIN_PASSWORD` above: at the command line, or in an
+untracked `.env.local` (already covered by `.gitignore`, alongside `*.db`),
+which Next loads automatically. The guard hook denies Read/Edit on `.env`
+files by design (CLAUDE.md > Data safety) — that includes `.env.local`, so
+Claude cannot open it to check what's in it; set it yourself.
 
-```bash
-ANTHROPIC_API_KEY=sk-ant-... npm run build && npm start
-```
-
-or drop it in `.env.local` (already covered by `.gitignore`, alongside
-`*.db`) and Next loads it automatically. The guard hook denies Read/Edit on
-`.env` files by design (CLAUDE.md > Data safety) — that includes
-`.env.local`, so Claude cannot open it to check what's in it; set it
-yourself.
+A missing `REQUIRED` or `DEGRADED` name now surfaces as a `[env] missing …`
+warning in the console at `npm run dev` (or `npm start`) startup, rather
+than only at the first request that needed it. Locally that includes
+`PLATFORM_DB`, which local dev deliberately never sets — its absence is
+exactly what makes `lib/db/instance.ts` fall back to `synthetic.db`, so
+expect that one warning on every local start.
 
 ## First-time setup
 
