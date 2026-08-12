@@ -194,6 +194,29 @@ inferred from evidence rather than checked: the live chat rows sat in
 to a *relative* `platform/dev/synthetic.db`, an unset variable would have sent
 those writes to a different file. The green deploy confirms the inference.
 
+**The gate blocked a real deploy for the first time on 2026-08-12**, during
+step 3's go-live (`step3.md`). `NTFY_TOPIC` had been added to the *local* `.env`
+rather than the droplet's, so `check-env.sh` printed
+`MISSING (REQUIRED): NTFY_TOPIC` after the pull, aborted before `npm ci`, and
+left the running version serving. That is the whole design working end to end,
+against exactly the failure it was built for: a variable everyone believed was
+set, whose absence has no user-visible symptom, on a deploy that would
+otherwise have gone green over a feature that silently did nothing.
+
+Two details from that run worth keeping:
+
+- **The abort happened after `git pull`.** The checkout advanced to the new
+  commit while the *service* stayed on the old one. That is by design (the
+  check runs on the pulled list, not a stale one), but it means a failed deploy
+  leaves the working tree ahead of what is running — re-running `deploy.sh`
+  after fixing `.env` is the intended recovery, not a `git reset`.
+- **`sed -i "s|^NAME=.*|NAME=value|"` is a silent no-op when the name is
+  absent.** Rotating an existing variable and adding a new one are different
+  commands, and the rotate form exits 0 having changed nothing.
+  `grep -c '^NAME=' .env` is the cheap confirmation, and it must print exactly
+  `1` — `0` means the write missed, `2` means a duplicate that last-wins will
+  resolve in a way the file does not visibly show (residual 1).
+
 Worth remembering for the next variable: the checker reads the `.env` FILE, not
 the process environment (spec D1). The deploy shell does not have systemd's
 `EnvironmentFile` loaded, so a check that read `process.env` would have failed

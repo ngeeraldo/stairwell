@@ -83,7 +83,24 @@ Two deviations from the plan, **both accepted by Nico on 2026-08-12**:
   Ruled a correct derivation of the at-mint decision rather than a new one: the
   alert asserts presence, and a refusal is still a friend who showed up.
 
-**NOT DEPLOYED.** See "Go-live" below — the remaining steps are Nico's.
+## Shipped
+
+Merged to `main` as a fast-forward (task SHAs preserved), pushed, and deployed
+to `app.stairwell.run` on **2026-08-12**. Both checkpoints passed — a real
+phone buzzed on both the dev and the production topic, from a non-admin
+account, with the `alert_sent` row to match.
+
+The deploy took two attempts, and the first one failing is the better story:
+`deploy/check-env.sh` **aborted it** over a missing `NTFY_TOPIC`, after the
+pull and before `npm ci`, leaving the running version untouched. See
+`required-env.md` — that gate had only ever been observed passing until now.
+
+The topic values appear nowhere in this repo, in any commit, or in any ledger.
+Before pushing, history was scanned for the shapes a topic can leak through —
+`NTFY_TOPIC=` with a value, any `.env` ever tracked, `ntfy.sh/<topic>` URLs in
+any blob, topic-shaped literals, and commit message bodies. The only topic
+literals that have ever existed in this repository are `'   '`, `'a/b'`, and
+`'topic-abc'`, all test fixtures.
 
 ## Residual risks
 
@@ -94,12 +111,16 @@ Two deviations from the plan, **both accepted by Nico on 2026-08-12**:
    surviving one level up.
 
    **MITIGATION RULED (2026-08-12): the step-3 checkpoint, run twice.** Once
-   now, locally, against the dev topic; once at go-live against the production
-   topic. Both are Nico's, both are below. The second is a **blocking** item:
-   `check-env.sh` proves presence, only a subscribed phone proves the topic,
-   and **a deploy is not complete until a phone physically buzzes** — the same
-   rule `deploy/smoke.sh` already applies to serving ("started" is not
-   "serving"), applied to alerting.
+   locally against the dev topic; once at go-live against the production
+   topic. The second was **blocking**: `check-env.sh` proves presence, only a
+   subscribed phone proves the topic, and a deploy is not complete until a
+   phone physically buzzes — the same rule `deploy/smoke.sh` already applies to
+   serving ("started" is not "serving"), applied to alerting.
+
+   **CLOSED 2026-08-12.** Both checkpoints ran and both buzzed a real phone.
+   The residual is closed for the topic in use *today*; it re-opens on any
+   topic change, which is why the checkpoint is written out below as a
+   procedure rather than a one-time note. Rotate the topic, run it again.
 
 2. **A CONCURRENT FIRST MESSAGE CAN DOUBLE-BUZZ.** `started` is derived from
    `lastTranscriptRow`, with no lock between the read and the insert. Two
@@ -135,6 +156,22 @@ Two deviations from the plan, **both accepted by Nico on 2026-08-12**:
 6. **`docs/local-dev.md` NOW NAMES THREE ENVIRONMENT VARIABLES** with nothing
    pinning them. Residual 7 in `required-env.md`, widened by one as predicted
    in the design spec. Accepted, not closed.
+
+7. **`devone` AND `devtwo` ARE LIVE PRODUCTION LOGINS WITH PUBLISHED
+   PASSWORDS.** Not a step-3 defect — step 3 only made it visible, because
+   checkpoint 2 required a non-admin account and `devone` was the one
+   available, so the production checkpoint was run with a credential written
+   in plain text in `scripts/create-dev-users.ts` and in `docs/local-dev.md`.
+   Anyone who reads the repo can log into `app.stairwell.run` as `devone` and
+   chat as them.
+
+   Deliberately out of scope here rather than fixed in passing: it belongs to
+   whoever owns account hygiene before real friends are seeded, and the fix
+   (delete the fixtures from production, or rotate them to generated
+   passwords) touches the account model rather than alerting. **Raised as a
+   task, not a log entry** — CLAUDE.md > Ledgers. It should close before the
+   first real user account exists, since that is the moment `devone` stops
+   being the only thing an intruder could reach.
 
 ## The step-3 checkpoint — Nico's, run twice
 
@@ -178,14 +215,21 @@ The steps as run:
 Unsubscribe from the dev topic afterwards if you would rather not be buzzed by
 local testing — the send still happens either way, which is the point of D4.
 
-### Checkpoint 2 — production, against the prod topic (BLOCKING) — **OPEN**
+### Checkpoint 2 — production, against the prod topic (BLOCKING) — **PASSED 2026-08-12**
+
+Ran against `app.stairwell.run` as `devone`. The phone buzzed.
 
 1. Pick a **different**, unguessable production topic and add
-   `NTFY_TOPIC=<prod-topic>` to the droplet's `.env`. The topic is a shared
-   secret with no auth around it: anyone who knows it can subscribe *and*
-   publish.
+   `NTFY_TOPIC=<prod-topic>` to the droplet's `.env` — **generated, not
+   chosen**. The topic is a shared secret with no auth around it: anyone who
+   knows it can subscribe *and* publish, and the alert body carries a friend's
+   slug, so a guessable topic leaks who is chatting and when. That is the
+   privacy property content-free alerts exist to protect, handed back.
+   `printf 'NTFY_TOPIC=stairwell-%s\n' "$(openssl rand -hex 12)" >> .env`
+   writes one without ever printing it.
 2. Push `main`, then run `deploy/deploy.sh`. Attempted before step 1 it aborts
-   before `npm ci` — that is the gate working, not a failure.
+   before `npm ci` — that is the gate working, not a failure. It did exactly
+   that on the first attempt here.
 3. Subscribe the phone to the **production** topic.
 4. Run the checkpoint against `app.stairwell.run` with a real `user` account.
 
@@ -193,3 +237,14 @@ local testing — the send still happens either way, which is the point of D4.
 `deploy/smoke.sh` proves the site serves; it says nothing about whether a
 notification will ever arrive. Treat a silent phone here exactly like a failed
 smoke check: the deploy did not succeed, whatever every other layer reports.
+
+**Two traps hit on the way through, worth writing down for the next rotation:**
+
+- **`sed -i "s|^NTFY_TOPIC=.*|...|"` is a silent no-op when the key is absent.**
+  Rotating an existing value and adding a new one are different commands, and
+  the "rotate" form succeeds loudly while changing nothing. `grep -c
+  '^NTFY_TOPIC=' .env` printing `0` instead of `1` is the tell, and it comes
+  seconds before the deploy would have told you anyway.
+- **Do not echo the topic into a terminal you might paste from.** The write
+  command above prints nothing; read the value back with an explicit
+  `grep '^NTFY_TOPIC=' .env` only when you need to type it into the phone.
