@@ -151,7 +151,19 @@ catches residual 1. Presence checks cannot: a typo'd topic is present.
 > `nico` is an admin account and is suppressed by design. Testing as yourself
 > looks *identical* to a broken alerter: no push, no row, everything green.
 
-### Checkpoint 1 — local, against the dev topic (do now)
+### Checkpoint 1 — local, against the dev topic — **PASSED 2026-08-12**
+
+Nico subscribed the phone to the dev topic, sent a message as a non-admin dev
+user, the phone buzzed, and the `alert_sent` row was confirmed in
+`platform/dev/synthetic.db`.
+
+That is the first end-to-end evidence that the send path works: topic read from
+`.env.local`, `started` computed, POST issued, ntfy.sh delivered, metric
+written. Everything below the production topic itself is now proven rather than
+assumed — which is exactly what D4 (local dev sends for real) was chosen to
+buy, and what a `NODE_ENV` gate would have deferred to production.
+
+The steps as run:
 
 1. Pick an unguessable dev topic and add `NTFY_TOPIC=<dev-topic>` to
    `.env.local`. Until this exists, every local conversation start writes an
@@ -166,7 +178,7 @@ catches residual 1. Presence checks cannot: a typo'd topic is present.
 Unsubscribe from the dev topic afterwards if you would rather not be buzzed by
 local testing — the send still happens either way, which is the point of D4.
 
-### Checkpoint 2 — production, against the prod topic (BLOCKING)
+### Checkpoint 2 — production, against the prod topic (BLOCKING) — **OPEN**
 
 1. Pick a **different**, unguessable production topic and add
    `NTFY_TOPIC=<prod-topic>` to the droplet's `.env`. The topic is a shared

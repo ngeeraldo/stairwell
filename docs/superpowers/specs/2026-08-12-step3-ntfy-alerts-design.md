@@ -135,6 +135,12 @@ that errors, aborts, or comes back empty still writes the **user** row, so the
 silence clock restarts from that row. A friend who hits an outage, waits ten
 minutes, and retries is inside the same conversation and does not re-alert.
 
+Both halves of that are the design working, not a gap in it (ruled 2026-08-12).
+D1 requires the **first contact** of a session to buzz regardless of outcome —
+it does, because the alert fires at mint, before the model is called. The retry
+then staying silent is the debounce of §7 doing its job: the friend is already
+here, and Nico has already been told.
+
 What is missing is only that the minting is not *reported*.
 `conversationIdFor` returns a string whether it minted or reused, so nothing
 downstream can tell the two apart.
