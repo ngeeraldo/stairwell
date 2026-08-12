@@ -31,10 +31,13 @@ describe('mockup HTML is rendered sealed off', () => {
     // A new render site nobody added to SITES is exactly the gap this file
     // exists to close, and it is invisible to a per-site assertion. Grep the
     // tree rather than trusting the list.
-    const found = execFileSync('git', ['grep', '-l', 'mockup_html', '--', 'app'], {
-      encoding: 'utf8',
-      cwd: process.cwd(),
-    })
+    // --untracked so a brand-new render site is caught by a local run
+    // before it's ever staged, not just in CI after the fact.
+    const found = execFileSync(
+      'git',
+      ['grep', '-l', '--untracked', 'mockup_html', '--', 'app'],
+      { encoding: 'utf8', cwd: process.cwd() },
+    )
       .split('\n')
       .filter((line) => line !== '')
       .sort()
