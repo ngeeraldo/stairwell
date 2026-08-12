@@ -97,65 +97,67 @@ Checks the banking app most days, does not trust it.
     expect(out.match(/_None\._/g)).toHaveLength(2)
   })
 
-  it('escapes line-leading markdown structure to prevent unterminated code blocks and spurious headings', () => {
-    // A field containing an unterminated ``` fence should not swallow all
-    // following sections into inert code text. A field containing # at
-    // line start should not spoof real headings. Use backslash escaping to
-    // neutralise user-supplied structure while preserving readability.
-    // Test with TWO attack patterns to cover multiple interpolation sites.
-    const out = renderSpecMarkdown(
-      {
-        ...PAYLOAD,
-        background: `Checks the banking app most days.
+  it('does not let user content add headings or code fences beyond the renderer\'s own', () => {
+    // Any allow-list keyed on line TEXT can be defeated by attacker text
+    // that equals an allowed string. Round 2 exempted anything matching
+    // /^# /, which the fixture `# This should not be a real heading` also
+    // matched. Round 3 replaced that with a Set of the renderer's exact
+    // heading strings — but five of those strings (e.g. `## Summary`) are
+    // FIXED, present verbatim in every render, so a payload field whose
+    // text is exactly `## Summary` is indistinguishable from the real one
+    // no matter which field produced it.
+    //
+    // Stop trying to name the renderer's own headings. Instead render the
+    // SAME payload shape twice — once with safe text, once with dangerous
+    // fixtures substituted in — and count lines that LOOK structural
+    // (heading or code-fence-opener, per the CommonMark rule that up to
+    // three leading spaces still counts) in each. Escaping that works
+    // keeps the count identical: an attacker's injected heading or fence
+    // is an ADDITIONAL structural-looking line, so the count rises no
+    // matter what text it carries — `# Anything`, `## Summary`, or a
+    // string nobody anticipated.
+    const countStructuralLines = (markdown: string): number =>
+      markdown.split('\n').filter((line) => {
+        // CommonMark tolerates up to 3 leading spaces before a line is
+        // still interpreted as a heading or a fence opener.
+        const stripped = line.replace(/^ {0,3}/, '')
+        return stripped.startsWith('#') || stripped.startsWith('```')
+      }).length
+
+    const DANGEROUS_PAYLOAD: SpecPayload = {
+      ...PAYLOAD,
+      // Fixture 1: an unterminated fence followed by a spoofed heading,
+      // in `background`.
+      background: `Checks the banking app most days.
 Here is an unterminated fence:
 \`\`\`
 
 And a line starting with hash:
 # This should not be a real heading`,
-        summary: `So mornings stop being a surprise.
+      // Fixture 2: a heading with no space after the hashes, in
+      // `summary` — a different field from fixture 1.
+      summary: `So mornings stop being a surprise.
 ##Sneaky heading with no space`,
-      },
-      { slug: 'devtwo', version: 1, confirmedAt: 0 },
-    )
-    // Verify the real section headings are still there and not inside code.
-    expect(out).toContain('## Panels')
-    expect(out).toContain('## Manual logging')
-    expect(out).toContain('## Open questions')
-
-    // Structural assertion: CommonMark rule violation check. After stripping
-    // up to 3 leading spaces, no line should start with # or ``` UNLESS it's
-    // a heading created by the renderer. Exempt by identity, not pattern shape:
-    // the renderer produces exactly these headings with no variables or
-    // attacker-controlled text. If a line matches one of these EXACT strings,
-    // it came from the renderer. Anything else starting with # is a finding.
-    const rendererHeadings = new Set([
-      '# Eating out and the car fund', // Payload title
-      '## Summary',
-      '## Background',
-      '## Panels',
-      '### 1. Eating out', // Payload panel
-      '### 2. Car fund', // Payload panel
-      '## Manual logging',
-      '## Open questions',
-    ])
-
-    const lines = out.split('\n')
-    for (const line of lines) {
-      const stripped = line.replace(/^ {0,3}/, '')
-
-      // Check for dangerous # (user-supplied heading)
-      if (stripped.startsWith('#')) {
-        const isRendererHeading = rendererHeadings.has(stripped)
-        expect(
-          isRendererHeading,
-          `User content should not create headings: "${stripped}"`,
-        ).toBe(true)
-      }
-
-      // Check for dangerous ``` (user-supplied fence)
-      if (stripped.startsWith('```')) {
-        expect.fail(`User content should not create fences: "${stripped}"`)
-      }
+      // Fixture 3: text EXACTLY equal to one of the renderer's own fixed
+      // heading strings, in `title` — a different field again. This is
+      // the case that defeated round 3: a content-keyed allow-list
+      // exempts this exact string regardless of which field produced it.
+      // A count does not care what the text says, only that it is one
+      // more structural-looking line than the safe render has.
+      title: `${PAYLOAD.title}\n## Summary`,
     }
+
+    const safeCount = countStructuralLines(
+      renderSpecMarkdown(PAYLOAD, { slug: 'devtwo', version: 1, confirmedAt: 0 }),
+    )
+    const dangerousCount = countStructuralLines(
+      renderSpecMarkdown(DANGEROUS_PAYLOAD, {
+        slug: 'devtwo',
+        version: 1,
+        confirmedAt: 0,
+      }),
+    )
+
+    expect(dangerousCount).toBe(safeCount)
   })
 })
