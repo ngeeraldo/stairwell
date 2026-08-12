@@ -80,3 +80,55 @@ BEFORE DELETE ON metrics
 BEGIN
   SELECT RAISE(ABORT, 'metrics is append-only');
 END;
+
+-- Step 4. Sacred like transcripts and metrics: append-only, never migrated.
+-- Deliberately NOT covered by lib/db/reshape.ts — CLAUDE.md forbids widening
+-- that exception, so these columns are right the first time or they are fixed
+-- by hand (design spec section 2.4).
+CREATE TABLE IF NOT EXISTS specs (
+  id              INTEGER PRIMARY KEY,
+  account_id      INTEGER NOT NULL,
+  conversation_id TEXT    NOT NULL,
+  prompt_sha      TEXT    NOT NULL,
+  payload         TEXT    NOT NULL,
+  mockup_html     TEXT    NOT NULL,
+  at              INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS specs_account ON specs(account_id, at);
+
+-- A confirmation is a second append, not a status column: a status column
+-- would need an UPDATE, which the triggers below reject.
+CREATE TABLE IF NOT EXISTS spec_confirmations (
+  id         INTEGER PRIMARY KEY,
+  spec_id    INTEGER NOT NULL,
+  account_id INTEGER NOT NULL,
+  at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS spec_confirmations_spec
+  ON spec_confirmations(spec_id);
+
+CREATE TRIGGER IF NOT EXISTS specs_no_update
+BEFORE UPDATE ON specs
+BEGIN
+  SELECT RAISE(ABORT, 'specs is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS specs_no_delete
+BEFORE DELETE ON specs
+BEGIN
+  SELECT RAISE(ABORT, 'specs is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS spec_confirmations_no_update
+BEFORE UPDATE ON spec_confirmations
+BEGIN
+  SELECT RAISE(ABORT, 'spec_confirmations is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS spec_confirmations_no_delete
+BEFORE DELETE ON spec_confirmations
+BEGIN
+  SELECT RAISE(ABORT, 'spec_confirmations is append-only');
+END;
