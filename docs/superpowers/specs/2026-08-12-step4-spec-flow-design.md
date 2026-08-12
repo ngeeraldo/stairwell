@@ -255,6 +255,22 @@ account (step-2 spec §2.5), and that hazard does not soften because a tool was
 also called. The prompt asks for a sentence before the call; the code does not
 depend on getting one.
 
+**Amended during implementation (2026-08-12).** The rule above, as first
+written, left the `proposed && !usable` case writing no metric row at all: not
+a `chat_turn`, not a `chat_empty_reply`, nothing. `spec_proposed` records the
+*authoring* call's tokens, so a tool-call-without-text turn's own billed input
+and thinking tokens were absent from an append-only cost log permanently.
+
+That contradicts this project's own rule — `lib/chat/turn.ts`: *"a cost log
+that reports zero for it is fiction"* — and step 4 exists partly to make cost
+attributable per run kind. A fourth arm now records **`chat_proposed_no_reply`**
+on that path, carrying the same counters, `stop_reason`, and `delivered_chars`
+as its siblings. The transcript behaviour is unchanged: still no assistant row.
+
+Three events, three different facts, and they must stay tellable apart:
+`chat_turn` delivered a reply, `chat_empty_reply` delivered nothing and
+proposed nothing, `chat_proposed_no_reply` proposed without a usable reply.
+
 ### 4.4 The authoring call
 
 Runs after the assistant row is appended, inside the same request, streaming
