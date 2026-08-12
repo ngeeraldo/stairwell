@@ -64,6 +64,34 @@ vi.mock('next/headers', () => ({
   cookies: async () => ({ get: cookieGet }),
 }))
 
+// ChatPanel is a 'use client' component. Calling UserSpace() directly (as
+// every test below does) never invokes it — React only expands a component
+// when something actually renders the tree (ReactDOM, a test renderer),
+// neither of which is in play here. So the ChatPanel element sitting in
+// UserSpace's returned tree stays an UNEXPANDED element: its own JSX (the
+// "Build this" button, the mockup, etc.) never appears in JSON.stringify
+// output, only the PROPS UserSpace computed and handed it do. That's
+// exactly the boundary these proposal tests need to check — page.tsx's job
+// is computing and passing `proposal`, not rendering it — so they inspect
+// the ChatPanel element's props directly instead of grepping for text that
+// only a real render would produce.
+function findChatPanelProps(node: unknown): { initial: unknown; proposal?: unknown } | undefined {
+  if (typeof node !== 'object' || node === null) return undefined
+  const props = (node as { props?: unknown }).props
+  if (props && typeof props === 'object' && 'initial' in props) {
+    return props as { initial: unknown; proposal?: unknown }
+  }
+  const children = (props as { children?: unknown } | undefined)?.children
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      const found = findChatPanelProps(child)
+      if (found) return found
+    }
+    return undefined
+  }
+  return children === undefined ? undefined : findChatPanelProps(children)
+}
+
 let dir: string
 let db: ReturnType<typeof openPlatformDb>
 
@@ -366,6 +394,93 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
 
     expect(redirectMock).toHaveBeenCalledWith('/login')
     expect(notFoundMock).not.toHaveBeenCalled()
+  })
+
+  it('passes the newest stored proposal through as the confirmable card', async () => {
+    // Rendered from the record on load, so a friend who closes the tab
+    // mid-decision comes back to the same card, still confirmable — this is
+    // page.tsx's half of that contract; ChatPanel/SpecCard's own rendering
+    // is covered by tests/chat/panel.test.ts.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    const { insertSpec } = await import('@/lib/db/specs')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    putK(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+
+    insertSpec(handle, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: {
+        title: 'Eating out and the car fund',
+        summary: 'So mornings stop being a surprise.',
+        background: 'Checks the banking app most days.',
+        panels: [{ name: 'Eating out', shows: 'This month', why: 'Said so', source: 'plaid' }],
+        manual_logging: [],
+        open_questions: [],
+      },
+      mockupHtml: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+      at: Date.now(),
+    })
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+
+    expect(notFoundMock).not.toHaveBeenCalled()
+    const proposal = findChatPanelProps(element)?.proposal as
+      | { payload: { title: string }; confirmed: boolean }
+      | undefined
+    expect(proposal?.payload.title).toBe('Eating out and the car fund')
+    expect(proposal?.confirmed).toBe(false)
+  })
+
+  it('degrades a corrupt stored proposal to no card, not a 500', async () => {
+    // specs is append-only (CLAUDE.md), so a corrupt row can never be
+    // deleted to make this go away. parseSpecPayload THROWS SpecShapeError
+    // on a payload missing the six frozen fields; an unhandled throw inside
+    // this server component would be a 500 page for the friend on every
+    // future visit. The page must degrade to no card instead.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    const { insertSpec } = await import('@/lib/db/specs')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    putK(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+
+    insertSpec(handle, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: { not: 'a valid spec payload' },
+      mockupHtml: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+      at: Date.now(),
+    })
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+
+    expect(notFoundMock).not.toHaveBeenCalled()
+    expect(redirectMock).not.toHaveBeenCalled()
+    // No 500 (the awaited call above didn't reject) AND no card: the
+    // corrupt row degrades all the way to ChatPanel receiving no proposal
+    // prop at all, not an empty-ish stand-in that could still leak the
+    // corrupt mockup_html into the page.
+    expect(findChatPanelProps(element)?.proposal).toBeUndefined()
   })
 })
 

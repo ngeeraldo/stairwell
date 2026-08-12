@@ -7,6 +7,9 @@ import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
 import { readTranscript } from '@/lib/db/appendOnly'
+import { newestSpec } from '@/lib/db/specs'
+import { parseSpecPayload, SpecShapeError } from '@/lib/spec/schema'
+import type { Proposal } from '@/lib/spec/author'
 import ChatPanel from './ChatPanel'
 
 export default async function UserSpace({
@@ -32,6 +35,30 @@ export default async function UserSpace({
 
   const unlocked = resolveState(getDb(), sessionId) === 'unlocked'
 
+  const newest = newestSpec(getDb(), accountId)
+  // Rendered from the record on load, so a friend who closes the tab
+  // mid-decision comes back to the same card, still confirmable.
+  let proposal: (Proposal & { confirmed: boolean }) | undefined
+  if (newest) {
+    try {
+      proposal = {
+        id: newest.id,
+        version: newest.version,
+        payload: parseSpecPayload(newest.payload),
+        mockup_html: newest.mockup_html,
+        confirmed: newest.confirmed_at !== null,
+      }
+    } catch (error) {
+      // specs is append-only, so a corrupt row can never be deleted to make
+      // this go away. Degrade to no card rather than let the throw become a
+      // 500 for the friend — anything OTHER than the expected shape error
+      // still escapes, because that's a bug this page has no business
+      // hiding.
+      if (!(error instanceof SpecShapeError)) throw error
+      proposal = undefined
+    }
+  }
+
   return (
     <main>
       <h1>{user}</h1>
@@ -40,6 +67,7 @@ export default async function UserSpace({
           role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
           body: row.body,
         }))}
+        proposal={proposal}
       />
       {unlocked ? (
         <p>Nothing here yet. Your dashboard gets built from your interview.</p>
