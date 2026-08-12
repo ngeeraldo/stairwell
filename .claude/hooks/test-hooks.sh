@@ -374,6 +374,8 @@ else
     platform/prompts/agent-v1.md
   class_check "guard:platform" "platform/chat.ts still guarded (glob not over-broad)" \
     platform/chat.ts
+  class_check "guard:platform" "a non-prose file under platform/prompts/ stays guarded" \
+    platform/prompts/loader.ts
 
   # skip_check <expected BLOCK|PASS> <label> <staged paths...>
   skip_check() {

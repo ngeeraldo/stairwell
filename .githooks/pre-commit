@@ -127,9 +127,12 @@ _gate_b_class() {
   # The loader and the hash stamping ARE tested (tests/chat/prompt.test.ts);
   # the prose is not, because a test over wording would pin style rather than
   # behaviour. Listed explicitly rather than relying on the *.md arm below,
-  # which exempts it only by accident of file extension.
+  # which exempts it only by accident of file extension. Scoped to *.md
+  # specifically because `case` globbing lets `*` match `/`: a bare
+  # platform/prompts/* would exempt a future loader or fixture placed in that
+  # directory, and only the prose is meant to be exempt.
   case "$p" in
-    platform/prompts/*) echo "exempt"; return ;;
+    platform/prompts/*.md) echo "exempt"; return ;;
   esac
 
   # Docs first: a .md is never a test, even under tests/.
