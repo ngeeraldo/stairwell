@@ -29,6 +29,10 @@ architectural changes; do not relitigate decided items).
 - After any plugin update or hook change, run .claude/hooks/test-hooks.sh
   and confirm all pass.
 - On any fresh clone of this repo, run ./setup.sh before doing anything else.
+- `transcripts` and `metrics` gained columns in step 2 via `lib/db/reshape.ts`,
+  which drops a stale-shaped table only after proving it holds zero rows and
+  throws otherwise. It is the one place in `lib/db` allowed to drop a sacred
+  table. Never widen that exception.
 
 ## Schema & module rules
 - schema.sql + seed.py + tests/ update in the SAME commit. No drift.
@@ -99,6 +103,12 @@ architectural changes; do not relitigate decided items).
   `SKIP_BUILD_GATE=1 git push` skips Gate D only, each only announcing the
   skip when it actually would have blocked. When Claude uses either skip, it
   states the reason in the commit message.
+- `platform/prompts/*` is runtime prose, not documentation and not logic. It
+  is exempt from Gate B by an explicit arm in `.githooks/pre-commit`. Test the
+  loader and the `prompt_sha` stamping, never the wording.
+- Chat tests never call the live Anthropic API. `lib/chat/turn.ts` takes its
+  client as a parameter; tests pass a fake. A test that needs a real key is a
+  test that is wrong.
 
 ## Local dev
 - Running the app, the dev account credentials, and how to reset the local

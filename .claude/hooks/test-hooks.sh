@@ -342,6 +342,39 @@ else
     lib/db/platform.ts tests/db/platform.test.ts \
     "users/alice/app/panels/spend.tsx" users/alice/tests/spend.test.ts
 
+  # class_check <expected> <label> <path>
+  #
+  # Calls _gate_b_class directly rather than going through check_test_coverage,
+  # so it can assert the classification string itself. platform/prompts/*.md
+  # was already exempt via the *.md arm below it, by accident of file
+  # extension rather than intent — this pins the explicit arm added ahead of
+  # it, and (the case that actually matters) proves the glob did not swallow
+  # the rest of platform/. A rule of `platform/*` instead of
+  # `platform/prompts/*` would pass the first assertion and silently exempt
+  # every guarded file under platform/; the second assertion is what catches
+  # that.
+  class_check() {
+    local expected=$1 label=$2 path=$3 actual
+    actual=$(
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE"
+      _gate_b_class "$path"
+    )
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  class_check exempt "platform/prompts/*.md classifies exempt (explicit arm)" \
+    platform/prompts/agent-v1.md
+  class_check "guard:platform" "platform/chat.ts still guarded (glob not over-broad)" \
+    platform/chat.ts
+
   # skip_check <expected BLOCK|PASS> <label> <staged paths...>
   skip_check() {
     local expected=$1 label=$2

@@ -122,6 +122,16 @@ check_schema_drift() {
 _gate_b_class() {
   local p=$1 u
 
+  # Runtime prose, not documentation and not logic. platform/prompts/*.md is
+  # loaded at request time and its sha is stamped on every transcript row.
+  # The loader and the hash stamping ARE tested (tests/chat/prompt.test.ts);
+  # the prose is not, because a test over wording would pin style rather than
+  # behaviour. Listed explicitly rather than relying on the *.md arm below,
+  # which exempts it only by accident of file extension.
+  case "$p" in
+    platform/prompts/*) echo "exempt"; return ;;
+  esac
+
   # Docs first: a .md is never a test, even under tests/.
   case "$p" in
     *.md|docs/*|LICENSE) echo "exempt"; return ;;

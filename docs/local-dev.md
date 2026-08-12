@@ -21,6 +21,21 @@ credential is never committed — the same script seeds the production droplet.
 If you forget the local one, delete the database and re-seed (below); there is
 no password-reset path yet.
 
+## Chat
+
+Chat needs `ANTHROPIC_API_KEY`, in the same shape as `ADMIN_PASSWORD` above:
+supplied at the command line or in an untracked `.env.local`, never committed.
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... npm run build && npm start
+```
+
+or drop it in `.env.local` (already covered by `.gitignore`, alongside
+`*.db`) and Next loads it automatically. The guard hook denies Read/Edit on
+`.env` files by design (CLAUDE.md > Data safety) — that includes
+`.env.local`, so Claude cannot open it to check what's in it; set it
+yourself.
+
 ## First-time setup
 
 ```bash

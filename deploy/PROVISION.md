@@ -96,3 +96,11 @@ hook cannot parse tool payloads and would fail open.
 Node 22 must match local — `better-sqlite3-multiple-ciphers` compiles natively,
 and a version skew surfaces as a confusing runtime failure rather than an
 install failure.
+7. Secrets, including `ANTHROPIC_API_KEY=sk-ant-...`, go in
+   `/home/deploy/stairwell/.env` — the file `deploy/stairwell.service:11`
+   already loads via `EnvironmentFile`. That file lives outside the repo and
+   is never checked in; create or edit it by hand on the droplet, over SSH,
+   readable only by `deploy`. This does not change the deploy contract:
+   `deploy/deploy.sh` remains the only way changes reach the droplet, and a
+   restart is enough to pick up a new or changed `.env` value — no redeploy
+   required.
