@@ -132,6 +132,12 @@ follows is what survived.
    reports success. Same shape as residual 3 — could-not-read produces green.
    Implausible trigger; pre-existing.
 
+   **CLOSED incidentally by the residual-3 fix**, and verified directly: a
+   directory now yields `read error: Is a directory` followed by "checklist
+   missing or empty" and exit 2. The two shared a root cause — the loop
+   accepting zero entries was indistinguishable from a clean pass — so fixing
+   the reachable one fixed the implausible one at no extra cost.
+
 ---
 
 ## Decisions worth not relitigating
