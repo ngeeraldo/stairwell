@@ -33,19 +33,38 @@ which Next loads automatically. The guard hook denies Read/Edit on `.env`
 files by design (CLAUDE.md > Data safety) — that includes `.env.local`, so
 Claude cannot open it to check what's in it; set it yourself.
 
+```bash
+<VAR>='<value>' npm run build && npm start
+```
+
+or put `<VAR>=<value>` in `.env.local` instead of the command line. Check
+`deploy/required-env` for which `<VAR>` names apply here and what each is
+for.
+
 A missing `REQUIRED` or `DEGRADED` name now surfaces as a `[env] missing …`
 warning in the console at `npm run dev` (or `npm start`) startup, rather
-than only at the first request that needed it. Locally that includes
-`PLATFORM_DB`, which local dev deliberately never sets — its absence is
-exactly what makes `lib/db/instance.ts` fall back to `synthetic.db`, so
-expect that one warning on every local start.
+than only at the first request that needed it. If you see `[env] missing
+REQUIRED: PLATFORM_DB`, it means `.env.local` doesn't have it set yet — see
+First-time setup below for the one-line fix. That warning means something;
+it is not expected noise on a healthy start.
 
 ## First-time setup
 
 ```bash
 ./setup.sh                      # installs deps, wires the git hooks, runs the harness
+echo 'PLATFORM_DB=platform/dev/synthetic.db' >> .env.local
 ADMIN_PASSWORD='something-you-will-remember' npx tsx scripts/create-dev-users.ts
 ```
+
+The `PLATFORM_DB` line points at the exact path `lib/db/instance.ts`
+already falls back to when it's unset, so this changes nothing about which
+database opens — only whether that choice is explicit or silent.
+`deploy/required-env` marks it `REQUIRED` precisely because a silent
+fallback to the synthetic database is the failure mode that severity
+exists to catch; local dev shouldn't be the one place that leans on it
+quietly. Set explicitly, the presence check passes clean: no `[env]
+missing` warning at startup, and no `env_missing` metric row written to
+`synthetic.db` on every run.
 
 Expected output:
 

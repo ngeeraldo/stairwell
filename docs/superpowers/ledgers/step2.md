@@ -207,6 +207,19 @@ Item 15's cause — a stale git ref that made `git pull` fetch nothing — is a
 different failure class, unrelated to configuration, and is not addressed
 by this task; it remains open on the mitigation already recorded there.
 
+Review round 1 caught a self-inflicted instance of exactly the failure
+class this task exists to prevent: documenting that `PLATFORM_DB` (marked
+`REQUIRED`) would warn on every healthy local start, since local dev never
+set it, trains a reader to ignore a `REQUIRED` warning — the same
+inattention that let item 16 through — and writes an `env_missing` metric
+row on every local start, defeating the "no database on a healthy boot"
+guarantee for local dev specifically. Resolved by having local dev set
+`PLATFORM_DB=platform/dev/synthetic.db` explicitly in `.env.local` (the
+same path the code already falls back to, so behaviour is unchanged) rather
+than by weakening the check or excusing local dev from it. `docs/local-dev.md`
+now adds that line at first-time setup instead of describing the warning as
+expected noise.
+
 17. deploy sudo password unconfirmed after failed attempts through a
     no-terminal SSH path; verify with ssh -t + sudo -v at next maintenance;
     deploys unaffected (NOPASSWD grant).
