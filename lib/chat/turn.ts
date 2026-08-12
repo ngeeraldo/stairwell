@@ -4,7 +4,16 @@ import { appendMetric, appendTranscript, readTranscript } from '@/lib/db/appendO
 import { conversationIdFor } from './conversation'
 import { toMessages } from './history'
 import { loadPrompt } from './prompt'
-import { CHAT_EFFORT, CHAT_MODEL, type ChatClient, type Usage } from './client'
+import {
+  CHAT_EFFORT,
+  CHAT_MODEL,
+  ChatStreamError,
+  UNKNOWN_ERROR,
+  type ChatClient,
+  type Served,
+  type StreamResult,
+  type Usage,
+} from './client'
 
 /**
  * The run kind recorded on every metrics row (architecture-overview.md line
@@ -27,16 +36,19 @@ export type TurnInput = {
   onText: (text: string) => void
 }
 
-export type TurnOutcome = { kind: 'completed' | 'aborted' | 'error' }
+export type TurnOutcome = {
+  kind: 'completed' | 'aborted' | 'error' | 'empty'
+}
 
 /**
  * One chat exchange, and the rule for what gets written.
  *
  * The user turn is appended immediately; the assistant turn is appended ONLY
- * when the stream completes server-side. An aborted or failed exchange
- * therefore leaves a user row with no reply — which is what actually happened.
- * transcripts is append-only, so this rule cannot be corrected after the fact;
- * see the design spec section 3.4.
+ * when the stream completes server-side AND actually delivered a complete
+ * reply. An aborted, failed, or empty exchange therefore leaves a user row
+ * with no reply — which is what actually happened. transcripts is
+ * append-only, so this rule cannot be corrected after the fact; see the design
+ * spec section 3.4.
  */
 export async function runTurn(
   deps: TurnDeps,
@@ -63,6 +75,10 @@ export async function runTurn(
 
   let delivered = ''
   let usage: Usage = { input: 0, output: 0, cache_read: 0, cache_creation: 0 }
+  // Seeded with what was requested, then overwritten by what the API reports.
+  // A turn that fails before message_start records the request's own model,
+  // which is the truth available at that point.
+  let served: Served = { model_served: CHAT_MODEL, fallback_fired: false }
   const base = {
     model: CHAT_MODEL,
     effort: CHAT_EFFORT,
@@ -70,7 +86,7 @@ export async function runTurn(
     context: CHAT_CONTEXT,
   }
 
-  let final: Usage
+  let final: StreamResult
   try {
     final = await client.stream({
       system,
@@ -83,11 +99,17 @@ export async function runTurn(
       onUsage: (partial) => {
         usage = { ...usage, ...partial }
       },
+      onServed: (partial) => {
+        served = { ...served, ...partial }
+      },
     })
   } catch (error) {
-    // No assistant row on either branch. The two events are kept apart because
-    // they are different facts: an abort has real token counts to record, an
-    // error before first output has none.
+    // No assistant row on either branch. The two events are kept apart
+    // because they are different facts: an abort stopped a working stream, an
+    // error is the API call failing. Both carry the counters accumulated so
+    // far — a 529 or a dropped connection after 400 tokens of output has
+    // real, billed counters, and a cost log that reports zero for it is
+    // fiction.
     //
     // This catch wraps ONLY the stream call. A DB write failing after a
     // successful stream must NOT land here — chat_error means the API call
@@ -104,17 +126,48 @@ export async function runTurn(
       return { kind: 'aborted' }
     }
 
+    // `kind` is what distinguishes a rate limit from a refusal from a timeout
+    // when the week-3 numbers get read (design spec section 2.5). It is
+    // derived in client.ts by `instanceof` against the SDK's error classes,
+    // because none of them assigns `name` — reading `error.name` here made
+    // this field the constant "Error" for every failure the SDK can raise.
     appendMetric(db, {
       accountId: input.accountId,
       event: 'chat_error',
       at: now(),
       data: {
+        ...usage,
         ...base,
-        kind: error instanceof Error ? error.name : 'unknown',
+        ...served,
+        ...(error instanceof ChatStreamError ? error.shape : UNKNOWN_ERROR),
         delivered_chars: delivered.length,
       },
     })
     return { kind: 'error' }
+  }
+
+  // A refusal is NOT an exception: it returns HTTP 200 with an empty content
+  // array and stop_reason "refusal", so the stream resolves normally having
+  // delivered nothing. Writing that as an assistant row would put an empty
+  // body in an append-only table, and toMessages would then send
+  // {role:'assistant', content:''} on every later turn — which the Messages
+  // API rejects, breaking the account permanently. A max_tokens stop is the
+  // same hazard from the other direction: truncated output is not a complete
+  // reply and must not be recorded as one.
+  if (delivered.trim() === '' || final.stop_reason !== 'end_turn') {
+    appendMetric(db, {
+      accountId: input.accountId,
+      event: 'chat_empty_reply',
+      at: now(),
+      data: {
+        ...final.usage,
+        ...base,
+        ...final.served,
+        stop_reason: final.stop_reason,
+        delivered_chars: delivered.length,
+      },
+    })
+    return { kind: 'empty' }
   }
 
   appendTranscript(db, {
@@ -127,7 +180,7 @@ export async function runTurn(
     accountId: input.accountId,
     event: 'chat_turn',
     at: now(),
-    data: { ...final, ...base },
+    data: { ...final.usage, ...base, ...final.served },
   })
   return { kind: 'completed' }
 }

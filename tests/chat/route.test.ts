@@ -16,20 +16,38 @@ vi.mock('next/headers', () => ({
 }))
 
 // The route builds a real Anthropic client. Replace the module so no test can
-// construct one (which would also throw without an API key).
+// construct one, and so each test can choose what that construction does.
+type Behaviour = 'ok' | 'refusal' | 'no-credential'
+const behaviour: { value: Behaviour } = { value: 'ok' }
+
 vi.mock('@/lib/chat/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/chat/client')>()
   return {
     ...actual,
-    anthropicClient: () => ({
-      async stream({ onText, onUsage }: any) {
-        onUsage({ input: 5, cache_read: 0, cache_creation: 0 })
-        onText('hello ')
-        onText('friend')
-        onUsage({ output: 2 })
-        return { input: 5, output: 2, cache_read: 0, cache_creation: 0 }
-      },
-    }),
+    anthropicClient: () => {
+      if (behaviour.value === 'no-credential') {
+        throw new actual.MissingCredentialError()
+      }
+      return {
+        async stream({ onText, onUsage, onServed }: any) {
+          onUsage({ input: 5, cache_read: 0, cache_creation: 0 })
+          onServed({ model_served: actual.CHAT_MODEL })
+          const served = {
+            model_served: actual.CHAT_MODEL,
+            fallback_fired: false,
+          }
+          const usage = { input: 5, output: 2, cache_read: 0, cache_creation: 0 }
+          if (behaviour.value === 'refusal') {
+            // HTTP 200, nothing delivered — see runTurn's empty-reply path.
+            return { usage, stop_reason: 'refusal', served }
+          }
+          onText('hello ')
+          onText('friend')
+          onUsage({ output: 2 })
+          return { usage, stop_reason: 'end_turn', served }
+        },
+      }
+    },
   }
 })
 
@@ -42,6 +60,7 @@ beforeEach(() => {
   vi.resetModules()
   cookieGet.mockClear()
   cookieSlot.value = undefined
+  behaviour.value = 'ok'
   handle = undefined
 })
 
@@ -148,5 +167,67 @@ describe('POST /api/chat', () => {
     await signIn(false)
     const res = await post({ body: 'hi' })
     expect(res.headers.get('content-type')).toContain('application/x-ndjson')
+  })
+
+  it('omits the terminal done line when the turn delivered nothing', async () => {
+    // The panel drives its "interrupted — not saved" marker entirely off this
+    // line's ABSENCE, and an empty reply saves no assistant row. If a new
+    // outcome kind ever slipped past the gate, the screen would claim a reply
+    // was saved that the transcript does not contain.
+    await signIn(false)
+    behaviour.value = 'refusal'
+
+    const res = await post({ body: 'hi' })
+    expect(res.status).toBe(200)
+    expect(await lines(res)).toEqual([])
+  })
+
+  it('does not write an assistant row for an empty reply', async () => {
+    const { accountId } = await signIn(false)
+    behaviour.value = 'refusal'
+    await (await post({ body: 'hi' })).text()
+
+    const { readTranscript } = await import('@/lib/db/appendOnly')
+    const rows = readTranscript(handle!, accountId)
+    expect(rows.map((r) => r.role)).toEqual(['user'])
+  })
+})
+
+describe('POST /api/chat — no credential', () => {
+  it('503s and records the outage in the metrics log', async () => {
+    // A total chat outage used to surface as a 200 with an errored body and
+    // ZERO rows in either sacred table — invisible in the log this project
+    // treats as ground truth.
+    const { accountId } = await signIn(false)
+    behaviour.value = 'no-credential'
+
+    const res = await post({ body: 'hi' })
+    expect(res.status).toBe(503)
+
+    const rows = handle!
+      .prepare('SELECT event, data FROM metrics ORDER BY id')
+      .all() as { event: string; data: string | null }[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.event).toBe('chat_error')
+    expect(JSON.parse(rows[0]!.data!)).toMatchObject({ kind: 'no_api_key' })
+
+    // And nothing was written to the transcript for a turn that never ran.
+    const { readTranscript } = await import('@/lib/db/appendOnly')
+    expect(readTranscript(handle!, accountId)).toHaveLength(0)
+  })
+
+  it('retries construction on the next request rather than caching the failure', async () => {
+    await signIn(false)
+    behaviour.value = 'no-credential'
+    expect((await post({ body: 'hi' })).status).toBe(503)
+
+    behaviour.value = 'ok'
+    const res = await post({ body: 'hi' })
+    expect(res.status).toBe(200)
+    expect(await lines(res)).toEqual([
+      { t: 'hello ' },
+      { t: 'friend' },
+      { done: true },
+    ])
   })
 })

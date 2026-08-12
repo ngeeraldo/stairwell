@@ -46,6 +46,43 @@ describe('toMessages', () => {
     ).toEqual([{ role: 'user', content: 'real start' }])
   })
 
+  it('drops empty and whitespace-only bodies, keeping the rest in order', () => {
+    // The recovery valve for C1. The Messages API rejects empty text content,
+    // so ONE such row would 400 every subsequent turn for that account —
+    // permanently, because transcripts is append-only and the row cannot be
+    // deleted. runTurn no longer writes one; this makes a row that was
+    // already written survivable rather than fatal.
+    expect(
+      toMessages([
+        row({ id: 1, role: 'user', body: 'first question' }),
+        row({ id: 2, role: 'assistant', body: 'first answer' }),
+        row({ id: 3, role: 'user', body: 'second question' }),
+        row({ id: 4, role: 'assistant', body: '' }),
+        row({ id: 5, role: 'user', body: 'third question' }),
+        row({ id: 6, role: 'assistant', body: '  \t\n ' }),
+        row({ id: 7, role: 'user', body: 'fourth question' }),
+      ]),
+    ).toEqual([
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'second question' },
+      { role: 'user', content: 'third question' },
+      { role: 'user', content: 'fourth question' },
+    ])
+  })
+
+  it('does not let an empty leading row count as the first user turn', () => {
+    // The leading-assistant trim runs on the filtered list, so an empty user
+    // row cannot anchor the slice and smuggle an assistant turn to the front.
+    expect(
+      toMessages([
+        row({ id: 1, role: 'user', body: '   ' }),
+        row({ id: 2, role: 'assistant', body: 'orphan' }),
+        row({ id: 3, role: 'user', body: 'real start' }),
+      ]),
+    ).toEqual([{ role: 'user', content: 'real start' }])
+  })
+
   it('keeps consecutive same-role turns rather than merging them', () => {
     // A retry appends a second user row with the same text (design spec
     // section 6.1). The API accepts consecutive same-role messages, and the

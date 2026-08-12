@@ -1,12 +1,31 @@
 import { cookies } from 'next/headers'
 import { getDb } from '@/lib/db/instance'
+import { appendMetric } from '@/lib/db/appendOnly'
 import { SESSION_COOKIE, readSession } from '@/lib/session/store'
 import { resolveState } from '@/lib/session/resolve'
-import { anthropicClient } from '@/lib/chat/client'
-import { runTurn } from '@/lib/chat/turn'
+import {
+  CHAT_EFFORT,
+  CHAT_MODEL,
+  anthropicClient,
+  type ChatClient,
+} from '@/lib/chat/client'
+import { CHAT_CONTEXT, runTurn } from '@/lib/chat/turn'
 
 const encoder = new TextEncoder()
 const line = (value: unknown) => encoder.encode(`${JSON.stringify(value)}\n`)
+
+/**
+ * One client, not one per request — the SDK owns a connection pool, and
+ * rebuilding it per request throws that away. Memoized lazily rather than
+ * built at module scope so a missing credential fails the request that asked
+ * for it, not the module import (which would take the whole route down,
+ * including the 401 and 400 paths that never touch the API). A failed
+ * construction is not cached, so the next request retries.
+ */
+let client: ChatClient | undefined
+function chatClient(): ChatClient {
+  return (client ??= anthropicClient())
+}
 
 /**
  * The chat endpoint.
@@ -35,10 +54,36 @@ export async function POST(request: Request) {
   const body = typeof payload.body === 'string' ? payload.body.trim() : ''
   if (!body) return new Response(null, { status: 400 })
 
+  // Resolved BEFORE the ReadableStream. Inside start() a construction failure
+  // would land after the 200 and its headers had already gone out, and before
+  // runTurn had written anything — so a total chat outage would produce zero
+  // transcript rows, zero metrics rows, and a browser that saw a successful
+  // response with an errored body. The metrics log is this project's ground
+  // truth; an outage has to be visible in it.
+  let turnClient: ChatClient
+  try {
+    turnClient = chatClient()
+  } catch {
+    appendMetric(db, {
+      accountId: session.account_id,
+      event: 'chat_error',
+      at: Date.now(),
+      data: {
+        model: CHAT_MODEL,
+        effort: CHAT_EFFORT,
+        context: CHAT_CONTEXT,
+        kind: 'no_api_key',
+        status: null,
+        type: null,
+      },
+    })
+    return new Response(null, { status: 503 })
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const outcome = await runTurn(
-        { db, client: anthropicClient(), now: Date.now },
+        { db, client: turnClient, now: Date.now },
         {
           accountId: session.account_id,
           sessionId: sessionId!,
@@ -55,6 +100,10 @@ export async function POST(request: Request) {
 
       // The terminal line is what tells the browser the reply is complete and
       // therefore saved. Its ABSENCE is the interrupted case — see the panel.
+      // Gated on 'completed' specifically, not on "not an error": 'empty' is
+      // also a turn with no assistant row, so it must not emit this line
+      // either. Any new outcome kind that does not append a row must stay
+      // outside this branch.
       if (outcome.kind === 'completed' && !request.signal.aborted) {
         controller.enqueue(line({ done: true }))
       }
