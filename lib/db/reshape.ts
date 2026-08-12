@@ -30,8 +30,13 @@ const EXPECTED: Record<string, readonly string[]> = {
  * must run BEFORE the schema exec, not after.
  *
  * If a stale table is NOT empty, the assumption above is wrong. Throw rather
- * than destroy: the process fails at boot, deploy/smoke.sh fails the deploy,
- * and the previous version keeps serving with history intact.
+ * than destroy. What that actually costs, stated plainly because someone will
+ * read this during an incident: getDb() is lazy, so this runs on the first
+ * database touch, not at boot — the process starts healthy and then 500s on
+ * every request that reaches a database. deploy/smoke.sh's login step touches
+ * the database, so the deploy does fail loudly. There is no rollback
+ * (deploy/deploy.sh says so in its own words), so the site stays down until a
+ * human intervenes. History is untouched, which is the point of throwing.
  */
 export function reshapeSacredTables(db: PlatformDb): void {
   for (const [table, expected] of Object.entries(EXPECTED)) {

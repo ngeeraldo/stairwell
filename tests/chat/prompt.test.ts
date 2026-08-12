@@ -52,8 +52,22 @@ describe('loadPrompt', () => {
     // enabled, and line 98 requires checking before promising a panel. A
     // prompt that mentions them will make promises the product cannot keep,
     // to a real friend, in the first conversation.
+    //
+    // The synonyms matter as much as the product names. This test exists to
+    // survive a substantive rewrite of agent-v1.md, and a rewrite that says
+    // "brokerage" or "mortgage" instead of "investments" or "liabilities"
+    // makes exactly the same promise while passing a two-word check.
     const { text } = loadPrompt(PROMPT_PATH)
-    expect(text).not.toMatch(/\binvestments?\b/i)
-    expect(text).not.toMatch(/\bliabilit(y|ies)\b/i)
+    for (const forbidden of [
+      /\binvestments?\b/i,
+      /\bliabilit(y|ies)\b/i,
+      /\bbrokerages?\b/i,
+      /\bportfolios?\b/i,
+      /\b401\s?-?\s?k\b/i,
+      /\bmortgages?\b/i,
+      /\bloans?\b/i,
+    ]) {
+      expect(text).not.toMatch(forbidden)
+    }
   })
 })

@@ -131,32 +131,74 @@ column set, and:
 The second branch is the point of the module. The production database is never
 opened during development (CLAUDE.md > Data safety), so this design cannot
 verify emptiness by inspection — it checks at runtime instead of assuming. If
-the assumption is wrong, the process fails at boot, the deploy's smoke check
-fails, and the previous version keeps serving with history untouched.
+the assumption is wrong, the deploy fails loudly and the site 500s until a
+human intervenes; history is untouched.
+
+Precisely: `getDb()` is lazy, so `openPlatformDb` runs on the first database
+touch rather than at boot — the process starts healthy and then 500s per
+request. `deploy/smoke.sh`'s login step touches the database, so the throw does
+fail the deploy. There is no rollback; `deploy/deploy.sh` says so in its own
+words. Accepting that outcome is deliberate: an outage is recoverable by hand,
+and a destroyed append-only table is not.
 
 ### 2.5 `metrics.data`
 
 Nullable JSON, so future metric shapes never require another change to the
-sacred table. Two events ship in step 2:
+sacred table. Four events ship in step 2:
 
 ```
-{ event: 'chat_turn',      data: { input, output, cache_read, cache_creation,
-                                   model, effort, prompt_sha, context } }
+{ event: 'chat_turn',        data: { input, output, cache_read, cache_creation,
+                                     model, effort, prompt_sha, context,
+                                     model_served, fallback_fired } }
 
-{ event: 'stream_aborted', data: { input, output, cache_read, cache_creation,
-                                   model, effort, prompt_sha, context,
-                                   delivered_chars } }
+{ event: 'stream_aborted',   data: { input, output, cache_read, cache_creation,
+                                     model, effort, prompt_sha, context,
+                                     delivered_chars } }
 
-{ event: 'chat_error',     data: { model, effort, prompt_sha, context,
-                                   kind, delivered_chars } }
+{ event: 'chat_error',       data: { input, output, cache_read, cache_creation,
+                                     model, effort, prompt_sha, context,
+                                     model_served, fallback_fired,
+                                     kind, status, type, delivered_chars } }
+
+{ event: 'chat_empty_reply', data: { input, output, cache_read, cache_creation,
+                                     model, effort, prompt_sha, context,
+                                     model_served, fallback_fired,
+                                     stop_reason, delivered_chars } }
 ```
 
 `stream_aborted` and `chat_error` are separate events because they are separate
 facts. The first is the user or their network walking away; the second is the
 API failing. Both append no assistant row, but conflating them would make the
-cost log unreadable — an abort has real token counts to record, while an error
-before first output has none, and `kind` is what distinguishes a rate limit from
-a refusal from a timeout when the week-3 numbers get read.
+cost log unreadable, and `kind` is what distinguishes a rate limit from a
+refusal from a timeout when the week-3 numbers get read.
+
+`kind` is derived by `instanceof` against the SDK's exported error classes, in
+`lib/chat/client.ts`. It cannot come from `error.name`: no class in
+`@anthropic-ai/sdk`'s hierarchy assigns `name`, so `RateLimitError`,
+`AuthenticationError`, `InternalServerError` and the rest all inherit
+`Error.prototype.name === "Error"` and the field would be a constant. It cannot
+come from `constructor.name` either — that is minifier-fragile in a Next
+production build. `status` and `type` carry the HTTP status and the API's own
+`error.type` discriminator where the response supplied them. `lib/chat/turn.ts`
+does not import the SDK; the normalized shape crosses that boundary as plain
+data.
+
+`chat_error` carries the four counters too. The earlier rationale — "an error
+before first output has none" — is only true for errors before first output. A
+529 or a dropped connection after 400 tokens of output has real, billed
+counters.
+
+`chat_empty_reply` is the turn that resolved successfully and delivered nothing
+usable: a safety-classifier refusal (HTTP 200, empty `content`,
+`stop_reason: "refusal"`) or a `max_tokens` stop that truncated the answer. It
+appends no assistant row, because an empty body in an append-only table 400s
+every later turn for that account and can never be deleted. `stop_reason` is
+recorded so the two causes stay distinguishable.
+
+`model_served` and `fallback_fired` record which model actually answered and
+whether a server-side refusal fallback fired (§3.2). Without them a fallback
+would silently change the answering model and corrupt exactly the cost
+retrospective the four counters exist to support.
 
 `context` is the run kind from `architecture-overview.md` line 136 —
 "interview, planning, tweak runs". In step 2 no spec exists yet, so every turn
