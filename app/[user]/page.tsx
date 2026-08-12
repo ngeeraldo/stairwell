@@ -45,7 +45,7 @@ export default async function UserSpace({
         <p>Nothing here yet. Your dashboard gets built from your interview.</p>
       ) : (
         <p>
-          Locked. Unlock to see your data. <a href="/unlock">Unlock</a>
+          Locked. <a href="/unlock">Unlock</a> to see your data.
         </p>
       )}
       <form method="post" action="/api/logout">
