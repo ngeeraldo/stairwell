@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+// register()'s env-reporting half calls getDb() — and ONLY when something is
+// missing. Standing in for it here turns "no database was opened" into an
+// assertion the tests below can actually make, instead of a property nobody
+// checks until a stray synthetic.db turns up somewhere it should not be.
+const { getDbSpy } = vi.hoisted(() => ({ getDbSpy: vi.fn() }))
+vi.mock('@/lib/db/instance', () => ({ getDb: getDbSpy }))
+
 /**
  * Design spec: expiry is enforced "on access and by a sweep interval, so an
  * idle process does not retain keys." instrumentation.ts is the only thing
@@ -13,12 +20,27 @@ describe('instrumentation.ts', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    getDbSpy.mockClear()
     if (originalRuntime === undefined) delete process.env.NEXT_RUNTIME
     else process.env.NEXT_RUNTIME = originalRuntime
   })
 
   it("schedules keymap sweep() on an unref'd interval in the nodejs runtime", async () => {
     process.env.NEXT_RUNTIME = 'nodejs'
+
+    // DO NOT REMOVE THE cwd MOCK. This test is about scheduling a timer, but
+    // register() also reads deploy/required-env and reports what is missing.
+    // Against the real cwd it found the real list, and vitest does not load
+    // .env.local, so both variables looked absent, so getDb() ran and a real
+    // env_missing row was appended to the metrics table — which is
+    // append-only sacred data (CLAUDE.md) and can never be cleaned up. It
+    // also fired on the droplet: deploy.sh runs `npx vitest run` in a shell
+    // without systemd's EnvironmentFile, so every deploy created
+    // platform/dev/synthetic.db inside the production checkout. Pointing cwd
+    // at a path with no list makes the read fail, which register() swallows —
+    // this test never wanted the filesystem in the first place.
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue('/nonexistent-path-for-test')
+
     const unref = vi.fn()
     const fakeTimer = { unref } as unknown as NodeJS.Timeout
     const setIntervalSpy = vi.spyOn(global, 'setInterval').mockReturnValue(fakeTimer)
@@ -31,6 +53,12 @@ describe('instrumentation.ts', () => {
     // .unref() must be called on the timer itself, not just constructed —
     // otherwise the interval would hold the Node event loop open forever.
     expect(unref).toHaveBeenCalledTimes(1)
+    // The property the cwd mock exists to protect, asserted rather than
+    // assumed: no database was opened, so nothing was written and no file
+    // was created.
+    expect(getDbSpy).not.toHaveBeenCalled()
+
+    cwd.mockRestore()
   })
 
   it('schedules nothing outside the nodejs runtime (e.g. the edge middleware isolate)', async () => {
@@ -62,6 +90,9 @@ describe('instrumentation.ts', () => {
 
     const { register } = await import('@/instrumentation')
     await expect(register()).resolves.toBeUndefined()
+    // Nothing to report means nothing to open, so a list it could not read
+    // must not reach the database either.
+    expect(getDbSpy).not.toHaveBeenCalled()
     cwd.mockRestore()
   })
 })
