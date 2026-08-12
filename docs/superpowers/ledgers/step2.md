@@ -187,3 +187,7 @@ Scope OUT, deliberately:
 Note: this modifies the deploy contract, which CLAUDE.md governs explicitly
 and which has already produced one self-exempting bug (the deploy that first
 shipped smoke.sh skipped its own gate). Design cycle, not improvisation.
+
+17. deploy sudo password unconfirmed after failed attempts through a
+    no-terminal SSH path; verify with ssh -t + sudo -v at next maintenance;
+    deploys unaffected (NOPASSWD grant).
