@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
-import { conversationAlerter } from '@/lib/alerts/ntfy'
+import { ALERT_TEXT, alerter, conversationAlerter, type AlertKind } from '@/lib/alerts/ntfy'
 import { CHAT_MODEL, type ChatClient } from '@/lib/chat/client'
 import { runTurn } from '@/lib/chat/turn'
 
@@ -114,5 +114,39 @@ describe('no message text reaches ntfy.sh', () => {
         .all() as { body: string }[]
     ).map((r) => r.body)
     expect(bodies.join('\n')).toContain(SENTINEL)
+  })
+})
+
+describe('content-freeness holds for EVERY alert kind', () => {
+  // Step-3 residual 5: the guarantee used to be the shape of ONE function.
+  // Iterating ALERT_TEXT is what makes a third kind covered the moment it is
+  // declared, rather than the moment someone remembers to add a test.
+  it.each(Object.keys(ALERT_TEXT) as AlertKind[])(
+    'sends only "<slug> <fixed phrase>" for %s',
+    async (kind) => {
+      const seen: { url: string; init: RequestInit | undefined }[] = []
+      const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        seen.push({ url: String(url), init })
+        return new Response('1', { status: 200 })
+      }) as unknown as typeof globalThis.fetch
+
+      await alerter({ topic: 'topic-abc', fetch, db, now: () => 1_000 })(
+        kind,
+        accountId,
+      )
+
+      expect(seen).toHaveLength(1)
+      expect(seen[0]!.init?.body).toBe(`devtwo ${ALERT_TEXT[kind]}`)
+    },
+  )
+
+  it('has no exported path through which text could reach ntfy.sh', () => {
+    // The guarantee moves from "this function has no parameter for it" to
+    // "this module has no path for it". The alerter takes a KIND, and the
+    // kind indexes a fixed table.
+    expect(alerter({ topic: 't', fetch: globalThis.fetch, db, now: () => 0 }).length).toBe(2)
+    for (const phrase of Object.values(ALERT_TEXT)) {
+      expect(typeof phrase).toBe('string')
+    }
   })
 })

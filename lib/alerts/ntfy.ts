@@ -4,11 +4,14 @@
 //
 // TWO PROPERTIES HOLD THIS FILE TOGETHER, and both are spec, not taste:
 //
-// 1. IT TAKES AN ACCOUNT ID AND NOTHING ELSE. Alerts are content-free
-//    (design spec §2 item 2) — the third party learns that someone started
-//    talking, never what was said. That is not enforced by discipline here;
-//    there is simply no parameter through which message text could arrive.
-//    Widening this signature is a spec change, and a visible one.
+// 1. NO EXPORTED FUNCTION HAS A PATH THROUGH WHICH CALLER-SUPPLIED TEXT COULD
+//    REACH ntfy.sh. Alerts are content-free (design spec §2 item 2) — the
+//    third party learns that someone did something, never what was said.
+//    This used to be the shape of ONE function (conversationAlerter took an
+//    account id and nothing else). It is now a property of the FILE: the
+//    alerter takes a KIND, and the kind indexes a fixed table below. Adding a
+//    third kind means adding a table entry, not a new place the guarantee can
+//    be forgotten.
 //
 // 2. IT NEVER THROWS AND NEVER REJECTS. Nothing awaits it, so a rejection is
 //    an unhandled rejection — a process-level event, over a push
@@ -28,8 +31,23 @@ export const NTFY_ORIGIN = 'https://ntfy.sh'
  */
 export const ALERT_TIMEOUT_MS = 5_000
 
-/** Distinguishes this alert from any later one sharing the same events. */
-export const ALERT_KIND = 'conversation_started'
+/**
+ * Every alert body this module can ever send.
+ *
+ * Step-3 residual 5: content-freeness used to be guaranteed by the SHAPE OF
+ * ONE FUNCTION — conversationAlerter had no parameter through which message
+ * text could arrive. Nothing extended that to a second alert type.
+ *
+ * It is now a property of the FILE. The alerter takes a kind, the kind indexes
+ * this table, and there is no exported function on this module through which
+ * text could reach ntfy.sh. Adding a third kind cannot weaken it by accident.
+ */
+export const ALERT_TEXT = {
+  conversation_started: 'started a conversation',
+  spec_confirmed: 'confirmed a spec',
+} as const
+
+export type AlertKind = keyof typeof ALERT_TEXT
 
 export type AlerterDeps = {
   topic: string | undefined
@@ -41,10 +59,10 @@ export type AlerterDeps = {
 
 type Failure = 'http' | 'network' | 'timeout' | 'no_topic'
 
-export function conversationAlerter(
+export function alerter(
   deps: AlerterDeps,
-): (accountId: number) => Promise<void> {
-  return async (accountId) => {
+): (kind: AlertKind, accountId: number) => Promise<void> {
+  return async (kind, accountId) => {
     try {
       const account = findAccountById(deps.db, accountId)
 
@@ -59,7 +77,7 @@ export function conversationAlerter(
         // Belt to the deploy gate's braces: NTFY_TOPIC is REQUIRED, so
         // deploy/check-env.sh should have stopped this. If it somehow did
         // not, the log says so rather than the alert vanishing.
-        record(deps, account.id, 'alert_failed', {
+        record(deps, account.id, kind, 'alert_failed', {
           reason: 'no_topic',
           status: null,
         })
@@ -69,8 +87,9 @@ export function conversationAlerter(
       await send(
         deps,
         account.id,
+        kind,
         topic,
-        `${account.slug} started a conversation`,
+        `${account.slug} ${ALERT_TEXT[kind]}`,
       )
     } catch {
       // Backstop for anything the paths above did not anticipate — a closed
@@ -79,9 +98,24 @@ export function conversationAlerter(
   }
 }
 
+/**
+ * The conversation-start alerter, kind-bound.
+ *
+ * Kept so lib/chat/turn.ts's `alert: (accountId: number) => void` dependency
+ * type is unchanged — that type is what stops a future edit from awaiting a
+ * push notification on the critical path of a friend's chat turn.
+ */
+export function conversationAlerter(
+  deps: AlerterDeps,
+): (accountId: number) => Promise<void> {
+  const send = alerter(deps)
+  return (accountId) => send('conversation_started', accountId)
+}
+
 async function send(
   deps: AlerterDeps,
   accountId: number,
+  kind: AlertKind,
   topic: string,
   body: string,
 ): Promise<void> {
@@ -96,9 +130,9 @@ async function send(
       },
     )
     if (response.ok) {
-      record(deps, accountId, 'alert_sent', { status: response.status })
+      record(deps, accountId, kind, 'alert_sent', { status: response.status })
     } else {
-      record(deps, accountId, 'alert_failed', {
+      record(deps, accountId, kind, 'alert_failed', {
         reason: 'http',
         status: response.status,
       })
@@ -111,7 +145,7 @@ async function send(
       error instanceof Error && error.name === 'TimeoutError'
         ? 'timeout'
         : 'network'
-    record(deps, accountId, 'alert_failed', { reason, status: null })
+    record(deps, accountId, kind, 'alert_failed', { reason, status: null })
   }
 }
 
@@ -129,6 +163,7 @@ async function send(
 function record(
   deps: AlerterDeps,
   accountId: number,
+  kind: AlertKind,
   event: 'alert_sent' | 'alert_failed',
   data: { reason?: Failure; status: number | null },
 ): void {
@@ -138,7 +173,7 @@ function record(
       event,
       at: deps.now(),
       // No text of any kind. account_id already says who.
-      data: { kind: ALERT_KIND, ...data },
+      data: { kind, ...data },
     })
   } catch {
     // Losing the metric is the cheapest possible failure here.
