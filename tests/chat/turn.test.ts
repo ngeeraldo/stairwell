@@ -44,7 +44,10 @@ function fakeClient(chunks: string[]): ChatClient {
         onText(c)
         onUsage({ output: 7 })
       }
-      return { usage: USAGE, stop_reason: 'end_turn', served: SERVED }
+      return { usage: USAGE, stop_reason: 'end_turn', served: SERVED, tools_called: [] }
+    },
+    async propose() {
+      throw new Error('unused')
     },
   }
 }
@@ -69,8 +72,12 @@ function silentClient(
         usage: USAGE,
         stop_reason: 'refusal',
         served: SERVED,
+        tools_called: [],
         ...result,
       }
+    },
+    async propose() {
+      throw new Error('unused')
     },
   }
 }
@@ -87,6 +94,9 @@ function abortingClient(controller: AbortController): ChatClient {
       throw Object.assign(new Error('aborted'), { name: 'AbortError' })
       // `signal` is deliberately unused here; runTurn reads signal.aborted.
       void signal
+    },
+    async propose() {
+      throw new Error('unused')
     },
   }
 }
@@ -107,6 +117,9 @@ function abortingClientAfterFallback(controller: AbortController): ChatClient {
       controller.abort()
       throw Object.assign(new Error('aborted'), { name: 'AbortError' })
       void signal
+    },
+    async propose() {
+      throw new Error('unused')
     },
   }
 }
@@ -141,6 +154,9 @@ function failingClient(
       }
       throw new ChatStreamError(describeError(error), error.message)
     },
+    async propose() {
+      throw new Error('unused')
+    },
   }
 }
 
@@ -159,7 +175,10 @@ function divergingUsageClient(): ChatClient {
       onServed({ model_served: CHAT_MODEL })
       onText('ok')
       onUsage({ output: 99 })
-      return { usage: USAGE, stop_reason: 'end_turn', served: SERVED }
+      return { usage: USAGE, stop_reason: 'end_turn', served: SERVED, tools_called: [] }
+    },
+    async propose() {
+      throw new Error('unused')
     },
   }
 }
@@ -524,7 +543,10 @@ describe('runTurn — empty or incomplete reply', () => {
         onUsage({ input: 100, cache_read: 40, cache_creation: 0 })
         onServed({ model_served: CHAT_MODEL })
         onText('a real reply')
-        return { usage: USAGE, stop_reason: 'end_turn', served: SERVED }
+        return { usage: USAGE, stop_reason: 'end_turn', served: SERVED, tools_called: [] }
+      },
+      async propose() {
+        throw new Error('unused')
       },
     }
 
@@ -554,7 +576,11 @@ describe('runTurn — served model and fallback', () => {
           usage: USAGE,
           stop_reason: 'end_turn',
           served: { model_served: 'claude-opus-4-8', fallback_fired: true },
+          tools_called: [],
         }
+      },
+      async propose() {
+        throw new Error('unused')
       },
     }
 
@@ -578,6 +604,9 @@ describe('runTurn — served model and fallback', () => {
           'overloaded',
         )
       },
+      async propose() {
+        throw new Error('unused')
+      },
     }
 
     await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert }, input())
@@ -597,6 +626,9 @@ describe('runTurn — served model and fallback', () => {
           { kind: 'connection', status: null, type: null },
           'down',
         )
+      },
+      async propose() {
+        throw new Error('unused')
       },
     }
 
@@ -655,7 +687,10 @@ describe('conversation-start alerting', () => {
         onServed({ model_served: CHAT_MODEL })
         onText('ok')
         onUsage({ output: 7 })
-        return { usage: USAGE, stop_reason: 'end_turn', served: SERVED }
+        return { usage: USAGE, stop_reason: 'end_turn', served: SERVED, tools_called: [] }
+      },
+      async propose() {
+        throw new Error('unused')
       },
     }
     const deps = {

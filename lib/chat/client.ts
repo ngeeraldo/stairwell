@@ -14,6 +14,7 @@ import Anthropic, {
   UnprocessableEntityError,
 } from '@anthropic-ai/sdk'
 import type { ChatMessage } from './history'
+import { SPEC_JSON_SCHEMA } from '@/lib/spec/schema'
 
 export type Usage = {
   input: number
@@ -46,6 +47,16 @@ export type StreamResult = {
    */
   stop_reason: string | null
   served: Served
+  /** Names of the tools the resolved message asked to call. */
+  tools_called: string[]
+}
+
+export type ProposeResult = {
+  /** The parsed object, still unvalidated. lib/spec/schema.ts validates it. */
+  input: unknown
+  usage: Usage
+  stop_reason: string | null
+  served: Served
 }
 
 export type ChatClient = {
@@ -62,6 +73,11 @@ export type ChatClient = {
      */
     onServed: (served: Partial<Served>) => void
   }): Promise<StreamResult>
+  propose(args: {
+    system: string
+    messages: ChatMessage[]
+    signal: AbortSignal
+  }): Promise<ProposeResult>
 }
 
 /** Configuration, not architecture — and stamped into every metrics row. */
@@ -78,6 +94,44 @@ export const CHAT_EFFORT = 'medium' as const
  * that is not actually generated.
  */
 export const MAX_TOKENS = 64000
+
+/** The hand-raise. No payload — see PROPOSE_TOOL below. */
+export const PROPOSE_TOOL_NAME = 'propose_spec'
+
+/**
+ * A tool with an EMPTY input schema.
+ *
+ * The agent is not delivering a spec here, it is asking for one to be
+ * written. Carrying no payload is what keeps stream() from having to
+ * accumulate a 5KB mockup out of input_json_delta events alongside the text
+ * it is already pushing to a friend's screen.
+ */
+export const PROPOSE_TOOL = {
+  name: PROPOSE_TOOL_NAME,
+  description:
+    'Signal that the interview has enough to describe a dashboard. Takes no ' +
+    'arguments. Calling this ends your turn; a preview is written and shown ' +
+    'to the person as a card they can accept or push back on.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {},
+    required: [] as string[],
+  },
+}
+
+/**
+ * NOT MAX_TOKENS, and this difference is load-bearing.
+ *
+ * stream() runs at 64000 because streaming makes a high ceiling free. The
+ * authoring call does not stream, and the SDK scales its own timeout UP for
+ * large non-streaming max_tokens — so reusing 64000 here could hold a friend
+ * on "putting together a preview" for the better part of an hour. This
+ * ceiling is still far above a spec plus a mockup plus adaptive thinking.
+ */
+export const SPEC_MAX_TOKENS = 32000
+
+/** What actually bounds the wait. A timeout is a visible failure; a hang is not. */
+export const SPEC_TIMEOUT_MS = 180_000
 
 /**
  * Server-side refusal fallbacks: a declined request is re-run on another model
@@ -206,6 +260,7 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
               },
             ],
             messages,
+            tools: [PROPOSE_TOOL],
           },
           { signal },
         )
@@ -255,10 +310,81 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
           },
           stop_reason: final.stop_reason,
           served,
+          tools_called: final.content
+            .filter((block) => block.type === 'tool_use')
+            .map((block) => (block as { name: string }).name),
         }
       } catch (error) {
         // Normalized here, where SDK knowledge already lives, so turn.ts never
         // has to know the SDK's class hierarchy to label a failure.
+        throw new ChatStreamError(
+          describeError(error),
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    },
+
+    async propose({ system, messages, signal }) {
+      try {
+        const message = await sdk.beta.messages.create(
+          {
+            model: CHAT_MODEL,
+            max_tokens: SPEC_MAX_TOKENS,
+            output_config: {
+              effort: CHAT_EFFORT,
+              // Structured outputs rather than a forced tool: it constrains
+              // the RESPONSE, so there is no tool_use block to extract and no
+              // tool/thinking interaction to reason about. Same guarantee,
+              // fewer moving parts (design spec section 4.1).
+              format: { type: 'json_schema', schema: SPEC_JSON_SCHEMA },
+            },
+            betas: [FALLBACK_BETA],
+            fallbacks: 'default',
+            // Deliberately no cache_control on this system block: the
+            // authoring prompt runs once per proposal, so a cache write
+            // premium buys nothing.
+            system: [{ type: 'text', text: system }],
+            messages,
+          },
+          { signal, timeout: SPEC_TIMEOUT_MS },
+        )
+
+        const text = message.content
+          .filter((block) => block.type === 'text')
+          .map((block) => (block as { text: string }).text)
+          .join('')
+
+        let input: unknown
+        try {
+          input = JSON.parse(text)
+        } catch {
+          // A truncated or refused reply is NOT a spec. Failing here is what
+          // keeps junk out of an append-only table.
+          throw new ChatStreamError(
+            { kind: 'unparsable_spec', status: null, type: null },
+            `authoring call returned unparsable output (stop_reason ${message.stop_reason})`,
+          )
+        }
+
+        return {
+          input,
+          usage: {
+            input: message.usage.input_tokens,
+            output: message.usage.output_tokens,
+            cache_read: message.usage.cache_read_input_tokens ?? 0,
+            cache_creation: message.usage.cache_creation_input_tokens ?? 0,
+          },
+          stop_reason: message.stop_reason,
+          served: {
+            model_served: message.model,
+            fallback_fired:
+              (message.usage.iterations ?? []).some(
+                (entry) => entry.type === 'fallback_message',
+              ) || message.content.some((block) => block.type === 'fallback'),
+          },
+        }
+      } catch (error) {
+        if (error instanceof ChatStreamError) throw error
         throw new ChatStreamError(
           describeError(error),
           error instanceof Error ? error.message : String(error),

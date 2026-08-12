@@ -63,7 +63,11 @@ describe('no message text reaches ntfy.sh', () => {
           usage: { input: 1, output: 1, cache_read: 0, cache_creation: 0 },
           stop_reason: 'end_turn',
           served: { model_served: CHAT_MODEL, fallback_fired: false },
+          tools_called: [],
         }
+      },
+      async propose() {
+        throw new Error('unused')
       },
     }
 
