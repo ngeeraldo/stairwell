@@ -7,8 +7,12 @@
 // That is consistent with CLAUDE.md: the platform database is not encrypted
 // with any user key and holds the records Nico is promised access to at
 // onboarding. It is NOT consistent with Claude running it locally against
-// anything but the synthetic database — pass --local for that, and nothing
-// else.
+// anything but the synthetic database. This file takes no flag of its own —
+// PLATFORM_DB is what selects the database, always explicit, never
+// ambient (see lib/db/platform.ts) — so point it at a synthetic one.
+// scripts/pull-spec.sh devtwo --local is the only form of this pull an
+// agent runs; that script's --local is what passes a synthetic PLATFORM_DB
+// through to this file.
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 import { currentSpec } from '@/lib/db/specs'
