@@ -756,10 +756,16 @@ describe('the completion rule with propose_spec', () => {
   const PROPOSAL = {
     id: 7,
     version: 1,
-    payload: {
-      title: 'T', summary: 's', background: 'b',
-      panels: [{ name: 'n', shows: 's', why: 'w', source: 'plaid' as const }],
-      manual_logging: [], open_questions: [],
+    // The tagged union Proposal now carries, so a card streamed mid-turn and
+    // a card rendered on page load have one shape. Legacy arm: that is what
+    // lib/spec/author.ts still produces until the authoring switchover.
+    spec: {
+      kind: 'legacy' as const,
+      payload: {
+        title: 'T', summary: 's', background: 'b',
+        panels: [{ name: 'n', shows: 's', why: 'w', source: 'plaid' as const }],
+        manual_logging: [], open_questions: [],
+      },
     },
     mockup_html: '<!doctype html>',
   }

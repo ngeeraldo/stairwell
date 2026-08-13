@@ -7,9 +7,9 @@ import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
-import { newestSpec } from '@/lib/db/specs'
+import { hasConfirmedSpec, newestSpec } from '@/lib/db/specs'
 import { SpecShapeError } from '@/lib/spec/schema'
-import { parseLegacySpecPayload } from '@/lib/spec/legacy'
+import { readStoredSpec } from '@/lib/spec/stored'
 import type { Proposal } from '@/lib/spec/author'
 import { openUserDb } from '@/lib/db/userDb'
 import type { UserDb } from '@/lib/db/userDb'
@@ -199,7 +199,11 @@ export default async function UserSpace({
       proposal = {
         id: newest.id,
         version: newest.version,
-        payload: parseLegacySpecPayload(newest.payload),
+        // readStoredSpec, not either parser directly: it is the one place
+        // that decides which shape a row is, and the card renders whichever
+        // arm comes back. A row written before the unified loop can never be
+        // rewritten (specs rejects UPDATE), so both arms are permanent.
+        spec: readStoredSpec(newest.payload),
         mockup_html: newest.mockup_html,
         confirmed: newest.confirmed_at !== null,
       }
@@ -214,6 +218,14 @@ export default async function UserSpace({
     }
   }
 
+  // Which delivery promise every card on this page makes. Computed HERE, from
+  // the record, because ChatPanel is a client component with no database and
+  // the alternative — the agent remembering to say it — is exactly what the
+  // fixed chrome exists to replace. Keyed on a CONFIRMED spec, not a proposed
+  // one: someone still deciding on their first card has nothing being built
+  // yet, so "tomorrow morning" is still the honest promise for them.
+  const first = !hasConfirmedSpec(getDb(), accountId)
+
   return (
     <main>
       <h1>{user}</h1>
@@ -223,6 +235,7 @@ export default async function UserSpace({
           body: row.body,
         }))}
         proposal={proposal}
+        first={first}
       />
       {unlocked ? (
         await dashboardRegion(user, accountId, sessionId!)

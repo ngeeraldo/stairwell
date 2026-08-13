@@ -85,11 +85,13 @@ vi.mock('@/lib/dashboard/registry', () => ({
 // is computing and passing `proposal`, not rendering it — so they inspect
 // the ChatPanel element's props directly instead of grepping for text that
 // only a real render would produce.
-function findChatPanelProps(node: unknown): { initial: unknown; proposal?: unknown } | undefined {
+function findChatPanelProps(
+  node: unknown,
+): { initial: unknown; proposal?: unknown; first?: unknown } | undefined {
   if (typeof node !== 'object' || node === null) return undefined
   const props = (node as { props?: unknown }).props
   if (props && typeof props === 'object' && 'initial' in props) {
-    return props as { initial: unknown; proposal?: unknown }
+    return props as { initial: unknown; proposal?: unknown; first?: unknown }
   }
   const children = (props as { children?: unknown } | undefined)?.children
   if (Array.isArray(children)) {
@@ -483,10 +485,62 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
 
     expect(notFoundMock).not.toHaveBeenCalled()
     const proposal = findChatPanelProps(element)?.proposal as
-      | { payload: { title: string }; confirmed: boolean }
+      | { spec: { kind: string; payload?: { title: string } }; confirmed: boolean }
       | undefined
-    expect(proposal?.payload.title).toBe('Eating out and the car fund')
+    // The card carries the tagged union readStoredSpec produced, not a bare
+    // payload: a card streamed mid-turn and a card rendered on page load must
+    // have ONE shape, or the two disagree the moment authoring switches over.
+    expect(proposal?.spec.kind).toBe('legacy')
+    expect(proposal?.spec.payload?.title).toBe('Eating out and the car fund')
     expect(proposal?.confirmed).toBe(false)
+  })
+
+  it('tells ChatPanel this is a first dashboard until the account has confirmed one', async () => {
+    // The delivery promise is chosen server-side, from the record, because
+    // it is the one sentence in the pilot that must never be wrong: a
+    // first-timer is promised tomorrow morning, someone tweaking an existing
+    // dashboard is promised a few hours. ChatPanel cannot work that out —
+    // it has no database — so the page must hand it over.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    const { confirmSpec, insertSpec } = await import('@/lib/db/specs')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    putK(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+
+    const specId = insertSpec(handle, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: {
+        title: 'Did I walk the dog today?',
+        summary: 'A one-tap tracker.',
+        background: 'Pivoted from weather TEST.',
+        panels: [{ name: 'Walked today?', shows: 'Yes/no', why: 'They asked', source: 'manual' }],
+        manual_logging: [],
+        open_questions: [],
+      },
+      mockupHtml: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+      at: 1_000,
+    })
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+
+    // Proposed but not confirmed: still a first dashboard.
+    const before = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+    expect(findChatPanelProps(before)?.first).toBe(true)
+
+    confirmSpec(handle, { specId, accountId: id, at: 2_000 })
+
+    const after = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+    expect(findChatPanelProps(after)?.first).toBe(false)
   })
 
   it('degrades a corrupt stored proposal to no card, not a 500', async () => {

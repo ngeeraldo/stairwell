@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { confirmSpec, insertSpec } from '@/lib/db/specs'
-import { SpecShapeError } from '@/lib/spec/schema'
+import { SpecShapeError, type SpecVersion } from '@/lib/spec/schema'
 import { type LegacySpecPayload } from '@/lib/spec/legacy'
 import { exportSpec } from '@/scripts/export-spec'
 
@@ -24,6 +24,34 @@ function payload(overrides: Partial<LegacySpecPayload> = {}): LegacySpecPayload 
     open_questions: [],
     ...overrides,
   }
+}
+
+const CURRENT_PAYLOAD: SpecVersion = {
+  title: 'Did I walk the dog today? TEST',
+  summary: 'A one-tap tracker, COFFEE PALACE TEST.',
+  background: 'Pivoted from weather TEST.',
+  change_summary: 'Added a streak panel TEST.',
+  based_on_version: null,
+  screens: [
+    {
+      id: 'today',
+      title: 'Today TEST',
+      order: 1,
+      panels: [
+        {
+          id: 'walked_today',
+          title: 'Walked today? TEST',
+          intent: 'Did I walk the dog TEST?',
+          display: 'Yes/no with a tap TEST.',
+          context_of_use: null,
+          values: [{ kind: 'entered', id: 'walk_flag', description: 'One tap per day TEST.' }],
+          entry: null,
+        },
+      ],
+    },
+  ],
+  data_requirements: [],
+  open_questions: [],
 }
 
 /**
@@ -81,6 +109,11 @@ beforeAll(async () => {
     role: 'user',
     password: 'TEST-DEV-THREE',
   })
+  const devfourId = await createAccount(db, {
+    slug: 'devfour',
+    role: 'user',
+    password: 'TEST-DEV-FOUR',
+  })
   // 'ghost' is deliberately never created.
 
   // devone: a proposal that was never confirmed. currentSpec must find
@@ -132,6 +165,21 @@ beforeAll(async () => {
     at: 1_000,
   })
   confirmSpec(db, { specId: corruptId, accountId: devthreeId, at: 1_500 })
+
+  // devfour: a CONFIRMED spec in the CURRENT whole-surface shape. Nothing
+  // writes this shape yet (Task 10 switches authoring over), but the export
+  // has to be ready the moment something does — a build contract that
+  // rendered the wrong shape would be discovered by a human reading spec.md
+  // after the fact, not by anything that fails loudly.
+  const currentId = insertSpec(db, {
+    accountId: devfourId,
+    conversationId: 'conv-devfour',
+    promptSha: 'sha-devfour-0001',
+    payload: CURRENT_PAYLOAD,
+    mockupHtml: MOCKUP,
+    at: 1_000,
+  })
+  confirmSpec(db, { specId: currentId, accountId: devfourId, at: 1_500 })
 })
 
 afterAll(() => {
@@ -161,6 +209,60 @@ describe('exportSpec', () => {
 
   it('refuses an unknown slug', () => {
     expect(() => exportSpec(db, 'ghost')).toThrow(/no account/)
+  })
+
+  it('renders a current-shape row through the whole-surface renderer', () => {
+    // `## What changed` exists only in renderSpecMarkdown. Asserting on it is
+    // asserting that exportSpec picked the right renderer for the row's
+    // actual shape, not merely that it produced some markdown.
+    const out = exportSpec(db, 'devfour')
+    expect(out.spec_md).toContain('## What changed')
+    expect(out.spec_md).toContain('Added a streak panel TEST.')
+    expect(out.spec_md).toContain('`walked_today`')
+    // The legacy renderer's own section headings must NOT appear: they are
+    // what a wrong-arm export would produce.
+    expect(out.spec_md).not.toContain('## Manual logging')
+  })
+
+  it('exports a legacy row byte-for-byte as it does today', () => {
+    // Pre-unification rows can never be rewritten (`specs` rejects UPDATE),
+    // so their export is frozen output. Pinned as exact bytes rather than
+    // substrings: a re-pull that produced a spurious diff in a build contract
+    // would be a human's problem to untangle, silently, later.
+    const out = exportSpec(db, 'devtwo')
+    expect(out.spec_md).toBe(`# Eating out and the car fund
+
+<!-- Generated from the confirmed spec record by scripts/pull-spec.sh.
+     Do not hand-edit: the next pull overwrites this file. -->
+
+- **User:** devtwo
+- **Spec version:** v1
+- **Confirmed:** 1970-01-01T00:00:01.500Z
+
+## Summary
+
+This is the confirmed one; a later draft came after it but was never confirmed.
+
+## Background
+
+Loudly-fake background, COFFEE PALACE TEST.
+
+## Panels
+
+### 1. Panel one
+
+- **Shows:** Something
+- **Why:** A reason
+- **Source:** plaid
+
+## Manual logging
+
+_None._
+
+## Open questions
+
+_None._
+`)
   })
 
   it('names the failure instead of crashing when the stored payload is corrupt', () => {

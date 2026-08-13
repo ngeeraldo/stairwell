@@ -6,8 +6,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import type { PlatformDb } from '@/lib/db/platform'
 import type { LegacySpecPayload } from '@/lib/spec/legacy'
+import type { Panel, SpecVersion } from '@/lib/spec/schema'
 
 beforeEach(() => {
   vi.stubGlobal('React', React)
@@ -90,6 +92,73 @@ const SPEC_V3: LegacySpecPayload = {
 // hazard app/[user]/page.tsx already handles (Task 3 finding).
 const CORRUPT_PAYLOAD = { title: 'CORRUPT TEST — missing fields' }
 
+function walkedTodayPanel(): Panel {
+  return {
+    id: 'walked_today',
+    title: 'Walked today? TEST',
+    intent: 'Did I walk the dog TEST?',
+    display: 'Yes/no with a tap TEST.',
+    context_of_use: null,
+    values: [{ kind: 'entered', id: 'walk_flag', description: 'One tap per day TEST.' }],
+    entry: null,
+  }
+}
+
+function streakPanel(): Panel {
+  return {
+    id: 'streak',
+    title: 'Current streak TEST',
+    intent: 'Keep the run going TEST.',
+    display: 'A day count TEST.',
+    context_of_use: null,
+    values: [
+      {
+        kind: 'derived',
+        id: 'streak_days',
+        description: 'Consecutive walked days TEST.',
+        inputs: ['walk_flag'],
+      },
+    ],
+    entry: null,
+  }
+}
+
+// The first structured version: no predecessor at all, so nothing to diff
+// against.
+const CURRENT_V1: SpecVersion = {
+  title: 'COFFEE PALACE TEST current v1',
+  summary: 'A one-tap tracker TEST.',
+  background: 'Pivoted from weather TEST.',
+  change_summary: 'The first whole-surface version TEST.',
+  based_on_version: null,
+  screens: [{ id: 'today', title: 'Today TEST', order: 1, panels: [walkedTodayPanel()] }],
+  data_requirements: [
+    { table: 'walks', purpose: 'One row per walked day TEST.', status: 'new' },
+  ],
+  open_questions: ['Does the streak reset at midnight TEST?'],
+}
+
+// Built on v1, adding exactly one panel — so the rendered diff has a single,
+// nameable added id rather than a wall of churn.
+const CURRENT_V2: SpecVersion = {
+  ...CURRENT_V1,
+  title: 'COFFEE PALACE TEST current v2',
+  change_summary: 'Added a streak panel TEST.',
+  based_on_version: 1,
+  screens: [
+    {
+      id: 'today',
+      title: 'Today TEST',
+      order: 1,
+      panels: [walkedTodayPanel(), streakPanel()],
+    },
+  ],
+}
+
+// `screens` is present, so readStoredSpec commits to the CURRENT arm and
+// parseSpecVersion throws — a corrupt current row, not a legacy one.
+const CORRUPT_CURRENT = { title: 'CORRUPT CURRENT TEST', screens: [{ id: 'nope' }] }
+
 describe('the spec pane', () => {
   let dir: string
   let handle: PlatformDb | undefined
@@ -110,7 +179,12 @@ describe('the spec pane', () => {
 
   async function render(
     user: string,
-    opts: { as?: 'user' | 'admin'; corrupt?: boolean } = {},
+    opts: {
+      as?: 'user' | 'admin'
+      corrupt?: boolean
+      /** Which current-shape rows 'devthree' gets. Only that slug has them. */
+      current?: 'v1' | 'v1+v2' | 'v1+corrupt' | 'legacy+v2'
+    } = {},
   ): Promise<string> {
     const role = opts.as ?? 'admin'
     const { getDb } = await import('@/lib/db/instance')
@@ -163,6 +237,39 @@ describe('the spec pane', () => {
       }
     }
 
+    if (user === 'devthree') {
+      insertSpec(handle, {
+        accountId: targetId,
+        conversationId: 'conv-3',
+        promptSha: 'sha123456789',
+        // The real migration shape: a friend whose v1 predates the unified
+        // loop, whose v2 is the first current-shape proposal on top of it.
+        payload: opts.current === 'legacy+v2' ? SPEC_V1 : CURRENT_V1,
+        mockupHtml: '<!doctype html><p>current v1 preview TEST</p>',
+        at: 1_000,
+      })
+      if (opts.current === 'v1+v2' || opts.current === 'legacy+v2') {
+        insertSpec(handle, {
+          accountId: targetId,
+          conversationId: 'conv-3',
+          promptSha: 'sha123456789',
+          payload: CURRENT_V2,
+          mockupHtml: '<!doctype html><p>current v2 preview TEST</p>',
+          at: 2_000,
+        })
+      }
+      if (opts.current === 'v1+corrupt') {
+        insertSpec(handle, {
+          accountId: targetId,
+          conversationId: 'conv-3',
+          promptSha: 'sha123456789',
+          payload: CORRUPT_CURRENT,
+          mockupHtml: '<!doctype html><p>corrupt current preview TEST</p>',
+          at: 2_000,
+        })
+      }
+    }
+
     const viewerId =
       role === 'admin'
         ? await createAccount(handle, { slug: 'nico', role: 'admin', password: 'pw' })
@@ -171,30 +278,37 @@ describe('the spec pane', () => {
 
     const { default: Pane } = await import('@/app/admin/[user]/page')
     const element = await Pane({ params: Promise.resolve({ user }) })
-    return JSON.stringify(element)
+    // A REAL render pass, not JSON.stringify of the element tree. The pane
+    // renders through helper functions now, and JSON.stringify leaves a
+    // function component unexpanded — so it serialises the PROPS handed to
+    // that component and none of its output. Assertions against that would
+    // pass for a helper that rendered nothing at all. Safe here because the
+    // pane and its helpers use no hooks: there is no dispatcher or DOM
+    // requirement SSR cannot satisfy.
+    return renderToStaticMarkup(element)
   }
 
   it('lists every proposal, newest first, marking the confirmed one', async () => {
     // A friend stuck on round three is visible as a friend stuck on round
     // three, not as silence.
-    const json = await render('devone')
-    expect(json.indexOf('v3')).toBeLessThan(json.indexOf('v1'))
-    expect(json).toContain('Confirmed')
+    const html = await render('devone')
+    expect(html.indexOf('v3')).toBeLessThan(html.indexOf('v1'))
+    expect(html).toContain('Confirmed')
   })
 
   it('puts open questions ABOVE the spec body', async () => {
     // open_questions is not documentation: it is the agent saying it refused
     // to promise something and handed the question over.
-    const json = await render('devone')
-    expect(json.indexOf('Is a Monzo pot reachable?')).toBeLessThan(
-      json.indexOf('So mornings stop being a surprise.'),
+    const html = await render('devone')
+    expect(html.indexOf('Is a Monzo pot reachable?')).toBeLessThan(
+      html.indexOf('So mornings stop being a surprise.'),
     )
   })
 
   it('renders the mockup with an empty sandbox', async () => {
-    const json = await render('devone')
-    expect(json).toContain('"sandbox":""')
-    expect(json).not.toContain('allow-scripts')
+    const html = await render('devone')
+    expect(html).toContain('sandbox=""')
+    expect(html).not.toContain('allow-scripts')
   })
 
   it('says so plainly when there are no proposals yet', async () => {
@@ -205,17 +319,77 @@ describe('the spec pane', () => {
     await expect(render('devone', { as: 'user' })).rejects.toThrow('NEXT_NOT_FOUND')
   })
 
+  it('marks a legacy row as one, so nobody reads a frozen shape as a current spec', async () => {
+    // A pre-unification row has no change_summary, no screens and no stable
+    // ids — a reader who mistakes one for a current spec would go looking for
+    // a diff that structurally cannot exist. `specs` rejects UPDATE, so these
+    // rows are permanent and so is the need for this badge.
+    const html = await render('devone')
+    expect(html).toContain('Pre-unification spec (legacy shape)')
+  })
+
+  it('renders a current-shape row down to its screens, panels and value sourcing', async () => {
+    const html = await render('devthree')
+    expect(html).toContain('Today TEST')
+    expect(html).toContain('Walked today? TEST')
+    expect(html).toContain('Yes/no with a tap TEST.')
+    // Where each value comes from is the point of the new shape: `entered`
+    // means a human types it, and that is what decides whether a panel needs
+    // an entry widget built for it.
+    expect(html).toContain('walk_flag')
+    expect(html).toContain('entered')
+    // And it is NOT badged as legacy.
+    expect(html).not.toContain('Pre-unification spec (legacy shape)')
+  })
+
+  it('renders the diff against the version a current row was based on', async () => {
+    // The structural diff is the canonical record of what a friend asked
+    // for — see lib/spec/diff.ts. The admin pane is where it gets read.
+    const html = await render('devthree', { current: 'v1+v2' })
+    expect(html).toContain('Changes from v1')
+    expect(html).toContain('Panels added: streak')
+  })
+
+  it('says so plainly when the base version is a legacy row, rather than inventing a diff', async () => {
+    // lib/spec/diff.ts compares by stable id, and a pre-unification row has
+    // none anywhere in it. There is no diff to compute — only a fact to
+    // state.
+    const html = await render('devthree', { current: 'legacy+v2' })
+    expect(html).toContain('Changes from v1')
+    expect(html).toContain('first structured version')
+    expect(html).not.toContain('Panels added')
+  })
+
+  it('renders a first structured version without a diff at all', async () => {
+    // based_on_version null means there is no predecessor. Diffing against
+    // nothing would list every screen and panel as "added", which reads as a
+    // change the friend never asked for.
+    const html = await render('devthree', { current: 'v1' })
+    expect(html).toContain('COFFEE PALACE TEST current v1')
+    expect(html).not.toContain('Changes from v')
+  })
+
+  it('degrades a corrupt CURRENT row to unreadable, leaving the rest of the pane intact', async () => {
+    // Same append-only hazard as the legacy corrupt row below, on the other
+    // arm of the union: `screens` is present so readStoredSpec commits to the
+    // current shape, and the validation failure must not 500 the pane.
+    const html = await render('devthree', { current: 'v1+corrupt' })
+    expect(notFoundMock).not.toHaveBeenCalled()
+    expect(html.indexOf('v2')).toBeLessThan(html.indexOf('Unreadable'))
+    expect(html).toContain('COFFEE PALACE TEST current v1')
+  })
+
   it('degrades a corrupt stored payload instead of 500ing the whole pane', async () => {
     // specs is append-only: this row can never be deleted to make the
     // problem go away, so the pane must survive it forever. Anything other
     // than the expected SpecShapeError must still escape — this test only
     // proves the expected one doesn't crash the render.
-    const json = await render('devone', { corrupt: true })
+    const html = await render('devone', { corrupt: true })
     expect(notFoundMock).not.toHaveBeenCalled()
     // The corrupt row (v4, newest) shows as unreadable...
-    expect(json.indexOf('v4')).toBeLessThan(json.indexOf('Unreadable'))
+    expect(html.indexOf('v4')).toBeLessThan(html.indexOf('Unreadable'))
     // ...while the valid rows around it still render in full.
-    expect(json).toContain('So mornings stop being a surprise.')
-    expect(json).toContain('Confirmed')
+    expect(html).toContain('So mornings stop being a surprise.')
+    expect(html).toContain('Confirmed')
   })
 })

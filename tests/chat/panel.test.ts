@@ -7,6 +7,8 @@ import {
   applyTurn,
   attemptConfirm,
   confirmRequest,
+  DELIVERY_CHANGE,
+  DELIVERY_FIRST,
   finishTurn,
   parseNdjson,
   pendingTurns,
@@ -18,6 +20,7 @@ import {
   type CardProposal,
   type PanelState,
 } from '@/app/[user]/ChatPanel'
+import type { SpecVersion } from '@/lib/spec/schema'
 
 // tsconfig.json sets "jsx": "preserve" for Next's own SWC compiler, which
 // auto-injects the JSX runtime import. vitest's esbuild transform instead
@@ -83,17 +86,131 @@ describe('pendingTurns — what a retry re-sends', () => {
 const PROPOSAL: CardProposal = {
   id: 42,
   version: 1,
-  payload: {
-    title: 'Eating out and the car fund',
-    summary: 'So mornings stop being a surprise.',
-    background: 'Checks the banking app most days.',
-    panels: [
-      { name: 'Eating out', shows: 'This month against last', why: 'Said so', source: 'plaid' },
-    ],
-    manual_logging: [],
-    open_questions: [],
+  spec: {
+    kind: 'legacy',
+    payload: {
+      title: 'Eating out and the car fund',
+      summary: 'So mornings stop being a surprise.',
+      background: 'Checks the banking app most days.',
+      panels: [
+        { name: 'Eating out', shows: 'This month against last', why: 'Said so', source: 'plaid' },
+      ],
+      manual_logging: [],
+      open_questions: [],
+    },
   },
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+}
+
+/**
+ * A pre-unification row, in the exact shape a friend's `specs` table already
+ * holds for real. `specs` rejects UPDATE, so these keep arriving at this card
+ * forever — the legacy arm is not a transitional courtesy.
+ */
+const LEGACY_PROPOSAL: CardProposal = {
+  id: 7,
+  version: 1,
+  spec: {
+    kind: 'legacy',
+    payload: {
+      title: 'Did I walk the dog today?',
+      summary: 'A one-tap tracker.',
+      background: 'Pivoted from weather TEST.',
+      panels: [
+        { name: 'Walked today?', shows: 'Yes/no', why: 'They asked', source: 'manual' },
+      ],
+      manual_logging: ['One tap per day.'],
+      open_questions: [],
+    },
+  },
+  mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+}
+
+function walkedTodayPanel() {
+  return {
+    id: 'walked_today',
+    title: 'Walked today?',
+    intent: 'Did I walk the dog?',
+    display: 'Yes/no with a tap.',
+    context_of_use: null,
+    values: [
+      { kind: 'entered' as const, id: 'walk_flag', description: 'One tap per day.' },
+    ],
+    entry: null,
+  }
+}
+
+function streakPanel() {
+  return {
+    id: 'streak',
+    title: 'Current streak',
+    intent: 'Keep the run going.',
+    display: 'A day count.',
+    context_of_use: null,
+    values: [
+      {
+        kind: 'derived' as const,
+        id: 'streak_days',
+        description: 'Consecutive walked days.',
+        inputs: ['walk_flag'],
+      },
+    ],
+    entry: null,
+  }
+}
+
+const VERSION: SpecVersion = {
+  title: 'Did I walk the dog today?',
+  summary: 'A one-tap tracker.',
+  background: 'Pivoted from weather TEST.',
+  change_summary: 'Added a streak.',
+  based_on_version: 1,
+  screens: [{ id: 'today', title: 'Today', order: 1, panels: [walkedTodayPanel()] }],
+  data_requirements: [],
+  open_questions: [],
+}
+
+const VERSION_PROPOSAL: CardProposal = {
+  id: 43,
+  version: 2,
+  spec: { kind: 'version', version: VERSION },
+  mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+}
+
+/** Two screens, so "lists every panel" cannot be satisfied by walking only
+ * the first screen — the bug a single-screen fixture could never see. */
+const TWO_SCREEN_PROPOSAL: CardProposal = {
+  id: 44,
+  version: 3,
+  spec: {
+    kind: 'version',
+    version: {
+      ...VERSION,
+      screens: [
+        { id: 'today', title: 'Today', order: 1, panels: [walkedTodayPanel()] },
+        { id: 'history', title: 'History', order: 2, panels: [streakPanel()] },
+      ],
+    },
+  },
+  mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+}
+
+const noop = () => {}
+
+/**
+ * renderToStaticMarkup escapes text content, so `it'll` reaches the markup as
+ * `it&#x27;ll` — a raw `toContain(DELIVERY_FIRST)` would fail against a page
+ * that renders the sentence perfectly. Decode instead of weakening the
+ * assertion to some apostrophe-free fragment: the point of these tests is the
+ * WHOLE sentence, byte for byte.
+ */
+function htmlText(html: string): string {
+  return html
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
 }
 
 const EMPTY_PANEL: PanelState = {
@@ -134,7 +251,9 @@ function findButtons(node: unknown, out: Elem[] = []): Elem[] {
 
 describe('the proposal card', () => {
   it('renders the spec, the mockup, and the exact copy', () => {
-    const json = JSON.stringify(SpecCard({ proposal: PROPOSAL, live: true, busy: false, onConfirm: () => {} }))
+    const json = JSON.stringify(
+      SpecCard({ proposal: PROPOSAL, live: true, busy: false, first: true, onConfirm: noop }),
+    )
     expect(json).toContain('Eating out and the car fund')
     expect(json).toContain('Build this')
     expect(json).toContain('Not quite yet')
@@ -148,7 +267,13 @@ describe('the proposal card', () => {
     // stack of armed buttons. Asserting `not.toContain('Build this')` alone
     // would still pass if "Not quite yet" survived, or if the whole card
     // vanished — neither of which is the property this test means to pin.
-    const element = SpecCard({ proposal: PROPOSAL, live: false, busy: false, onConfirm: () => {} })
+    const element = SpecCard({
+      proposal: PROPOSAL,
+      live: false,
+      busy: false,
+      first: true,
+      onConfirm: noop,
+    })
     expect(findButtons(element)).toEqual([])
   })
 
@@ -156,10 +281,136 @@ describe('the proposal card', () => {
     // The promise becomes operative exactly when it's confirmed, and a
     // friend reloading afterwards should still see the timeframe.
     const json = JSON.stringify(
-      SpecCard({ proposal: { ...PROPOSAL, confirmed: true }, live: true, busy: false, onConfirm: () => {} }),
+      SpecCard({
+        proposal: { ...PROPOSAL, confirmed: true },
+        live: true,
+        busy: false,
+        first: true,
+        onConfirm: noop,
+      }),
     )
     expect(json).toContain('Building this one.')
     expect(json).toContain(
+      "Your dashboard gets built as soon as possible — at the latest, it'll be here tomorrow morning.",
+    )
+  })
+
+  it('leads a current-shape card with what changed, not with the summary', () => {
+    // The one-word relabel case is the whole reason the unified loop exists:
+    // a friend re-reading their own card needs "what did I just ask for"
+    // before "what is this dashboard", or the change is buried in copy they
+    // already read last time.
+    const html = renderToStaticMarkup(
+      SpecCard({
+        proposal: VERSION_PROPOSAL,
+        live: true,
+        busy: false,
+        first: false,
+        onConfirm: noop,
+      }),
+    )
+    expect(html.indexOf('Added a streak')).toBeLessThan(html.indexOf('A one-tap tracker'))
+  })
+
+  it('lists every panel of a current-shape card, across screens', () => {
+    const html = renderToStaticMarkup(
+      SpecCard({
+        proposal: TWO_SCREEN_PROPOSAL,
+        live: true,
+        busy: false,
+        first: false,
+        onConfirm: noop,
+      }),
+    )
+    expect(html).toContain('Walked today?')
+    expect(html).toContain('Current streak')
+  })
+
+  it('still renders a legacy card exactly as before', () => {
+    // `specs` rejects UPDATE, so a pre-unification row can never be rewritten
+    // into the current shape. This arm has no end date.
+    const html = renderToStaticMarkup(
+      SpecCard({
+        proposal: LEGACY_PROPOSAL,
+        live: true,
+        busy: false,
+        first: false,
+        onConfirm: noop,
+      }),
+    )
+    expect(html).toContain('Did I walk the dog today?')
+    expect(html).toContain('Walked today?')
+  })
+
+  it('promises tomorrow morning on a first dashboard', () => {
+    const text = htmlText(
+      renderToStaticMarkup(
+        SpecCard({
+          proposal: VERSION_PROPOSAL,
+          live: true,
+          busy: false,
+          first: true,
+          onConfirm: noop,
+        }),
+      ),
+    )
+    expect(text).toContain(DELIVERY_FIRST)
+    expect(text).not.toContain(DELIVERY_CHANGE)
+  })
+
+  it('promises a few hours on a later change', () => {
+    // The card must not tell someone their one-word relabel arrives tomorrow
+    // morning when the agent just said small changes land within hours.
+    const text = htmlText(
+      renderToStaticMarkup(
+        SpecCard({
+          proposal: VERSION_PROPOSAL,
+          live: true,
+          busy: false,
+          first: false,
+          onConfirm: noop,
+        }),
+      ),
+    )
+    expect(text).toContain(DELIVERY_CHANGE)
+    expect(text).not.toContain(DELIVERY_FIRST)
+  })
+
+  it('shows the same delivery line on a confirmed card as on the live one', () => {
+    for (const first of [true, false]) {
+      const live = htmlText(
+        renderToStaticMarkup(
+          SpecCard({
+            proposal: VERSION_PROPOSAL,
+            live: true,
+            busy: false,
+            first,
+            onConfirm: noop,
+          }),
+        ),
+      )
+      const done = htmlText(
+        renderToStaticMarkup(
+          SpecCard({
+            proposal: { ...VERSION_PROPOSAL, confirmed: true },
+            live: false,
+            busy: false,
+            first,
+            onConfirm: noop,
+          }),
+        ),
+      )
+      const line = first ? DELIVERY_FIRST : DELIVERY_CHANGE
+      expect(live).toContain(line)
+      expect(done).toContain(line)
+    }
+  })
+
+  it('keeps the first-dashboard wording byte-identical to what shipped in step 4', () => {
+    // The behaviour-preserving requirement, pinned. This is the most
+    // load-bearing promise in the pilot and it is made at the exact moment the
+    // friend decides.
+    expect(DELIVERY_FIRST).toBe(
       "Your dashboard gets built as soon as possible — at the latest, it'll be here tomorrow morning.",
     )
   })
@@ -170,8 +421,9 @@ describe('the proposal card', () => {
         proposal: PROPOSAL,
         live: true,
         busy: false,
+        first: true,
         confirmError: true,
-        onConfirm: () => {},
+        onConfirm: noop,
       }),
     )
     expect(json).toContain("didn't go through")
@@ -229,6 +481,7 @@ describe('the proposal card', () => {
       proposal: { ...PROPOSAL, id: 42 },
       live: true,
       busy: false,
+      first: true,
       onConfirm,
     })
     const build = findButtons(element).find((b) => textOf(b.props.children).includes('Build this'))
@@ -253,8 +506,8 @@ describe('withLiveness — only the newest proposal is confirmable', () => {
 
     // And prove it through the actual card render, not just the flag: the
     // older card must carry zero buttons, the newer one the full pair.
-    const olderCard = SpecCard({ ...withLive[0]!, busy: false, onConfirm: () => {} })
-    const newerCard = SpecCard({ ...withLive[1]!, busy: false, onConfirm: () => {} })
+    const olderCard = SpecCard({ ...withLive[0]!, busy: false, first: true, onConfirm: noop })
+    const newerCard = SpecCard({ ...withLive[1]!, busy: false, first: true, onConfirm: noop })
     expect(findButtons(olderCard)).toEqual([])
     expect(findButtons(newerCard)).toHaveLength(2)
   })
@@ -277,6 +530,7 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
       proposals: [],
       confirming: false,
       confirmError: false,
+      first: true,
       onConfirm: () => {},
     })
     expect(JSON.stringify(region)).toContain('Putting together a preview')
@@ -293,6 +547,7 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
       proposals: [],
       confirming: false,
       confirmError: false,
+      first: true,
       onConfirm: () => {},
     })
     const json = JSON.stringify(region)
@@ -317,6 +572,7 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
         proposals: [older, newer],
         confirming: false,
         confirmError: false,
+        first: true,
         onConfirm: () => {},
       }),
     )
@@ -326,6 +582,35 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
     expect(sections).toHaveLength(2)
     expect(sections[0]).not.toContain('Build this')
     expect(sections[1]).toContain('Build this')
+  })
+
+  it('threads the delivery promise through to every card rather than each card deciding', () => {
+    // Exactly the same class of bug as the live={live} -> live={true}
+    // mutation pinned just above, on the one line in the product that must
+    // never be wrong. Every other delivery test in this file drives SpecCard
+    // directly, so hardcoding `first` HERE — the JSX plumbing — reds none of
+    // them: a correct SpecCard does not, by itself, guarantee ProposalRegion
+    // hands it the page's answer instead of its own guess. Both cards are
+    // asserted — the older one confirmed, so it renders the promise through
+    // SpecCard's OTHER branch, and a mutation that fixes `first` on only one
+    // of the two still reds this.
+    const older = { ...PROPOSAL, id: 42, confirmed: true }
+    const newer = { ...PROPOSAL, id: 43 }
+    const text = htmlText(
+      renderToStaticMarkup(
+        ProposalRegion({
+          authoring: false,
+          proposalError: false,
+          proposals: [older, newer],
+          confirming: false,
+          confirmError: false,
+          first: false,
+          onConfirm: noop,
+        }),
+      ),
+    )
+    expect(text.split(DELIVERY_CHANGE)).toHaveLength(3)
+    expect(text).not.toContain(DELIVERY_FIRST)
   })
 })
 
@@ -430,6 +715,7 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
         proposals: state.proposals,
         confirming: false,
         confirmError: false,
+        first: true,
         onConfirm: () => {},
       }),
     )

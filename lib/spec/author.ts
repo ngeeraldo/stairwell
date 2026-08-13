@@ -15,12 +15,28 @@ import {
   type Served,
   type Usage,
 } from '@/lib/chat/client'
-import { LEGACY_SPEC_JSON_SCHEMA, parseLegacySpecInput, type LegacySpecPayload } from './legacy'
+import { LEGACY_SPEC_JSON_SCHEMA, parseLegacySpecInput } from './legacy'
+import type { StoredSpec } from './stored'
 
+/**
+ * One proposal, as it reaches the card — whichever way it got there.
+ *
+ * `spec` is the SAME tagged union readStoredSpec returns, because this type is
+ * what the NDJSON `proposal` line carries (app/api/chat/route.ts) AND what
+ * app/[user]/page.tsx builds from the stored row. A card streamed mid-turn and
+ * a card rendered on page load must have one shape at every commit; two
+ * near-identical unions would be two chances to render the wrong arm.
+ *
+ * Today this path only ever produces the `legacy` arm — the authoring call
+ * below still asks for and parses the frozen six-field shape. Task 10 is what
+ * makes the `version` arm reachable from here. The readers handle both
+ * already, deliberately ahead of that switch: reversed, there would be a
+ * window where a confirmed proposal renders as nothing.
+ */
 export type Proposal = {
   id: number
   version: number
-  payload: LegacySpecPayload
+  spec: StoredSpec
   mockup_html: string
 }
 
@@ -205,7 +221,16 @@ export async function authorSpec(
       data: { ...result.usage, ...base, ...result.served, spec_id: id, version },
     })
 
-    return { id, version, payload: parsed.payload, mockup_html: parsed.mockupHtml }
+    // Wrapped as `legacy` because that is what this path genuinely produced:
+    // parseLegacySpecInput above validated the frozen six-field shape. The tag
+    // is a statement of fact about the payload, not a placeholder — Task 10
+    // changes the schema, the parser and this tag together.
+    return {
+      id,
+      version,
+      spec: { kind: 'legacy', payload: parsed.payload },
+      mockup_html: parsed.mockupHtml,
+    }
   } catch (error) {
     // Anything with no dedicated branch above. promptSha may or may not be
     // known depending on where this fired. result may or may not be known

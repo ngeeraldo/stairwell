@@ -73,7 +73,12 @@ describe('authorSpec', () => {
     const proposal = await authorSpec(deps(client()), INPUT)
 
     expect(proposal!.version).toBe(1)
-    expect(proposal!.payload.title).toBe('Eating out and the car fund')
+    // Tagged `legacy`, because that is what this path genuinely produced:
+    // it asked for and parsed the frozen six-field shape. The tag is a fact
+    // about the payload, and it flips only when the authoring path does.
+    expect(proposal!.spec.kind).toBe('legacy')
+    if (proposal!.spec.kind !== 'legacy') throw new Error('unreachable')
+    expect(proposal!.spec.payload.title).toBe('Eating out and the car fund')
     expect(proposal!.mockup_html).toContain('COFFEE PALACE TEST')
 
     const rows = readSpecs(db, 1)

@@ -3,9 +3,11 @@
 
 import { useEffect, useState } from 'react'
 // Type-only: lib/spec/author.ts pulls in server-only modules (better-sqlite3
-// et al). `import type` is erased at compile time regardless of bundler, so
-// none of that reaches the client bundle — a value import here would.
+// et al), and lib/spec/stored.ts pulls in the validators. `import type` is
+// erased at compile time regardless of bundler, so none of that reaches the
+// client bundle — a value import here would.
 import type { Proposal } from '@/lib/spec/author'
+import type { StoredSpec } from '@/lib/spec/stored'
 
 const TOGGLE_KEY = 'stairwell:chat-open'
 
@@ -66,6 +68,23 @@ function updateLastTurn(turns: Turn[], patch: (last: Turn) => Turn): Turn[] {
   next[next.length - 1] = patch(last)
   return next
 }
+
+/**
+ * What a card holds instead of a payload: the tagged union readStoredSpec
+ * returns, either arm.
+ *
+ * An ALIAS, not a second declaration of the same union. lib/spec/stored.ts is
+ * "the ONE place anything discriminates a pre-unification row from a current
+ * one"; re-spelling `{kind:'version'} | {kind:'legacy'}` here would give that
+ * discrimination a second home, free to drift, in the one file that renders
+ * both arms to a person.
+ */
+export type CardSpec = StoredSpec
+
+/** The version arm's payload shape, derived from CardSpec rather than
+ * imported separately, so it cannot end up naming a different type from the
+ * one this card is actually handed. */
+type SpecVersionShape = Extract<CardSpec, { kind: 'version' }>['version']
 
 /** What SpecCard needs. `confirmed` is optional because a proposal freshly
  * streamed in from the `proposal` NDJSON line has none yet — only the record
@@ -287,17 +306,63 @@ export async function attemptConfirm(specId: number, fetchImpl: typeof fetch): P
   }
 }
 
-// Fixed chrome, not agent prose: this is the most load-bearing promise in
-// the pilot and it is made at the exact moment the friend decides, so it
-// cannot depend on a model remembering to say it. Passive, and it names
-// nobody — the agent is not the one building, and naming Nico turns the
-// surface into a middleman. It promises no notification, because nothing
-// can deliver one (architecture-overview.md line 49: delivery nudges stay
-// out-of-app). A single constant, not copy typed twice, so the confirmed
-// and not-yet-confirmed cards can never drift apart on the one line that
-// matters most.
-const DELIVERY_LINE =
+// Fixed chrome, not agent prose, for the same reason it always was: this is
+// the most load-bearing promise in the pilot and it is made at the exact
+// moment the friend decides, so it cannot depend on a model remembering to
+// say it. What is NEW is that there are two of them.
+//
+// Under the unified loop the same card carries a one-word relabel and a
+// first dashboard. One sentence cannot be honest about both — "tomorrow
+// morning" over-promises the wait on a small change and contradicts what the
+// agent's own prompt says (small changes land within a few hours). Selected
+// by whether this account has a confirmed version yet, computed server-side.
+//
+// Both are still passive and name nobody — the agent is not the one building,
+// and naming Nico turns the surface into a middleman — and neither promises a
+// notification, because nothing can deliver one (architecture-overview.md
+// line 49: delivery nudges stay out-of-app). Constants, not copy typed twice,
+// so the confirmed and not-yet-confirmed cards can never drift apart on the
+// one line that matters most.
+export const DELIVERY_FIRST =
   "Your dashboard gets built as soon as possible — at the latest, it'll be here tomorrow morning."
+export const DELIVERY_CHANGE =
+  'This gets built as soon as possible — small changes usually land within a few hours.'
+
+/** The title, from whichever arm this card holds. Pulled out because the
+ * heading and the iframe's accessible name both need it, and a card that
+ * announced a different preview from the one it shows would be worse than
+ * either mistake alone. */
+function cardTitle(spec: CardSpec): string {
+  return spec.kind === 'version' ? spec.version.title : spec.payload.title
+}
+
+/**
+ * The whole surface, screen by screen.
+ *
+ * Every screen's panels, not just the first screen's: a friend whose change
+ * touched a second screen must be able to see it on the card they are about
+ * to press "Build this" on. Each panel shows its title and its `display` —
+ * what will be on the screen — rather than `intent`, which is the reason for
+ * it and reads as the agent explaining itself back to them.
+ */
+function VersionBody({ version }: { version: SpecVersionShape }) {
+  return (
+    <ul>
+      {version.screens.map((screen) => (
+        <li key={screen.id}>
+          <strong>{screen.title}</strong>
+          <ul>
+            {screen.panels.map((panel) => (
+              <li key={panel.id}>
+                <strong>{panel.title}</strong> — {panel.display}
+              </li>
+            ))}
+          </ul>
+        </li>
+      ))}
+    </ul>
+  )
+}
 
 /**
  * The moment a promise gets made.
@@ -306,6 +371,11 @@ const DELIVERY_LINE =
  * so the conversation reads as a history of what was offered, but it carries
  * no buttons. The server enforces the same rule (409), because a stale tab is
  * not bound by what this rendered.
+ *
+ * `first` selects the delivery promise, and is computed server-side from the
+ * record (app/[user]/page.tsx) — this component has no database and must not
+ * guess. It has no default for the same reason: a defaulted `first` is a
+ * wrong promise made silently.
  *
  * `confirmError` is honest, brief failure feedback for a confirm attempt
  * that did not succeed (§Important 3, fix round 1) — no invented promise,
@@ -317,27 +387,51 @@ export function SpecCard({
   proposal,
   live,
   busy,
+  first,
   confirmError,
   onConfirm,
 }: {
   proposal: CardProposal
   live: boolean
   busy: boolean
+  first: boolean
   confirmError?: boolean
   onConfirm: (specId: number) => void
 }) {
-  const { payload } = proposal
+  const { spec } = proposal
+  const title = cardTitle(spec)
+  // One expression, read twice below, so the confirmed and unconfirmed halves
+  // of this card cannot disagree about what was promised.
+  const delivery = first ? DELIVERY_FIRST : DELIVERY_CHANGE
   return (
     <section aria-label="Proposed dashboard" data-spec-id={proposal.id}>
-      <h3>{payload.title}</h3>
-      <p>{payload.summary}</p>
-      <ul>
-        {payload.panels.map((panel) => (
-          <li key={panel.name}>
-            <strong>{panel.name}</strong> — {panel.shows}
-          </li>
-        ))}
-      </ul>
+      <h3>{title}</h3>
+      {spec.kind === 'version' ? (
+        <>
+          {/* What changed comes FIRST, above the summary. On a tweak the
+              summary is text they already read last time, and burying the
+              one new sentence underneath it is how a one-word relabel
+              becomes invisible on the card where they approve it. */}
+          <p>{spec.version.change_summary}</p>
+          <p>{spec.version.summary}</p>
+          <VersionBody version={spec.version} />
+        </>
+      ) : (
+        <>
+          {/* The frozen arm, rendered exactly as it was before the unified
+              loop. `specs` rejects UPDATE, so these rows can never be
+              rewritten into the current shape and this markup has no end
+              date — see lib/spec/legacy.ts. */}
+          <p>{spec.payload.summary}</p>
+          <ul>
+            {spec.payload.panels.map((panel) => (
+              <li key={panel.name}>
+                <strong>{panel.name}</strong> — {panel.shows}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
 
       {/* Sealed off: an empty sandbox grants nothing — no scripts, no
           same-origin, no forms, no top-level navigation. Model-authored
@@ -345,7 +439,7 @@ export function SpecCard({
           preview stays a LAYOUT promise rather than a behaviour promise
           somebody then has to build. tests/spec/sandbox.test.ts pins this. */}
       <iframe
-        title={`Preview of ${payload.title}`}
+        title={`Preview of ${title}`}
         srcDoc={proposal.mockup_html}
         sandbox=""
       />
@@ -357,7 +451,7 @@ export function SpecCard({
               a friend reloading afterwards should still see the timeframe —
               dropping this line here would be the one moment it matters
               most. */}
-          <p><small>{DELIVERY_LINE}</small></p>
+          <p><small>{delivery}</small></p>
         </>
       ) : live ? (
         <>
@@ -372,7 +466,7 @@ export function SpecCard({
           {confirmError && (
             <p><em>That didn&apos;t go through — try again.</em></p>
           )}
-          <p><small>{DELIVERY_LINE}</small></p>
+          <p><small>{delivery}</small></p>
         </>
       ) : null}
     </section>
@@ -394,6 +488,7 @@ export function ProposalRegion({
   proposals,
   confirming,
   confirmError,
+  first,
   onConfirm,
 }: {
   authoring: boolean
@@ -401,6 +496,10 @@ export function ProposalRegion({
   proposals: CardProposal[]
   confirming: boolean
   confirmError: boolean
+  /** Threaded straight through from the page. Passed to EVERY card, not just
+   * the live one: a superseded or already-confirmed card shows the same
+   * promise, and the account's history is what decided it either way. */
+  first: boolean
   onConfirm: (specId: number) => void
 }) {
   return (
@@ -417,6 +516,7 @@ export function ProposalRegion({
           proposal={proposal}
           live={live}
           busy={confirming}
+          first={first}
           confirmError={live && confirmError}
           onConfirm={onConfirm}
         />
@@ -462,9 +562,13 @@ export function TurnRow({
 export default function ChatPanel({
   initial,
   proposal,
+  first,
 }: {
   initial: Turn[]
   proposal?: Proposal & { confirmed: boolean }
+  /** True when this account has no confirmed spec yet. Server-computed —
+   * see SpecCard's `first`. */
+  first: boolean
 }) {
   const [open, setOpen] = useState(true)
   // Seeded from the DB record so a friend who closes the tab mid-decision
@@ -578,6 +682,7 @@ export default function ChatPanel({
         proposals={panel.proposals}
         confirming={confirming}
         confirmError={panel.confirmError}
+        first={first}
         onConfirm={onConfirm}
       />
 
