@@ -122,15 +122,50 @@ export const PROPOSE_TOOL = {
 /**
  * NOT MAX_TOKENS, and this difference is load-bearing.
  *
- * stream() runs at 64000 because streaming makes a high ceiling free. The
- * authoring call does not stream, and the SDK scales its own timeout UP for
- * large non-streaming max_tokens — so reusing 64000 here could hold a friend
- * on "putting together a preview" for the better part of an hour. This
- * ceiling is still far above a spec plus a mockup plus adaptive thinking.
+ * stream() runs at 64000 because streaming makes a high ceiling free. This
+ * ceiling is still far above a spec plus a mockup plus adaptive thinking, and
+ * it is deliberately below stream()'s so a wedged authoring call costs less.
+ *
+ * AMENDED 2026-08-13, after the first live run. This call used to be
+ * non-streaming, and at 32000 it could not run AT ALL: the SDK refuses a
+ * non-streaming request whose max_tokens implies more than ten minutes of
+ * generation, throwing `AnthropicError("Streaming is required for operations
+ * that may take longer than 10 minutes")` before it opens a socket. Its
+ * arithmetic is (60min x max_tokens) / 128000, so the non-streaming ceiling is
+ * 21,333 tokens and 32000 implies fifteen minutes. Every proposal failed with
+ * a `spec_error` of kind `sdk_error` and no billed tokens, because no request
+ * was ever made.
+ *
+ * The original mitigation — an explicit per-request timeout — aimed at the
+ * wrong lever. The SDK skips that guard only when the CLIENT-level timeout is
+ * set (`resources/beta/messages/messages.js`: `if (!body.stream && timeout ==
+ * null)` reads `this._client._options.timeout`). A per-request timeout still
+ * overrides the final request deadline, but it is applied after the guard has
+ * already thrown.
+ *
+ * Lowering to 21,333 would trade a hard failure for an intermittent one:
+ * Opus 5 thinks by default and max_tokens caps thinking PLUS the spec PLUS a
+ * full HTML mockup, so a tight ceiling surfaces as `truncated_spec`. The call
+ * streams instead — which is what the SDK's own error asks for, works with
+ * structured outputs, and is the pattern stream() above already uses.
  */
 export const SPEC_MAX_TOKENS = 32000
 
-/** What actually bounds the wait. A timeout is a visible failure; a hang is not. */
+/**
+ * The SDK's non-streaming ceiling, derived from its own arithmetic:
+ * (60min x max_tokens) / 128000 must not exceed 10min, so max_tokens must not
+ * exceed 600000 * 128000 / 3600000. Exported so a test can pin the constraint
+ * rather than restate the number.
+ */
+export const SDK_NONSTREAMING_MAX_TOKENS = 21_333
+
+/**
+ * What actually bounds the wait. A timeout is a visible failure; a hang is not.
+ *
+ * Passed per request. That is now belt-and-braces rather than the only bound:
+ * streaming removes the ten-minute non-streaming ceiling entirely, so this
+ * exists to fail fast, not to make the call legal.
+ */
 export const SPEC_TIMEOUT_MS = 180_000
 
 /**
@@ -335,28 +370,37 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
 
     async propose({ system, messages, signal }) {
       try {
-        const message = await sdk.beta.messages.create(
-          {
-            model: CHAT_MODEL,
-            max_tokens: SPEC_MAX_TOKENS,
-            output_config: {
-              effort: CHAT_EFFORT,
-              // Structured outputs rather than a forced tool: it constrains
-              // the RESPONSE, so there is no tool_use block to extract and no
-              // tool/thinking interaction to reason about. Same guarantee,
-              // fewer moving parts (design spec section 4.1).
-              format: { type: 'json_schema', schema: SPEC_JSON_SCHEMA },
+        // STREAMS, and must keep streaming. A non-streaming call at
+        // SPEC_MAX_TOKENS is rejected by the SDK before it opens a socket —
+        // see the SPEC_MAX_TOKENS comment for the arithmetic and for why
+        // lowering the ceiling is the worse fix. Nothing is emitted to the
+        // caller as it arrives: this reads finalMessage() and behaves exactly
+        // as the non-streaming version did, because the friend sees one card
+        // when the spec is whole, not a spec being typed.
+        const message = await sdk.beta.messages
+          .stream(
+            {
+              model: CHAT_MODEL,
+              max_tokens: SPEC_MAX_TOKENS,
+              output_config: {
+                effort: CHAT_EFFORT,
+                // Structured outputs rather than a forced tool: it constrains
+                // the RESPONSE, so there is no tool_use block to extract and no
+                // tool/thinking interaction to reason about. Same guarantee,
+                // fewer moving parts (design spec section 4.1).
+                format: { type: 'json_schema', schema: SPEC_JSON_SCHEMA },
+              },
+              betas: [FALLBACK_BETA],
+              fallbacks: 'default',
+              // Deliberately no cache_control on this system block: the
+              // authoring prompt runs once per proposal, so a cache write
+              // premium buys nothing.
+              system: [{ type: 'text', text: system }],
+              messages,
             },
-            betas: [FALLBACK_BETA],
-            fallbacks: 'default',
-            // Deliberately no cache_control on this system block: the
-            // authoring prompt runs once per proposal, so a cache write
-            // premium buys nothing.
-            system: [{ type: 'text', text: system }],
-            messages,
-          },
-          { signal, timeout: SPEC_TIMEOUT_MS },
-        )
+            { signal, timeout: SPEC_TIMEOUT_MS },
+          )
+          .finalMessage()
 
         // Extracted once and reused by the truncated/unparsable failure
         // throws below AND the success return: a call that hit either
