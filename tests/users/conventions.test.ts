@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3-multiple-ciphers'
 import { afterAll, describe, expect, it } from 'vitest'
 import { SLUG_PATTERN } from '@/lib/auth/slug'
+import { declaredObjects } from '@/tests/support/declaredObjects'
 
 /**
  * Every test in this file spawns python3 once per user folder. vitest's
@@ -44,25 +45,6 @@ const temps: string[] = []
 afterAll(() => {
   for (const d of temps) rmSync(d, { recursive: true, force: true })
 })
-
-/**
- * Table and view names declared in a schema file. Strips `--` line comments
- * first, so a retired table documented in a comment (e.g. "-- CREATE TABLE
- * old_thing (...)") is not read as a live declaration. SQL block comments are
- * left alone — no schema.sql in this repo uses them, so handling them is not
- * worth the added complexity.
- */
-function declaredObjects(sql: string): string[] {
-  const withoutLineComments = sql
-    .split('\n')
-    .map((line) => line.replace(/--.*$/, ''))
-    .join('\n')
-  const names: string[] = []
-  const re = /CREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?([A-Za-z_][A-Za-z0-9_]*)/gi
-  let match: RegExpExecArray | null
-  while ((match = re.exec(withoutLineComments)) !== null) names.push(match[1]!)
-  return names
-}
 
 describe('users/ folder conventions', () => {
   // Without this the it.each below is vacuous on an empty users/ tree: zero

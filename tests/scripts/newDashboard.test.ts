@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync }
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3-multiple-ciphers'
+import { declaredObjects } from '@/tests/support/declaredObjects'
 
 /** See tests/scripts/pullSpec.test.ts — the droplet spawns processes slowly. */
 const SUBPROCESS_TIMEOUT_MS = 60_000
@@ -159,11 +160,7 @@ describe('scripts/new-dashboard.sh', () => {
           ).map((r) => r.name),
         )
         const schema = readFileSync(join(dir, 'schema.sql'), 'utf8')
-        const declared = [
-          ...schema.matchAll(
-            /CREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?([A-Za-z_][A-Za-z0-9_]*)/gi,
-          ),
-        ].map((m) => m[1]!)
+        const declared = declaredObjects(schema)
         expect(declared.length).toBeGreaterThan(0)
         for (const name of declared) expect(present.has(name)).toBe(true)
 

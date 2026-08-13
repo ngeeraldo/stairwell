@@ -9,8 +9,17 @@ function money(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
 }
 
+// Local calendar components, not toISOString() (which is UTC). monthRange
+// (queries.ts) buckets transactions by the LOCAL calendar, so a UTC render
+// here would disagree with it: west of Greenwich, a transaction late enough
+// in the local day rolls over to the NEXT UTC date, so it could render next
+// to a total for a month it wasn't counted in.
 function day(at: number): string {
-  return new Date(at).toISOString().slice(0, 10)
+  const d = new Date(at)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const date = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${date}`
 }
 
 export default function DevOneDashboard({ db }: DashboardProps) {

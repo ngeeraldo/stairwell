@@ -61,4 +61,28 @@ describe('users/devone/dashboard.tsx', () => {
     expect(json).toContain('$0.00')
     expect(json).toContain('No transactions yet')
   })
+
+  it('renders a transaction under its LOCAL calendar date, not the UTC date the same instant falls on', async () => {
+    // queries.ts's monthRange buckets transactions by the LOCAL calendar
+    // (its own comment says so). If the dashboard rendered the UTC date
+    // instead, a transaction near a local day boundary could show a date
+    // implying a different month than the total it was counted in.
+    //
+    // This machine's timezone (America/Chicago, UTC-5 at the time this was
+    // written) is WEST of Greenwich, where UTC runs AHEAD of local time — so
+    // a local instant late enough in the day lands on the NEXT calendar date
+    // in UTC, not the previous one. Pick a fixture that crosses that
+    // boundary and prove it really does (the guard below), so the assertion
+    // is not vacuous on a host where local and UTC happen to agree.
+    const local = new Date(2026, 2, 15, 23, 30, 0) // 2026-03-15 23:30 local
+    const at = local.getTime()
+    const utcDate = new Date(at).toISOString().slice(0, 10)
+    const localDate = '2026-03-15'
+    expect(utcDate).not.toBe(localDate) // guards against a vacuous test
+
+    add('LATE NIGHT TEST', 'eating out', 100, at)
+    const json = JSON.stringify(await DevOneDashboard({ slug: 'devone', db }))
+    expect(json).toContain(localDate)
+    expect(json).not.toContain(utcDate)
+  })
 })

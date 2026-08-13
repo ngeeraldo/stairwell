@@ -56,11 +56,21 @@ export function regenerateAll(usersDir: string): string[] {
   for (const slug of userSlugsWithSeeds(usersDir)) {
     const target = join(usersDir, slug, 'synthetic.db')
     // The sidecars hold the same rows as the database itself; a stale one can
-    // resurrect rows the new generator never wrote.
-    for (const suffix of ['', '-wal', '-shm']) {
+    // resurrect rows the new generator never wrote. `-journal`, not `-wal`
+    // or `-shm`, is the one Python's sqlite3 module actually leaves behind:
+    // it defaults to ROLLBACK JOURNAL mode, not WAL, so `-wal`/`-shm` cover a
+    // mode this generator never uses while the sidecar it DOES produce went
+    // unremoved.
+    for (const suffix of ['', '-wal', '-shm', '-journal']) {
       rmSync(`${target}${suffix}`, { force: true })
     }
     try {
+      // The sidecars above are removed BEFORE this runs, not after — so a
+      // seed.py that fails here leaves this slug with no database at all
+      // until the next successful regeneration, rather than leaving the
+      // last-good one in place. The still-running process keeps serving
+      // reads from its already-open handle on the deleted inode in the
+      // meantime, so there is no visible outage until the next restart.
       execFileSync('python3', [join(usersDir, slug, 'seed.py'), target], {
         stdio: 'pipe',
       })
