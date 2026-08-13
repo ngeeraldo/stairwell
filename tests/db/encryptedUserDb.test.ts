@@ -33,6 +33,20 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS walks (
 
 let root: string
 
+/**
+ * Half-built databases the atomic create left under its temp name.
+ *
+ * The create builds at `.creating-<hex>.<slug>.db` and links that into place,
+ * so a failure must clean up the temp entry as well as leave the real path
+ * alone. Nothing in the codebase ever reaps these, by design — an unattended
+ * process deleting files matching a glob inside a user's folder is a worse
+ * risk than the disk it would save — so the cleanup being correct is the only
+ * thing standing between a failed create and permanent debris.
+ */
+function creatingDebris(slug: string): string[] {
+  return readdirSync(join(root, slug)).filter((f) => f.startsWith('.creating-'))
+}
+
 /** A user folder with a schema.sql, which the opener applies on create. */
 function makeUserFolder(slug: string) {
   mkdirSync(join(root, slug), { recursive: true })
@@ -219,11 +233,19 @@ describe('openEncryptedUserDb', () => {
   })
 
   it('ATOMIC CREATE: a concurrent first-write cannot clobber a row the winner stored', () => {
-    // The reason this uses link() rather than rename(). Both are atomic within
-    // a directory, but rename CLOBBERS: two first-writes racing for one user
-    // each build an empty database, and the loser's rename lands on top of a
-    // file the winner has already written a tap into. That is a lost row, not
-    // a lost empty file.
+    // WHAT THIS PINS, stated exactly: a create that finds a database already
+    // at the real path does not replace it. That is the property the row
+    // depends on — two first-writes race for one user, each builds an empty
+    // database, and the loser must not land on top of the file the winner has
+    // already written a tap into. A lost row, not a lost empty file.
+    //
+    // WHAT IT DOES NOT PIN: that the mechanism is link() specifically. It
+    // reddens against `renameSync` (drilled: 1 failed / 639), because rename
+    // clobbers unconditionally — but it would stay green against
+    // `existsSync(path) ? skip : renameSync(...)`, which passes this test
+    // while keeping a real TOCTOU window between the check and the rename.
+    // link()'s EEXIST is atomic and that guard is not; nothing here can tell
+    // them apart, and the module comment is where that reasoning lives.
     //
     // The race is forced rather than hoped for: the winner's database is
     // planted at the real path at the exact instant this call is applying the
@@ -333,14 +355,37 @@ describe('openEncryptedUserDb', () => {
   })
 
   it('leaves no file behind when the open fails on a brand-new file', () => {
-    // new Database(path) creates the file immediately, and the WAL /
-    // foreign_keys pragmas write real bytes before schema.sql is even
-    // read. Without cleanup, a failed FIRST open leaves a stub that makes
-    // existedBefore true forever after, for this slug.
+    // The create writes real bytes — the file, the cipher, the WAL and
+    // foreign_keys pragmas — before schema.sql is even read. Those bytes must
+    // not survive a failed create under ANY name: not at the real path, where
+    // a stub would make existedBefore true forever after and get the correct
+    // key reported as wrong, and not under the temp name either, where nothing
+    // would ever reap it.
+    //
+    // This is the failure path that throws BEFORE the schema exec — the
+    // readFileSync of a missing schema.sql, evaluated as its argument.
     mkdirSync(join(root, 'devthree'), { recursive: true })
     // Deliberately no schema.sql: the exec() call has nothing to read.
     expect(() => openEncryptedUserDb('devthree', KEY)).toThrow()
     expect(encryptedUserDbExists('devthree')).toBe(false)
+    expect(creatingDebris('devthree')).toEqual([])
+  })
+
+  it('leaves no half-built temp file behind when the SCHEMA ITSELF throws', () => {
+    // The sibling failure path: a throw from INSIDE db.exec rather than from
+    // evaluating its argument. Different route through the create's two nested
+    // finally blocks — the database has had statements run against it and a
+    // WAL to discard, where the case above had neither — so the cleanup is
+    // worth pinning at both, not just at whichever one happened to be written
+    // first.
+    mkdirSync(join(root, 'devfour'), { recursive: true })
+    writeFileSync(join(root, 'devfour', 'schema.sql'), 'CREATE TABLE ;;; not sql;')
+
+    // Matched on the SQL parse error, so this cannot pass because the create
+    // fell over somewhere earlier and never reached exec at all.
+    expect(() => openEncryptedUserDb('devfour', KEY)).toThrow(/syntax|near/i)
+    expect(encryptedUserDbExists('devfour')).toBe(false)
+    expect(creatingDebris('devfour')).toEqual([])
   })
 
   it('does not misdiagnose a later, legitimate open after an earlier failed create', () => {

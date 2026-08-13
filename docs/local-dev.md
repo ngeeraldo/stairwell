@@ -213,8 +213,9 @@ file it creates in a temp tree — running the command by hand is how you check
 the same thing about a file the app wrote, which is the only form of the check
 that says anything about a real deployment.
 
-To start over: `rm users/devtwo/devtwo.db` — there is no other way back, which
-is the same property a forgotten password has.
+To start over: `rm users/devtwo/devtwo.db*` — the `*` matters here for the same
+reason it does under Reset below; it takes the `-wal` and `-shm` sidecars too.
+There is no other way back, which is the same property a forgotten password has.
 
 **If you use `npm run dev` for this instead of `npm run build && npm start`,**
 expect the cold-route artifact at the top of this file to bite twice, not once.

@@ -131,7 +131,7 @@ plus the registry line.
    there is no CSS anywhere in `app/`, devone renders equally bare, and Nico
    confirmed all five step-5 checkpoints against that bare rendering. Inventing
    a styling layer mid-plan is the unasked-for widening the plan forbids.
-   Carried as residual 8 and raised to Nico as a scope question, because
+   Carried as residual 9 and raised to Nico as a scope question, because
    `users/devtwo/spec.md` records that he asked repeatedly for the preview.
 
 ## What the review layer caught
@@ -259,7 +259,7 @@ the evidence that the practice pays.
    the only thing that re-executes `schema.sql` against it is the walk route's
    writable open, which fires on a tap, and `CREATE TABLE IF NOT EXISTS` can
    add a table but cannot alter one that already exists. The read path does not
-   apply the schema at all any more (residual 9's read-only handle), so a
+   apply the schema at all any more (residual 10's read-only handle), so a
    render sees the frozen shape.
 
    Harmless today, because no user schema has changed since any real file was
@@ -272,7 +272,7 @@ the evidence that the practice pays.
    holds zero rows before dropping it, which is exactly the assumption that
    fails on a database holding a real person's history.
 3. **CLOSED in fix round 2: a table-less encrypted stub can no longer exist at
-   the real path.** It was the sharp edge of residual 9's read-only handle —
+   the real path.** It was the sharp edge of residual 10's read-only handle —
    two exceptional windows (a failed create whose cleanup `unlinkSync` ALSO
    fails, and a process killed between `new Database(path)` and the schema
    exec, which a deploy restart is) could leave `<slug>.db` present with no
@@ -286,51 +286,51 @@ the evidence that the practice pays.
    nothing opens, never a schemaless file at the real path — which disposes of
    the failed-`unlinkSync` case too, since that debris is no longer where
    anything looks. See "Fix round 2" below.
-3. **A forgotten password destroys the data.** No reset, no backup, by design.
+4. **A forgotten password destroys the data.** No reset, no backup, by design.
    Now stated on the login page. The `rm users/devtwo/devtwo.db` reset in
    `docs/local-dev.md` is the same property, deliberately.
-4. **`<slug>.db` is not backed up at all.** A droplet loss is a data loss. There
+5. **`<slug>.db` is not backed up at all.** A droplet loss is a data loss. There
    is no backup mechanism anywhere in `deploy/`, and an encrypted file that only
    the user's password opens is not something the operator can back up usefully
    without a design decision nobody has made yet.
-5. **Nothing verifies the DEPLOYED file is encrypted.**
+6. **Nothing verifies the DEPLOYED file is encrypted.**
    `tests/db/encryptedUserDb.test.ts` byte-checks a file it creates in a temp
    tree — that proves the opener encrypts, not that the file on the droplet is
    encrypted. `head -c 16 users/devtwo/devtwo.db | xxd` must be run once on the
    droplet against the first real `devtwo.db`. It is documented in
    `docs/local-dev.md` and it is a human's job: CLAUDE.md forbids Claude opening
    any `*.db` that is not `synthetic.db`, and that includes this one.
-6. **The wrong-key narrowing (`notADb && existedBefore`) is reasoned, not
+7. **The wrong-key narrowing (`notADb && existedBefore`) is reasoned, not
    test-pinned.** Widening it to `notADb` alone breaks no test. The plan
    expected this drill to come back green; it did. The answer is this line, not
    a new test.
-7. **The `db.close()` in the page's `finally` is not test-pinned.** A leak
+8. **The `db.close()` in the page's `finally` is not test-pinned.** A leak
    surfaces as file handles, not as a failing assertion. Same shape as
    `closeUserDbs` in step 5's fix wave, which was green while leaking a
    descriptor per `afterEach`.
-8. **The dashboard has no styling and does not resemble
+9. **The dashboard has no styling and does not resemble
    `users/devtwo/mockup.html`.** Ruling 7 above; out of scope, raised to Nico as
    a scope question. Same family: the page renders the raw `YYYY-MM-DD` day key
    where the mockup humanises the date, and titles itself with the slug where
    the mockup carries its own title and subtitle.
-9. **CLOSED in the fix round: the real-path handle is now read-only.**
-   `CLAUDE.md` said for two steps that a dashboard "gets a read-only handle, so
-   it cannot write." That was true of the synthetic path and **became false
-   under 6a at the exact moment it started to matter** — the handle now points
-   at the friend's real encrypted data rather than at a file the next deploy
-   regenerates, and `openEncryptedUserDb` had no read-only mode because the
-   same call creates the file. **The invariant was documented for two steps
-   before it was true.** It is now enforced: the render path opens with
-   `{ readonly: true }` and `fileMustExist`, and the pin is a test that makes
-   the handle refuse a real `INSERT` — not one that checks a flag was passed.
-   Its two consequences are residual 2 (no migration story, deferred to 6b) and
-   residual 3 (closed in the next round by making creation atomic).
-10. **`seed.py`'s loud-fake sentinel puts a non-day value
+10. **CLOSED in fix round 1: the real-path handle is now read-only.**
+    `CLAUDE.md` said for two steps that a dashboard "gets a read-only handle, so
+    it cannot write." That was true of the synthetic path and **became false
+    under 6a at the exact moment it started to matter** — the handle now points
+    at the friend's real encrypted data rather than at a file the next deploy
+    regenerates, and `openEncryptedUserDb` had no read-only mode because the
+    same call creates the file. **The invariant was documented for two steps
+    before it was true.** It is now enforced: the render path opens with
+    `{ readonly: true }` and `fileMustExist`, and the pin is a test that makes
+    the handle refuse a real `INSERT` — not one that checks a flag was passed.
+    Its two consequences are residual 2 (no migration story, deferred to 6b) and
+    residual 3 (closed in the next round by making creation atomic).
+11. **`seed.py`'s loud-fake sentinel puts a non-day value
     (`'1970-01-01 SAMPLE TEST'`) in the `day` PRIMARY KEY**, contradicting what
     `schema.sql` documents that column to be. Harmless — both window queries are
     string range comparisons that exclude it — and recorded in the file's own
     comment rather than left to be rediscovered.
-11. **`dayKey` (`lib/time/dayKey.ts`) and `dayKeyOf` (`users/devtwo/queries.ts`)
+12. **`dayKey` (`lib/time/dayKey.ts`) and `dayKeyOf` (`users/devtwo/queries.ts`)
     are the same computation in two modules, still deliberately — but the
     reason has moved.** It was "a platform route must not import ONE USER'S
     queries file," which the fix round did not change: a shared platform module
@@ -342,16 +342,27 @@ the evidence that the practice pays.
     them against each other**, so they can still drift. That is the residual,
     and it is now a one-directional one: `lib/time/dayKey.ts` is the definition
     a future user folder should copy.
-12. **A production `dashboard_error` with `kind: 'error'` gives an operator no
+13. **A production `dashboard_error` with `kind: 'error'` gives an operator no
     way to tell a permissions failure from a corrupt file.** Not a regression —
     the prior code had no server-side log either. The right fix is
     `console.error` at the catch site, which never reaches the append-only
     table. **NOT widening `kind`**, which would walk the leak back in.
-13. **`users/devtwo/queries.ts` holds only reads**, though its header once said
+14. **`users/devtwo/queries.ts` holds only reads**, though its header once said
     "every SQL statement". The INSERT lives in the platform walk route by
     design. Wording corrected; the asymmetry with `CLAUDE.md > Dashboard folder
     conventions` ("`queries.ts` — every SQL statement") remains.
-14. **Step-4 residual 8 is unchanged and now costs more.** `devone` and `devtwo`
+15. **Nothing reaps a killed create's debris.** The atomic create builds at
+    `.creating-<hex>.<slug>.db` and cleans that entry up on every path it can
+    reach — pinned at two distinct failure paths, and drilled. What it cannot
+    reach is a process KILLED mid-create, which is the exact case the design
+    exists to survive: the debris is deliberately not at the real path, so
+    nothing opens it, and nothing deletes it either. It also ends in `.db`, so
+    the guard hook denies even listing it and diagnosis is ssh-only.
+    **No reaper, deliberately** — an unattended process deleting files matching
+    a glob inside a user's folder is a worse risk than the disk it would save.
+    The cost is bounded: one file per killed create, each the size of an empty
+    database.
+16. **Step-4 residual 8 is unchanged and now costs more.** `devone` and `devtwo`
     are live production logins with passwords published in `docs/local-dev.md`,
     and as of this step one of them can create an encrypted database on the
     production droplet. Still no real user data, but the account that would hold
@@ -438,29 +449,41 @@ After fix round 1:
 | `npx tsc --noEmit`, `.next/types` present | exit 0, silent |
 | `.claude/hooks/test-hooks.sh` | 158/158 passed |
 
-After fix round 2, on a clean tree — the numbers this ledger stands on:
+After fix round 2:
 
 | Layer | Result |
 |---|---|
-| `npx vitest run` | **639 passed**, 59 files, 0 failed |
-| `TZ=Asia/Tokyo npx vitest run` | **639 passed**, 59 files, 0 failed |
+| `npx vitest run` | 639 passed, 59 files, 0 failed |
+| `TZ=Asia/Tokyo npx vitest run` | 639 passed, 59 files, 0 failed |
+| `npx tsc --noEmit`, `.next` absent | exit 0, silent |
+| `npx next build` | exit 0, 13 routes generated |
+| `npx tsc --noEmit`, `.next/types` present | exit 0, silent |
+| `.claude/hooks/test-hooks.sh` | 158/158 passed |
+
+After fix round 3, on a clean tree — the numbers this ledger stands on:
+
+| Layer | Result |
+|---|---|
+| `npx vitest run` | **640 passed**, 59 files, 0 failed |
+| `TZ=Asia/Tokyo npx vitest run` | **640 passed**, 59 files, 0 failed |
 | `npx tsc --noEmit`, `.next` absent | **exit 0, silent** |
 | `npx next build` | **exit 0**, 13 routes generated |
 | `npx tsc --noEmit`, `.next/types` present | **exit 0, silent** — the two states now agree |
 | `.claude/hooks/test-hooks.sh` | **158/158 passed** |
 | `git status --short` | no `*.db`; `git ls-files` databases → `fake-real.db` only |
 
-The suite went 633 → 639 across the two rounds: one test moved
+The suite went 633 → 640 across the three rounds: one test moved
 (`tests/time/dayKey.test.ts`, out of `tests/routing/walkRoute.test.ts`, hence
-58 → 59 files), four added for the read-only handle, and two for the atomic
-create. `TZ=Asia/Tokyo` rather than `TZ=UTC` for the second run because the
+58 → 59 files), four added for the read-only handle, two for the atomic create,
+and one for the temp-file cleanup on a failing create.
+`TZ=Asia/Tokyo` rather than `TZ=UTC` for the second run because the
 timezone test moved in round 1 and UTC is the one offset at which its
 divergence check asserts nothing — Task 4 had already measured that a
 `dayKeyOf` regression reddens 7 tests at UTC+9 and 0 at UTC.
 
 ## Deferred, accepted
 
-- The `dayKey` / `dayKeyOf` duplication (residual 11). A shared module would
+- The `dayKey` / `dayKeyOf` duplication (residual 12). A shared module would
   have to live outside `users/`, and the route importing one user's queries file
   is the coupling the split exists to prevent.
 - The test `does not misdiagnose a later, legitimate open after an earlier
@@ -516,7 +539,7 @@ drilled rather than argued.
 `lib/time/dayKey.ts` now owns it and `app/api/users/[user]/walk/route.ts`
 imports it. The module's header says why it may not go back, and why
 `users/devtwo/queries.ts` keeps its own `dayKeyOf` rather than importing this
-one (residual 11).
+one (residual 12).
 
 The timezone test moved with it, byte-identical in what it asserts, from
 `tests/routing/walkRoute.test.ts` to `tests/time/dayKey.test.ts`. It shed only
@@ -694,3 +717,63 @@ instant the schema is being applied — it asserts the window is absent, not tha
 any particular file was used to avoid it. The second forces the race rather
 than hoping for it: it plants a complete, row-bearing database at the real path
 at exactly that instant, and requires the row to survive.
+
+---
+
+## Fix round 3 — the guard that had no test
+
+Small, and one of the five items is the reason the round exists.
+
+**The temp-file cleanup was a guard with no test.** Fix round 2 drilled the
+create as a whole (revert to direct-create: 2 red) and link-versus-rename
+(1 red), but never the cleanup on its own. The task reviewer did, with the
+mutation nobody had tried: move `unlinkSync(temp)` so it fires only after a
+successful link. **The suite stayed 639/639 green while the code actually
+produced debris** — a `.creating-<hex>.devthree.db` left in the user folder
+with `schema.sql` missing, another with invalid SQL in it. The round-2
+atomicity test only looked for `creating` files on the SUCCESS path, and Task
+1's test only ever looked at the real path. Between them, the failure paths
+were unwatched.
+
+Now pinned at two of them, because they are different routes through the
+create's two nested `finally` blocks: a throw BEFORE the schema exec (the
+`readFileSync` of a missing `schema.sql`, evaluated as `exec`'s argument, with
+no statements yet run) and a throw DURING it (invalid SQL, with a WAL to
+discard). The second matches on the SQL parse error, so it cannot pass by
+falling over earlier and never reaching `exec` at all.
+
+**Drilled with the reviewer's exact mutation: 2 failed / 640**, both new
+assertions, `expected [ Array(1) ] to deeply equal []`. Before this round the
+same mutation was invisible.
+
+**This is the fifth claim on this branch that outran its evidence**, and the
+first one caught by a reviewer mutating a guard the implementer had already
+drilled *around*. Drilling a change end to end is not the same as drilling each
+guard inside it — the composite drill passed because the successful path
+cleaned up correctly, which says nothing about the paths that throw.
+
+The other four items, for the record:
+
+- **The residual list had two items numbered 3**, so it ran 1,2,3,3,4…14 —
+  fifteen items numbered to fourteen. Not tidiness: "residual 3" was ambiguous
+  in source, and a reader grepping it could land on *a forgotten password
+  destroys the data* sitting directly beneath a heading that says CLOSED. Any
+  renderer that renumbers ordered lists also shifted 4–14 up by one, so this
+  file's own references to residuals 5, 9 and 11 pointed one item off.
+  Renumbered to 1–16 (15 is new, below), and every cross-reference in this
+  file, in `CLAUDE.md` and in the SDD `progress.md` re-checked against what it
+  now resolves to.
+- **`docs/local-dev.md`'s `rm users/devtwo/devtwo.db`** left the `-wal` and
+  `-shm` sidecars behind, while the same file's Reset section stresses that
+  "The `*` matters." The document contradicted itself; the reset self-heals, so
+  it was only ever a doc bug. Now `devtwo.db*`.
+- **Nothing reaps a killed create's debris** — the residual this round's own
+  predecessor created and did not record. Now residual 15, with the reasoning
+  for having no reaper.
+- **A test comment claimed more than its test.** The concurrency test's header
+  said it pinned "link, not rename." It pins *does not clobber an
+  already-present file*: it reddens against `renameSync`, but would stay green
+  against `existsSync(path) ? skip : renameSync(...)`, which keeps a real TOCTOU
+  window. Comment corrected to say what it pins and what it does not.
+  **A comment that overstates its test is the same defect class as a test that
+  proves nothing**, and this branch has now produced four of those.
