@@ -5,14 +5,23 @@ import { relative, resolve } from 'node:path'
 const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
 
 /** The interview prompt. New versions are new FILES, never edits. */
-export const AGENT_PROMPT = 'agent-v2.md'
+export const AGENT_PROMPT = 'agent-v3.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output
- * contract and the mockup conventions can be iterated without touching
- * interview wording, and so the two eras stay separable in the record.
+ * contract can be iterated without touching interview wording, and so the two
+ * eras stay separable in the record. As of v2 it no longer covers the mockup
+ * — that moved to its own call and its own prompt, MOCKUP_PROMPT below.
  */
-export const SPEC_PROMPT = 'spec-v1.md'
+export const SPEC_PROMPT = 'spec-v2.md'
+
+/**
+ * The mockup-rendering prompt. Takes a validated spec version as JSON and
+ * emits the self-contained HTML preview — split out from SPEC_PROMPT so a
+ * spec can be authored and validated without also generating and discarding
+ * HTML on a rejected draft.
+ */
+export const MOCKUP_PROMPT = 'mockup-v1.md'
 
 export type LoadedPrompt = { text: string; sha: string }
 

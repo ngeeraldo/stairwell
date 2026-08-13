@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   AGENT_PROMPT,
+  MOCKUP_PROMPT,
   SPEC_PROMPT,
   loadPrompt,
   loadPromptAtPath,
@@ -100,16 +101,30 @@ describe('loadPrompt', () => {
     expect(new Set(shas).size).toBe(3)
   })
 
-  it('does not promise Plaid products that are not enabled, in ANY prompt', () => {
+  it('never mentions an un-enabled Plaid product without disclaiming it, in ANY prompt', () => {
     // architecture-overview.md section 3: Investments and Liabilities are NOT
     // enabled, and line 98 requires checking before promising a panel. This
-    // now covers spec-v1.md too, which is the call that actually writes the
-    // panels — a panel naming an un-enabled product is a promise to a friend
-    // that step 6 cannot keep.
+    // covers spec-v1.md/spec-v2.md too, which is the call that actually
+    // writes the panels — a panel naming an un-enabled product is a promise
+    // to a friend that step 6 cannot keep.
+    //
+    // v2/v3 changed strategy from v1: instead of staying silent about
+    // investments/liabilities, agent-v3.md and spec-v2.md name them
+    // explicitly so the model knows the boundary rather than guessing at it
+    // ("Investments and liabilities are not connected — ... an open_question,
+    // not a panel"). A bare word-forbid can no longer tell that apart from
+    // an actual promise, so this checks every match has a nearby "not" —
+    // disclaiming, not promising. A term named without one still fails.
     for (const name of [AGENT_PROMPT, 'agent-v2.md', SPEC_PROMPT]) {
       const { text } = loadPrompt(name)
       for (const forbidden of FORBIDDEN_TERMS) {
-        expect(text, `${name} matched ${forbidden}`).not.toMatch(forbidden)
+        const global = new RegExp(forbidden.source, forbidden.flags.includes('g') ? forbidden.flags : `${forbidden.flags}g`)
+        for (const match of text.matchAll(global)) {
+          const start = Math.max(0, (match.index ?? 0) - 80)
+          const end = (match.index ?? 0) + match[0].length + 80
+          const window = text.slice(start, end)
+          expect(window, `${name}: "${match[0]}" appears without a nearby disclaimer`).toMatch(/\bnot\b/i)
+        }
       }
     }
   })
@@ -150,5 +165,19 @@ describe('loadPrompt', () => {
     const sample = 'We can help you track your 401(k) balance.'
     const matched = FORBIDDEN_TERMS.some((pattern) => pattern.test(sample))
     expect(matched).toBe(true)
+  })
+
+  it('names prompt files that exist on disk', () => {
+    for (const name of [AGENT_PROMPT, SPEC_PROMPT, MOCKUP_PROMPT]) {
+      expect(existsSync(promptPath(name))).toBe(true)
+    }
+  })
+
+  it('keeps superseded prompts on disk, because rows point at their hashes', () => {
+    // prompt_sha is a content hash stamped on every transcript and spec row.
+    // Deleting a superseded prompt orphans every row that names it.
+    for (const name of ['agent-v2.md', 'spec-v1.md']) {
+      expect(existsSync(promptPath(name))).toBe(true)
+    }
   })
 })
