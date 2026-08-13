@@ -189,16 +189,33 @@ _gate_b_class() {
       echo "guard:user:$u"
       return
       ;;
-    # A shared file directly under users/ — e.g. a registry or an index. It
-    # is platform code, so its test belongs under tests/, and without this arm
-    # it falls through every case below and classifies as `unguarded`.
+    # Any other shared file directly under users/ — a registry, an index, a
+    # config, anything with no per-user subdirectory. It is platform code, so
+    # its test belongs under tests/, and without this arm it falls through
+    # every case below and classifies as `unguarded`. A catch-all rather than
+    # an extension list (.ts/.tsx/.sh, etc.) because enumerating extensions
+    # keeps missing the next one — users/foo.json or a bare users/manifest
+    # would still slip through an enumerated list.
     #
-    # MUST stay AFTER users/*/* : `case` globs match '/', so users/*.ts also
+    # MUST stay AFTER users/*/* : `case` globs match '/', so users/* also
     # matches users/alice/queries.ts. Placed first it would classify every
     # per-user file as platform scope, and a users/alice change would be
     # satisfied by a test under tests/. The alice case in test-hooks.sh is
     # what catches that.
-    users/*.ts|users/*.tsx|users/*.sh) echo "guard:platform"; return ;;
+    #
+    # Safe only because everything that should NOT land here is claimed by an
+    # earlier case block, checked before this function ever reaches "Guarded
+    # scopes": users/*/* above claims every nested per-user path; the Gate A
+    # exempt arm claims users/<name>/seed.py and */schema.sql; the docs arm
+    # claims *.md; the styling arm claims */mockup.html. What's left is
+    # exactly "a shared file directly under users/ with no per-user
+    # subdirectory" — platform code.
+    #
+    # Consequence, so it isn't a surprise: users/.gitkeep would now classify
+    # as guarded and demand a test. That fails safe (it blocks rather than
+    # letting something through); SKIP_TEST_GATE=1 with a stated reason is
+    # the escape hatch.
+    users/*) echo "guard:platform"; return ;;
   esac
 
   # Root-level TypeScript that fell through everything above

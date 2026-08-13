@@ -381,6 +381,10 @@ else
     users/registry.ts
   class_check "guard:user:alice" "users/alice/queries.ts still scopes to its own user" \
     users/alice/queries.ts
+  class_check "guard:platform" "users/registry.json is guarded (not just .ts/.tsx/.sh)" \
+    users/registry.json
+  class_check "guard:platform" "a bare extensionless users/manifest is guarded" \
+    users/manifest
 
   # skip_check <expected BLOCK|PASS> <label> <staged paths...>
   skip_check() {
