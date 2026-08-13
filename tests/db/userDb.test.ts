@@ -117,6 +117,12 @@ describe('openUserDb', () => {
     makeUserDb('devone')
     const first = openUserDb('devone').db
     closeUserDbs()
+    // `new Database(...)` returns a fresh object on every call regardless of
+    // whether the old handle was ever closed, so `.not.toBe(first)` below
+    // stays green even if closeUserDbs stopped calling db.close() entirely —
+    // it would just leak a file descriptor per test. Assert the old handle
+    // is actually closed: better-sqlite3's `.open` flips to false on close().
+    expect(first!.open).toBe(false)
     expect(openUserDb('devone').db).not.toBe(first)
   })
 })

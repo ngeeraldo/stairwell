@@ -14,6 +14,16 @@
 # collected by vitest.
 set -euo pipefail
 
+# `[a-z0-9-]` in a bash bracket expression is a COLLATION range, not a
+# codepoint range — it is resolved against LC_COLLATE. Measured directly:
+# under LC_ALL=C, `case "DEVONE" in *[!a-z0-9-]*)` rejects it as expected;
+# under LC_ALL=en_US.UTF-8, the same case ACCEPTS "Devone", "DEVONE" and
+# accented input, because that locale's collation order folds case (and
+# more) into the range. The repo does not control the droplet's locale, so
+# pin it here rather than trust the environment the script happens to run
+# in.
+export LC_ALL=C
+
 main() {
   local slug="${1:-}"
 
@@ -28,7 +38,9 @@ main() {
   # The same rule as lib/auth/slug.ts's SLUG_PATTERN: lowercase letters,
   # digits and hyphens, 1-32 characters. Stated here rather than imported
   # because this is bash; tests/scripts/newDashboard.test.ts pins the
-  # rejections.
+  # rejections. The equivalence holds only BECAUSE LC_ALL=C is pinned above —
+  # a bracket expression is a collation range, and SLUG_PATTERN's codepoint
+  # range has no such dependency.
   case "$slug" in
     *[!a-z0-9-]*)
       echo "invalid slug '$slug': lowercase letters, digits and hyphens only" >&2
