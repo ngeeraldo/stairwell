@@ -12,7 +12,11 @@ import { parseSpecPayload, SpecShapeError } from '@/lib/spec/schema'
 import type { Proposal } from '@/lib/spec/author'
 import { openUserDb } from '@/lib/db/userDb'
 import type { UserDb } from '@/lib/db/userDb'
-import { encryptedUserDbExists, openEncryptedUserDb } from '@/lib/db/encryptedUserDb'
+import {
+  encryptedUserDbExists,
+  openEncryptedUserDb,
+  WrongKeyError,
+} from '@/lib/db/encryptedUserDb'
 import { getKey } from '@/lib/session/keymap'
 import { dashboardLoaderFor } from '@/lib/dashboard/registry'
 import ChatPanel from './ChatPanel'
@@ -32,6 +36,22 @@ import ChatPanel from './ChatPanel'
  * function on purpose: it is the surface a friend uses to report that the
  * dashboard broke.
  */
+
+/**
+ * `dashboard_error`'s payload has never been free text. `metrics` is
+ * append-only and unencrypted, so a raw `.message` written through either
+ * catch below is a fragment of the friend's own data, permanent, in the one
+ * place this design promises never holds it — see the login page's "I can
+ * see when you use it ... but not what you log", and step 5's ledger
+ * residual 6, which flagged this exact pattern for revisiting once step 6
+ * put a real database behind these catches. `kind` is a small closed set
+ * instead, derived with `instanceof` — NOT `error.constructor.name`, which
+ * lib/chat/client.ts notes is minifier-fragile in a Next production build.
+ */
+function dashboardErrorKind(error: unknown): 'wrong_key' | 'error' {
+  return error instanceof WrongKeyError ? 'wrong_key' : 'error'
+}
+
 async function dashboardRegion(slug: string, accountId: number, sessionId: string) {
   const loader = dashboardLoaderFor(slug)
   if (!loader) {
@@ -69,10 +89,7 @@ async function dashboardRegion(slug: string, accountId: number, sessionId: strin
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_error',
-      data: {
-        slug,
-        message: error instanceof Error ? error.message : String(error),
-      },
+      data: { slug, kind: dashboardErrorKind(error) },
       at: Date.now(),
     })
     return <p>This dashboard failed to load.</p>
@@ -115,10 +132,7 @@ async function renderDashboard(
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_error',
-      data: {
-        slug,
-        message: error instanceof Error ? error.message : String(error),
-      },
+      data: { slug, kind: dashboardErrorKind(error) },
       at: Date.now(),
     })
     return <p>This dashboard failed to load.</p>

@@ -62,20 +62,43 @@ vi.mock('@/lib/db/userDb', () => ({
   openUserDb: (slug: string) => openUserDbMock(slug),
 }))
 
-const encryptedSlot: { exists: boolean; rows: unknown[]; throwOnOpen: boolean } = {
+/**
+ * A local stand-in, not the real class: this module is mocked, so
+ * app/[user]/page.tsx's `error instanceof WrongKeyError` check resolves
+ * against THIS export, not lib/db/encryptedUserDb.ts's real one. Structurally
+ * equivalent is enough — nothing beyond `instanceof` matters to the page.
+ */
+class WrongKeyError extends Error {
+  constructor(slug: string) {
+    super(`${slug}.db exists but did not open with this session's key`)
+    this.name = 'WrongKeyError'
+  }
+}
+
+const encryptedSlot: {
+  exists: boolean
+  rows: unknown[]
+  throwOnOpen: 'wrong_key' | 'other' | undefined
+} = {
   exists: false,
   rows: [],
-  throwOnOpen: false,
+  throwOnOpen: undefined,
 }
 // A real vi.fn(), not a no-op stub: drill 3 (task-3 fix round) showed the
 // no-op let a missing db.close() pass silently. Asserting this was called
 // converts that residual into a real, pinned assertion.
 const closeMock = vi.fn()
 const openEncryptedMock = vi.fn(() => {
-  if (encryptedSlot.throwOnOpen) {
-    // Stands in for WrongKeyError or a corrupt file: openEncryptedUserDb can
-    // throw, and the page must degrade rather than 500 the whole route.
-    throw new Error('wrong key TEST')
+  if (encryptedSlot.throwOnOpen === 'wrong_key') {
+    throw new WrongKeyError(SLUG)
+  }
+  if (encryptedSlot.throwOnOpen === 'other') {
+    // A recognisable, obviously-fake fragment. The fix-round-2 drill checks
+    // this string reaches metrics NOWHERE — not in the parsed payload and
+    // not in the raw stored column — because a non-WrongKeyError exception
+    // from openEncryptedUserDb is exactly the case the untyped `.message`
+    // capture used to let through uninspected.
+    throw new Error('REAL ACCOUNT NUMBER 4111 5551 2222 TEST')
   }
   return {
     prepare: () => ({ all: () => encryptedSlot.rows, get: () => encryptedSlot.rows[0] }),
@@ -85,6 +108,7 @@ const openEncryptedMock = vi.fn(() => {
 vi.mock('@/lib/db/encryptedUserDb', () => ({
   encryptedUserDbExists: () => encryptedSlot.exists,
   openEncryptedUserDb: () => openEncryptedMock(),
+  WrongKeyError,
 }))
 
 const SLUG = 'devone'
@@ -128,6 +152,18 @@ function metricData(event: string): Record<string, unknown> | undefined {
   return row?.data ? (JSON.parse(row.data) as Record<string, unknown>) : undefined
 }
 
+/**
+ * The raw stored column, not the parsed object — proves a string never
+ * touched the actual append-only bytes, rather than merely being absent from
+ * the keys an `.toEqual` happened to check.
+ */
+function rawMetricData(event: string): string | null {
+  const row = handle!
+    .prepare('SELECT data FROM metrics WHERE event = ? ORDER BY id DESC LIMIT 1')
+    .get(event) as { data: string | null } | undefined
+  return row?.data ?? null
+}
+
 /** A real read-only handle over a throwaway file, for the rendering cases. */
 function realDb(): unknown {
   const path = join(pageDir, 'devone-synthetic.db')
@@ -155,7 +191,7 @@ beforeEach(() => {
   handle = undefined
   encryptedSlot.exists = false
   encryptedSlot.rows = []
-  encryptedSlot.throwOnOpen = false
+  encryptedSlot.throwOnOpen = undefined
   openEncryptedMock.mockClear()
   closeMock.mockClear()
 })
@@ -256,10 +292,15 @@ describe('app/[user]/page.tsx data region', () => {
     // A failed render is not an open.
     expect(metricEvents()).toContain('dashboard_error')
     expect(metricEvents()).not.toContain('dashboard_open')
+    // The panel-throw catch (renderDashboard) is bound by the same policy as
+    // the encrypted-open catch: a bounded `kind`, never the thrown message.
+    // WrongKeyError cannot come from here, so 'error' is the only kind this
+    // path can ever record.
     expect(metricData('dashboard_error')).toEqual({
       slug: SLUG,
-      message: 'panel query blew up TEST',
+      kind: 'error',
     })
+    expect(rawMetricData('dashboard_error')).not.toContain('panel query blew up TEST')
   })
 
   it('degrades a loader that fails to import at all', async () => {
@@ -295,14 +336,14 @@ describe('app/[user]/page.tsx data region', () => {
     expect(closeMock).toHaveBeenCalled()
   })
 
-  it('degrades instead of 500ing the whole route when opening the encrypted database throws', async () => {
-    // Stands in for WrongKeyError or a corrupt file. Before the task-3 fix
-    // round, openEncryptedUserDb sat outside the try, so this throw would
-    // propagate past dashboardRegion with no error.tsx anywhere in app/ —
-    // taking the chat panel and logout button down with it, which is
-    // exactly the surface a friend uses to report the dashboard broke.
+  it('degrades instead of 500ing the whole route when a wrong key is presented', async () => {
+    // Before the task-3 fix round, openEncryptedUserDb sat outside the try,
+    // so this throw would propagate past dashboardRegion with no error.tsx
+    // anywhere in app/ — taking the chat panel and logout button down with
+    // it, which is exactly the surface a friend uses to report the
+    // dashboard broke.
     encryptedSlot.exists = true
-    encryptedSlot.throwOnOpen = true
+    encryptedSlot.throwOnOpen = 'wrong_key'
     loaderSlot.value = async () => ({
       default: () => React.createElement('section', null, 'UNREACHED PANEL TEST'),
     })
@@ -318,8 +359,37 @@ describe('app/[user]/page.tsx data region', () => {
     expect(metricEvents()).not.toContain('dashboard_open')
     expect(metricData('dashboard_error')).toEqual({
       slug: SLUG,
-      message: 'wrong key TEST',
+      kind: 'wrong_key',
     })
+  })
+
+  it('never writes an opening error message into metrics, even a non-WrongKeyError one', async () => {
+    // Fix-round-2 drill: this is the test that actually pins the policy
+    // (nothing user-derived goes into metrics, ever), rather than pinning
+    // one expected payload. openEncryptedUserDb can throw something other
+    // than WrongKeyError (a permissions error, a different driver failure,
+    // ...) and the untyped `error.message` capture this replaced would have
+    // committed that raw text permanently to an append-only, unencrypted
+    // table — see step 5's ledger residual 6.
+    encryptedSlot.exists = true
+    encryptedSlot.throwOnOpen = 'other'
+    loaderSlot.value = async () => ({
+      default: () => React.createElement('section', null, 'UNREACHED PANEL TEST'),
+    })
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    expect(JSON.stringify(element)).toContain('This dashboard failed to load')
+    expect(metricData('dashboard_error')).toEqual({
+      slug: SLUG,
+      kind: 'error',
+    })
+    // The raw stored column, not just the parsed object's keys: the
+    // recognisable fragment must never have touched the append-only bytes.
+    const raw = rawMetricData('dashboard_error')
+    expect(raw).not.toBeNull()
+    expect(raw).not.toContain('REAL ACCOUNT NUMBER')
+    expect(raw).not.toContain('4111')
   })
 
   it('keeps the synthetic banner while no real database exists', async () => {
