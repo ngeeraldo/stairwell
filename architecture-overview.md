@@ -147,7 +147,17 @@ Retention curves cannot be reconstructed retroactively, and they are the fundrai
 | 3 | ntfy.sh alerts (session start, spec confirmed) | Phone buzzes when dev user #2 sends a message |
 | 4 | Interview → structured spec flow: agent presents spec + renders HTML mockup inline in chat, user confirms, `spec.md` + `mockup.html` saved + shown in admin | `devtwo` runs an interview end-to-end; spec + mockup land in the portal |
 | 5 | Per-user dashboard hosting + folder conventions (`schema.sql` / `seed.py` / `tests/` / `synthetic.db`) | Nico builds `devtwo`'s dashboard from `devtwo`'s confirmed spec via Claude Code; it deploys behind `devtwo`'s login; `devone` can't see it |
-| 6 | Plaid module: Link flow, SQLCipher, login-triggered sync | Nico's real accounts sync into his encrypted DB; dev folder shows only COFFEE PALACE TEST |
+
+Step 6 was split on 2026-08-13, during the step-5 build. `devtwo`'s confirmed spec is a
+manual-logging tracker whose primary control is a tap, and step 5 shipped a deliberately
+read-only data layer — so the first real dashboard needs a write path before it can be
+what it says it is. Writing to `synthetic.db` was rejected twice over: `deploy.sh`
+regenerates it on every deploy, and real taps sharing a file with loudly-fake seeded rows
+breaks the rule that any screen reads instantly as fake or real. Encryption therefore
+lands **before** the first real byte rather than after it, which is also the only ordering
+the onboarding promise supports.
+| 6a | Per-user encrypted data layer: SQLCipher `<name>.db`, key derived at login, and the first write path (manual logging) behind the lock | `devtwo` taps "walked" on their own dashboard; the row survives a deploy; a locked session can neither read it nor write it |
+| 6b | Plaid module: Link flow, login-triggered sync | Nico's real accounts sync into his encrypted DB; dev folder shows only COFFEE PALACE TEST |
 | 7 | Privacy toggle + metrics logging (append-only, off-VPS backup) | Metrics rows appear from Nico's own usage; backup verified |
 | → | **Onboard test user #1** | |
 

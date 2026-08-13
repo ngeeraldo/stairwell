@@ -147,6 +147,69 @@ function run(
  */
 const SUBPROCESS_TIMEOUT_MS = 60_000
 
+/**
+ * The droplet path, by static scan — the same idiom as tests/deploy/. It
+ * cannot be executed here (tests must not ssh), and that is exactly how it
+ * shipped broken: only --local was ever exercised.
+ *
+ * What went wrong: a non-interactive ssh loads no profile and no systemd
+ * EnvironmentFile, so PLATFORM_DB was unset on the far side and
+ * export-spec.ts fell back to the SYNTHETIC database on the production box.
+ * It surfaced as a confusing "directory does not exist" only because
+ * platform/dev/ is absent from the droplet's checkout — git will not create a
+ * directory whose only contents are gitignored. With that directory present,
+ * the failure mode is silent and much worse: synthetic rows written into
+ * users/<name>/spec.md as if they were a friend's real confirmed spec.
+ *
+ * This pins the fix, not the bug. It cannot prove the remote command runs;
+ * only a real pull can, and one has.
+ */
+describe('scripts/pull-spec.sh droplet path', () => {
+  const script = readFileSync('scripts/pull-spec.sh', 'utf8')
+
+  /**
+   * Two scoping rules, both learned by drilling the first version of these
+   * tests rather than by reading them:
+   *
+   * 1. Strip comments. A raw scan matches the script's own prose — the comment
+   *    explaining the `.env` sourcing put that string in the --local half of
+   *    the file and reddened the third test for a reason unrelated to the
+   *    code. The same hazard tests/deploy names.
+   * 2. Scope to the REMOTE command. A bare indexOf over the whole script
+   *    compares positions across two branches: --local invokes export-spec.ts
+   *    earlier, correctly, with no .env at all.
+   */
+  const code = script
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n')
+
+  const sshCommand = code.slice(code.indexOf('ssh deploy@'))
+
+  it('sources .env on the droplet before invoking export-spec.ts', () => {
+    const sourcesEnv = sshCommand.indexOf('. ./.env')
+    const invokesExport = sshCommand.indexOf('npx tsx scripts/export-spec.ts')
+    expect(sourcesEnv).toBeGreaterThan(-1)
+    expect(invokesExport).toBeGreaterThan(-1)
+    expect(sourcesEnv).toBeLessThan(invokesExport)
+  })
+
+  it('exports what it sources, so PLATFORM_DB reaches the child process', () => {
+    // `. ./.env` alone defines the variables in the remote shell without
+    // exporting them, so `npx tsx` would still see PLATFORM_DB unset and the
+    // bug would survive the fix. `set -a` is the load-bearing half.
+    expect(sshCommand).toMatch(/set -a && \. \.\/\.env && set \+a && npx tsx/)
+  })
+
+  it('leaves --local alone, which needs no .env', () => {
+    // The other half of the scoping: --local reads PLATFORM_DB from the
+    // caller's own environment and must not start sourcing a droplet file.
+    const localBranch = code.slice(0, code.indexOf('ssh deploy@'))
+    expect(localBranch).toContain('npx tsx scripts/export-spec.ts')
+    expect(localBranch).not.toContain('. ./.env')
+  })
+})
+
 describe('scripts/pull-spec.sh --local', () => {
   it('writes spec.md and mockup.html from the confirmed spec', async () => {
     const sandbox = makeSandbox()

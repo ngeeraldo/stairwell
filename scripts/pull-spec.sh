@@ -42,8 +42,21 @@ main() {
   if [ "${2:-}" = "--local" ]; then
     json=$(npx tsx scripts/export-spec.ts "$user")
   else
+    # `set -a; . ./.env` because a non-interactive ssh loads no profile and no
+    # EnvironmentFile — only systemd does that for the running service. Without
+    # it PLATFORM_DB is unset on the far side and export-spec.ts used to fall
+    # back to the SYNTHETIC database, on the production box. That failed loudly
+    # here only by luck: platform/dev/ does not exist in the droplet's checkout,
+    # because git will not create a directory whose only contents are
+    # gitignored. Had it existed, this would have written synthetic data into
+    # users/<name>/spec.md as if it were the friend's real confirmed spec.
+    # export-spec.ts now refuses to run without PLATFORM_DB rather than
+    # guessing; this line is what supplies it.
+    #
+    # Nothing is echoed: `.env` is sourced by the REMOTE shell and only
+    # export-spec.ts's JSON comes back over stdout.
     json=$(ssh deploy@app.stairwell.run \
-      'cd /home/deploy/stairwell && npx tsx scripts/export-spec.ts '"$user")
+      'cd /home/deploy/stairwell && set -a && . ./.env && set +a && npx tsx scripts/export-spec.ts '"$user")
   fi
 
   npx tsx scripts/write-spec-pair.ts "users/$user" "$json"
