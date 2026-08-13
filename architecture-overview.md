@@ -107,6 +107,10 @@ Server (single VPS)
 - **Dev laptop never contains production DBs.** Real files live on the server; deploys go out through git; Claude Code runs only in folders where synthetic.db is the only database.
 - **Privacy toggle** on every dashboard: swaps live numbers for synthetic ones (for studio sessions / screen shares).
 - Honest residue, stated plainly to users at onboarding: *"My tools run on fake data. I'll see what you tell the agent and what you ask for. I won't open your transactions. I'd have to deliberately modify the system to see anything, and I won't. Everything's deleted when the pilot ends."* Written down where they can see it (login page paragraph).
+- **Extended in step 6a, when real per-user data first became possible.** Two sentences, both consequences of decisions rather than caveats on them:
+  - *"I can see when you use it — which days you open it and log things — but not what you log."* Engagement is recorded because the retention curve is the fundraise and cannot be reconstructed later. The **permanent policy** is `dashboard_write` carrying a slug and a panel and **never a value** — for every panel type, now and in future, not just this dashboard. That bound is what makes the sentence true, so the sentence and the policy stand or fall together.
+  - *"If you forget your password, your logged data is gone forever — I can't recover it, on purpose, because I can't read it either."* The key is derived from the password and stored nowhere. There is no reset path and no backup, by design.
+- The whole paragraph is pinned sentence-by-sentence in `tests/routing/loginPage.test.ts`. It is a promise made to a person; it should not be able to drift through an unrelated edit without someone deciding to change it.
 
 ### 5. The agent's core job — monitoring-first, goals optional
 - The product may end up replacing a horizontal shelf of apps (Quicken, MyFitnessPal, etc.) — so the agent's framing stays broad: its job is to find out **what this person would want to keep an eye on every morning.** What do they currently check (or wish they checked)? What do they worry about? What would they glance at over coffee?

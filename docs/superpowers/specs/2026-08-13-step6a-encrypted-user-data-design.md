@@ -164,7 +164,21 @@ step-5 folder convention. Four panels, all from one `walks` table:
 `seed.py` generates a plausible fake history so the pre-first-tap screen is not
 empty. Its values carry the `TEST` marker like every other generator.
 
-## 6. One decision I want ruled before building
+## 6. Metrics — RULED 2026-08-13
+
+> **Option 2, adopted as permanent policy rather than as a choice for this
+> dashboard.** `dashboard_write` carries a **slug and a panel, never a value** —
+> for every panel type, now and in future. Nico's reasoning: it is the right
+> shape for every future panel, and the retention curve is non-negotiable.
+>
+> **Paired with a concrete promise amendment**, not a gesture at one. The login
+> paragraph gains: *"I can see when you use it — which days you open it and log
+> things — but not what you log."* The policy is what makes that sentence true,
+> so the two stand or fall together. Both live in
+> `architecture-overview.md` section 4 and are pinned in
+> `tests/routing/loginPage.test.ts`.
+
+The original framing, kept because the reasoning is the point:
 
 **Does a tap get a metrics row?**
 
@@ -219,8 +233,13 @@ The delete-the-guard rule applies to every guard below.
 
 1. **A forgotten password destroys the data, permanently.** The key is derived
    from the password and stored nowhere; there is no reset path and no backup.
-   This is the design working as intended, and it is a sentence that belongs in
-   the onboarding copy before a real friend logs anything they would miss.
+   This is the design working as intended.
+
+   **RULED 2026-08-13 — in the onboarding copy, verbatim-blunt:** *"If you
+   forget your password, your logged data is gone forever — I can't recover it,
+   on purpose, because I can't read it either."* Shipped on the login page and
+   pinned in `tests/routing/loginPage.test.ts`. Stated as the deal rather than
+   as a caveat, which is the only honest way to state it.
 2. **`<slug>.db` is not backed up.** Step 7 covers an off-VPS backup for the
    metrics log; per-user encrypted data is not in that scope, and a droplet loss
    is a data loss.
