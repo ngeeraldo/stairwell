@@ -124,13 +124,10 @@ time. Warm the routes first if you do use `npm run dev`.
    space at.
 9. Restart the server without clearing cookies → `/devone` redirects to
    `/unlock`, not `/login`. The session survived; the key did not.
-9. Log in as `nico` → lands on `/admin`, not `/nico` — the admin account has
-   no user space of its own.
-10. `/nico` as `nico` → **404**, same as any other slug an admin has no user
-    space at.
-11. `/devone` shows the reference dashboard under a **SYNTHETIC DATA** banner:
-    an eating-out total and a list of `COFFEE PALACE TEST` transactions.
-12. `/devtwo` shows "Nothing here yet" — devtwo has no dashboard until its
+10. `/devone` shows the reference dashboard under a **SYNTHETIC DATA** banner:
+    an eating-out total and a recent-transactions list of loudly-fake
+    merchants, `COFFEE PALACE TEST` among them.
+11. `/devtwo` shows "Nothing here yet" — devtwo has no dashboard until its
     spec is confirmed and one is built. Neither account can reach the other's
     URL at all; both get a 404, not a 403.
 
