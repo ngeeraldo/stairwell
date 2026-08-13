@@ -41,6 +41,12 @@ const slugs = existsSync(USERS)
       .sort()
   : []
 
+/** The five entries a BUILT dashboard has. See the state note below. */
+const REQUIRED = ['schema.sql', 'seed.py', 'queries.ts', 'dashboard.tsx', 'tests']
+
+const isBuilt = (slug: string) =>
+  REQUIRED.every((entry) => existsSync(join(USERS, slug, entry)))
+
 const temps: string[] = []
 afterAll(() => {
   for (const d of temps) rmSync(d, { recursive: true, force: true })
@@ -54,24 +60,54 @@ describe('users/ folder conventions', () => {
     expect(slugs.length).toBeGreaterThan(0)
   })
 
+  // The companion to the skip below. A folder that has been pulled but not
+  // built skips the four checks that do the real work, which is correct for
+  // that folder and dangerous for the sweep: a tree where every folder were
+  // pulled-only would report all-green having executed none of them.
+  it('sweeps at least one BUILT dashboard, not only pulled-but-unbuilt folders', () => {
+    expect(slugs.filter(isBuilt)).not.toHaveLength(0)
+  })
+
   describe.each(slugs)('users/%s', (slug) => {
     const dir = join(USERS, slug)
 
-    it.each(['schema.sql', 'seed.py', 'queries.ts', 'dashboard.tsx', 'tests'])(
-      'has %s',
-      (entry) => {
-        expect(existsSync(join(dir, entry))).toBe(true)
-      },
-    )
+    /**
+     * A user folder has three legitimate states, and only one of them is a
+     * defect. This distinction was missing until the first real pull created
+     * the middle one: `./scripts/pull-spec.sh devtwo` writes spec.md and
+     * mockup.html into a folder that does not exist yet, so between pulling a
+     * confirmed spec and building the dashboard from it the folder legitimately
+     * holds the build contract and nothing else. The sweep used to fail all
+     * eight of its checks there — on the documented workflow, at the exact
+     * moment it is followed.
+     *
+     *   pulled  — spec.md / mockup.html only. Allowed: not started yet.
+     *   built   — all five required entries. Swept in full.
+     *   partial — some of the five. A defect, and the one this now names.
+     *
+     * Skipping the built-only checks is what makes the middle state pass, so
+     * "is either fully built or not started" carries the weight for a pulled
+     * folder, and the run-if-built assertion below stops the whole sweep from
+     * going quiet if every folder were ever pulled-only.
+     */
+    const found = REQUIRED.filter((entry) => existsSync(join(dir, entry)))
+    const built = found.length === REQUIRED.length
+    const whenBuilt = built ? it : it.skip
 
-    it('has at least one test of its own', () => {
+    it('is either fully built or not started — never half a dashboard', () => {
+      const missing = REQUIRED.filter((entry) => !found.includes(entry))
+      // Named rather than counted, so the failure says which files to write.
+      expect(built || found.length === 0, `missing: ${missing.join(', ')}`).toBe(true)
+    })
+
+    whenBuilt('has at least one test of its own', () => {
       const tests = readdirSync(join(dir, 'tests')).filter((f) =>
         f.endsWith('.test.ts'),
       )
       expect(tests.length).toBeGreaterThan(0)
     })
 
-    it(
+    whenBuilt(
       'seed.py runs clean and produces every object schema.sql declares',
       () => {
         const out = mkdtempSync(join(tmpdir(), `stairwell-conv-${slug}-`))
@@ -101,7 +137,7 @@ describe('users/ folder conventions', () => {
       SUBPROCESS_TIMEOUT_MS,
     )
 
-    it(
+    whenBuilt(
       'generates loudly-fake, non-empty data',
       () => {
         const out = mkdtempSync(join(tmpdir(), `stairwell-loud-${slug}-`))
