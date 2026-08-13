@@ -312,6 +312,108 @@ const outOfOrderVersion: SpecVersion = sealVersion(
   null,
 )
 
+/** A version with every optional/list field populated (non-null
+ * context_of_use, a non-empty open_questions), used only as the SAFE half of
+ * the differential escaping test below — DANGEROUS_VERSION mirrors this
+ * shape exactly (same screen/panel/value/entry-field/requirement/question
+ * counts), so the two renders differ only in field CONTENT, never in how
+ * many of the renderer's own fixed headings appear. */
+const RICH_VERSION: SpecVersion = sealVersion(
+  parseSpecDraft(draft({ open_questions: ['Wants a Monzo pot balance — is that reachable?'] })),
+  null,
+)
+
+/**
+ * Same shape as RICH_VERSION, field for field, but every free-text field
+ * carries a SECOND LINE that looks structural. Per the review finding on
+ * renderPanel's own comment (lib/spec/render.ts): a single-line fixture like
+ * `'# pwned'` cannot observe an inline interpolation site, because whatever
+ * precedes it on the same line (a label, a bullet, another field's value)
+ * keeps it off the true start of an output line. A multi-line fixture does
+ * not have that problem — text after the `'\n'` starts a fresh line
+ * regardless of what came before it, which is exactly how
+ * renderLegacyMarkdown's OWN differential test already catches a bug at its
+ * inline `panel.shows` site. Every site below carries an attack: the four
+ * top-level fields, both inline sites (screen.title, panel.title,
+ * value.description, entry.fields[].name, data_requirement.table/purpose),
+ * and both own-line sites (panel.intent/display/context_of_use,
+ * entry.description) that aren't already covered by a dedicated test above.
+ * Attack forms vary rather than repeat, including two exact collisions with
+ * this renderer's own fixed heading text — the case that specifically
+ * defeats any escaping approach keyed on what the injected text looks like
+ * rather than on where it lands.
+ */
+const DANGEROUS_VERSION: SpecVersion = sealVersion(
+  parseSpecDraft({
+    // Site: version.title. Exact-string collision with a real fixed heading.
+    title: 'Did I walk the dog today?\n## Summary',
+    // Site: version.summary. A heading with no space after the hashes.
+    summary: 'A one-tap daily tracker.\n##Sneaky heading with no space',
+    // Site: version.background. An unterminated fence.
+    background: 'Pivoted from a weather idea.\n```\nunterminated fence',
+    // Site: version.change_summary. Bare `#` heading.
+    change_summary: 'The whole dashboard: one tap, a streak, a 30-day rate.\n# Not a real heading',
+    screens: [
+      {
+        id: 'today',
+        // Site: screen.title. An INLINE site ("### " + text, same line) —
+        // this is the shape Important 1 is about: only a multi-line fixture
+        // can observe it.
+        title: 'Today\n## Background',
+        order: 1,
+        panels: [
+          {
+            id: 'walked_today',
+            // Site: panel.title. Also inline ("#### `id` — " + text).
+            // Exact collision with another of the renderer's own headings.
+            title: 'Walked today?\n## Entered by hand',
+            // Site: panel.intent. Own-line (see renderPanel's doc comment).
+            intent: 'Did I walk the dog today?\n```\nfence in intent',
+            // Site: panel.display. Own-line.
+            display: 'A big yes/no with a tap-to-mark control.\n##No-space heading',
+            // Site: panel.context_of_use. Own-line.
+            context_of_use: 'Phone, in bed, before getting up.\n# Context heading',
+            values: [
+              {
+                kind: 'entered',
+                id: 'walk_flag',
+                // Site: value.description, via valueLine — INLINE
+                // ("- `id` — kind — " + text, same line). Rendered TWICE
+                // (Screens' Values sub-list AND Entered by hand), so a
+                // missed escape here would show up doubled in the count.
+                // Exact collision with a third fixed heading.
+                description: 'One tap per day.\n## Data requirements',
+              },
+            ],
+            entry: {
+              // Site: entry.description, via entryLine — own-line (its
+              // result is interpolated after "- **Entry:**\n\n").
+              description: 'One tap.\n```\nfence in entry description',
+              fields: [
+                // Site: entry.fields[].name — inline (joined with " — fields: ").
+                { name: 'walked\n# Field name heading', type: 'boolean', choices: [] },
+              ],
+              annotates: null,
+            },
+          },
+        ],
+      },
+    ],
+    data_requirements: [
+      {
+        // Site: data_requirement.table, via dataRequirementLine — inline.
+        table: 'walks\n# Table heading',
+        // Site: data_requirement.purpose — inline, after "— status — ".
+        purpose: 'One row per day walked.\n```\nfence in purpose',
+        status: 'new',
+      },
+    ],
+    // Site: open_questions, via list() — inline ("- " + text).
+    open_questions: ['Wants a Monzo pot balance — is that reachable?\n# Open question heading'],
+  }),
+  null,
+)
+
 const meta = { slug: 'devtwo', version: 1, confirmedAt: 1_760_000_000_000 }
 
 /** Replaces one panel's intent in place, mirroring diff.test.ts's
@@ -378,11 +480,36 @@ describe('renderSpecMarkdown', () => {
   })
 
   it('escapes hostile text inside a panel and a value too', () => {
-    // The step-4 ledger flagged the fixture-based escaping test as able to miss
-    // a NEW interpolation site. The new renderer has many more sites, so this
-    // walks panel and value fields as well, not just the top-level ones.
+    // Test name and fixture are as the brief specified. Correction: this
+    // fixture only reaches panel.intent — it does NOT itself exercise a
+    // value field, despite the name. Review caught the claim; real,
+    // comprehensive coverage of every field including every value field
+    // (not just this one panel-level site) lives in the differential test
+    // below, which is what actually makes "and a value too" true.
     const hostile = withPanelIntent(version, 'walked_today', '# pwned')
     expect(renderSpecMarkdown(hostile, meta)).not.toMatch(/^# pwned$/m)
+  })
+
+  it('escapes hostile multi-line text at every interpolation site, not just a sample', () => {
+    // Same technique renderLegacyMarkdown's own differential test uses
+    // (below), for the same reason: an allow-list keyed on what the
+    // injected text looks like is defeated by text equal to one of the
+    // renderer's own fixed headings (DANGEROUS_VERSION plants three such
+    // collisions on purpose). Render the SAME shape twice — once clean,
+    // once with every free-text field carrying a structural-looking second
+    // line — and count lines that look like a heading or fence opener
+    // (CommonMark: up to 3 leading spaces still counts). Escaping that
+    // works keeps the count identical; a missed site adds at least one.
+    const countStructuralLines = (markdown: string): number =>
+      markdown.split('\n').filter((line) => {
+        const stripped = line.replace(/^ {0,3}/, '')
+        return stripped.startsWith('#') || stripped.startsWith('```')
+      }).length
+
+    const safeCount = countStructuralLines(renderSpecMarkdown(RICH_VERSION, meta))
+    const dangerousCount = countStructuralLines(renderSpecMarkdown(DANGEROUS_VERSION, meta))
+
+    expect(dangerousCount).toBe(safeCount)
   })
 
   it('is deterministic', () => {

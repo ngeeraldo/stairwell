@@ -128,14 +128,18 @@ function valueLine(value: ValueSpec): string {
  * Every field below is rendered as "- **Label:**" followed by a BLANK LINE
  * and then the escaped text on its own — never "- **Label:** text" inline.
  * That is a deliberate departure from renderLegacyMarkdown's inline style
- * just above. Inline embedding ("- **Intent:** " + text) can never place
- * attacker text at the true start of an output line, because the label
- * always precedes it on the same line — so escaping at an inline site is
- * cosmetic, not load-bearing, and a bug there would leave every test green.
- * Giving the field its own line is what makes safeMarkdown's job at THIS
- * site actually do something a test can catch, which is exactly what the
- * step-4 ledger's "new interpolation site, no matching fixture" weakness
- * calls for: a real regression, not just an unexercised call.
+ * just above, chosen for readability and consistency with the Summary/
+ * Background paragraph pattern used elsewhere in this file — it does NOT
+ * rest on any claim that inline escaping is unnecessary. An inline site CAN
+ * still be attacked: renderLegacyMarkdown's own differential test proves it,
+ * driving `panel.shows` — an inline "- **Shows:** " + text site — with a
+ * fixture whose SECOND line lands at a true line start regardless of what
+ * precedes the first line, and that test goes red if the inline
+ * `safeMarkdown` call there is removed. What a single-line fixture like
+ * `'# pwned'` cannot observe at an inline site is narrower than that: only
+ * multi-line input exercises it, which is why the red-test control for
+ * THIS renderer's `panel.intent` site (see task-5-report.md) had to use a
+ * fixture that puts the attack on its own line to begin with.
  */
 function renderPanel(panel: Panel): string {
   const parts: string[] = [
