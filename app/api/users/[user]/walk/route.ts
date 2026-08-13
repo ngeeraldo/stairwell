@@ -2,6 +2,7 @@ import { cookies } from 'next/headers'
 import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { appendMetric } from '@/lib/db/appendOnly'
 import { openEncryptedUserDb } from '@/lib/db/encryptedUserDb'
+import { logDbFailure } from '@/lib/db/failureLog'
 import { getDb } from '@/lib/db/instance'
 import { dashboardLoaderFor } from '@/lib/dashboard/registry'
 import { relativeRedirect } from '@/lib/http/redirect'
@@ -54,12 +55,14 @@ export async function POST(
   let userDb
   try {
     userDb = openEncryptedUserDb(user, key)
-  } catch {
+  } catch (error) {
     // WrongKeyError (or a corrupt file) must not become a bare 500 with a
     // stack: a metric is recorded first so the failure is visible at all,
     // then a bodyless 500. Slug and panel only, per the permanent metrics
     // policy below — never the error message, which could carry what was
-    // being logged.
+    // being logged. The stderr line carries the error's name and code, which
+    // the metric deliberately cannot; see lib/db/failureLog.ts.
+    logDbFailure('dashboard_write_error', user, error)
     appendMetric(db, {
       accountId,
       event: 'dashboard_write_error',
@@ -74,6 +77,23 @@ export async function POST(
     userDb
       .prepare('INSERT OR IGNORE INTO walks (day, at) VALUES (?, ?)')
       .run(dayKey(Date.now()), Date.now())
+  } catch (error) {
+    // The WRITE needs the same catch as the open above, and for longer than it
+    // had one. Until this existed, a full disk, a SQLITE_BUSY outliving the
+    // driver's timeout, or (once 6b changes a schema an existing file was
+    // frozen at) a missing table threw straight out of POST: the friend got
+    // Next's default error page in response to a form submit — no dashboard,
+    // no chat surface, no way back but the browser's back button — and no
+    // metric row, so it was invisible to the operator too. Same treatment as
+    // the open: log the shape, record that it happened, return a bodyless 500.
+    logDbFailure('dashboard_write_error', user, error)
+    appendMetric(db, {
+      accountId,
+      event: 'dashboard_write_error',
+      data: { slug: user, panel: 'walked_today' },
+      at: Date.now(),
+    })
+    return new Response(null, { status: 500 })
   } finally {
     userDb.close()
   }

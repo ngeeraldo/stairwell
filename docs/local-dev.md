@@ -213,6 +213,13 @@ file it creates in a temp tree — running the command by hand is how you check
 the same thing about a file the app wrote, which is the only form of the check
 that says anything about a real deployment.
 
+Expect `devtwo.db-wal` and `devtwo.db-shm` next to it, and expect them to
+stay. A dashboard render opens the database read-only, and a read-only
+connection cannot checkpoint the write-ahead log away when it closes, so the
+sidecars outlive the request. They are normal, they hold the same rows the
+database does, and they are why every command here globs `devtwo.db*` — a copy
+or a delete that takes only the main file is taking part of the database.
+
 To start over: `rm users/devtwo/devtwo.db*` — the `*` matters here for the same
 reason it does under Reset below; it takes the `-wal` and `-shm` sidecars too.
 There is no other way back, which is the same property a forgotten password has.

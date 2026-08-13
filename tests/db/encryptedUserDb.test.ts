@@ -47,6 +47,43 @@ function creatingDebris(slug: string): string[] {
   return readdirSync(join(root, slug)).filter((f) => f.startsWith('.creating-'))
 }
 
+/**
+ * Run `fn` with Database.prototype.pragma and .key spied, recording the ORDER
+ * of the cipher pragma and the key call. Every call passes through to the real
+ * implementation, so behaviour is unchanged.
+ *
+ * There is no handle to spy on before openEncryptedUserDb creates its own,
+ * which is why this reaches for the prototype.
+ */
+function pragmaOrderDuring(fn: () => void): string[] {
+  const originalPragma = Database.prototype.pragma
+  const originalKey = Database.prototype.key
+  const order: string[] = []
+
+  const pragmaSpy = vi
+    .spyOn(Database.prototype, 'pragma')
+    .mockImplementation(function (this: Database.Database, ...args: unknown[]) {
+      if (typeof args[0] === 'string' && /^cipher\s*=/.test(args[0])) {
+        order.push('cipher-pragma')
+      }
+      return (originalPragma as (...a: unknown[]) => unknown).apply(this, args)
+    })
+  const keySpy = vi
+    .spyOn(Database.prototype, 'key')
+    .mockImplementation(function (this: Database.Database, ...args: unknown[]) {
+      order.push('key')
+      return (originalKey as (...a: unknown[]) => number).apply(this, args)
+    })
+
+  try {
+    fn()
+  } finally {
+    pragmaSpy.mockRestore()
+    keySpy.mockRestore()
+  }
+  return order
+}
+
 /** A user folder with a schema.sql, which the opener applies on create. */
 function makeUserFolder(slug: string) {
   mkdirSync(join(root, slug), { recursive: true })
@@ -150,36 +187,51 @@ describe('openEncryptedUserDb', () => {
     // this spies on the prototype methods for the duration of one open,
     // passing every call through to the real implementation so behaviour is
     // unchanged.
-    const originalPragma = Database.prototype.pragma
-    const originalKey = Database.prototype.key
-    const order: string[] = []
+    const order = pragmaOrderDuring(() => {
+      openEncryptedUserDb('devtwo', KEY).close()
+    })
 
-    const pragmaSpy = vi
-      .spyOn(Database.prototype, 'pragma')
-      .mockImplementation(function (this: Database.Database, ...args: unknown[]) {
-        if (typeof args[0] === 'string' && /^cipher\s*=/.test(args[0])) {
-          order.push('cipher-pragma')
-        }
-        return (originalPragma as (...a: unknown[]) => unknown).apply(this, args)
-      })
-    const keySpy = vi
-      .spyOn(Database.prototype, 'key')
-      .mockImplementation(function (this: Database.Database, ...args: unknown[]) {
-        order.push('key')
-        return (originalKey as (...a: unknown[]) => number).apply(this, args)
-      })
+    expect(order).toContain('cipher-pragma')
+    expect(order).toContain('key')
+    expect(order.indexOf('cipher-pragma')).toBeLessThan(order.indexOf('key'))
+  })
 
-    try {
-      const db = openEncryptedUserDb('devtwo', KEY)
-      db.close()
+  it('pins the cipher on the OPEN paths too, not only when creating', () => {
+    // The pin was guarded on the CREATE path alone. Removing the pragma from
+    // openEncryptedUserDb left the whole suite green; removing it from the
+    // create reddened one test. The test above cannot tell them apart, because
+    // a first open both creates and opens, so `order` was satisfied by the
+    // create's own pragma either way.
+    //
+    // Why it matters more on the open path than on the create: if a driver
+    // upgrade changes the default cipher, new files are still written
+    // chacha20 by an unpinned create — but every open of an EXISTING file uses
+    // the new default, gets SQLITE_NOTADB, and `existedBefore` is true, so it
+    // is reported as WrongKeyError. The friend's dashboard reads "This
+    // dashboard failed to load.", every tap 500s, and the named error points
+    // diagnosis straight at their password. That is precisely the
+    // misdiagnosis the pin exists to prevent, on data with no backup.
+    //
+    // Created OUTSIDE the spy window, so `order` can only contain calls made
+    // while opening a file that already exists.
+    openEncryptedUserDb('devtwo', KEY).close()
 
-      expect(order).toContain('cipher-pragma')
-      expect(order).toContain('key')
-      expect(order.indexOf('cipher-pragma')).toBeLessThan(order.indexOf('key'))
-    } finally {
-      pragmaSpy.mockRestore()
-      keySpy.mockRestore()
-    }
+    const writable = pragmaOrderDuring(() => {
+      openEncryptedUserDb('devtwo', KEY).close()
+    })
+    expect(writable).toContain('cipher-pragma')
+    expect(writable).toContain('key')
+    expect(writable.indexOf('cipher-pragma')).toBeLessThan(writable.indexOf('key'))
+
+    // And the read-only open, which is the one a dashboard render uses — the
+    // path where an unpinned cipher would surface as a broken dashboard rather
+    // than as a failed tap.
+    const readOnly = pragmaOrderDuring(() => {
+      openEncryptedUserDb('devtwo', KEY, { readonly: true }).close()
+    })
+    expect(readOnly).toContain('cipher-pragma')
+    expect(readOnly).toContain('key')
+    expect(readOnly.indexOf('cipher-pragma')).toBeLessThan(readOnly.indexOf('key'))
   })
 
   it('ATOMIC CREATE: <slug>.db is never observable without its schema', () => {

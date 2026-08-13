@@ -88,7 +88,14 @@ const encryptedSlot: {
 // no-op let a missing db.close() pass silently. Asserting this was called
 // converts that residual into a real, pinned assertion.
 const closeMock = vi.fn()
-const openEncryptedMock = vi.fn(() => {
+// Argument-aware ON PURPOSE. The previous form took no parameters and the
+// vi.mock factory called it as `() => openEncryptedMock()`, which discarded
+// everything the page passed — so `{ readonly: true }` at the call site was
+// invisible to every test in this file, and dropping it there left the whole
+// suite green while every render opened the friend's real database WRITABLE
+// and re-executed schema.sql. The implementation-side flag was drilled in fix
+// round 1; the CALLER was not. It is now.
+const openEncryptedMock = vi.fn((_slug?: unknown, _key?: unknown, _options?: unknown) => {
   if (encryptedSlot.throwOnOpen === 'wrong_key') {
     throw new WrongKeyError(SLUG)
   }
@@ -107,11 +114,27 @@ const openEncryptedMock = vi.fn(() => {
 })
 vi.mock('@/lib/db/encryptedUserDb', () => ({
   encryptedUserDbExists: () => encryptedSlot.exists,
-  openEncryptedUserDb: () => openEncryptedMock(),
+  openEncryptedUserDb: (...args: unknown[]) => openEncryptedMock(...args),
   WrongKeyError,
 }))
 
 const SLUG = 'devone'
+
+/**
+ * The one sentence on the dashboard addressed to the PERSON rather than to
+ * whoever is demonstrating it.
+ *
+ * Held as a constant and asserted verbatim, the way
+ * tests/routing/loginPage.test.ts pins the onboarding promises, because it is
+ * copy that carries a commitment: the sample below looks like a real record,
+ * and the friend's first tap replaces 77% / nine walked days with 3% / one.
+ * Someone who mistook the sample for their own would read that as having lost
+ * something. It must appear WITH the banner and never without it — over real
+ * data it would be a lie about their own history.
+ */
+const SAMPLE_NOTICE =
+  "This sample history isn't yours. Your own record starts empty, with your first tap."
+
 
 let pageDir: string
 let handle: PlatformDb | undefined
@@ -253,8 +276,12 @@ describe('app/[user]/page.tsx data region', () => {
     const UserSpace = await arrange()
     const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
 
-    const json = JSON.stringify(element)
+    const json = JSON.stringify(element).replace(/&apos;|&#39;/g, "'")
     expect(json).toContain('SYNTHETIC DATA')
+    // Travels with the banner, always. JSX escapes the apostrophe in source;
+    // the rendered tree carries the real character, so unescape before
+    // comparing — same treatment as the login promises.
+    expect(json).toContain(SAMPLE_NOTICE)
     expect(json).toContain('PANEL RENDERED TEST')
     // The dashboard got its own slug and the exact handle the page resolved —
     // this is the wiring assertion, not just "some component rendered".
@@ -329,7 +356,22 @@ describe('app/[user]/page.tsx data region', () => {
     // The banner is the ONLY thing distinguishing a screen of sample data from
     // a screen of the friend's own. It must go when the data is real.
     expect(json).not.toContain('SYNTHETIC DATA')
+    // ...and neither does the sample notice. Over the friend's own data it
+    // would be a false statement about their history, which is worse than
+    // saying nothing.
+    expect(json.replace(/&apos;|&#39;/g, "'")).not.toContain(SAMPLE_NOTICE)
     expect(openEncryptedMock).toHaveBeenCalled()
+    // THE RENDER PATH OPENS READ-ONLY. Asserted at the CALL SITE, because the
+    // flag has two halves and only one of them was pinned: fix round 1 drilled
+    // the implementation (removing `readonly: true` from openEncryptedUserDb
+    // reddens one test), but nothing watched whether the page still asked for
+    // it. Dropping the option here left 640/640 green. If it goes, every
+    // dashboard render opens the friend's real database writable AND
+    // re-executes schema.sql — a render becomes a migrator, which the step-6a
+    // ledger's residual 2 says must not happen before 6b designs migration.
+    expect(openEncryptedMock).toHaveBeenCalledWith(SLUG, expect.anything(), {
+      readonly: true,
+    })
     // A handle is scoped to one key and a key to one session — caching it
     // process-wide is the bug step 5's ledger warns against, so the request
     // must close what it opened.
@@ -348,7 +390,16 @@ describe('app/[user]/page.tsx data region', () => {
       default: () => React.createElement('section', null, 'UNREACHED PANEL TEST'),
     })
     const UserSpace = await arrange()
-    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+    const stderr: string[] = []
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      stderr.push(args.map(String).join(' '))
+    })
+    let element: unknown
+    try {
+      element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+    } finally {
+      errSpy.mockRestore()
+    }
 
     const json = JSON.stringify(element)
     expect(json).toContain('This dashboard failed to load')
@@ -356,6 +407,12 @@ describe('app/[user]/page.tsx data region', () => {
     // not 500 the whole route.
     expect(json).toContain('Log out')
     expect(metricEvents()).toContain('dashboard_error')
+    // `kind` is a closed two-value set on purpose, so the stderr line is the
+    // only thing that tells an operator WHICH failure this was. Pinned at the
+    // call site: deleting the console.error from this catch reddened nothing
+    // before this assertion existed.
+    expect(stderr.join('\n')).toContain('WrongKeyError')
+    expect(stderr.join('\n')).toContain(SLUG)
     expect(metricEvents()).not.toContain('dashboard_open')
     expect(metricData('dashboard_error')).toEqual({
       slug: SLUG,

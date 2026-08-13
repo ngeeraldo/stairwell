@@ -85,9 +85,10 @@ architectural changes; do not relitigate decided items).
 - A dashboard is handed `{ slug, db }` and never resolves either itself. It
   gets a read-only handle, so it cannot write — on BOTH paths: `openUserDb`
   opens the synthetic file `readonly`, and the render path opens the encrypted
-  one with `openEncryptedUserDb(slug, key, { readonly: true })`. Pinned by a
-  test that makes the handle refuse a real INSERT, not by one that checks a
-  flag was passed. A read-only open also skips `schema.sql`, because applying
+  one with `openEncryptedUserDb(slug, key, { readonly: true })`. Pinned at BOTH
+  ends, because they fail independently: a test that makes the handle refuse a
+  real INSERT, and a test that the page still asks for the flag. Dropping it at
+  the call site once left the whole suite green. A read-only open also skips `schema.sql`, because applying
   a schema is a write: **the walk route's writable open is the only thing that
   creates or migrates a user's real database.** Every write goes through a
   platform route, which is the only place the four ordered checks live.

@@ -17,6 +17,7 @@ import {
   openEncryptedUserDb,
   WrongKeyError,
 } from '@/lib/db/encryptedUserDb'
+import { logDbFailure } from '@/lib/db/failureLog'
 import { getKey } from '@/lib/session/keymap'
 import { dashboardLoaderFor } from '@/lib/dashboard/registry'
 import ChatPanel from './ChatPanel'
@@ -91,6 +92,7 @@ async function dashboardRegion(slug: string, accountId: number, sessionId: strin
     db = openEncryptedUserDb(slug, key!, { readonly: true })
     return await renderDashboard(loader, slug, db, accountId, 'real')
   } catch (error) {
+    logDbFailure('dashboard_error', slug, error)
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_error',
@@ -128,12 +130,32 @@ async function renderDashboard(
     return (
       <>
         {source === 'synthetic' && (
-          <p role="status">SYNTHETIC DATA — every number below is fake.</p>
+          <>
+            <p role="status">SYNTHETIC DATA — every number below is fake.</p>
+            {/*
+              Said to the PERSON, not to a demonstrator. The sample below looks
+              like a real record — a streak, a percentage, a fortnight of ticks
+              — and their first tap replaces all of it with one day, because
+              the real database is created by that tap and starts empty. Anyone
+              who mistook the sample for their own would read that as having
+              lost something. The ledger and docs/local-dev.md explain this to
+              whoever is running the demo; this is the only place the person
+              holding the phone is told. Copy, not styling, so the no-CSS
+              ruling does not cover it. Pinned in
+              tests/routing/dashboardRegion.test.ts the way the login page's
+              promises are pinned in tests/routing/loginPage.test.ts.
+            */}
+            <p>
+              This sample history isn&apos;t yours. Your own record starts empty, with
+              your first tap.
+            </p>
+          </>
         )}
         {rendered}
       </>
     )
   } catch (error) {
+    logDbFailure('dashboard_error', slug, error)
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_error',

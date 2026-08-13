@@ -107,6 +107,25 @@ async function arrange(opts: { lock?: boolean; slug?: string } = {}) {
   return POST
 }
 
+/**
+ * Capture stderr for one call. The logDbFailure line is the ONLY signal an
+ * operator gets that tells a permissions failure from a corrupt file — the
+ * metric deliberately carries a slug and a panel and nothing else — so the
+ * call sites are pinned here, not just the helper in tests/db/failureLog.test.ts.
+ * Without this, deleting the console.error from a catch reddens nothing.
+ */
+async function withStderr<T>(fn: () => Promise<T>): Promise<[T, string]> {
+  const lines: string[] = []
+  const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    lines.push(args.map(String).join(' '))
+  })
+  try {
+    return [await fn(), lines.join('\n')]
+  } finally {
+    spy.mockRestore()
+  }
+}
+
 const params = (user: string) => ({ params: Promise.resolve({ user }) })
 
 function walkRows(dbPath: string, key: Buffer) {
@@ -117,7 +136,10 @@ function walkRows(dbPath: string, key: Buffer) {
   db.pragma("cipher='chacha20'")
   db.key(key)
   try {
-    return db.prepare('SELECT day FROM walks ORDER BY day').all() as { day: string }[]
+    return db.prepare('SELECT day, at FROM walks ORDER BY day').all() as {
+      day: string
+      at: number
+    }[]
   } finally {
     db.close()
   }
@@ -125,15 +147,91 @@ function walkRows(dbPath: string, key: Buffer) {
 
 describe('POST /api/users/[user]/walk', () => {
   it('writes today exactly once, however many times it is tapped', async () => {
-    const POST = await arrange()
-    const first = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
-    const second = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+    // Row COUNT alone is the weak form of "a double tap is a no-op": swapping
+    // INSERT OR IGNORE for INSERT OR REPLACE keeps exactly one row while
+    // rewriting `at`, and reddened nothing before this test also checked the
+    // timestamp. The clock is driven deliberately so the second tap carries a
+    // demonstrably different `at` — otherwise two taps in the same millisecond
+    // would make the assertion vacuous.
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date(2026, 7, 13, 9, 0, 0))
+      const firstInstant = Date.now()
+      const POST = await arrange()
+      const first = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+      const dbPath = join(dir, 'users', 'devtwo', 'devtwo.db')
+      const afterFirst = walkRows(dbPath, Buffer.alloc(32, 7))
 
-    expect(first.status).toBe(303)
-    expect(second.status).toBe(303)
-    const rows = walkRows(join(dir, 'users', 'devtwo', 'devtwo.db'), Buffer.alloc(32, 7))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.day).toBe(dayKey(Date.now()))
+      // Same local day, an hour later: a replacing write would move `at`.
+      vi.setSystemTime(new Date(2026, 7, 13, 10, 0, 0))
+      const secondInstant = Date.now()
+      expect(secondInstant).not.toBe(firstInstant)
+
+      const second = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+      const afterSecond = walkRows(dbPath, Buffer.alloc(32, 7))
+
+      expect(first.status).toBe(303)
+      expect(second.status).toBe(303)
+      expect(afterSecond).toHaveLength(1)
+      expect(afterSecond[0]?.day).toBe(dayKey(secondInstant))
+      // The row the FIRST tap wrote is the row that is still there, untouched.
+      expect(afterSecond[0]?.at).toBe(afterFirst[0]?.at)
+      expect(afterSecond[0]?.at).toBe(firstInstant)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns a bodyless 500 and records dashboard_write_error when the WRITE itself throws', async () => {
+    // The open had a catch; the INSERT below it had only a finally. A full
+    // disk, a SQLITE_BUSY outliving the driver's timeout, or — once 6b changes
+    // a schema an existing file was frozen at — a missing table threw straight
+    // out of POST. The friend would get Next's default error page in response
+    // to a form submit, with no dashboard, no chat surface and no way back but
+    // the browser's back button, and NO metric row, so the operator could not
+    // see it either.
+    //
+    // Forced through the real code path rather than by mocking the opener: a
+    // trigger in this user's own schema aborts the insert, so the open
+    // succeeds and the write is what fails. That is the shape of every case
+    // above.
+    writeFileSync(
+      join(dir, 'users', 'devtwo', 'schema.sql'),
+      `${SCHEMA}
+       CREATE TRIGGER IF NOT EXISTS refuse_writes BEFORE INSERT ON walks
+       BEGIN SELECT RAISE(ABORT, 'SIMULATED WRITE FAILURE TEST'); END;`,
+    )
+
+    const POST = await arrange()
+    const [response, stderr] = await withStderr(() =>
+      POST(new Request('http://x', { method: 'POST' }), params('devtwo')),
+    )
+
+    expect(response.status).toBe(500)
+    expect(await response.text()).toBe('')
+
+    // The operator's only handle on WHICH failure this was. A trigger abort is
+    // SQLITE_CONSTRAINT_TRIGGER; a full disk would be SQLITE_FULL. Neither is
+    // distinguishable from the metric row, which is the point.
+    expect(stderr).toContain('dashboard_write_error')
+    expect(stderr).toContain('devtwo')
+    expect(stderr).toContain('SQLITE_CONSTRAINT_TRIGGER')
+    // ...and the planted abort message is not in the log either.
+    expect(stderr).not.toContain('SIMULATED')
+
+    const row = handle!
+      .prepare("SELECT data FROM metrics WHERE event = 'dashboard_write_error'")
+      .get() as { data: string } | undefined
+    expect(row).toBeDefined()
+    // Slug and panel, never the exception text — the abort message is the
+    // planted string above, and it must not reach the append-only column.
+    expect(JSON.parse(row!.data)).toEqual({ slug: 'devtwo', panel: 'walked_today' })
+    expect(row!.data).not.toContain('SIMULATED')
+
+    // And no success row: a failed tap must not look like a logged day.
+    expect(
+      handle!.prepare("SELECT 1 FROM metrics WHERE event = 'dashboard_write'").get(),
+    ).toBeUndefined()
   })
 
   it('refuses a LOCKED session without reaching check 2 or touching the file', async () => {
@@ -204,11 +302,17 @@ describe('POST /api/users/[user]/walk', () => {
     seed.close()
 
     const POST = await arrange()
-    const response = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+    const [response, stderr] = await withStderr(() =>
+      POST(new Request('http://x', { method: 'POST' }), params('devtwo')),
+    )
 
     expect(response.status).toBe(500)
     const body = await response.text()
     expect(body).toBe('')
+
+    // Named, so a wrong key is diagnosable as a wrong key rather than as an
+    // anonymous 500.
+    expect(stderr).toContain('WrongKeyError')
 
     const row = handle!
       .prepare("SELECT data FROM metrics WHERE event = 'dashboard_write_error'")

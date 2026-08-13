@@ -342,11 +342,23 @@ the evidence that the practice pays.
     them against each other**, so they can still drift. That is the residual,
     and it is now a one-directional one: `lib/time/dayKey.ts` is the definition
     a future user folder should copy.
-13. **A production `dashboard_error` with `kind: 'error'` gives an operator no
-    way to tell a permissions failure from a corrupt file.** Not a regression —
-    the prior code had no server-side log either. The right fix is
-    `console.error` at the catch site, which never reaches the append-only
-    table. **NOT widening `kind`**, which would walk the leak back in.
+13. **CLOSED in fix round 4: an operator can now tell a permissions failure
+    from a corrupt file.** `kind` stays a closed two-value set — widening it
+    would walk the metrics leak back in — and `lib/db/failureLog.ts` writes one
+    stderr line at each of the four catch sites instead: the event, the slug,
+    the error's `name` and its `code`. Codes discriminate every case this
+    exists for (`SQLITE_READONLY`, `SQLITE_NOTADB`, `SQLITE_FULL`,
+    `SQLITE_BUSY`, `SQLITE_ERROR` for the missing table a frozen schema
+    produces) and `WrongKeyError` arrives by name. **The `message` is left out
+    deliberately**, even though measurement showed this driver never
+    interpolates bound parameters into its messages (a duplicate primary key
+    reports `UNIQUE constraint failed: walks.day`, not the day) — because the
+    same catch also receives whatever a per-user dashboard component threw, and
+    that component is free to put a row value in an Error it constructs.
+    `CLAUDE.md`'s hard rule covers debug output as well as storage, so the
+    cheap win is declined and the discipline is identical at both sinks. Pinned
+    by a planted-value test on the helper AND at three call sites, because
+    deleting a `console.error` from a catch reddened nothing until it was.
 14. **`users/devtwo/queries.ts` holds only reads**, though its header once said
     "every SQL statement". The INSERT lives in the platform walk route by
     design. Wording corrected; the asymmetry with `CLAUDE.md > Dashboard folder
@@ -362,7 +374,16 @@ the evidence that the practice pays.
     a glob inside a user's folder is a worse risk than the disk it would save.
     The cost is bounded: one file per killed create, each the size of an empty
     database.
-16. **Step-4 residual 8 is unchanged and now costs more.** `devone` and `devtwo`
+16. **A read-only render leaves `-wal`/`-shm` sidecars in the user folder
+    permanently.** A read-only connection cannot checkpoint the write-ahead log
+    away on close, so unlike the create — which closes writable and leaves a
+    single file — every dashboard view leaves two more. Harmless in itself, and
+    `docs/local-dev.md` already globs `devtwo.db*` everywhere, but the glob is
+    **load-bearing rather than cosmetic**: a copy or a delete that takes only
+    the main file is taking part of the database. Anyone who later backs up
+    `<slug>.db`, or runs residual 6's `head -c 16` check on the droplet, meets
+    files the docs had not mentioned. Now documented where that check is.
+17. **Step-4 residual 8 is unchanged and now costs more.** `devone` and `devtwo`
     are live production logins with passwords published in `docs/local-dev.md`,
     and as of this step one of them can create an encrypted database on the
     production droplet. Still no real user data, but the account that would hold
@@ -460,22 +481,35 @@ After fix round 2:
 | `npx tsc --noEmit`, `.next/types` present | exit 0, silent |
 | `.claude/hooks/test-hooks.sh` | 158/158 passed |
 
-After fix round 3, on a clean tree — the numbers this ledger stands on:
+After fix round 3:
 
 | Layer | Result |
 |---|---|
-| `npx vitest run` | **640 passed**, 59 files, 0 failed |
-| `TZ=Asia/Tokyo npx vitest run` | **640 passed**, 59 files, 0 failed |
+| `npx vitest run` | 640 passed, 59 files, 0 failed |
+| `TZ=Asia/Tokyo npx vitest run` | 640 passed, 59 files, 0 failed |
+| `npx tsc --noEmit`, `.next` absent | exit 0, silent |
+| `npx next build` | exit 0, 13 routes generated |
+| `npx tsc --noEmit`, `.next/types` present | exit 0, silent |
+| `.claude/hooks/test-hooks.sh` | 158/158 passed |
+
+After fix round 4, on a clean tree — the numbers this ledger stands on:
+
+| Layer | Result |
+|---|---|
+| `npx vitest run` | **647 passed**, 60 files, 0 failed |
+| `TZ=Asia/Tokyo npx vitest run` | **647 passed**, 60 files, 0 failed |
 | `npx tsc --noEmit`, `.next` absent | **exit 0, silent** |
 | `npx next build` | **exit 0**, 13 routes generated |
 | `npx tsc --noEmit`, `.next/types` present | **exit 0, silent** — the two states now agree |
 | `.claude/hooks/test-hooks.sh` | **158/158 passed** |
 | `git status --short` | no `*.db`; `git ls-files` databases → `fake-real.db` only |
 
-The suite went 633 → 640 across the three rounds: one test moved
+The suite went 633 → 647 across the four rounds: one test moved
 (`tests/time/dayKey.test.ts`, out of `tests/routing/walkRoute.test.ts`, hence
 58 → 59 files), four added for the read-only handle, two for the atomic create,
-and one for the temp-file cleanup on a failing create.
+one for the temp-file cleanup on a failing create, and seven in round 4 — the
+cipher pin on the open paths, the failed write, and five for
+`lib/db/failureLog.ts` (60 files).
 `TZ=Asia/Tokyo` rather than `TZ=UTC` for the second run because the
 timezone test moved in round 1 and UTC is the one offset at which its
 divergence check asserts nothing — Task 4 had already measured that a
@@ -777,3 +811,89 @@ The other four items, for the record:
   window. Comment corrected to say what it pins and what it does not.
   **A comment that overstates its test is the same defect class as a test that
   proves nothing**, and this branch has now produced four of those.
+
+---
+
+## Fix round 4 — what the whole-branch review found
+
+The review ran 22 mutations against the suite and re-ran every layer. The
+encrypted opener survived everything thrown at it — read-only over WAL,
+concurrent create, both debris paths, a wrong key, a deploy mid-journey — and
+all four of fix round 3's claims held as written. Six findings, and the two
+biggest have the same shape as each other and as round 3's: **a guard whose
+implementation was drilled and whose CALLER was not.**
+
+**The render path's `{ readonly: true }` was pinned by nothing.** Round 1
+drilled the flag inside `openEncryptedUserDb` and correctly found one red.
+Nobody drilled `app/[user]/page.tsx`. Dropping the option at the CALL SITE left
+**640/640 green**, because `tests/routing/dashboardRegion.test.ts` mocked the
+module with `openEncryptedUserDb: () => openEncryptedMock()` — a factory that
+discards its arguments, so no test in the file could see what the page asked
+for. Had it gone, every dashboard render would have opened the friend's real
+database writable AND re-executed `schema.sql`: a render becomes a migrator,
+which residual 2 says must not happen before 6b designs migration. The mock is
+argument-aware now and the call site is asserted. **`CLAUDE.md` claimed the
+invariant held "on BOTH paths"; half that sentence was unpinned.**
+
+**The cipher pin was guarded on the create path only.** Removing the pragma
+from `openEncryptedUserDb` left **640/640 green**; removing it from the create
+reddened one test. The existing test opened one brand-new file and asserted
+`order` CONTAINS `cipher-pragma`, which the create alone satisfies — a first
+open does both, so the two were never separable. The consequence of the gap is
+worse than the create's: if a driver upgrade changes the default cipher, new
+files are still written `chacha20`, but every open of an EXISTING file gets
+`SQLITE_NOTADB`, `existedBefore` is true, and it is reported as
+`WrongKeyError`. The dashboard reads "This dashboard failed to load.", every
+tap 500s, and the named error points diagnosis **straight at the friend's
+password** — the exact misdiagnosis the pin exists to prevent, on data with no
+backup. Both open paths, writable and read-only, are now drilled separately
+from the create.
+
+**A failed WRITE escaped the walk route entirely.** The open had a catch; the
+`INSERT` below it had a `finally` and no catch. A full disk, a `SQLITE_BUSY`
+outliving the driver's timeout, or a missing table once 6b changes a schema an
+existing file was frozen at, threw straight out of `POST`: the friend got
+Next's default error page in response to a form submit — no dashboard, no chat
+surface, no way back but the browser's back button — and **no metric row**, so
+it was invisible to the operator too. That asymmetry is precisely what the
+open-path catch exists to remove. The write now has the same treatment, and its
+test forces the failure through the real code path with a `RAISE(ABORT)`
+trigger in the user's own schema rather than by mocking the opener.
+
+**Residual 13 is closed** — see the residual for what is logged and what is
+deliberately not.
+
+**Two smaller ones, both about a claim outrunning its evidence.**
+`INSERT OR IGNORE` → `INSERT OR REPLACE` reddened nothing: the double-tap test
+asserted one row, which a replacing write also satisfies while rewriting `at`.
+"A double tap is a no-op" was pinned only in its weak form, and is now pinned
+on the timestamp, with the clock driven so the two taps carry demonstrably
+different instants. And the first tap silently replaced an impressive-looking
+sample — 77% / nine walked days / banner → 3% / one / no banner — which the
+ledger and `docs/local-dev.md` explain to a demonstrator while **the page said
+nothing to the person holding the phone.** That is copy, not CSS, so the
+no-styling ruling does not cover it; the reviewer's push-back was accepted. One
+sentence now appears with the banner and only with the banner.
+
+### Drills — one mutation, one red, six times
+
+| Mutation | Result |
+|---|---|
+| `{ readonly: true }` dropped at the page's call site | 1 red — `reads the encrypted database and drops the banner` |
+| cipher pragma removed from the OPEN path | 1 red — `pins the cipher on the OPEN paths too` |
+| cipher pragma removed from the CREATE path | 1 red — `calls db.pragma to pin the cipher BEFORE db.key` |
+| the new catch removed from around the `INSERT` | 1 red — `…when the WRITE itself throws` |
+| `INSERT OR IGNORE` → `INSERT OR REPLACE` | 1 red — `writes today exactly once` |
+| the sample-history sentence removed from the page | 1 red — `renders the dashboard under a synthetic banner` |
+| `console.error` removed from the page's open catch | 1 red — `degrades instead of 500ing the whole route` |
+
+Seven, in fact: the log call sites were pinned too, unprompted, because they
+had the identical defect the round's own headline finding is about — the helper
+had tests and the four `logDbFailure(...)` calls had none, so deleting one
+reddened nothing. Two of the three catches that write a metric now assert on
+their stderr line.
+
+**The two cipher mutations are the useful pair.** Each reddens exactly its own
+test and neither reddens the other's, which is what "drilled separately" has to
+mean; before this round one test stood in front of both paths and covered only
+one.
