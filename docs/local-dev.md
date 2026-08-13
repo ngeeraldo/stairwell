@@ -157,6 +157,35 @@ data locally. For that:
 `--local` reads `PLATFORM_DB` (falling back to `platform/dev/synthetic.db`,
 same as everything else in this doc) and is the only form Claude runs.
 
+## Announcing a build, or asking a question, in a friend's chat
+
+Two things reach a friend's chat that no model can produce: "your build
+landed" and "I hit a decision only you can make." Both are ordinary
+assistant transcript rows, written by these CLIs — run BY NICO, by hand, on
+the server, right after (or during) a specific account's build. **Not**
+called from `deploy/deploy.sh`: that script deploys the whole service, and
+wiring either of these in would post into every account's chat on every
+push, which is a permanent lie in an append-only transcript for every
+account that was not the reason for that deploy.
+
+```bash
+npx tsx scripts/announce-deploy.ts devtwo
+```
+
+Posts the confirmed version's `change_summary` (or, for a legacy row with
+none, its `title`) into `devtwo`'s chat — once per confirmed spec version.
+Safe to re-run: a version already announced is reported, not repeated.
+
+```bash
+npx tsx scripts/ask-user.ts devtwo "Want the streak to reset on a missed day, or just pause?"
+```
+
+Posts a question into `devtwo`'s chat for a mid-build decision only they can
+make. The friend's reply lands in the transcript like any other message.
+
+Both take `PLATFORM_DB` the same way every script in this doc does — point
+it at `platform/dev/synthetic.db` locally, never at a real database.
+
 ## Building a dashboard
 
 ```bash
