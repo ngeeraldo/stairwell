@@ -21,6 +21,11 @@
 #                    deploy over a variable the service does not use.
 #   CHAT_MODEL       has an intended default (claude-opus-5). Absence is not a
 #                    failure.
+#   USERS_DIR        exists so tests can point at a temp tree. Unlike
+#                    PLATFORM_DB, its default (<cwd>/users) IS the correct
+#                    production value, so falling back is not a failure mode
+#                    and listing it would block deploys over a variable that
+#                    should normally be unset.
 
 PLATFORM_DB        REQUIRED  # Path to the platform database. Absent, lib/db/instance.ts falls back to the SYNTHETIC dev database and production serves loudly-fake data with every health check green.
 ANTHROPIC_API_KEY  DEGRADED  # Read by @anthropic-ai/sdk. Absent, POST /api/chat returns 503 and logs a chat_error; the rest of the site is unaffected.

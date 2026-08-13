@@ -99,6 +99,27 @@ main() {
   # 3. Install. Full install, NOT --omit=dev: step 5 needs Vitest.
   npm ci
 
+  # 3a. Synthetic per-user databases.
+  #
+  #     users/*/synthetic.db is gitignored (CLAUDE.md > Data safety: no
+  #     database is ever committed), so a fresh checkout has none and every
+  #     dashboard would render "its data has not been generated yet".
+  #
+  #     BEFORE the test gate, not after: tests/users/conventions.test.ts and
+  #     the per-user suites are the things that would notice a broken
+  #     generator, and a suite that runs first would happily exercise the
+  #     no-data path and pass.
+  #
+  #     Explicit `if !` rather than leaning on `set -e`, so the deploy log
+  #     carries a line naming this step instead of ending mid-script.
+  if ! npx tsx scripts/regen-synthetic.ts; then
+    echo >&2
+    echo "DEPLOY ABORTED — synthetic user databases could not be generated." >&2
+    echo "The running version is untouched." >&2
+    echo >&2
+    exit 1
+  fi
+
   # 4. Build
   #
   # NOTE, so nobody over-reads the guarantee below: this overwrites .next/ in
