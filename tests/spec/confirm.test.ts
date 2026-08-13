@@ -9,6 +9,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PlatformDb } from '@/lib/db/platform'
+import { parseSpecDraft, sealVersion } from '@/lib/spec/validate'
+import type { Panel, SpecVersion } from '@/lib/spec/schema'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
 let sessionCookieName = 'sid'
@@ -194,6 +196,16 @@ async function post(body: unknown, opts: PostOpts = {}) {
 /**
  * Insert a spec proposal for `slug`'s account, returning its id. Never
  * unlocks a session — some tests (the LOCKED one) depend on that.
+ *
+ * The payload is a genuine, if minimal, LEGACY-shaped spec (lib/spec/legacy.ts's
+ * six fields) rather than an arbitrary placeholder object. Task 11 made the
+ * route call readStoredSpec(spec.payload) on every confirmed spec, not just
+ * ones with a diff to compute — an ad hoc `{ fake: ... }` object satisfies
+ * neither the version reader (no `screens`) nor the legacy reader (missing
+ * `title` etc.), so it would throw there and, prior to this fixture change,
+ * silently depended on the counts try/catch to survive. Most tests in this
+ * file don't care about spec shape at all; they should not be coupled to
+ * diff internals just because the route now touches the payload.
  */
 async function seedSpec(slug: string): Promise<number> {
   const db = await ensureDb()
@@ -203,7 +215,124 @@ async function seedSpec(slug: string): Promise<number> {
     accountId,
     conversationId: 'conv-test',
     promptSha: 'sha-test-fake',
-    payload: { fake: 'COFFEE PALACE TEST SPEC' },
+    payload: {
+      title: 'COFFEE PALACE TEST SPEC',
+      summary: 'COFFEE PALACE TEST SUMMARY',
+      background: 'COFFEE PALACE TEST BACKGROUND',
+      panels: [
+        { name: 'COFFEE PALACE TEST PANEL', shows: 'COFFEE PALACE TEST SHOWS', why: 'COFFEE PALACE TEST WHY', source: 'manual' },
+      ],
+      manual_logging: [],
+      open_questions: [],
+    },
+    mockupHtml: '<html>COFFEE PALACE TEST MOCKUP</html>',
+    at: Date.now(),
+  })
+}
+
+/**
+ * Insert a spec whose payload is genuinely unparseable by EITHER reader —
+ * has no `screens` (so readStoredSpec tries the legacy reader), and is
+ * missing the legacy reader's own required fields too. Used only as a BASE
+ * row (based_on_version target), never as the spec being confirmed: it
+ * stands in for "a corrupt base row that can never be repaired" — the other
+ * half of the bound the counts try/catch exists for, distinct from
+ * seedSpec's now-valid legacy payload.
+ */
+async function seedCorruptSpec(slug: string): Promise<number> {
+  const db = await ensureDb()
+  const accountId = await ensureAccountId(slug)
+  const { insertSpec } = await import('@/lib/db/specs')
+  return insertSpec(db, {
+    accountId,
+    conversationId: 'conv-test',
+    promptSha: 'sha-test-fake',
+    payload: { fake: 'COFFEE PALACE TEST CORRUPT SPEC' },
+    mockupHtml: '<html>COFFEE PALACE TEST MOCKUP</html>',
+    at: Date.now(),
+  })
+}
+
+// Fixtures below mirror tests/spec/diff.test.ts's panel()/draft() helpers
+// (that file's own comment says they were copied from tests/spec/validate.test.ts
+// for the same reason): going through the real validator/sealer, rather than
+// casting an invented object, means v1/v2 are genuine SpecVersions and any
+// diff computed over them is the real diffVersions, not a stand-in.
+function panel(over: Partial<Panel> = {}): Panel {
+  return {
+    id: 'walked_today',
+    title: 'Walked today?',
+    intent: 'Did I walk the dog today?',
+    display: 'A big yes/no with a tap-to-mark control.',
+    context_of_use: 'Phone, in bed, before getting up.',
+    values: [{ kind: 'entered', id: 'walk_flag', description: 'One tap per day.' }],
+    entry: {
+      description: 'One tap.',
+      fields: [{ name: 'walked', type: 'boolean', choices: [] }],
+      annotates: null,
+    },
+    ...over,
+  }
+}
+
+function draft(over: Record<string, unknown> = {}): unknown {
+  return {
+    title: 'Did I walk the dog today?',
+    summary: 'A one-tap daily tracker.',
+    background: 'Pivoted from a weather idea.',
+    change_summary: 'The whole dashboard: one tap, a streak, a 30-day rate.',
+    screens: [{ id: 'today', title: 'Today', order: 1, panels: [panel()] }],
+    data_requirements: [{ table: 'walks', purpose: 'One row per day walked.', status: 'new' }],
+    open_questions: [],
+    ...over,
+  }
+}
+
+// v1: a first proposal, no prior version. v2: one new panel ("streak") added
+// on top, based_on_version 1 — the shape a real second proposal has once a
+// friend confirms a first dashboard and asks for a change. v1's panel
+// carries a distinctive id/title ("walked_today" / "Walked today?") on
+// purpose: the no-content test below needs a fixture that COULD leak a
+// title, or its assertion proves nothing.
+const v1: SpecVersion = sealVersion(parseSpecDraft(draft()), null)
+const v1Screen = v1.screens[0]
+if (!v1Screen) throw new Error('fixture: v1 has no screens')
+const v2: SpecVersion = {
+  ...v1,
+  based_on_version: 1,
+  screens: [
+    {
+      ...v1Screen,
+      panels: [
+        ...v1Screen.panels,
+        // A distinct values[].id, not the default 'walk_flag': re-inserting
+        // panel()'s default would duplicate a value id across panels, which
+        // parseSpecVersion's checkInvariants rejects on the read back inside
+        // the route — a fixture bug, not the behavior under test.
+        panel({
+          id: 'streak',
+          title: 'Current streak',
+          values: [{ kind: 'entered', id: 'streak_flag', description: 'Consecutive days walked.' }],
+        }),
+      ],
+    },
+  ],
+}
+
+/**
+ * Insert a spec whose payload is a genuine SpecVersion — unlike seedSpec's
+ * `{ fake: ... }` placeholder, which exists only for tests that never touch
+ * the diff and would fail both the version and legacy readers if parsed.
+ */
+async function seedVersionSpec(slug: string, version: SpecVersion): Promise<number> {
+  const db = await ensureDb()
+  const accountId = await ensureAccountId(slug)
+  const { insertSpec } = await import('@/lib/db/specs')
+  return insertSpec(db, {
+    accountId,
+    conversationId: 'conv-test',
+    promptSha: 'sha-test-fake',
+    payload: version,
     mockupHtml: '<html>COFFEE PALACE TEST MOCKUP</html>',
     at: Date.now(),
   })
@@ -317,5 +446,54 @@ describe('POST /api/spec/confirm', () => {
     const res = await post({ specId: id })
     expect(res.status).toBe(404)
     expect(confirmationCount(id)).toBe(0)
+  })
+})
+
+describe('spec_confirmed records the structural diff, never its content', () => {
+  it('records the structural diff counts on spec_confirmed', async () => {
+    // The diff between confirmed versions is the canonical record of what a
+    // request WAS — it replaces classifying chat text after the fact.
+    await seedVersionSpec('devtwo', v1)
+    const v2Id = await seedVersionSpec('devtwo', v2)
+    expect((await post({ specId: v2Id })).status).toBe(200)
+    expect(lastMetric('spec_confirmed').data).toMatchObject({
+      spec_id: v2Id,
+      version: 2,
+      panels_added: 1,
+      panels_changed: 0,
+    })
+  })
+
+  it('records counts only — never a panel id or a title', async () => {
+    // Metrics is the unencrypted platform database. Counts are structural;
+    // a panel title is the friend's own words.
+    await seedVersionSpec('devtwo', v1)
+    const v2Id = await seedVersionSpec('devtwo', v2)
+    expect((await post({ specId: v2Id })).status).toBe(200)
+    const serialized = JSON.stringify(lastMetric('spec_confirmed').data)
+    expect(serialized).not.toContain('walked_today')
+    expect(serialized).not.toContain('Walked today?')
+  })
+
+  it('counts every panel as added for a first confirmed version', async () => {
+    const v1Id = await seedVersionSpec('devtwo', v1)
+    expect((await post({ specId: v1Id })).status).toBe(200)
+    expect(lastMetric('spec_confirmed').data.panels_added).toBe(1)
+  })
+
+  it('still confirms, and still fires the alert, when the diff cannot be computed', async () => {
+    // v1 here is seedCorruptSpec's payload: no `screens` key, so
+    // readStoredSpec tries the frozen legacy reader, which then throws
+    // because it also lacks the legacy reader's own required fields.
+    // Standing in for a corrupt base row that can never be repaired — one of
+    // the two reasons (alongside a legacy base with no ids to diff against)
+    // this bound must survive without stopping a friend pressing "Build
+    // this".
+    const v1Id = await seedCorruptSpec('devtwo')
+    const v2Id = await seedVersionSpec('devtwo', v2)
+    expect(v2Id).toBeGreaterThan(v1Id) // sanity: v1 really is version 1, the based-on target
+    const res = await post({ specId: v2Id })
+    expect(res.status).toBe(200)
+    expect(alertBodies()).toHaveLength(1)
   })
 })

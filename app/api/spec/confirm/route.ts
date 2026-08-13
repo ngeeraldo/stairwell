@@ -4,9 +4,11 @@ import { getDb } from '@/lib/db/instance'
 import { appendMetric } from '@/lib/db/appendOnly'
 import { SESSION_COOKIE, readSession } from '@/lib/session/store'
 import { resolveState } from '@/lib/session/resolve'
-import { confirmSpec, newestSpec, readSpecs } from '@/lib/db/specs'
+import { confirmSpec, newestSpec, readSpecs, specByVersion } from '@/lib/db/specs'
 import { alerter } from '@/lib/alerts/ntfy'
 import { isAdmin } from '@/lib/auth/authorize'
+import { readStoredSpec } from '@/lib/spec/stored'
+import { diffCounts, diffVersions } from '@/lib/spec/diff'
 
 /**
  * The only thing that turns a proposal into a promise.
@@ -77,13 +79,35 @@ export async function POST(request: Request) {
     // found," which is what the mismatch actually means.
     return new Response(null, { status: 404 })
   }
+
+  // Counts, never content: metrics is the unencrypted platform database, and a
+  // panel title is the friend's own words. This is the same bound that makes
+  // dashboard_write's slug-and-panel-only policy true.
+  //
+  // Wrapped because a diff is a nice-to-have and a confirmation is not: a
+  // legacy base (which has no ids to diff against) or a corrupt base row that
+  // can never be repaired must not stop someone pressing Build this.
+  let counts: Record<string, number> = {}
+  try {
+    const stored = readStoredSpec(spec.payload)
+    if (stored.kind === 'version') {
+      const baseRow = stored.version.based_on_version === null
+        ? undefined
+        : specByVersion(db, session.account_id, stored.version.based_on_version)
+      const base = baseRow ? readStoredSpec(baseRow.payload) : undefined
+      counts = diffCounts(
+        diffVersions(base?.kind === 'version' ? base.version : null, stored.version),
+      )
+    }
+  } catch { /* a diff is not worth failing a confirmation over */ }
+
   appendMetric(db, {
     accountId: session.account_id,
     event: 'spec_confirmed',
     at,
     // Not a model call: no counters, no model. Giving it zeroed counters
     // would put four rows of fiction in the cost log per confirmation.
-    data: { spec_id: spec.id, version: spec.version },
+    data: { spec_id: spec.id, version: spec.version, ...counts },
   })
 
   // Fire-and-forget, exactly like the conversation alert: a friend's
