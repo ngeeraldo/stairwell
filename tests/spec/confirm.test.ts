@@ -496,4 +496,34 @@ describe('spec_confirmed records the structural diff, never its content', () => 
     expect(res.status).toBe(200)
     expect(alertBodies()).toHaveLength(1)
   })
+
+  it('still confirms, with counts against a null base, when the based-on spec is legacy-shaped', async () => {
+    // The brief's OTHER named condition, distinct from the corrupt-base test
+    // above: "a legacy base (which has no ids to diff against)". This is not
+    // a throw at all — readStoredSpec parses a legacy payload fine (kind
+    // 'legacy'), and the route's own ternary
+    // (`base?.kind === 'version' ? base.version : null`) already collapses
+    // it to a null base before diffVersions ever runs. seedSpec's payload is
+    // now a genuine, if minimal, legacy-shaped spec (see its own comment),
+    // so it can stand in for this case directly instead of only the
+    // corrupt-and-unparseable one above, which the try/catch actually
+    // catches.
+    const v1Id = await seedSpec('devtwo')
+    const v2Id = await seedVersionSpec('devtwo', v2)
+    expect(v2Id).toBeGreaterThan(v1Id) // sanity: v1 really is version 1, the based-on target
+    const res = await post({ specId: v2Id })
+    expect(res.status).toBe(200)
+    expect(alertBodies()).toHaveLength(1)
+    // Same shape as "counts every panel as added for a first confirmed
+    // version": a legacy base has no ids to diff against, so both of v2's
+    // panels read as added, not as changes against panels a legacy payload
+    // cannot express.
+    expect(lastMetric('spec_confirmed').data).toMatchObject({
+      spec_id: v2Id,
+      version: 2,
+      panels_added: 2,
+      panels_changed: 0,
+      panels_removed: 0,
+    })
+  })
 })
