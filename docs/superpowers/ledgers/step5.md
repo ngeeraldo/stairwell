@@ -165,12 +165,18 @@ history:**
    component execution; not something this task's code can close, only avoid
    triggering — `users/devone/dashboard.tsx` does not compose nested
    components today.
-6. **`dashboard_error` stores `error.message` verbatim in append-only
-   metrics.** No scrubbing exists. Matches the design doc's approved shape
-   and `lib/spec/author.ts`'s existing precedent for error metrics. Fine
-   while every dashboard reads synthetic data only; needs revisiting before
-   step 6 puts a real per-user database behind this same catch, since a real
-   database's error text could carry real values.
+6. **CLOSED by `82bb90f` (step 6a, Task 3).** ~~`dashboard_error` stores
+   `error.message` verbatim in append-only metrics.~~ No scrubbing existed.
+   Fine while every dashboard read synthetic data only; this residual named
+   the exact trigger — "before step 6 puts a real per-user database behind
+   this same catch" — and step 6a then introduced that leak, in a fix
+   dispatched mid-task, at precisely the predicted moment. `dashboard_error`
+   now carries `{slug, kind}` with `kind` a closed `'wrong_key' | 'error'`,
+   derived with `instanceof`. Pinned by a policy test that plants a fake
+   account number in an error message and asserts it appears nowhere in the
+   raw stored column. **A reviewer found it by reading this ledger and
+   checking whether the prediction had come true** — not by reading the
+   diff, which looked correct.
 7. **Step-4 residual 8 is unchanged.** `devone` and `devtwo` remain live
    production logins with published passwords (`docs/local-dev.md`), and as
    of this step one of them — `devone` — has a real dashboard behind it, not

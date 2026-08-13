@@ -127,9 +127,11 @@ time. Warm the routes first if you do use `npm run dev`.
 10. `/devone` as `devone` shows the reference dashboard under a **SYNTHETIC
     DATA** banner: an eating-out total and a recent-transactions list of
     loudly-fake merchants, `COFFEE PALACE TEST` among them.
-11. `/devtwo` as `devtwo` shows "Nothing here yet" — devtwo has no dashboard
-    until its spec is confirmed and one is built. Neither account can reach
-    the other's URL at all; both get a 404, not a 403.
+11. `/devtwo` as `devtwo` shows the walk tracker — today's yes/no with a tap
+    control, the streak, a 30-day percentage and a 14-day row — under the same
+    **SYNTHETIC DATA** banner, until devtwo's first real tap. See "Trying the
+    encrypted write path" below. Neither account can reach the other's URL at
+    all; both get a 404, not a 403.
 
 ## Pulling a confirmed spec into the repo
 
@@ -165,6 +167,62 @@ npx vitest run users/<slug>
 
 The conventions and what each file is for: `CLAUDE.md > Dashboard folder
 conventions`. `users/devone/` is a worked example.
+
+## Trying the encrypted write path
+
+```bash
+npm run synthetic
+npm run build && npm start
+```
+
+Log in as `devtwo` / `TEST-DEV-TWO` and open `/devtwo`.
+
+**Before the first tap** the screen is the SYNTHETIC DATA banner over
+`users/devtwo/synthetic.db`. Run on 2026-08-13 at `America/Chicago`, it read:
+
+| Panel | Before the tap | After the tap |
+|---|---|---|
+| Walked today? | `NOT YET`, with a **Tap to mark walked** button | `WALKED` / `Marked for today.`, no button |
+| Current streak | `1` day in a row | `1` day in a row |
+| Last 30 days | `77%` — 23 of 30 days | `3%` — 1 of 30 days |
+| Last 14 days | 9 walked, 5 missed | 1 walked (today), 13 missed |
+| Banner | present | **gone** |
+
+The banner disappearing is the whole event: `users/devtwo/devtwo.db` now exists,
+so the dashboard reads that instead. Everything above the banner line is the
+same component reading a different file.
+
+**The streak does not change, and that is not a bug in either direction.**
+`seed.py` deliberately leaves today unwalked in the sample (so the tap control
+is visible on handover morning), and it leaves the day before today walked, so
+the sample streak is already exactly one day. The real database then contains
+exactly one day. Two different single days, same number. The panels that
+actually show you the sample history was never yours are the 30-day percentage
+and the 14-day row — 77% to 3%, nine walked days to one. If you are
+demonstrating this to someone, point at those.
+
+To confirm the file is really encrypted:
+
+```bash
+head -c 16 users/devtwo/devtwo.db | xxd
+```
+
+An unencrypted SQLite file begins with the ASCII `SQLite format 3`. This one
+does not. `tests/db/encryptedUserDb.test.ts` asserts exactly that against a
+file it creates in a temp tree — running the command by hand is how you check
+the same thing about a file the app wrote, which is the only form of the check
+that says anything about a real deployment.
+
+To start over: `rm users/devtwo/devtwo.db` — there is no other way back, which
+is the same property a forgotten password has.
+
+**If you use `npm run dev` for this instead of `npm run build && npm start`,**
+expect the cold-route artifact at the top of this file to bite twice, not once.
+The key is set by `/api/login` in one freshly compiled module instance;
+`/devtwo` renders `Locked.` and `POST /api/users/[user]/walk` returns `403`
+until each of those routes has been compiled at least once. Request both, log
+in again, and both work. It is the same dev-compiler artifact described under
+"Run it" — it just has two more places to show up now.
 
 ## Reset
 
