@@ -189,6 +189,16 @@ _gate_b_class() {
       echo "guard:user:$u"
       return
       ;;
+    # A shared file directly under users/ — e.g. a registry or an index. It
+    # is platform code, so its test belongs under tests/, and without this arm
+    # it falls through every case below and classifies as `unguarded`.
+    #
+    # MUST stay AFTER users/*/* : `case` globs match '/', so users/*.ts also
+    # matches users/alice/queries.ts. Placed first it would classify every
+    # per-user file as platform scope, and a users/alice change would be
+    # satisfied by a test under tests/. The alice case in test-hooks.sh is
+    # what catches that.
+    users/*.ts|users/*.tsx|users/*.sh) echo "guard:platform"; return ;;
   esac
 
   # Root-level TypeScript that fell through everything above

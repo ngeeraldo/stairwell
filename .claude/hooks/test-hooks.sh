@@ -377,6 +377,11 @@ else
   class_check "guard:platform" "a non-prose file under platform/prompts/ stays guarded" \
     platform/prompts/loader.ts
 
+  class_check "guard:platform" "users/registry.ts is guarded, not unguarded" \
+    users/registry.ts
+  class_check "guard:user:alice" "users/alice/queries.ts still scopes to its own user" \
+    users/alice/queries.ts
+
   # skip_check <expected BLOCK|PASS> <label> <staged paths...>
   skip_check() {
     local expected=$1 label=$2
