@@ -127,6 +127,26 @@ function run(
   }
 }
 
+/**
+ * Every test in this file spawns the real shell script, and each pull inside it
+ * spawns `npx tsx` TWICE — once to export, once to write — with npx
+ * re-resolving the binary on each call. That is seconds of genuine work, and
+ * vitest's 5-second default is not a budget for it.
+ *
+ * It first bit on the droplet, not here: the deploy of 2026-08-13 aborted
+ * because the two-pull test crossed 5s there while passing locally. The suite
+ * runs about 1.7x slower on that box (85s vs 50s), so a laptop-calibrated
+ * default is the wrong gate — and `deploy/deploy.sh` runs the suite before the
+ * restart, so a false timeout blocks a deploy over nothing.
+ *
+ * Deliberately per-file rather than a global `testTimeout` in vitest.config.ts:
+ * these four tests are legitimately slow, and raising the ceiling everywhere
+ * would mask a genuine hang in the ~490 tests that should finish in
+ * milliseconds. Still far below any real hang, so this fails fast when
+ * something is actually wrong.
+ */
+const SUBPROCESS_TIMEOUT_MS = 60_000
+
 describe('scripts/pull-spec.sh --local', () => {
   it('writes spec.md and mockup.html from the confirmed spec', async () => {
     const sandbox = makeSandbox()
@@ -146,7 +166,7 @@ describe('scripts/pull-spec.sh --local', () => {
     expect(readFileSync(join(userDir(sandbox, CONFIRMED_SLUG), 'mockup.html'), 'utf8')).toBe(
       '<!doctype html><html><body>PULL SPEC TEST</body></html>',
     )
-  })
+  }, SUBPROCESS_TIMEOUT_MS)
 
   it('overwrites both files on a second pull, as documented', async () => {
     const sandbox = makeSandbox()
@@ -173,7 +193,7 @@ describe('scripts/pull-spec.sh --local', () => {
     expect(readFileSync(join(userDir(sandbox, CONFIRMED_SLUG), 'mockup.html'), 'utf8')).toBe(
       '<!doctype html><html><body>SECOND PULL TEST</body></html>',
     )
-  })
+  }, SUBPROCESS_TIMEOUT_MS)
 
   it('writes NEITHER file and exits non-zero when the account has no confirmed spec', async () => {
     // The partial-write hazard this guards against: a spec.md from one
@@ -191,7 +211,7 @@ describe('scripts/pull-spec.sh --local', () => {
     expect(status).not.toBe(0)
     expect(output).toMatch(/no confirmed spec/)
     expect(existsSync(userDir(sandbox, UNCONFIRMED_SLUG))).toBe(false)
-  })
+  }, SUBPROCESS_TIMEOUT_MS)
 
   it('requires a user argument and writes nothing', () => {
     const sandbox = makeSandbox()
@@ -199,5 +219,5 @@ describe('scripts/pull-spec.sh --local', () => {
 
     expect(status).toBe(2)
     expect(output).toMatch(/usage/)
-  })
+  }, SUBPROCESS_TIMEOUT_MS)
 })
