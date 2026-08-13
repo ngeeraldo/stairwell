@@ -62,11 +62,26 @@ vi.mock('@/lib/db/userDb', () => ({
   openUserDb: (slug: string) => openUserDbMock(slug),
 }))
 
-const encryptedSlot: { exists: boolean; rows: unknown[] } = { exists: false, rows: [] }
-const openEncryptedMock = vi.fn(() => ({
-  prepare: () => ({ all: () => encryptedSlot.rows, get: () => encryptedSlot.rows[0] }),
-  close: () => {},
-}))
+const encryptedSlot: { exists: boolean; rows: unknown[]; throwOnOpen: boolean } = {
+  exists: false,
+  rows: [],
+  throwOnOpen: false,
+}
+// A real vi.fn(), not a no-op stub: drill 3 (task-3 fix round) showed the
+// no-op let a missing db.close() pass silently. Asserting this was called
+// converts that residual into a real, pinned assertion.
+const closeMock = vi.fn()
+const openEncryptedMock = vi.fn(() => {
+  if (encryptedSlot.throwOnOpen) {
+    // Stands in for WrongKeyError or a corrupt file: openEncryptedUserDb can
+    // throw, and the page must degrade rather than 500 the whole route.
+    throw new Error('wrong key TEST')
+  }
+  return {
+    prepare: () => ({ all: () => encryptedSlot.rows, get: () => encryptedSlot.rows[0] }),
+    close: closeMock,
+  }
+})
 vi.mock('@/lib/db/encryptedUserDb', () => ({
   encryptedUserDbExists: () => encryptedSlot.exists,
   openEncryptedUserDb: () => openEncryptedMock(),
@@ -140,7 +155,9 @@ beforeEach(() => {
   handle = undefined
   encryptedSlot.exists = false
   encryptedSlot.rows = []
+  encryptedSlot.throwOnOpen = false
   openEncryptedMock.mockClear()
+  closeMock.mockClear()
 })
 
 afterEach(() => {
@@ -272,6 +289,37 @@ describe('app/[user]/page.tsx data region', () => {
     // a screen of the friend's own. It must go when the data is real.
     expect(json).not.toContain('SYNTHETIC DATA')
     expect(openEncryptedMock).toHaveBeenCalled()
+    // A handle is scoped to one key and a key to one session — caching it
+    // process-wide is the bug step 5's ledger warns against, so the request
+    // must close what it opened.
+    expect(closeMock).toHaveBeenCalled()
+  })
+
+  it('degrades instead of 500ing the whole route when opening the encrypted database throws', async () => {
+    // Stands in for WrongKeyError or a corrupt file. Before the task-3 fix
+    // round, openEncryptedUserDb sat outside the try, so this throw would
+    // propagate past dashboardRegion with no error.tsx anywhere in app/ —
+    // taking the chat panel and logout button down with it, which is
+    // exactly the surface a friend uses to report the dashboard broke.
+    encryptedSlot.exists = true
+    encryptedSlot.throwOnOpen = true
+    loaderSlot.value = async () => ({
+      default: () => React.createElement('section', null, 'UNREACHED PANEL TEST'),
+    })
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    const json = JSON.stringify(element)
+    expect(json).toContain('This dashboard failed to load')
+    // The chat panel and logout button survive — the page degraded, it did
+    // not 500 the whole route.
+    expect(json).toContain('Log out')
+    expect(metricEvents()).toContain('dashboard_error')
+    expect(metricEvents()).not.toContain('dashboard_open')
+    expect(metricData('dashboard_error')).toEqual({
+      slug: SLUG,
+      message: 'wrong key TEST',
+    })
   })
 
   it('keeps the synthetic banner while no real database exists', async () => {

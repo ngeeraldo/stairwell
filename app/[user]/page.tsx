@@ -54,14 +54,34 @@ async function dashboardRegion(slug: string, accountId: number, sessionId: strin
     return renderDashboard(loader, slug, data.db, accountId, 'synthetic')
   }
 
-  const db = openEncryptedUserDb(slug, key!)
+  let db: UserDb | undefined
   try {
+    // openEncryptedUserDb is INSIDE this try, not before it: WrongKeyError
+    // (or a corrupt file) exists for precisely this case, and an uncaught
+    // throw here would propagate past this function with no error.tsx
+    // anywhere in app/ — taking the whole route's default error boundary
+    // over the ENTIRE page, chat panel and logout button included, which is
+    // exactly the surface this file's own docstring says stays reachable so
+    // a friend can report a broken dashboard.
+    db = openEncryptedUserDb(slug, key!)
     return await renderDashboard(loader, slug, db, accountId, 'real')
+  } catch (error) {
+    appendMetric(getDb(), {
+      accountId,
+      event: 'dashboard_error',
+      data: {
+        slug,
+        message: error instanceof Error ? error.message : String(error),
+      },
+      at: Date.now(),
+    })
+    return <p>This dashboard failed to load.</p>
   } finally {
     // Opened per request and closed here: a handle is scoped to one key, and a
     // key is scoped to one session. Caching it process-wide is exactly the bug
-    // step 5's ledger (residual 4) warns against.
-    db.close()
+    // step 5's ledger (residual 4) warns against. Guarded with `?.` because a
+    // failed open leaves db unassigned — nothing to close.
+    db?.close()
   }
 }
 

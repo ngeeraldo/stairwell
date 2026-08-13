@@ -231,4 +231,37 @@ describe('POST /api/users/[user]/walk', () => {
     const response = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
     expect(response.headers.get('location')).toBe('/devtwo')
   })
+
+  it('returns a bodyless 500 and records dashboard_write_error when the encrypted open fails, instead of throwing', async () => {
+    // Pre-create devtwo.db under a DIFFERENT key, unmocked and for real, so
+    // the route's own open — with the session's real key — hits
+    // WrongKeyError from lib/db/encryptedUserDb.ts: same failure mode as a
+    // corrupt file, from the opener's point of view. Before the task-3 fix
+    // round, openEncryptedUserDb sat outside any try/catch in the route and
+    // this would have been a bare 500 with a stack instead.
+    const { openEncryptedUserDb } = await import('@/lib/db/encryptedUserDb')
+    const seed = openEncryptedUserDb('devtwo', Buffer.alloc(32, 9))
+    seed.close()
+
+    const POST = await arrange()
+    const response = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+
+    expect(response.status).toBe(500)
+    const body = await response.text()
+    expect(body).toBe('')
+
+    const row = handle!
+      .prepare("SELECT data FROM metrics WHERE event = 'dashboard_write_error'")
+      .get() as { data: string } | undefined
+    expect(row).toBeDefined()
+    const data = JSON.parse(row!.data) as Record<string, unknown>
+    // Slug and panel, never the error message: the metrics policy is a slug
+    // and a panel and never a value, and the wrong-key message could carry
+    // more than that.
+    expect(data).toEqual({ slug: 'devtwo', panel: 'walked_today' })
+
+    expect(
+      handle!.prepare("SELECT 1 FROM metrics WHERE event = 'dashboard_write'").get(),
+    ).toBeUndefined()
+  })
 })

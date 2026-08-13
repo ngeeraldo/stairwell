@@ -62,7 +62,23 @@ export async function POST(
     return new Response(null, { status: 403 })
   }
 
-  const userDb = openEncryptedUserDb(user, key)
+  let userDb
+  try {
+    userDb = openEncryptedUserDb(user, key)
+  } catch {
+    // WrongKeyError (or a corrupt file) must not become a bare 500 with a
+    // stack: a metric is recorded first so the failure is visible at all,
+    // then a bodyless 500. Slug and panel only, per the permanent metrics
+    // policy below — never the error message, which could carry what was
+    // being logged.
+    appendMetric(db, {
+      accountId,
+      event: 'dashboard_write_error',
+      data: { slug: user, panel: 'walked_today' },
+      at: Date.now(),
+    })
+    return new Response(null, { status: 500 })
+  }
   try {
     // Idempotent by primary key, not by a read-then-write: a double tap is a
     // no-op with no race between the check and the insert.
