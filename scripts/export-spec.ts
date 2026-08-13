@@ -17,7 +17,7 @@ import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 import { currentSpec } from '@/lib/db/specs'
 import { parseLegacySpecPayload } from '@/lib/spec/legacy'
-import { renderSpecMarkdown } from '@/lib/spec/render'
+import { renderLegacyMarkdown } from '@/lib/spec/render'
 
 export function exportSpec(
   db: PlatformDb,
@@ -39,7 +39,7 @@ export function exportSpec(
   // object is constructed, is what guarantees that — a throw here means the
   // caller (the CLI entry point below, then pull-spec.sh) never sees a
   // result to write at all.
-  const spec_md = renderSpecMarkdown(parseLegacySpecPayload(spec.payload), {
+  const spec_md = renderLegacyMarkdown(parseLegacySpecPayload(spec.payload), {
     slug,
     version: spec.version,
     confirmedAt: spec.confirmed_at!,

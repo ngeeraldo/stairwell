@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { LegacyPanel, LegacySpecPayload } from '@/lib/spec/legacy'
-import { renderSpecMarkdown } from '@/lib/spec/render'
+import type { Panel, SpecVersion } from '@/lib/spec/schema'
+import { parseSpecDraft, sealVersion } from '@/lib/spec/validate'
+import { renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 
 const PAYLOAD: LegacySpecPayload = {
   title: 'Eating out and the car fund',
@@ -24,13 +26,13 @@ const PAYLOAD: LegacySpecPayload = {
   open_questions: ['Wants a Monzo pot balance — is that reachable?'],
 }
 
-describe('renderSpecMarkdown', () => {
+describe('renderLegacyMarkdown', () => {
   it('renders every field, deterministically', () => {
     // Pin the exact bytes of the output, not just self-consistency. This catches
     // nondeterminism that reaches the output (e.g., reading the clock at second
     // granularity) AND unintended format drift. A self-comparison would not catch
     // a regression that read time at second granularity.
-    const out = renderSpecMarkdown(PAYLOAD, {
+    const out = renderLegacyMarkdown(PAYLOAD, {
       slug: 'devtwo',
       version: 2,
       confirmedAt: 1_760_000_000_000,
@@ -77,7 +79,7 @@ Checks the banking app most days, does not trust it.
   })
 
   it('warns against hand-editing, because pull-spec.sh overwrites', () => {
-    const out = renderSpecMarkdown(PAYLOAD, {
+    const out = renderLegacyMarkdown(PAYLOAD, {
       slug: 'devtwo',
       version: 1,
       confirmedAt: 0,
@@ -88,7 +90,7 @@ Checks the banking app most days, does not trust it.
   it('says so plainly when a list is empty rather than rendering nothing', () => {
     // A missing heading reads as "the renderer dropped it". "None." reads as
     // "the friend had none", which is the fact.
-    const out = renderSpecMarkdown(
+    const out = renderLegacyMarkdown(
       { ...PAYLOAD, manual_logging: [], open_questions: [] },
       { slug: 'devtwo', version: 1, confirmedAt: 0 },
     )
@@ -183,10 +185,10 @@ And a line starting with hash:
     }
 
     const safeCount = countStructuralLines(
-      renderSpecMarkdown(PAYLOAD, { slug: 'devtwo', version: 1, confirmedAt: 0 }),
+      renderLegacyMarkdown(PAYLOAD, { slug: 'devtwo', version: 1, confirmedAt: 0 }),
     )
     const dangerousCount = countStructuralLines(
-      renderSpecMarkdown(DANGEROUS_PAYLOAD, {
+      renderLegacyMarkdown(DANGEROUS_PAYLOAD, {
         slug: 'devtwo',
         version: 1,
         confirmedAt: 0,
@@ -194,5 +196,145 @@ And a line starting with hash:
     )
 
     expect(dangerousCount).toBe(safeCount)
+  })
+})
+
+// --- renderSpecMarkdown: the new whole-surface renderer ------------------
+//
+// Fixtures below are copied from tests/spec/validate.test.ts's panel()/draft()
+// shape (same convention tests/spec/diff.test.ts already follows: "Copied ...
+// per the brief, so this file's fixtures don't drift if that file's shapes
+// change later") rather than imported, because a shared test-fixture module
+// would let a change made for ONE test file's needs silently ripple into
+// another's.
+
+function panel(over: Partial<Panel> = {}): Panel {
+  return {
+    id: 'walked_today',
+    title: 'Walked today?',
+    intent: 'Did I walk the dog today?',
+    display: 'A big yes/no with a tap-to-mark control.',
+    context_of_use: 'Phone, in bed, before getting up.',
+    values: [{ kind: 'entered', id: 'walk_flag', description: 'One tap per day.' }],
+    entry: {
+      description: 'One tap.',
+      fields: [{ name: 'walked', type: 'boolean', choices: [] }],
+      annotates: null,
+    },
+    ...over,
+  }
+}
+
+function draft(over: Record<string, unknown> = {}): unknown {
+  return {
+    title: 'Did I walk the dog today?',
+    summary: 'A one-tap daily tracker.',
+    background: 'Pivoted from a weather idea.',
+    change_summary: 'The whole dashboard: one tap, a streak, a 30-day rate.',
+    screens: [{ id: 'today', title: 'Today', order: 1, panels: [panel()] }],
+    data_requirements: [{ table: 'walks', purpose: 'One row per day walked.', status: 'new' }],
+    open_questions: [],
+    ...over,
+  }
+}
+
+/** Goes through the real validator/sealer rather than being cast, so `version`
+ * is a genuine SpecVersion and not just an object that happens to typecheck
+ * as one — same rationale tests/spec/diff.test.ts gives for its own `v1`. */
+const version: SpecVersion = sealVersion(parseSpecDraft(draft()), null)
+
+/** A version whose only value anywhere is `synced`, so the derived "Entered
+ * by hand" section has nothing to list. Isolates the empty-section case from
+ * the populated one without touching `version` itself. */
+const allSyncedVersion: SpecVersion = sealVersion(
+  parseSpecDraft(
+    draft({
+      screens: [
+        {
+          id: 'today',
+          title: 'Today',
+          order: 1,
+          panels: [
+            panel({
+              values: [
+                {
+                  kind: 'synced',
+                  id: 'walk_synced',
+                  module: 'plaid',
+                  description: 'Steps synced automatically.',
+                },
+              ],
+              entry: null,
+            }),
+          ],
+        },
+      ],
+    }),
+  ),
+  null,
+)
+
+const meta = { slug: 'devtwo', version: 1, confirmedAt: 1_760_000_000_000 }
+
+/** Replaces one panel's intent in place, mirroring diff.test.ts's
+ * withPanelTitle — everything else (id, screen, values, entry) is untouched,
+ * isolating "intent is hostile text" as the only edit. */
+function withPanelIntent(v: SpecVersion, panelId: string, intent: string): SpecVersion {
+  return {
+    ...v,
+    screens: v.screens.map((s) => ({
+      ...s,
+      panels: s.panels.map((p) => (p.id === panelId ? { ...p, intent } : p)),
+    })),
+  }
+}
+
+describe('renderSpecMarkdown', () => {
+  it('renders sections in the stable order the spec doc fixes', () => {
+    const md = renderSpecMarkdown(version, meta)
+    const order = ['## What changed', '## Summary', '## Background', '## Screens',
+                   '## Entered by hand', '## Data requirements', '## Open questions']
+    const positions = order.map((h) => md.indexOf(h))
+    expect(positions.every((p) => p >= 0)).toBe(true)
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions)
+  })
+
+  it('carries each panel id, so the build knows what the diff was talking about', () => {
+    expect(renderSpecMarkdown(version, meta)).toContain('`walked_today`')
+  })
+
+  it('labels each value with its source kind', () => {
+    const md = renderSpecMarkdown(version, meta)
+    expect(md).toMatch(/entered.*One tap per day/i)
+  })
+
+  it('derives the entered-by-hand section from entered values', () => {
+    // manual_logging is gone; this section is computed, not authored, so it can
+    // never disagree with the values it summarises.
+    expect(renderSpecMarkdown(version, meta)).toContain('One tap per day')
+  })
+
+  it('says so plainly when a version has no entered values', () => {
+    expect(renderSpecMarkdown(allSyncedVersion, meta)).toMatch(/## Entered by hand\n\n_None\./)
+  })
+
+  it('escapes a leading # or fence in every interpolated field', () => {
+    // Differential: same fixture through every field, one at a time.
+    for (const field of ['title', 'summary', 'background', 'change_summary']) {
+      const hostile = { ...version, [field]: '# pwned\n```' }
+      expect(renderSpecMarkdown(hostile, meta)).not.toMatch(/^# pwned$/m)
+    }
+  })
+
+  it('escapes hostile text inside a panel and a value too', () => {
+    // The step-4 ledger flagged the fixture-based escaping test as able to miss
+    // a NEW interpolation site. The new renderer has many more sites, so this
+    // walks panel and value fields as well, not just the top-level ones.
+    const hostile = withPanelIntent(version, 'walked_today', '# pwned')
+    expect(renderSpecMarkdown(hostile, meta)).not.toMatch(/^# pwned$/m)
+  })
+
+  it('is deterministic', () => {
+    expect(renderSpecMarkdown(version, meta)).toBe(renderSpecMarkdown(version, meta))
   })
 })
