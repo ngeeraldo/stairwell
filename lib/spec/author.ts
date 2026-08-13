@@ -76,31 +76,76 @@ const NO_USAGE: Usage = { input: 0, output: 0, cache_read: 0, cache_creation: 0 
 const NO_SERVED: Served = { model_served: CHAT_MODEL, fallback_fired: false }
 
 /**
- * The MOCKUP call's counters, under their own flat names (ledger D15).
+ * Everything about the MOCKUP call, under its own flat names (ledger D15).
  *
- * The four standard names (`input`/`output`/`cache_read`/`cache_creation`)
- * mean "the spec call" on every row this module writes, so grouping the
- * metrics log by them is never corrupted by the second call. The mockup
- * call's own numbers ride alongside under these names instead.
+ * The four standard counters (`input`/`output`/`cache_read`/`cache_creation`)
+ * and `prompt_sha` mean "the spec call" on every row this module writes, so
+ * grouping or joining the metrics log by them is never corrupted by the second
+ * call. The mockup call's own numbers and its prompt's hash ride alongside
+ * under these names instead.
  *
- * Null, never zero, when the mockup call did not report usage: zero is a claim
- * that nothing was billed, and that is false for a call that returned (or
- * truncated) before something downstream rejected it. Flat rather than
- * nested, because the step-4 ledger already records spreading a nested
+ * `mockup_prompt_sha` is what ties a stored `mockup_html` to the exact prompt
+ * text that produced it (ledger D13). It cannot live on `specs` — that table
+ * takes no new column — and `metrics` cannot be backfilled, so a row written
+ * without it is a preview whose provenance is lost for good.
+ *
+ * Null, never zero or a placeholder, when the call did not get that far: zero
+ * is a claim that nothing was billed, and that is false for a call that
+ * returned (or truncated) before something downstream rejected it. Flat rather
+ * than nested, because the step-4 ledger already records spreading a nested
  * `usage` beside flat counters as a hazard in `chat_error`.
+ *
+ * One function for the whole group so a new metrics site cannot pick up the
+ * counters and silently omit the sha, or the other way round.
  */
-function mockupCounters(usage: Usage | undefined): {
+function mockupFields(
+  usage: Usage | undefined,
+  promptSha: string | null,
+): {
   mockup_input: number | null
   mockup_output: number | null
   mockup_cache_read: number | null
   mockup_cache_creation: number | null
+  mockup_prompt_sha: string | null
 } {
   return {
     mockup_input: usage?.input ?? null,
     mockup_output: usage?.output ?? null,
     mockup_cache_read: usage?.cache_read ?? null,
     mockup_cache_creation: usage?.cache_creation ?? null,
+    mockup_prompt_sha: promptSha,
   }
+}
+
+/**
+ * A failure message fit for an append-only table: the SHAPE of the failure,
+ * never the content of the spec.
+ *
+ * The validator's messages quote what they rejected — `duplicate panel id
+ * "eating_out"`, `panel "x" annotates "y"` — because those quoted ids are
+ * exactly what lets the model correct itself on the retry. They are also
+ * derived from what the friend asked for, and `metrics` is sacred and
+ * append-only: nothing written here can ever be edited or removed.
+ *
+ * This is not a leak — Nico can already read the whole transcript and the
+ * whole payload in the admin pane, so the marginal disclosure is nil. It is
+ * consistency: `spec_confirmed` carries counts and never content, and a rule
+ * that holds on one row of a table but not its neighbour stops being a rule.
+ *
+ * Redaction applies to `SpecShapeError` and nothing else, because the quoting
+ * convention is that class's: every content interpolation in lib/spec/validate.ts
+ * is double-quoted, and everything left unquoted there is structural (a path
+ * like `screens[0].panels[1]`, or one of the fixed `kind`/`status` enums). Any
+ * other error reaching here — SQLite, the SDK, a bug — carries infrastructure
+ * text with no spec content in it, and mangling that would cost real debugging
+ * information for nothing.
+ *
+ * The retry path deliberately does NOT go through this: the model gets the
+ * full message, quoted ids and all.
+ */
+function metricMessage(error: unknown): string {
+  if (error instanceof SpecShapeError) return error.message.replace(/"[^"]*"/g, '"…"')
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
@@ -222,6 +267,12 @@ export async function authorSpec(
   let result: ProposeResult | undefined
   // Same, for the mockup call. Undefined until that call returns.
   let mockupResult: ProposeResult | undefined
+  // The mockup prompt's own hash, populated the moment its file is read and
+  // read by the outer catch too. Declared here for the same reason promptSha
+  // is: a row that names the wrong prompt — or no prompt — is a stored
+  // mockup_html nobody can trace back to the text that produced it, in two
+  // tables that can never be backfilled.
+  let mockupPromptSha: string | null = null
   // Which spec attempt produced the outcome. Every row this function writes
   // carries it, so the log distinguishes "the model got it right first time"
   // from "it took the retry". Zero means no spec call was made at all — the
@@ -344,7 +395,9 @@ export async function authorSpec(
         // `type` is the API's own error.type discriminator, and the
         // validator's prose message is not that — putting it there would mix
         // discriminators with sentences for any query that groups spec_error
-        // rows by type, permanently. The message goes in its own field.
+        // rows by type, permanently. The message goes in its own field —
+        // redacted, because the validator quotes the ids it rejected and
+        // `metrics` is append-only (see metricMessage above).
         appendMetric(db, {
           accountId: input.accountId,
           event: 'spec_error',
@@ -357,12 +410,15 @@ export async function authorSpec(
             status: null,
             type: null,
             attempt,
-            message: error.message,
+            message: metricMessage(error),
           },
         })
         // Checked BEFORE the retry, not after: the friend has walked away and
         // a second authoring call would bill for a card nobody is waiting for.
         if (input.signal.aborted) return undefined
+        // The FULL message, quoted ids and all: this one goes to the model,
+        // where naming the exact thing that failed is what lets it correct
+        // itself. Only the copy bound for the metrics log is redacted.
         feedback = error.message
       }
     }
@@ -375,8 +431,13 @@ export async function authorSpec(
 
     let mockupHtml: string
     try {
+      // Both halves of the loaded prompt are kept: the text goes to the model
+      // and the sha onto every row below, so the preview this call produces
+      // stays tied to the exact prompt text that produced it.
+      const mockupPrompt = loadPrompt(MOCKUP_PROMPT)
+      mockupPromptSha = mockupPrompt.sha
       mockupResult = await client.propose({
-        system: loadPrompt(MOCKUP_PROMPT).text,
+        system: mockupPrompt.text,
         // The VALIDATED draft, not the raw reply: a mockup generated from
         // anything else could show a panel the spec does not contain, which
         // is a promise made on the friend's behalf (ledger D7).
@@ -415,8 +476,8 @@ export async function authorSpec(
           status: shape.status,
           type: shape.type,
           attempt,
-          message: error instanceof Error ? error.message : String(error),
-          ...mockupCounters(mockupResult?.usage ?? shape.usage),
+          message: metricMessage(error),
+          ...mockupFields(mockupResult?.usage ?? shape.usage, mockupPromptSha),
         },
       })
       return undefined
@@ -455,10 +516,11 @@ export async function authorSpec(
         spec_id: id,
         version,
         attempt,
-        // Both calls returned and both were billed. Without these four the
+        // Both calls returned and both were billed. Without these the
         // success path would be the one path where a returning model call's
-        // usage reaches no metrics row at all.
-        ...mockupCounters(mockupResult.usage),
+        // usage reaches no metrics row at all — and the one stored
+        // mockup_html nobody could tie back to its prompt.
+        ...mockupFields(mockupResult.usage, mockupPromptSha),
       },
     })
 
@@ -480,7 +542,12 @@ export async function authorSpec(
     // succeeded — insertSpec, the version read-back, or the spec_proposed
     // append itself is what threw — result carries the real, billed
     // counters and those are what must be reported, not zero. Same for the
-    // mockup call's own counters, which are null until it returns.
+    // mockup call's own fields, which are null until it gets that far.
+    //
+    // The message goes through metricMessage for a reason that is easy to
+    // miss: currentVersionBlock reads the CURRENT spec, so a stored row that
+    // no longer validates throws a SpecShapeError quoting ids out of THAT
+    // spec, and it lands right here.
     appendMetric(db, {
       accountId: input.accountId,
       event: 'spec_error',
@@ -496,8 +563,8 @@ export async function authorSpec(
         status: null,
         type: null,
         attempt,
-        message: error instanceof Error ? error.message : String(error),
-        ...mockupCounters(mockupResult?.usage),
+        message: metricMessage(error),
+        ...mockupFields(mockupResult?.usage, mockupPromptSha),
       },
     })
     return undefined

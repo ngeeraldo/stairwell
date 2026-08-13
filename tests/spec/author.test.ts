@@ -55,6 +55,27 @@ const BAD_DRAFT = {
   screens: [{ id: 'today', title: 'Today', order: 1, panels: [PANEL, PANEL] }],
 }
 
+/**
+ * The same failure, but with an id nothing else in this file uses, so an
+ * assertion about where that id may and may not appear cannot be satisfied
+ * by some other fixture.
+ */
+const SECRET_ID = 'divorce_lawyer_fund'
+const IDENTIFYING_DRAFT = {
+  ...GOOD_DRAFT,
+  screens: [
+    {
+      id: 'today',
+      title: 'Today',
+      order: 1,
+      panels: [
+        { ...PANEL, id: SECRET_ID },
+        { ...PANEL, id: SECRET_ID },
+      ],
+    },
+  ],
+}
+
 const GOOD_MOCKUP = {
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
@@ -227,6 +248,20 @@ describe('authorSpec', () => {
     expect(row!.data.mockup_cache_creation).toBe(MOCKUP_USAGE.cache_creation)
   })
 
+  it('ties the stored mockup to the prompt that produced it', async () => {
+    // prompt_sha on every row this module writes is the SPEC prompt's, and
+    // specs.prompt_sha likewise — so without this field the HTML sitting in
+    // specs.mockup_html names no prompt at all, in two tables that can never
+    // be backfilled (ledger D13).
+    await authorSpec(deps(fake().client), INPUT)
+
+    const [row] = metrics()
+    expect(row!.data.mockup_prompt_sha).toMatch(/^[0-9a-f]{12}$/)
+    // A DIFFERENT prompt from the spec call's — copying prompt_sha across
+    // would satisfy a bare "is a sha" assertion and be a lie.
+    expect(row!.data.mockup_prompt_sha).not.toBe(row!.data.prompt_sha)
+  })
+
   it('writes NO spec and records spec_error when the call fails', async () => {
     const failing = fake({
       drafts: [
@@ -351,6 +386,7 @@ describe('authorSpec', () => {
     expect(row!.data.model_served).toBe(SERVED.model_served)
     expect(row!.data.fallback_fired).toBe(SERVED.fallback_fired)
     expect(row!.data.mockup_output).toBe(MOCKUP_USAGE.output)
+    expect(row!.data.mockup_prompt_sha).toMatch(/^[0-9a-f]{12}$/)
   })
 
   it('writes NO spec and records spec_aborted when the friend walks away', async () => {
@@ -420,6 +456,20 @@ describe('authorSpec', () => {
     it('tells the writer the spec is empty on the first-ever proposal', async () => {
       // Behaviour-preserving: the v1 path must send a prompt of the same
       // SHAPE, not a prompt with a section missing.
+      //
+      // A rejected proposal is seeded first, so the second assertion is not
+      // vacuous: something in the database DOES contain those ids, and the
+      // empty arm is right only because currentSpec asks for the newest
+      // CONFIRMED proposal, not the newest one.
+      insertSpec(db, {
+        accountId: 1,
+        conversationId: 'conv-0',
+        promptSha: 'abc123abc123',
+        payload: CURRENT_V1,
+        mockupHtml: '<html></html>',
+        at: 1,
+      })
+
       const client = fake()
       await authorSpec(deps(client.client), INPUT)
 
@@ -468,6 +518,63 @@ describe('authorSpec', () => {
       expect(failed[0]!.data.attempt).toBe(1)
       expect(failed[0]!.data.output).toBeGreaterThan(0)
       expect(rows.find((r) => r.event === 'spec_proposed')!.data.attempt).toBe(2)
+    })
+
+    it('sends the id to the MODEL but never writes it to metrics', async () => {
+      // The pairing is the whole property. The validator quotes what it
+      // rejected, and that quoted id is exactly what lets the model correct
+      // itself — so the retry turn must carry it. It is also derived from
+      // what the friend asked for, and `metrics` is sacred and append-only:
+      // nothing written there can ever be edited or removed. Task 11 ruled
+      // "counts, never content" for spec_confirmed, and a rule that holds on
+      // one row of that table but not its neighbour stops being a rule.
+      const client = fake({ drafts: [IDENTIFYING_DRAFT, GOOD_DRAFT] })
+      await authorSpec(deps(client.client), INPUT)
+
+      const retry = client.specCalls()[1]!.messages.at(-1)!.content
+      expect(retry).toContain(SECRET_ID)
+
+      const row = metrics().find((r) => r.data.kind === 'malformed_spec')!
+      const message = row.data.message as string
+      // The SHAPE of the failure survives — this row is still diagnostic.
+      expect(message).toContain('duplicate panel id')
+      expect(message).not.toContain(SECRET_ID)
+      // And nothing else quoted survives either, so a validator message that
+      // quotes something new is redacted without anyone remembering to.
+      expect(message).not.toMatch(/"[^"]*[a-z0-9][^"]*"/)
+    })
+
+    it('keeps redacting when the validator quotes more than one id', async () => {
+      // `annotates` failures name two things and end in an unquoted enum
+      // word: the redaction has to strip both without eating the diagnosis.
+      const annotating = {
+        ...GOOD_DRAFT,
+        screens: [
+          {
+            id: 'today',
+            title: 'Today',
+            order: 1,
+            panels: [
+              {
+                ...PANEL,
+                entry: {
+                  description: 'One tap.',
+                  fields: [],
+                  annotates: 'walk_flag',
+                },
+              },
+            ],
+          },
+        ],
+      }
+      await authorSpec(deps(fake({ drafts: [annotating, GOOD_DRAFT] }).client), INPUT)
+
+      const message = metrics().find((r) => r.data.kind === 'malformed_spec')!.data
+        .message as string
+      expect(message).toContain('annotates')
+      expect(message).toContain('not synced')
+      expect(message).not.toContain('walk_flag')
+      expect(message).not.toContain('walked_today')
     })
 
     it('gives up after exactly two attempts and writes no row', async () => {
@@ -538,6 +645,10 @@ describe('authorSpec', () => {
       expect(row.event).toBe('spec_error')
       expect(row.data.kind).toBe('mockup_failed')
       expect(row.data.attempt).toBe(1)
+      // The prompt was loaded before the call failed, so the row can still
+      // say which mockup prompt was in play.
+      expect(row.data.mockup_prompt_sha).toMatch(/^[0-9a-f]{12}$/)
+      expect(row.data.mockup_prompt_sha).not.toBe(row.data.prompt_sha)
     })
 
     it("puts the SPEC call's billed tokens on the mockup_failed row", async () => {
@@ -712,6 +823,7 @@ describe('authorSpec', () => {
       await authorSpec(deps(client.client), INPUT)
 
       const sent = client.specCalls()[0]!.messages
+      expect(sent.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'user'])
       expect(sent.map((m) => m.content).slice(0, 3)).toEqual(['hi', 'tell me more', 'my rent'])
       // The current-version block still goes, so the prompt has one shape on
       // every path; only the synthetic instruction is conditional.
