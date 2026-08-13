@@ -44,6 +44,37 @@ const FORBIDDEN_TERMS = [
   /\bloans?\b/i,
 ]
 
+/**
+ * Global-flag twins of FORBIDDEN_TERMS, precomputed once rather than rebuilt
+ * per name/per-term inside the nested loop below.
+ */
+const FORBIDDEN_TERMS_GLOBAL = FORBIDDEN_TERMS.map(
+  (p) => new RegExp(p.source, p.flags.includes('g') ? p.flags : `${p.flags}g`),
+)
+
+/**
+ * What "disclaiming" actually looks like in this project's prompts: "not"
+ * (optionally "not yet") immediately followed — allowing only non-letter
+ * filler (markdown `**`, spaces, a line-wrap newline+indent) — by a word
+ * this project actually uses to say a product is unavailable. A bare `not`
+ * is not enough: "investment tracking is not experimental anymore" contains
+ * a "not" nowhere near a real disclaimer and must still fail.
+ *
+ * `[^A-Za-z]{0,20}` rather than `.{0,20}}` is the load-bearing choice: it
+ * lets whitespace, punctuation, and newlines through but stops dead at the
+ * next real word, so an unrelated clause after "not" can never bridge to a
+ * disclaiming verb it doesn't contain.
+ */
+const DISCLAIM_NEARBY =
+  /\bnot\b[^A-Za-z]{0,20}(?:yet\b[^A-Za-z]{0,20})?\b(?:connected|enabled|supported|automatic(?:ally)?|available)\b/i
+
+/** Does a disclaiming phrase sit within `radius` characters of a match? */
+function hasNearbyDisclaimer(text: string, index: number, matchLength: number, radius = 80): boolean {
+  const start = Math.max(0, index - radius)
+  const end = index + matchLength + radius
+  return DISCLAIM_NEARBY.test(text.slice(start, end))
+}
+
 describe('loadPrompt', () => {
   it('returns the file text and a 12-hex-char sha', () => {
     // loadPromptAtPath, not loadPrompt: loadPrompt only ever resolves a bare
@@ -104,29 +135,42 @@ describe('loadPrompt', () => {
   it('never mentions an un-enabled Plaid product without disclaiming it, in ANY prompt', () => {
     // architecture-overview.md section 3: Investments and Liabilities are NOT
     // enabled, and line 98 requires checking before promising a panel. This
-    // covers spec-v1.md/spec-v2.md too, which is the call that actually
-    // writes the panels — a panel naming an un-enabled product is a promise
-    // to a friend that step 6 cannot keep.
+    // covers spec-v1.md/spec-v2.md/mockup-v1.md too — "in ANY prompt" means
+    // all of them, including the mockup call, which turns a spec that may
+    // carry open_questions naming these products into rendered HTML.
     //
     // v2/v3 changed strategy from v1: instead of staying silent about
     // investments/liabilities, agent-v3.md and spec-v2.md name them
     // explicitly so the model knows the boundary rather than guessing at it
     // ("Investments and liabilities are not connected — ... an open_question,
-    // not a panel"). A bare word-forbid can no longer tell that apart from
-    // an actual promise, so this checks every match has a nearby "not" —
-    // disclaiming, not promising. A term named without one still fails.
-    for (const name of [AGENT_PROMPT, 'agent-v2.md', SPEC_PROMPT]) {
+    // not a panel"). A bare "is there a not nearby" check cannot tell that
+    // apart from an actual promise ("investment tracking is not experimental
+    // anymore" would pass it) — see the counter-example test below — so this
+    // requires DISCLAIM_NEARBY: "not" anchored to a real disclaiming verb
+    // this project actually uses, not any "not" in the neighbourhood.
+    for (const name of [AGENT_PROMPT, 'agent-v2.md', SPEC_PROMPT, MOCKUP_PROMPT]) {
       const { text } = loadPrompt(name)
-      for (const forbidden of FORBIDDEN_TERMS) {
-        const global = new RegExp(forbidden.source, forbidden.flags.includes('g') ? forbidden.flags : `${forbidden.flags}g`)
+      for (const global of FORBIDDEN_TERMS_GLOBAL) {
         for (const match of text.matchAll(global)) {
-          const start = Math.max(0, (match.index ?? 0) - 80)
-          const end = (match.index ?? 0) + match[0].length + 80
-          const window = text.slice(start, end)
-          expect(window, `${name}: "${match[0]}" appears without a nearby disclaimer`).toMatch(/\bnot\b/i)
+          expect(
+            hasNearbyDisclaimer(text, match.index ?? 0, match[0].length),
+            `${name}: "${match[0]}" appears without a nearby disclaimer`,
+          ).toBe(true)
         }
       }
     }
+  })
+
+  it('rejects a false promise a bare "not"-nearby check would have missed', () => {
+    // Counter-example from code review: a "not" that has nothing to do with
+    // the forbidden term sailing through a check that only asked "is there
+    // a not within N characters". This is a live false promise of an
+    // un-enabled product — the guard above must treat it as undisclaimed.
+    const counterExample =
+      'Great news: investment tracking is not experimental anymore, it just went live for everyone.'
+    const match = /\binvestments?\b/i.exec(counterExample)
+    expect(match).not.toBeNull()
+    expect(hasNearbyDisclaimer(counterExample, match!.index, match![0].length)).toBe(false)
   })
 
   it('resolves a bare name under platform/prompts', () => {
