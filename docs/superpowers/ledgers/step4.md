@@ -34,6 +34,30 @@ friend on "putting together a preview…" for the better part of an hour with no
 error. It runs at `SPEC_MAX_TOKENS` 32000 with an explicit 180-second timeout,
 and a timeout is a visible `spec_error` rather than a hang.
 
+> **CORRECTION, 2026-08-13 — the paragraph above is wrong, and the mitigation it
+> describes never worked.** On the first live run, every proposal failed. The
+> SDK does not merely scale its timeout up: it *refuses* a non-streaming request
+> whose `max_tokens` implies more than ten minutes of generation, throwing
+> `AnthropicError("Streaming is required…")` synchronously, before opening a
+> socket. Its arithmetic is `(60min × max_tokens) / 128000`, so the ceiling is
+> 21,333 tokens and 32000 implies fifteen minutes. The authoring call could
+> never have run at all.
+>
+> The explicit 180-second timeout aimed at the wrong lever. The SDK skips that
+> guard only when the **client-level** timeout is set; ours is per-request and
+> is applied after the guard has already thrown. `AnthropicError` is not an
+> `APIError`, so `kindOf` landed on `sdk_error` — the unclassified bucket, whose
+> metric row discards the message. That is why the failure said nothing, twice,
+> with no billed tokens.
+>
+> Fixed in `65a4cd3` by streaming the call. The tests could not have caught it:
+> they faked `sdk.beta.messages.create`, so the fake answered a request the real
+> SDK refuses. Every propose fake now throws on `create`.
+>
+> This is the sharpest instance yet of the pattern this ledger already names —
+> a claim written down, believed, and never observed. It is also the one that
+> cost a live session with a real interview in it.
+
 ## What the review layer caught
 
 Worth recording because it is the argument for keeping it: **every Important

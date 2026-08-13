@@ -343,3 +343,65 @@ reported second-hand:
 | `npx next build` | succeeded, 12 routes |
 | `.claude/hooks/test-hooks.sh` | 158/158 |
 | `git ls-files` databases | `fake-real.db` only |
+
+---
+
+## Checkpoint result, 2026-08-13
+
+Run by Nico against `app.stairwell.run` after the deploy of `8117b6e`.
+
+**Passed, all five:** `/devone` renders the reference dashboard under the
+SYNTHETIC DATA banner; `/devtwo` renders the not-built placeholder; each account
+gets a 404 (never a 403) on the other's URL; `/admin` lists both users and
+renders `devtwo`'s confirmed spec and mockup; `/devone` 404s for the admin.
+
+**The build half does not close here.** "Nico builds `devtwo`'s dashboard from
+`devtwo`'s confirmed spec" now waits on step 6a — see below.
+
+## What the first real use found
+
+Three defects, none of which any suite could have caught, all in code paths no
+human had walked. Recorded here because the pattern is the point: every one sat
+behind a claim that had been written down and believed.
+
+1. **The spec authoring call could never run.** Non-streaming at 32000
+   `max_tokens`, which the SDK refuses outright. Full account and the correction
+   are in `step4.md`. Fixed in `65a4cd3`.
+2. **`pull-spec.sh`'s droplet path had never been run.** A non-interactive ssh
+   loads no profile and no `EnvironmentFile`, so `PLATFORM_DB` was unset and
+   `export-spec.ts` fell back to the SYNTHETIC database on the production box.
+   It failed loudly only by luck — `platform/dev/` is absent from the droplet's
+   checkout, because git will not create a directory whose only contents are
+   gitignored. With that directory present it would have written synthetic rows
+   into `users/<name>/spec.md` as a real confirmed spec. Fixed in `83a7cc2`,
+   pinned by a static scan whose own first two versions measured the wrong
+   thing.
+3. **An admin had no way to log out.** Step 4 removed the admin's user space,
+   and `app/[user]/page.tsx` was the page carrying the control. Nothing asserted
+   that a signed-in admin can sign out — the admin tests covered who may *see*
+   the portal, never what it lets you *do*. Fixed in `8117b6e`. Same shape as
+   residual 1: coverage of the guard, none of the affordance.
+
+## What the conventions sweep learned
+
+`tests/users/conventions.test.ts` rejected the documented workflow at the exact
+moment it was followed: `pull-spec.sh` writes `spec.md` and `mockup.html` into a
+folder that does not exist yet, and the sweep demanded all five required entries
+of it. A user folder now has three states — pulled (contract files only,
+allowed), built (all five, swept in full), partial (a defect, named with what is
+missing) — plus a guard that at least one BUILT dashboard is swept, so a tree of
+pulled-only folders cannot report all-green having run none of the work.
+
+## Step 6 split, and why
+
+`devtwo`'s confirmed spec is a manual-logging tracker whose primary control is a
+tap. Step 5 shipped a deliberately read-only data layer, so the first real
+dashboard needs a write path before it is what it claims to be. Writing to
+`synthetic.db` was rejected twice over: `deploy.sh` regenerates it on every
+deploy, and real taps sharing a file with loudly-fake seeded rows breaks the rule
+that any screen reads instantly as fake or real.
+
+Ruled by Nico: **6a** is the encrypted per-user data layer plus the first write
+path; **6b** is Plaid as scheduled. Encryption therefore lands before the first
+real byte rather than after it, which is the only ordering the onboarding promise
+supports. `architecture-overview.md`'s build order carries the split.
