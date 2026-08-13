@@ -136,11 +136,24 @@ describe('recentTransactions', () => {
 
   it('breaks a same-timestamp tie by insertion order, newest row last inserted first', () => {
     // A real Plaid import posts a batch of transactions sharing one
-    // timestamp. `ORDER BY at DESC` alone leaves SQLite free to return tied
-    // rows in any order it likes, so the list could reshuffle between two
-    // renders of the exact same data. `id DESC` pins a deterministic
-    // tiebreak: pins the regression where `at DESC, id DESC` is weakened to
-    // bare `at DESC`.
+    // timestamp, and without a deterministic order the list would reshuffle
+    // between renders of the exact same data.
+    //
+    // What this test PINS: the tiebreak direction. `id DESC` must mean
+    // newest-inserted-first; flip it to `id ASC` and only this test goes
+    // red (verified by hand).
+    //
+    // What it CANNOT pin: dropping `, id DESC` entirely. transactions_at
+    // indexes (at), which SQLite stores as (at, rowid); EXPLAIN QUERY PLAN
+    // shows `ORDER BY at DESC` alone already resolves via
+    // `SCAN transactions USING INDEX transactions_at` — the same plan as
+    // with the explicit tiebreak — so with that index in place the two
+    // queries are indistinguishable and no test can tell them apart. The
+    // clause is redundant given TODAY'S index, and is kept anyway so the
+    // order stays a property of the query rather than of whichever index
+    // happens to exist — a future schema change that drops or reshapes
+    // transactions_at would otherwise make the order unspecified with no
+    // test able to notice.
     add({ merchant: 'FIRST TEST', category: 'eating out', amount_cents: 100, at: MID_MARCH })
     add({ merchant: 'SECOND TEST', category: 'eating out', amount_cents: 200, at: MID_MARCH })
     add({ merchant: 'THIRD TEST', category: 'eating out', amount_cents: 300, at: MID_MARCH })
