@@ -40,6 +40,35 @@ architectural changes; do not relitigate decided items).
   User-specific needs = views/derived tables in the user's own schema.
 - Shared-module changes happen from repo root only, never inside /users/<name>/.
 
+## Dashboard folder conventions
+- A user dashboard lives entirely in `users/<slug>/`. Five entries are
+  required; `tests/users/conventions.test.ts` sweeps every folder and fails
+  if one is missing:
+  - `schema.sql` — table/view shapes
+  - `seed.py` — `python3 seed.py <target.db>`; **executes `schema.sql`** before
+    inserting, so shapes have exactly one source
+  - `queries.ts` — every SQL statement, as pure functions taking a `UserDb`
+  - `dashboard.tsx` — default-export server component, **no SQL**
+  - `tests/` — at least one `*.test.ts`
+- `spec.md` and `mockup.html` are written by `./scripts/pull-spec.sh <slug>`
+  and are absent until a spec is confirmed. `synthetic.db` is generated and
+  gitignored. `<slug>.db` arrives in step 6.
+- A dashboard renders only if it is registered in `lib/dashboard/registry.ts`.
+  One line: `<slug>: () => import('@/users/<slug>/dashboard'),`. A folder with
+  no registry line fails `tests/dashboard/registry.test.ts`.
+- Scaffold a new one — do not copy by hand:
+  ```bash
+  ./scripts/new-dashboard.sh <slug>   # creates the folder, prints the registry line
+  npm run synthetic                   # regenerates every users/*/synthetic.db
+  npx vitest run users/<slug>
+  ```
+- `users/devone/` is the worked reference implementation. It is hand-written,
+  not agent output — see its README.
+- A dashboard is handed `{ slug, db }` and never resolves either itself. It
+  gets a read-only handle, so it cannot write.
+- Everything a dashboard can show today is synthetic and the page says so on
+  every render. Real per-user data arrives in step 6.
+
 ## Build contract
 - spec.md + mockup.html in the user's folder are the build contract for
   **user dashboards** (`users/<name>/`, `app/[user]/`).

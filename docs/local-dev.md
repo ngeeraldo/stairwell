@@ -69,6 +69,13 @@ echo 'NTFY_TOPIC=stairwell-dev-<something-unguessable>' >> .env.local
 ADMIN_PASSWORD='something-you-will-remember' npx tsx scripts/create-dev-users.ts
 ```
 
+```bash
+npm run synthetic               # generates every users/*/synthetic.db
+```
+
+`users/*/synthetic.db` is gitignored, so a fresh clone has none and every
+dashboard renders "its data has not been generated yet" until this runs.
+
 The `PLATFORM_DB` line points at the exact path `lib/db/instance.ts`
 already falls back to when it's unset, so this changes nothing about which
 database opens — only whether that choice is explicit or silent.
@@ -121,6 +128,11 @@ time. Warm the routes first if you do use `npm run dev`.
    no user space of its own.
 10. `/nico` as `nico` → **404**, same as any other slug an admin has no user
     space at.
+11. `/devone` shows the reference dashboard under a **SYNTHETIC DATA** banner:
+    an eating-out total and a list of `COFFEE PALACE TEST` transactions.
+12. `/devtwo` shows "Nothing here yet" — devtwo has no dashboard until its
+    spec is confirmed and one is built. Neither account can reach the other's
+    URL at all; both get a 404, not a 403.
 
 ## Pulling a confirmed spec into the repo
 
@@ -145,6 +157,17 @@ data locally. For that:
 
 `--local` reads `PLATFORM_DB` (falling back to `platform/dev/synthetic.db`,
 same as everything else in this doc) and is the only form Claude runs.
+
+## Building a dashboard
+
+```bash
+./scripts/new-dashboard.sh <slug>   # scaffold; prints the registry line to add
+npm run synthetic                   # regenerate every users/*/synthetic.db
+npx vitest run users/<slug>
+```
+
+The conventions and what each file is for: `CLAUDE.md > Dashboard folder
+conventions`. `users/devone/` is a worked example.
 
 ## Reset
 
