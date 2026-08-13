@@ -8,10 +8,12 @@
 // file therefore has no future: nothing new is ever added here. It exists so
 // old rows keep rendering.
 //
-// The three AUTHORING exports — LEGACY_SPEC_JSON_SCHEMA, LegacySpecInput,
-// parseLegacySpecInput — are here only so the branch keeps working on the old
-// shape until Task 10 switches the authoring path over. Task 10 deletes them.
-// Nothing may author this shape after that.
+// It is a READER, and only a reader. The three authoring exports it briefly
+// carried — LEGACY_SPEC_JSON_SCHEMA, LegacySpecInput, parseLegacySpecInput —
+// existed only to keep the branch working on the old shape until the
+// authoring path switched over, and are gone with that switch. Nothing may
+// author this shape again: lib/spec/schema.ts and lib/spec/validate.ts own
+// what gets written.
 
 import { SpecShapeError } from './schema'
 
@@ -33,53 +35,6 @@ export type LegacySpecPayload = {
   manual_logging: string[]
   open_questions: string[]
 }
-
-/** What the record stores: the payload, and the mockup in its own column. */
-export type LegacySpecInput = { payload: LegacySpecPayload; mockupHtml: string }
-
-/**
- * The shape handed to the API as output_config.format.
- *
- * Constraining the response is what makes a well-formed proposal guaranteed
- * rather than hoped for. It does NOT remove the need for parseLegacySpecInput
- * below: the schema is a request parameter and the validator is what stands
- * between the model and an append-only table.
- */
-export const LEGACY_SPEC_JSON_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    title: { type: 'string' },
-    summary: { type: 'string' },
-    background: { type: 'string' },
-    panels: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          name: { type: 'string' },
-          shows: { type: 'string' },
-          why: { type: 'string' },
-          source: { type: 'string', enum: LEGACY_PANEL_SOURCES },
-        },
-        required: ['name', 'shows', 'why', 'source'],
-      },
-    },
-    manual_logging: { type: 'array', items: { type: 'string' } },
-    open_questions: { type: 'array', items: { type: 'string' } },
-    mockup_html: { type: 'string' },
-  },
-  required: [
-    'title',
-    'summary',
-    'background',
-    'panels',
-    'manual_logging',
-    'open_questions',
-    'mockup_html',
-  ],
-} as const
 
 function asRecord(raw: unknown, what: string): Record<string, unknown> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -133,10 +88,7 @@ function panels(source: Record<string, unknown>): LegacyPanel[] {
   })
 }
 
-/**
- * Validate the six payload fields. Used by both parseLegacySpecInput and
- * parseLegacySpecPayload so they share the same validation logic.
- */
+/** Validate the six payload fields. */
 function validatePayload(input: Record<string, unknown>): LegacySpecPayload {
   return {
     title: text(input, 'title'),
@@ -145,15 +97,6 @@ function validatePayload(input: Record<string, unknown>): LegacySpecPayload {
     panels: panels(input),
     manual_logging: textList(input, 'manual_logging'),
     open_questions: textList(input, 'open_questions'),
-  }
-}
-
-/** Validate a model-authored object, and split the mockup from the payload. */
-export function parseLegacySpecInput(raw: unknown): LegacySpecInput {
-  const input = asRecord(raw, 'input')
-  return {
-    payload: validatePayload(input),
-    mockupHtml: text(input, 'mockup_html'),
   }
 }
 
