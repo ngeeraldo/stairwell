@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3-multiple-ciphers'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { SLUG_PATTERN } from '@/lib/auth/slug'
 import { usersRoot } from '@/lib/db/userDb'
@@ -65,9 +65,11 @@ export function openEncryptedUserDb(slug: string, key: Buffer): EncryptedUserDb 
 
   const db = new Database(path)
   try {
-    // Order matters: cipher, then key, then anything else. Both must be set
-    // before the first real statement or the driver reads the file as plain
-    // SQLite.
+    // Cipher and key are both applied before any statement touches the file
+    // (WAL and foreign_keys, then schema.sql). This order is deliberate —
+    // not because a specific failure from reordering was observed here:
+    // reversing cipher and key was tested directly against this driver and
+    // it still produced a correctly encrypted file.
     db.pragma(`cipher='${CIPHER}'`)
     db.key(key)
     db.pragma('journal_mode = WAL')
@@ -78,6 +80,20 @@ export function openEncryptedUserDb(slug: string, key: Buffer): EncryptedUserDb 
     db.exec(readFileSync(join(usersRoot(), slug, 'schema.sql'), 'utf8'))
   } catch (error) {
     db.close()
+    if (!existedBefore) {
+      // `new Database(path)` creates the file immediately, and the WAL /
+      // foreign_keys pragmas write real bytes before schema.sql is even
+      // read — so a failed open on a brand-new file leaves an encrypted
+      // but table-less stub behind. Left in place, that stub makes
+      // existedBefore true on the NEXT call for this slug, so a later
+      // failure (for any reason) would be misreported as a wrong key. A
+      // failed create must leave nothing behind.
+      try {
+        unlinkSync(path)
+      } catch {
+        // Do not let a failed cleanup mask the original error below.
+      }
+    }
     const notADb =
       typeof error === 'object' &&
       error !== null &&

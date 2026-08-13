@@ -3,7 +3,7 @@
 // The real assertion in this file is that the bytes on disk are not a SQLite
 // database. Everything else is a round-trip, and a round-trip passes just as
 // happily against no encryption at all.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3-multiple-ciphers'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -116,16 +116,74 @@ describe('openEncryptedUserDb', () => {
     }
   })
 
-  it('pins the cipher rather than inheriting the driver default', () => {
-    // If the driver's default cipher ever changes, every existing file becomes
-    // unreadable with no error that says so. Pinning is what prevents that,
-    // and this asserts the opener actually sets it.
-    const db = openEncryptedUserDb('devtwo', KEY)
+  it('calls db.pragma to pin the cipher BEFORE db.key — a real call assertion, not a value scan', () => {
+    // A test that only checks the resulting cipher VALUE cannot fail here:
+    // the driver's own default is already chacha20 (see fix-round section
+    // of the report), which is the same string this module pins, so
+    // removing the pragma call changes nothing observable about the
+    // outcome — verified by deleting the call and watching the old,
+    // value-based version of this test stay green. What IS observable is
+    // whether the opener actually makes the call, and in what order. There
+    // is no handle to spy on before openEncryptedUserDb creates its own, so
+    // this spies on the prototype methods for the duration of one open,
+    // passing every call through to the real implementation so behaviour is
+    // unchanged.
+    const originalPragma = Database.prototype.pragma
+    const originalKey = Database.prototype.key
+    const order: string[] = []
+
+    const pragmaSpy = vi
+      .spyOn(Database.prototype, 'pragma')
+      .mockImplementation(function (this: Database.Database, ...args: unknown[]) {
+        if (typeof args[0] === 'string' && /^cipher\s*=/.test(args[0])) {
+          order.push('cipher-pragma')
+        }
+        return (originalPragma as (...a: unknown[]) => unknown).apply(this, args)
+      })
+    const keySpy = vi
+      .spyOn(Database.prototype, 'key')
+      .mockImplementation(function (this: Database.Database, ...args: unknown[]) {
+        order.push('key')
+        return (originalKey as (...a: unknown[]) => number).apply(this, args)
+      })
+
     try {
-      expect(JSON.stringify(db.pragma('cipher'))).toContain('chacha20')
-    } finally {
+      const db = openEncryptedUserDb('devtwo', KEY)
       db.close()
+
+      expect(order).toContain('cipher-pragma')
+      expect(order).toContain('key')
+      expect(order.indexOf('cipher-pragma')).toBeLessThan(order.indexOf('key'))
+    } finally {
+      pragmaSpy.mockRestore()
+      keySpy.mockRestore()
     }
+  })
+
+  it('leaves no file behind when the open fails on a brand-new file', () => {
+    // new Database(path) creates the file immediately, and the WAL /
+    // foreign_keys pragmas write real bytes before schema.sql is even
+    // read. Without cleanup, a failed FIRST open leaves a stub that makes
+    // existedBefore true forever after, for this slug.
+    mkdirSync(join(root, 'devthree'), { recursive: true })
+    // Deliberately no schema.sql: the exec() call has nothing to read.
+    expect(() => openEncryptedUserDb('devthree', KEY)).toThrow()
+    expect(encryptedUserDbExists('devthree')).toBe(false)
+  })
+
+  it('does not misdiagnose a later, legitimate open after an earlier failed create', () => {
+    // The consequence of the leak above: once schema.sql is fixed, opening
+    // with a key must succeed cleanly — not get relabelled as a wrong key
+    // because a stub from the earlier failure was still on disk.
+    mkdirSync(join(root, 'devthree'), { recursive: true })
+    expect(() => openEncryptedUserDb('devthree', KEY)).toThrow()
+
+    writeFileSync(join(root, 'devthree', 'schema.sql'), SCHEMA)
+    let db: ReturnType<typeof openEncryptedUserDb> | undefined
+    expect(() => {
+      db = openEncryptedUserDb('devthree', KEY)
+    }).not.toThrow(WrongKeyError)
+    db?.close()
   })
 
   it('is not openable as a plain SQLite database', () => {
