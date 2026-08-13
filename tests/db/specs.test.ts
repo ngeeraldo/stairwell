@@ -11,6 +11,7 @@ import {
   insertSpec,
   newestSpec,
   readSpecs,
+  specByVersion,
 } from '@/lib/db/specs'
 
 let dir: string
@@ -108,6 +109,26 @@ describe('confirmation', () => {
 
     // Verify the spec is still unconfirmed; no partial write occurred.
     expect(readSpecs(db, 1)[0]!.confirmed_at).toBeNull()
+  })
+})
+
+describe('specByVersion', () => {
+  it('finds a spec by its derived version number', () => {
+    // Version is position, so this cannot be a WHERE clause — it has to walk
+    // the same derivation readSpecs does, or the two disagree.
+    write(1, 'one', 1_000)
+    const secondSpecId = write(1, 'two', 2_000)
+    expect(specByVersion(db, 1, 2)?.id).toBe(secondSpecId)
+  })
+
+  it('returns undefined for a version that does not exist', () => {
+    write(1, 'one', 1_000)
+    expect(specByVersion(db, 1, 99)).toBeUndefined()
+  })
+
+  it('does not find another account\'s spec', () => {
+    write(1, 'mine', 1_000)
+    expect(specByVersion(db, 2, 1)).toBeUndefined()
   })
 })
 

@@ -52,4 +52,15 @@ describe('contextFor', () => {
     confirmSpec(db, { specId: id, accountId: 1, at: 2_000 })
     expect(contextFor(db, 2)).toBe('interview')
   })
+
+  it('keeps both era labels, because metrics rows already carry them', () => {
+    // A rename here splits an append-only series. See ledger D11.
+    const freshAccount = 1
+    const confirmedAccount = 2
+    const id = draft(confirmedAccount)
+    confirmSpec(db, { specId: id, accountId: confirmedAccount, at: 2_000 })
+
+    expect(contextFor(db, freshAccount)).toBe('interview')
+    expect(contextFor(db, confirmedAccount)).toBe('tweak')
+  })
 })

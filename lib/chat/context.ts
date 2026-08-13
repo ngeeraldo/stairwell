@@ -9,18 +9,17 @@ import { hasConfirmedSpec } from '@/lib/db/specs'
 export type ChatContext = 'interview' | 'tweak'
 
 /**
- * Which kind of run this turn is.
+ * Which ERA this turn belongs to, for the cost log. NOT a pipeline branch:
+ * nothing reads this to decide behaviour, and after the unified proposal loop
+ * there is only one loop to branch to. It answers architecture-overview line
+ * 136's question — how much cost goes into winning someone over versus
+ * keeping them — and the boundary is still CONFIRMATION, because a spec that
+ * was offered and not accepted has not ended the interview.
  *
- * Replaces step 2's hardcoded 'interview', which was correct only until spec
- * confirmation existed (step-2 ledger residual 5). This is the field that
- * answers how much cost goes into winning someone over versus keeping them.
- *
- * Going forward only. metrics is append-only and rows already written say
- * 'interview' permanently — which is correct, because every turn written so
- * far genuinely was one.
- *
- * The boundary is CONFIRMATION, not proposal: a spec that was offered and not
- * accepted has not ended the interview.
+ * The value 'tweak' is kept rather than renamed even though the tweak/build
+ * distinction is gone everywhere else: metrics is append-only and cannot be
+ * migrated, so a rename would split one series across two spellings for a
+ * wording change. See the unified-loop ledger, D11.
  */
 export function contextFor(db: PlatformDb, accountId: number): ChatContext {
   return hasConfirmedSpec(db, accountId) ? 'tweak' : 'interview'

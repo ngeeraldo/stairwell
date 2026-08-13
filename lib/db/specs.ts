@@ -76,6 +76,19 @@ export function readSpecs(db: PlatformDb, accountId: number): SpecRecord[] {
   return rows.map((row, index) => ({ ...row, version: rows.length - index }))
 }
 
+/**
+ * The proposal at a given version number. Version is derived from position
+ * (see readSpecs), so this walks the same derivation rather than adding a
+ * WHERE clause that could disagree with it.
+ */
+export function specByVersion(
+  db: PlatformDb,
+  accountId: number,
+  version: number,
+): SpecRecord | undefined {
+  return readSpecs(db, accountId).find((s) => s.version === version)
+}
+
 export function newestSpec(
   db: PlatformDb,
   accountId: number,
