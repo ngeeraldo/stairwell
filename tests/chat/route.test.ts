@@ -153,6 +153,43 @@ async function signIn(unlocked: boolean) {
   return { accountId: id, sid }
 }
 
+/** Create an admin account and a session for it (no key needed — the admin check runs first). */
+async function signInAdmin() {
+  const { getDb } = await import('@/lib/db/instance')
+  const { createAccount } = await import('@/lib/auth/accounts')
+  const { createSession, SESSION_COOKIE } = await import('@/lib/session/store')
+  sessionCookieName = SESSION_COOKIE
+  handle = getDb()
+  const id = await createAccount(handle, {
+    slug: 'nico',
+    role: 'admin',
+    password: 'pw',
+  })
+  const sid = createSession(handle, id)
+  cookieSlot.value = { value: sid }
+  return { accountId: id, sid }
+}
+
+describe('POST /api/chat — admin', () => {
+  it('403s an admin, before anything is written: no transcript row, no metrics row, no model call', async () => {
+    // Not 404: unlike the page, there is nothing to hide here — the caller
+    // is asking about their own account and already knows their own role.
+    const { accountId } = await signInAdmin()
+    const res = await post({ body: 'hi' })
+
+    expect(res.status).toBe(403)
+    // No streamed body at all — proof the model was never called and the
+    // ReadableStream never started.
+    expect(await res.text()).toBe('')
+
+    const { readTranscript } = await import('@/lib/db/appendOnly')
+    expect(readTranscript(handle!, accountId)).toHaveLength(0)
+
+    const rows = handle!.prepare('SELECT event FROM metrics').all()
+    expect(rows).toHaveLength(0)
+  })
+})
+
 describe('POST /api/chat', () => {
   it('401s with no session', async () => {
     const { getDb } = await import('@/lib/db/instance')

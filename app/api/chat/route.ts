@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db/instance'
 import { appendMetric } from '@/lib/db/appendOnly'
 import { SESSION_COOKIE, readSession } from '@/lib/session/store'
 import { resolveState } from '@/lib/session/resolve'
+import { isAdmin } from '@/lib/auth/authorize'
 import {
   CHAT_EFFORT,
   CHAT_MODEL,
@@ -48,6 +49,15 @@ export async function POST(request: Request) {
   }
   const session = readSession(db, sessionId!)
   if (!session) return new Response(null, { status: 401 })
+
+  // 403, not 404: unlike app/[user]/page.tsx's canSeeUserSpace check, there
+  // is nothing to hide here — the caller is asking about their own account
+  // and already knows their own role. Placed before any body parsing, the
+  // chatClient() construction, and the ReadableStream: an admin's request
+  // must write no transcript row, no metrics row, and trigger no model call.
+  if (isAdmin(db, sessionId)) {
+    return new Response(null, { status: 403 })
+  }
 
   let payload: { body?: unknown }
   try {

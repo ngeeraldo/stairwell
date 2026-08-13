@@ -34,10 +34,16 @@ export async function POST(request: Request) {
   }
   putKey(sessionId, await deriveDbKey(password, account.salt_key))
 
-  // account.slug, not the raw form value: the stored slug is the one
-  // SLUG_PATTERN validated at creation, which is what keeps this
-  // interpolation off the open-redirect path (see lib/auth/accounts.ts).
-  const response = relativeRedirect(`/${account.slug}`)
+  // An admin account has no user space — it lands on the read-only admin
+  // portal instead of /<slug>, which would now 404 (canSeeUserSpace excludes
+  // admins even for their own slug; see lib/auth/authorize.ts).
+  //
+  // account.slug, not the raw form value, for the non-admin branch: the
+  // stored slug is the one SLUG_PATTERN validated at creation, which is what
+  // keeps this interpolation off the open-redirect path (see
+  // lib/auth/accounts.ts).
+  const target = account.role === 'admin' ? '/admin' : `/${account.slug}`
+  const response = relativeRedirect(target)
   response.cookies.set(SESSION_COOKIE, sessionId, COOKIE_OPTIONS)
   return response
 }

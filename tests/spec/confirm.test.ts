@@ -139,7 +139,32 @@ async function sessionFor(slug: string, unlocked: boolean): Promise<string> {
   return sid
 }
 
-type PostOpts = { session?: 'none'; as?: string; locked?: boolean }
+/**
+ * Create (or reuse) an ADMIN session for `slug`. Kept separate from
+ * sessionFor/ensureAccountId rather than adding a role parameter there:
+ * every non-admin test in this file depends on those helpers minting a
+ * 'user' account, and a role parameter threaded through both would risk a
+ * default-value slip changing that for existing tests.
+ */
+async function sessionForAdmin(slug: string): Promise<string> {
+  const db = await ensureDb()
+  let id = accountIds.get(slug)
+  if (id === undefined) {
+    const { createAccount } = await import('@/lib/auth/accounts')
+    id = await createAccount(db, { slug, role: 'admin', password: 'pw' })
+    accountIds.set(slug, id)
+  }
+  let sid = sessionsBySlug.get(slug)
+  if (!sid) {
+    const { createSession, SESSION_COOKIE } = await import('@/lib/session/store')
+    sessionCookieName = SESSION_COOKIE
+    sid = createSession(db, id)
+    sessionsBySlug.set(slug, sid)
+  }
+  return sid
+}
+
+type PostOpts = { session?: 'none'; as?: string; locked?: boolean; admin?: boolean }
 
 async function post(body: unknown, opts: PostOpts = {}) {
   await ensureDb()
@@ -149,6 +174,9 @@ async function post(body: unknown, opts: PostOpts = {}) {
 
   if (opts.session === 'none') {
     cookieSlot.value = undefined
+  } else if (opts.admin) {
+    const sid = await sessionForAdmin(opts.as ?? 'nico')
+    cookieSlot.value = { value: sid }
   } else {
     const sid = await sessionFor(opts.as ?? 'devtwo', !opts.locked)
     cookieSlot.value = { value: sid }
@@ -260,6 +288,18 @@ describe('POST /api/spec/confirm', () => {
     // confirming touches no user data.
     const id = await seedSpec('devtwo')
     expect((await post({ specId: id }, { locked: true })).status).toBe(200)
+  })
+
+  it('403s an admin, confirming nothing — not 404, because there is nothing to hide here', async () => {
+    // Unlike canSeeUserSpace's 404, the admin check on this route answers
+    // 403: the caller is asking about their own account and already knows
+    // their own role. Uses devtwo's spec (not the admin's own — admins have
+    // none) to prove the rejection fires on IDENTITY alone, before the
+    // route ever looks at whether the spec belongs to the caller.
+    const id = await seedSpec('devtwo')
+    const res = await post({ specId: id }, { admin: true })
+    expect(res.status).toBe(403)
+    expect(confirmationCount(id)).toBe(0)
   })
 
   it('404s (not 500) when confirmSpec throws on a pair the 404 check should have caught', async () => {

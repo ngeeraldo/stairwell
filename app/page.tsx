@@ -3,7 +3,7 @@ import { cookies } from 'next/headers'
 import { getDb } from '@/lib/db/instance'
 import { SESSION_COOKIE } from '@/lib/session/store'
 import { resolveState } from '@/lib/session/resolve'
-import { slugFor } from '@/lib/auth/authorize'
+import { isAdmin, slugFor } from '@/lib/auth/authorize'
 
 /**
  * '/' has no content of its own — it only dispatches by session state. It
@@ -21,6 +21,11 @@ export default async function Home() {
 
   if (state === 'anonymous') redirect('/login')
   if (state === 'authenticated') redirect('/unlock')
+
+  // An admin account has no user space — it lands on the read-only admin
+  // portal instead of /<slug>, which would now 404 (canSeeUserSpace excludes
+  // admins even for their own slug; see lib/auth/authorize.ts).
+  if (isAdmin(getDb(), sessionId)) redirect('/admin')
 
   const slug = slugFor(getDb(), sessionId)
   // Defensive only: resolveState returning 'unlocked' means readSession()

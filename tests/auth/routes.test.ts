@@ -247,6 +247,19 @@ describe('POST /api/login', () => {
     // And /unlock itself stays reachable, so the single re-lock prompt works.
     expect(redirectTargetFor(handle, sid, '/unlock')).toBeNull()
   })
+
+  it('sends an admin to /admin, not to /<slug> — an admin account has no user space', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    handle = getDb()
+    await createAccount(handle, { slug: 'nico', role: 'admin', password: 'pw' })
+
+    const { POST } = await import('@/app/api/login/route')
+    const response = await POST(loginRequest('nico', 'pw'))
+
+    expect(response.status).toBe(303)
+    expectRelativeRedirect(response, '/admin')
+  })
 })
 
 describe('POST /api/unlock', () => {
@@ -294,6 +307,26 @@ describe('POST /api/unlock', () => {
     expect(response.status).toBe(303)
     expectRelativeRedirect(response, '/unlock?error=1')
     expect(getKey(sid)).toBeUndefined()
+  })
+
+  it('sends an admin to /admin, not to /<slug> — an admin account has no user space', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    const { createSession } = await import('@/lib/session/store')
+    handle = getDb()
+    const id = await createAccount(handle, {
+      slug: 'nico',
+      role: 'admin',
+      password: 'pw',
+    })
+    const sid = createSession(handle, id)
+    cookieSlot.value = { value: sid }
+
+    const { POST } = await import('@/app/api/unlock/route')
+    const response = await POST(unlockRequest('pw'))
+
+    expect(response.status).toBe(303)
+    expectRelativeRedirect(response, '/admin')
   })
 })
 

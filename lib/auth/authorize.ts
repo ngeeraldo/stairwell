@@ -18,7 +18,11 @@ function accountFor(
 /**
  * A user space belongs to exactly one account. Admin is not an override:
  * the admin portal is read-only over transcripts and specs, not a back door
- * into someone's dashboard.
+ * into someone's dashboard. An admin account has no user space at all —
+ * not even its own slug — so this returns false even when account.slug ===
+ * slug. Testing runs as devone/devtwo for exactly this reason: running the
+ * user-facing checks as an admin now fails loudly (404) instead of silently
+ * doing nothing.
  *
  * Callers must render 404, never 403 — a 403 confirms the space exists.
  */
@@ -28,7 +32,9 @@ export function canSeeUserSpace(
   slug: string,
 ): boolean {
   const account = accountFor(db, sessionId)
-  return account !== undefined && account.slug === slug
+  return (
+    account !== undefined && account.role !== 'admin' && account.slug === slug
+  )
 }
 
 export function isAdmin(

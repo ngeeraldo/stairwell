@@ -126,6 +126,15 @@ describe('user space authorization', () => {
     expect(canSeeUserSpace(db, sid!, 'devone')).toBe(false)
   })
 
+  it('does not let an admin see their own slug either — an admin has no user space at all', async () => {
+    // The case above only proves an admin can't browse SOMEONE ELSE'S space,
+    // which was already false on slug mismatch alone. This is the actually
+    // new property: 'nico' asking for '/nico' must also 404, because an
+    // admin account has no user space of its own to browse.
+    const sid = await login(db, 'nico', 'pw')
+    expect(canSeeUserSpace(db, sid!, 'nico')).toBe(false)
+  })
+
   it('treats an unknown slug the same as a forbidden one', async () => {
     const sid = await login(db, 'devone', 'pw')
     expect(canSeeUserSpace(db, sid!, 'ghost')).toBe(false)
@@ -368,6 +377,34 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     const { default: UserSpace } = await import('@/app/[user]/page')
     await expect(
       UserSpace({ params: Promise.resolve({ user: 'devone' }) }),
+    ).rejects.toThrow('NEXT_NOT_FOUND')
+
+    expect(notFoundMock).toHaveBeenCalledTimes(1)
+    expect(redirectMock).not.toHaveBeenCalled()
+  })
+
+  it('404s an unlocked admin visiting THEIR OWN slug — admin has no user space at all', async () => {
+    // The existing wrong-owner test above proves an admin can't browse
+    // SOMEONE ELSE'S space, which the page would 404 on slug mismatch alone
+    // even for a regular user. This is the property that only an admin
+    // account exercises: 'nico' hitting '/nico' must still 404, because an
+    // admin has no user space, not even its own.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const adminId = await createAcct(handle, { slug: 'nico', role: 'admin', password: 'pw' })
+    const sid = createSess(handle, adminId)
+    putK(sid, Buffer.alloc(32, 1)) // unlocked
+    cookieSlot.value = { value: sid }
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    await expect(
+      UserSpace({ params: Promise.resolve({ user: 'nico' }) }),
     ).rejects.toThrow('NEXT_NOT_FOUND')
 
     expect(notFoundMock).toHaveBeenCalledTimes(1)

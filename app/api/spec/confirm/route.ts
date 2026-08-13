@@ -6,6 +6,7 @@ import { SESSION_COOKIE, readSession } from '@/lib/session/store'
 import { resolveState } from '@/lib/session/resolve'
 import { confirmSpec, newestSpec, readSpecs } from '@/lib/db/specs'
 import { alerter } from '@/lib/alerts/ntfy'
+import { isAdmin } from '@/lib/auth/authorize'
 
 /**
  * The only thing that turns a proposal into a promise.
@@ -24,6 +25,15 @@ export async function POST(request: Request) {
   }
   const session = readSession(db, sessionId!)
   if (!session) return new Response(null, { status: 401 })
+
+  // 403, not 404: unlike the 404 below (which hides whether a spec row
+  // exists), there is nothing to hide here — the caller is asking about
+  // their own account and already knows their own role. Placed before any
+  // body parsing or spec lookup, so an admin's request confirms nothing and
+  // writes no metrics row.
+  if (isAdmin(db, sessionId)) {
+    return new Response(null, { status: 403 })
+  }
 
   let payload: { specId?: unknown }
   try {

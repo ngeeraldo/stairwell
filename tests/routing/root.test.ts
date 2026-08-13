@@ -108,4 +108,26 @@ describe('app shell (/)', () => {
     expect(redirectMock).not.toHaveBeenCalledWith('/login')
     expect(redirectMock).toHaveBeenCalledWith('/devone')
   })
+
+  it('sends an unlocked admin session to /admin, never to /<slug> — an admin has no user space', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    const { createSession } = await import('@/lib/session/store')
+    const { putKey } = await import('@/lib/session/keymap')
+    const { SESSION_COOKIE } = await import('@/lib/session/cookie')
+    db = getDb()
+    const id = await createAccount(db, { slug: 'nico', role: 'admin', password: 'pw' })
+    const sid = createSession(db, id)
+    putKey(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+    cookieGet.mockImplementation((name: string) =>
+      name === SESSION_COOKIE ? cookieSlot.value : undefined,
+    )
+
+    const { default: Home } = await import('@/app/page')
+    await expect(Home()).rejects.toThrow('NEXT_REDIRECT:/admin')
+
+    expect(redirectMock).toHaveBeenCalledWith('/admin')
+    expect(redirectMock).not.toHaveBeenCalledWith('/nico')
+  })
 })

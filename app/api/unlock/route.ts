@@ -16,7 +16,13 @@ export async function POST(request: Request) {
 
   const session = readSession(getDb(), sessionId)!
   const account = getDb()
-    .prepare('SELECT slug FROM accounts WHERE id = ?')
-    .get(session.account_id) as { slug: string }
-  return relativeRedirect(`/${account.slug}`)
+    .prepare('SELECT slug, role FROM accounts WHERE id = ?')
+    .get(session.account_id) as { slug: string; role: 'user' | 'admin' }
+
+  // An admin account has no user space — see app/api/login/route.ts for the
+  // matching comment. /unlock is the re-lock path (a deploy, or the 12h
+  // ceiling expiring), so an admin arrives here too, and must land on /admin
+  // rather than a /<slug> that would now 404.
+  const target = account.role === 'admin' ? '/admin' : `/${account.slug}`
+  return relativeRedirect(target)
 }
