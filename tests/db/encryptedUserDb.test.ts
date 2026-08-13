@@ -160,6 +160,73 @@ describe('openEncryptedUserDb', () => {
     }
   })
 
+  it('READ-ONLY: the handle a dashboard render gets REFUSES a write', () => {
+    // A capability assertion, not an option assertion. Checking that
+    // `{ readonly: true }` was passed, or that some flag is set on the
+    // handle, would pass against a handle that happily writes — this repo has
+    // shipped that mistake before (step 5's `closeUserDbs releases handles`
+    // asserted a fresh object rather than a closed one, and was green while
+    // leaking a descriptor per afterEach). So: attempt the write the walk
+    // route makes, and require the driver to refuse it.
+    const seeded = openEncryptedUserDb('devtwo', KEY)
+    seeded.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
+    seeded.close()
+
+    const db = openEncryptedUserDb('devtwo', KEY, { readonly: true })
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS n FROM walks').get()).toEqual({ n: 1 })
+      expect(() =>
+        db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-14', 2),
+      ).toThrow(/readonly/i)
+      // And nothing got through: the row count is unchanged.
+      expect(db.prepare('SELECT COUNT(*) AS n FROM walks').get()).toEqual({ n: 1 })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('READ-ONLY: never creates a missing file, so a render cannot conjure real data', () => {
+    // fileMustExist. The lazy-creation rule is that the FIRST WRITE creates
+    // the real database; a page render that created an empty one would put a
+    // user permanently onto an empty real file instead of the sample.
+    mkdirSync(join(root, 'devthree'), { recursive: true })
+    writeFileSync(join(root, 'devthree', 'schema.sql'), SCHEMA)
+    expect(() => openEncryptedUserDb('devthree', KEY, { readonly: true })).toThrow()
+    expect(encryptedUserDbExists('devthree')).toBe(false)
+  })
+
+  it('READ-ONLY: still names a wrong key rather than leaking a raw driver error', () => {
+    // The schema exec is the writable path's key check. The read path has no
+    // schema exec, so it needs its own first touch of the encrypted pages —
+    // without one, a wrong key would surface later, unnamed, at whatever
+    // SELECT the dashboard happened to run first.
+    const db = openEncryptedUserDb('devtwo', KEY)
+    db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
+    db.close()
+
+    expect(() => openEncryptedUserDb('devtwo', OTHER_KEY, { readonly: true })).toThrow(
+      WrongKeyError,
+    )
+  })
+
+  it('READ-ONLY: does not apply schema.sql, because a render must not migrate', () => {
+    // Removing schema.sql after creation is a stand-in for a schema that has
+    // gained a table since the file was written: the read path must not be
+    // the thing that applies it. Recorded as a consequence rather than
+    // sold as a feature — see the step-6a ledger's residual on stale schemas.
+    const seeded = openEncryptedUserDb('devtwo', KEY)
+    seeded.close()
+    rmSync(join(root, 'devtwo', 'schema.sql'))
+
+    // No throw: the read path never reads schema.sql at all.
+    const db = openEncryptedUserDb('devtwo', KEY, { readonly: true })
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS n FROM walks').get()).toEqual({ n: 0 })
+    } finally {
+      db.close()
+    }
+  })
+
   it('leaves no file behind when the open fails on a brand-new file', () => {
     // new Database(path) creates the file immediately, and the WAL /
     // foreign_keys pragmas write real bytes before schema.sql is even

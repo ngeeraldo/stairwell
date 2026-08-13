@@ -83,7 +83,12 @@ async function dashboardRegion(slug: string, accountId: number, sessionId: strin
     // over the ENTIRE page, chat panel and logout button included, which is
     // exactly the surface this file's own docstring says stays reachable so
     // a friend can report a broken dashboard.
-    db = openEncryptedUserDb(slug, key!)
+    // readonly: a dashboard component is the least-reviewed code in the repo
+    // and this handle points at the friend's real data, not at a synthetic
+    // file the next deploy regenerates. The walk route's writable open is the
+    // only thing that may create or migrate it — so this open also does NOT
+    // apply schema.sql, which is a write. See lib/db/encryptedUserDb.ts.
+    db = openEncryptedUserDb(slug, key!, { readonly: true })
     return await renderDashboard(loader, slug, db, accountId, 'real')
   } catch (error) {
     appendMetric(getDb(), {

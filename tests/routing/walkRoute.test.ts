@@ -14,6 +14,12 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PlatformDb } from '@/lib/db/platform'
+// Safe as a static import, unlike the route module below: lib/time/dayKey.ts
+// imports nothing, so evaluating it during vi.mock's hoisting pass touches no
+// spy declared further down this file. Its own timezone tests live in
+// tests/time/dayKey.test.ts; it is imported here only to check that the row
+// the route wrote carries the day the route was asked for.
+import { dayKey } from '@/lib/time/dayKey'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
 let sessionCookieName = 'sid'
@@ -103,18 +109,6 @@ async function arrange(opts: { lock?: boolean; slug?: string } = {}) {
 
 const params = (user: string) => ({ params: Promise.resolve({ user }) })
 
-/**
- * dayKey is pure and does not depend on any mocked module, but it lives in
- * route.ts alongside imports of the mocked '@/lib/auth/authorize'. A static
- * top-level `import { dayKey } from '...'` would force route.ts to be
- * evaluated during vi.mock's hoisting pass — before the module-scope spy
- * declarations below run — and throw a TDZ error. A dynamic import, used
- * only inside test bodies, defers that evaluation until after setup.
- */
-async function importDayKey() {
-  return (await import('@/app/api/users/[user]/walk/route')).dayKey
-}
-
 function walkRows(dbPath: string, key: Buffer) {
   // Opened directly rather than through the route's own opener, so the test
   // proves the row is really on disk under that key.
@@ -129,39 +123,6 @@ function walkRows(dbPath: string, key: Buffer) {
   }
 }
 
-describe('dayKey', () => {
-  it('yields the LOCAL calendar day, and diverges from ISO/UTC off-UTC', async () => {
-    const dayKey = await importDayKey()
-    // Two fixed local instants, chosen to straddle midnight from each side:
-    // a late evening (23:30) and an early morning (00:30) on the same
-    // nominal local date. dayKey must report that same local date for both,
-    // regardless of the host's timezone.
-    const evening = new Date(2026, 7, 12, 23, 30, 0).getTime() // Aug is month 7 (0-based)
-    const morning = new Date(2026, 7, 12, 0, 30, 0).getTime()
-    expect(dayKey(evening)).toBe('2026-08-12')
-    expect(dayKey(morning)).toBe('2026-08-12')
-
-    // Pinning that dayKey is NOT `new Date(at).toISOString().slice(0, 10)`:
-    // a late-evening local instant rolls onto the NEXT UTC day when local
-    // time is BEHIND UTC (getTimezoneOffset() > 0, e.g. the Americas); an
-    // early-morning local instant rolls onto the PREVIOUS UTC day when
-    // local time is AHEAD of UTC (getTimezoneOffset() < 0, e.g.
-    // Asia/Tokyo). Exactly one of the two diverges for any real non-UTC
-    // timezone, which is why the branch is picked from the host's own
-    // offset rather than hardcoded. At UTC itself (offset === 0) neither
-    // instant can diverge — the two equality checks above are the only
-    // assertions this test can make in that environment, and this branch
-    // asserts nothing further. This is stated plainly rather than silently
-    // passing: the divergence check below is only discriminating off-UTC.
-    const offsetMinutes = new Date().getTimezoneOffset()
-    if (offsetMinutes > 0) {
-      expect(dayKey(evening)).not.toBe(new Date(evening).toISOString().slice(0, 10))
-    } else if (offsetMinutes < 0) {
-      expect(dayKey(morning)).not.toBe(new Date(morning).toISOString().slice(0, 10))
-    }
-  })
-})
-
 describe('POST /api/users/[user]/walk', () => {
   it('writes today exactly once, however many times it is tapped', async () => {
     const POST = await arrange()
@@ -172,7 +133,6 @@ describe('POST /api/users/[user]/walk', () => {
     expect(second.status).toBe(303)
     const rows = walkRows(join(dir, 'users', 'devtwo', 'devtwo.db'), Buffer.alloc(32, 7))
     expect(rows).toHaveLength(1)
-    const dayKey = await importDayKey()
     expect(rows[0]?.day).toBe(dayKey(Date.now()))
   })
 

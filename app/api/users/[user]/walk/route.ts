@@ -8,22 +8,11 @@ import { relativeRedirect } from '@/lib/http/redirect'
 import { getKey } from '@/lib/session/keymap'
 import { resolveState } from '@/lib/session/resolve'
 import { SESSION_COOKIE } from '@/lib/session/store'
-
-/**
- * The LOCAL calendar day, as 'YYYY-MM-DD'.
- *
- * Local, not UTC, and not toISOString(): devone shipped a dashboard whose
- * query bucketed months locally while its renderer formatted dates in UTC, so
- * west of Greenwich a late-evening row displayed under the previous day. A
- * tracker whose unit IS the day cannot afford that ambiguity, so the day key
- * is built from local calendar components at the one place it is derived.
- */
-export function dayKey(at: number): string {
-  const d = new Date(at)
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${month}-${day}`
-}
+// dayKey lives in lib/time, not here. A route module may export only Next's
+// own route fields — anything else fails `next build` with "is not a valid
+// Route export field", which is exactly what an exported-for-testability
+// dayKey did on this branch. See lib/time/dayKey.ts.
+import { dayKey } from '@/lib/time/dayKey'
 
 /**
  * Mark today walked. The order of the checks below is the security property.

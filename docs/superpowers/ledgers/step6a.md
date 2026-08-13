@@ -2,13 +2,13 @@
 
 Spec: `docs/superpowers/specs/2026-08-13-step6a-encrypted-user-data-design.md`
 Plan: `docs/superpowers/plans/2026-08-13-step6a-encrypted-user-data.md`
-Branch: `step6a-encrypted-user-data`, 12 commits, `67fc0ab..4cf75b8` (base
-`200b001` on `main`)
+Branch: `step6a-encrypted-user-data`, from `67fc0ab` (base `200b001` on `main`)
+through this ledger's own commit and the fix round that follows it.
 
-## OPEN BLOCKER: `npx next build` does not build this branch
+## What Gate D caught, one commit before the push — RESOLVED
 
-**Recorded first because it changes what everything below is allowed to
-claim.** At `4cf75b8`, with a clean tree:
+**Recorded first because it is the whole argument for the gate.** At `4cf75b8`,
+with a clean tree, `npx next build` exited 1:
 
 ```
 app/api/users/[user]/walk/route.ts
@@ -17,11 +17,18 @@ required types of a Next.js Route.
   "dayKey" is not a valid Route export field.
 ```
 
-`next build` exits 1. Next 15 validates a route module's export list against a
-closed set, and `export function dayKey` — exported for testability, and only
-ever imported by `tests/routing/walkRoute.test.ts` — is not in it. Diagnosed by
-deleting the `export` keyword and nothing else: the build then succeeded, 13
-routes generated. The keyword was restored; no fix is applied on this branch.
+Next 15 validates a route module's export list against a closed set, and
+`export function dayKey` — exported for testability, and only ever imported by
+`tests/routing/walkRoute.test.ts` — is not in it. Diagnosed by deleting the
+`export` keyword and nothing else: the build then succeeded, 13 routes.
+
+**Deleting the export was not the fix, and was reverted.** `dayKey` was
+exported deliberately in Task 2's fix round, because the review found it had
+zero tests and a UTC regression was invisible; the timezone tests that came
+with it are load-bearing. It now lives in `lib/time/dayKey.ts`, a platform
+module the route imports, with its tests moved to `tests/time/dayKey.test.ts`.
+The move was drilled on both sides — see "The fix round" at the end of this
+ledger.
 
 Two things about it are worth more than the one-line cause.
 
@@ -49,10 +56,16 @@ suite and a clean typecheck. Gate D is the only layer that caught it, exactly
 as its own rationale predicted, and it caught it here only because Task 6's
 brief made someone run it.
 
-Consequence while it stands: `git push` cannot pass Gate D, and
-`deploy/deploy.sh` cannot deploy this branch. The plan's Task 6 push was not
-performed. Using `SKIP_BUILD_GATE=1` would be exactly the wrong move — the gate
-is right.
+While it stood, `git push` could not pass Gate D and `deploy/deploy.sh` could
+not deploy this branch. `SKIP_BUILD_GATE=1` was never used and would have been
+exactly the wrong move — the gate was right, and it was right one commit before
+the branch left this machine. **The one layer nobody had run for four tasks is
+the one layer that mattered.**
+
+After the fix, with the same measurement repeated: `.next` absent → `tsc`
+exit 0; build → exit 0, 13 routes; `.next/types/app/api/users/[user]/walk/route.ts`
+present → `tsc` exit 0. The two states now agree, which is what makes Gate C
+able to catch a regression of this shape at all.
 
 ## Built
 
@@ -64,7 +77,10 @@ cannot distinguish on its own — a wrong key and a corrupt file are both
 `SQLITE_NOTADB`, and only the opener knows whether the file existed a moment
 ago. A failed create unlinks its own debris, because `new Database(path)`
 writes real bytes before the key is validated and a left-behind stub would make
-the *correct* key report as wrong forever after.
+the *correct* key report as wrong forever after. It has two modes: the writable
+one above, and a `{ readonly: true }` one for render paths that neither creates
+nor migrates and whose key check is a read of `sqlite_schema` instead of the
+schema exec.
 
 `POST /api/users/[user]/walk` is the only write path in the repo. Four checks in
 a fixed order — unlocked, then ownership (404, never 403), then a registered
@@ -74,8 +90,9 @@ local day, so a double tap is a no-op with no read-then-write race.
 `app/[user]/page.tsx` resolves three states rather than two: real data when a
 key exists and the file exists, synthetic under the banner otherwise, and
 "not generated yet" when neither file is there. The encrypted open sits inside
-the try, and the handle is closed in a `finally` — opened per request, never
-cached, because a handle is scoped to one key and a key to one session.
+the try, is **read-only**, and the handle is closed in a `finally` — opened per
+request, never cached, because a handle is scoped to one key and a key to one
+session.
 
 `users/devtwo/` is the second worked dashboard and the first one built from a
 confirmed spec: `schema.sql`, `seed.py`, `queries.ts` (reads only), a
@@ -219,12 +236,39 @@ the evidence that the practice pays.
 
 ## Residual risks
 
-1. **`npx next build` fails at `4cf75b8`** — the open blocker above. Not a risk;
-   a known break, unfixed on this branch, blocking both push and deploy.
-2. **Gate C's verdict depends on whether `.next/types` exists**, and that
-   directory is gitignored build output. A clean checkout typechecks green on a
-   branch that does not build. Running a build before the typecheck changes the
-   answer. Nothing in `.githooks/pre-commit` establishes that state.
+1. **Gate C's verdict depends on a gitignored build artifact.**
+   `tsconfig.json` includes `.next/types/**/*.ts`, so `npx tsc --noEmit` on a
+   tree that has never been built does not compile Next's generated per-route
+   types at all. On such a tree "tsc clean" is **truthful and uninformative** —
+   it was truthful and uninformative for four consecutive tasks here, on a
+   branch that did not build. `.githooks/pre-commit` (Gate C) does nothing to
+   establish that state, so the gate's strength varies with whether the
+   developer happens to have run a build recently. This is a sharper version of
+   what `CLAUDE.md > Testing` already says about Gate D, and the reason Gate D
+   has no fast path. Not fixed here: forcing a build before every commit would
+   make Gate C cost what Gate D costs, which is the trade the two-gate split
+   exists to avoid.
+2. **The render path no longer applies `schema.sql`, so a schema change is
+   invisible to a read until the next write.** The direct consequence of the
+   read-only handle, and the intended division of labour — the walk route's
+   writable open is the only thing that creates or migrates a real database.
+   But it means that after a `schema.sql` gains a table, a user's real file
+   stays on the old shape until they next tap, and a dashboard reading the new
+   table in the meantime throws into the `dashboard_error` catch. Previously
+   the page's own open migrated it silently on render. Nothing warns about
+   this; the next dashboard that changes its schema is where it will be felt.
+3. **A table-less encrypted stub is unrecoverable from the UI.** Also from the
+   read-only handle. Two exceptional windows can leave `<slug>.db` present with
+   no schema: a failed create whose cleanup `unlinkSync` ALSO fails (the catch
+   swallows that deliberately, so it cannot mask the original error), and a
+   process killed between `new Database(path)` and the schema exec — a deploy
+   restart is exactly such a kill. Neither is a normal code path; both were
+   checked for before the flag shipped. With the flag, that state renders as
+   "This dashboard failed to load." and the tap control lives inside the failed
+   region, so the write path that would heal the file is unreachable from the
+   page. Before the flag, the render healed it. Recovery today is deleting the
+   file on the droplet. **Open for a ruling** — the alternative is a permanent
+   write capability on every render, which is the thing the flag removes.
 3. **A forgotten password destroys the data.** No reset, no backup, by design.
    Now stated on the login page. The `rm users/devtwo/devtwo.db` reset in
    `docs/local-dev.md` is the same property, deliberately.
@@ -252,21 +296,34 @@ the evidence that the practice pays.
    a scope question. Same family: the page renders the raw `YYYY-MM-DD` day key
    where the mockup humanises the date, and titles itself with the slug where
    the mockup carries its own title and subtitle.
-9. **A dashboard's real-path handle is NOT read-only.** `openEncryptedUserDb`
-   has no readonly mode, because the same call creates the file and applies the
-   schema. On the synthetic path the handle is `readonly: true`; on the real
-   path a dashboard component could write. CLAUDE.md's convention bullet
-   previously claimed a read-only handle unconditionally and has been corrected.
-   Nothing enforces the convention but review.
+9. **CLOSED in the fix round: the real-path handle is now read-only.**
+   `CLAUDE.md` said for two steps that a dashboard "gets a read-only handle, so
+   it cannot write." That was true of the synthetic path and **became false
+   under 6a at the exact moment it started to matter** — the handle now points
+   at the friend's real encrypted data rather than at a file the next deploy
+   regenerates, and `openEncryptedUserDb` had no read-only mode because the
+   same call creates the file. **The invariant was documented for two steps
+   before it was true.** It is now enforced: the render path opens with
+   `{ readonly: true }` and `fileMustExist`, and the pin is a test that makes
+   the handle refuse a real `INSERT` — not one that checks a flag was passed.
+   The cost is residuals 2 and 3 above.
 10. **`seed.py`'s loud-fake sentinel puts a non-day value
     (`'1970-01-01 SAMPLE TEST'`) in the `day` PRIMARY KEY**, contradicting what
     `schema.sql` documents that column to be. Harmless — both window queries are
     string range comparisons that exclude it — and recorded in the file's own
     comment rather than left to be rediscovered.
-11. **`dayKey` (route) and `dayKeyOf` (devtwo queries) are the same computation
-    in two modules, deliberately.** A platform route must not import one user's
-    queries file. The duplication is accepted; nothing pins the two against each
-    other, so they can drift.
+11. **`dayKey` (`lib/time/dayKey.ts`) and `dayKeyOf` (`users/devtwo/queries.ts`)
+    are the same computation in two modules, still deliberately — but the
+    reason has moved.** It was "a platform route must not import ONE USER'S
+    queries file," which the fix round did not change: a shared platform module
+    is not one user's queries file, and the route now imports `lib/time/dayKey`
+    rather than defining its own. What keeps the twin in devtwo's queries is
+    the other half — a user folder is self-contained, and taking a platform
+    dependency for four lines of date arithmetic costs the property that a
+    dashboard folder reads on its own. The two must agree and **nothing pins
+    them against each other**, so they can still drift. That is the residual,
+    and it is now a one-directional one: `lib/time/dayKey.ts` is the definition
+    a future user folder should copy.
 12. **A production `dashboard_error` with `kind: 'error'` gives an operator no
     way to tell a permissions failure from a corrupt file.** Not a regression —
     the prior code had no server-side log either. The right fix is
@@ -288,12 +345,11 @@ the evidence that the practice pays.
 survives a deploy; a locked session can neither read nor write it.
 
 **This ledger does not close it** — that is Nico's to run on
-`app.stairwell.run`, and the blocker above means the branch cannot be deployed
-there yet.
+`app.stairwell.run`. The branch builds and deploys again after the fix round.
 
 **What was observed locally**, at `4cf75b8` on 2026-08-13, `America/Chicago`,
 by driving a running server rather than by reasoning about the code. Under
-`npm run dev`, because the production build does not complete (see the
+`npm run dev`, because at that commit the production build did not complete (see the
 blocker); the cold-route artifact in `docs/local-dev.md` applies and each route
 was requested twice.
 
@@ -341,17 +397,36 @@ ledger deferred it to 6a, and 6a is where it lands.
 
 ## Verification
 
-Run at `4cf75b8` on a clean tree by the implementer of this task, not recalled
-from earlier task reports.
+Run by the implementer of this task, not recalled from earlier task reports.
+
+At `4cf75b8`, before the fix round:
 
 | Layer | Result |
 |---|---|
-| `npx vitest run` | **633 passed**, 58 files, 0 failed |
-| `TZ=UTC npx vitest run` | **633 passed**, 58 files, 0 failed |
-| `npx tsc --noEmit` | **exit 0, silent** — with `.next/` absent. **exit 2** with `.next/types` present; see residual 2 |
-| `npx next build` | **FAILED, exit 1** — see the blocker above |
+| `npx vitest run` | 633 passed, 58 files, 0 failed |
+| `TZ=UTC npx vitest run` | 633 passed, 58 files, 0 failed |
+| `npx tsc --noEmit` | exit 0 with `.next/` absent; **exit 2** with `.next/types` present |
+| `npx next build` | **FAILED, exit 1** |
+| `.claude/hooks/test-hooks.sh` | 158/158 passed |
+
+After the fix round, on a clean tree:
+
+| Layer | Result |
+|---|---|
+| `npx vitest run` | **637 passed**, 59 files, 0 failed |
+| `TZ=Asia/Tokyo npx vitest run` | **637 passed**, 59 files, 0 failed |
+| `npx tsc --noEmit`, `.next` absent | **exit 0, silent** |
+| `npx next build` | **exit 0**, 13 routes generated |
+| `npx tsc --noEmit`, `.next/types` present | **exit 0, silent** — the two states now agree |
 | `.claude/hooks/test-hooks.sh` | **158/158 passed** |
-| `git status --short` | empty; `git ls-files` databases → `fake-real.db` only |
+| `git status --short` | no `*.db`; `git ls-files` databases → `fake-real.db` only |
+
+The suite grew by four: one moved (`tests/time/dayKey.test.ts`, out of
+`tests/routing/walkRoute.test.ts`) and four added for the read-only handle.
+`TZ=Asia/Tokyo` rather than `TZ=UTC` for the second run because the timezone
+test moved this round and UTC is the one offset at which its divergence check
+asserts nothing — Task 4 had already measured that a `dayKeyOf` regression
+reddens 7 tests at UTC+9 and 0 at UTC.
 
 ## Deferred, accepted
 
@@ -398,3 +473,95 @@ a streak that does not drop. Each was caught downstream by someone who ran it.
 The standing rule added mid-plan — **the observation beats the template** — is
 what caught the last two, and it is the rule that produced the honest
 walkthrough above instead of a tidier false one.
+
+---
+
+## The fix round — what Task 6's verification forced
+
+Two changes, both to code, in a task whose brief was documentation. Each was
+drilled rather than argued.
+
+### `dayKey` moved out of the route module
+
+`lib/time/dayKey.ts` now owns it and `app/api/users/[user]/walk/route.ts`
+imports it. The module's header says why it may not go back, and why
+`users/devtwo/queries.ts` keeps its own `dayKeyOf` rather than importing this
+one (residual 11).
+
+The timezone test moved with it, byte-identical in what it asserts, from
+`tests/routing/walkRoute.test.ts` to `tests/time/dayKey.test.ts`. It shed only
+its dynamic-import helper — that existed because `dayKey` lived in a route
+module alongside mocked imports and a static import would have hit a TDZ error
+during `vi.mock` hoisting. `lib/time/dayKey.ts` imports nothing, so the helper
+had nothing left to protect against.
+
+**Drill — a move that orphans its tests is the failure mode, so it was measured
+on both sides.** `dayKey` was replaced with
+`new Date(at).toISOString().slice(0, 10)` and the full suite run at three
+offsets, first at `4cf75b8` (function in the route, test in
+`walkRoute.test.ts`) and then after the move:
+
+| | `TZ=America/Chicago` (UTC−5) | `TZ=UTC` | `TZ=Asia/Tokyo` (UTC+9) |
+|---|---|---|---|
+| Before the move | 1 failed / 633 | **0 failed** / 633 | 1 failed / 633 |
+| After the move | 1 failed / 637 | **0 failed** / 637 | 1 failed / 637 |
+
+Same single test — `dayKey > yields the LOCAL calendar day, and diverges from
+ISO/UTC off-UTC` — same assertion (`expected '2026-08-11' to be '2026-08-12'`
+at UTC+9), same zero at UTC, which is the limit the test states about itself in
+its own comment. The move changed nothing about what the drill detects.
+
+Worth noting what stayed green in every column: the route's own round-trip
+test, which compares the written row against the same `dayKey` used to write
+it. That vacuity was found in Task 2's review and is exactly why the dedicated
+timezone test exists — the drill re-demonstrates it rather than contradicting
+it.
+
+### The read-only handle, and an invariant that was documented before it was true
+
+`openEncryptedUserDb(slug, key, { readonly: true })` opens with `readonly: true`
+and `fileMustExist: true`, skips `journal_mode`/`foreign_keys`, and skips
+`schema.sql` — applying a schema is a write and cannot survive the flag. The
+schema exec was also the writable path's key check, so the read path grows its
+own first touch of the encrypted pages: `SELECT count(*) FROM sqlite_schema`.
+Without it a wrong key would surface later, unnamed, at whatever `SELECT` the
+dashboard happened to run first, instead of as `WrongKeyError`.
+
+`app/[user]/page.tsx` uses it. The walk route does not, and must not: it is the
+only thing that may create or migrate a real database.
+
+**The point is not the flag, it is what the flag makes true again.** `CLAUDE.md`
+had said since step 5 that a dashboard "gets a read-only handle, so it cannot
+write." Step 6a made that sentence false at the exact moment it started to
+matter — the handle stopped pointing at a regenerable synthetic file and
+started pointing at a friend's real encrypted data. Task 6's first pass
+corrected the documentation to match the code. **That was the wrong direction,
+and the controller sent it back:** correct the code and restore the sentence.
+The sentence is restored, and now names both paths and its pin.
+
+**Drill — the flag was removed (`readonly: true` dropped, `fileMustExist`
+kept) and the full suite run: exactly one test reddened**, `openEncryptedUserDb
+> READ-ONLY: the handle a dashboard render gets REFUSES a write`, 636 passed /
+637. Nothing else in the suite noticed, which is the measurement that matters:
+the guarantee is pinned by that test and by nothing else, so if it is ever
+deleted the guarantee goes with it silently.
+
+The test asserts a capability, not an option — it opens a seeded database
+read-only, runs the `INSERT` the walk route runs, requires the driver to refuse
+it, and re-counts the rows. Asserting that `{ readonly: true }` was passed, or
+reading a flag off the handle, would pass against a handle that writes happily;
+this repo has shipped precisely that mistake before (`closeUserDbs releases
+handles`, step 5's fix wave, green while leaking a descriptor per `afterEach`).
+
+Three more tests came with it: that a read-only open never creates a missing
+file, that it still raises `WrongKeyError`, and that it does not read
+`schema.sql` at all. The last one documents residuals 2 and 3 as behaviour
+rather than as a promise.
+
+**What was checked before shipping the flag**, because a read-only handle onto
+a schemaless file would be a broken dashboard with no way back: the only creator
+of `<slug>.db` is `openEncryptedUserDb`'s writable branch, which applies
+`schema.sql` in the same call and unlinks the file if that fails —
+`grep` confirms no other `new Database` in `lib/`, `app/` or `scripts/` touches
+that path. No normal code path leaves a table-less file. Two exceptional
+windows do, and they are residual 3, raised for a ruling rather than buried.

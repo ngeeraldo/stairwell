@@ -79,13 +79,15 @@ architectural changes; do not relitigate decided items).
   ```
 - `users/devone/` is the worked reference implementation. It is hand-written,
   not agent output — see its README.
-- A dashboard is handed `{ slug, db }` and never resolves either itself. On the
-  synthetic path that handle is opened `readonly`, so it cannot write. On the
-  real path it is NOT — `openEncryptedUserDb` has no readonly mode, because the
-  same call creates the file. A dashboard component still must not write: every
-  write goes through a platform route (`POST /api/users/[user]/walk`), which is
-  the only place the four ordered checks live. Enforced by convention and
-  review, not by the handle.
+- A dashboard is handed `{ slug, db }` and never resolves either itself. It
+  gets a read-only handle, so it cannot write — on BOTH paths: `openUserDb`
+  opens the synthetic file `readonly`, and the render path opens the encrypted
+  one with `openEncryptedUserDb(slug, key, { readonly: true })`. Pinned by a
+  test that makes the handle refuse a real INSERT, not by one that checks a
+  flag was passed. A read-only open also skips `schema.sql`, because applying
+  a schema is a write: **the walk route's writable open is the only thing that
+  creates or migrates a user's real database.** Every write goes through a
+  platform route, which is the only place the four ordered checks live.
 - Everything a dashboard shows is synthetic UNTIL that user's first write, and
   the page says so with the banner on every synthetic render. Real per-user
   data arrived in step 6a; Plaid-sourced data is step 6b.
