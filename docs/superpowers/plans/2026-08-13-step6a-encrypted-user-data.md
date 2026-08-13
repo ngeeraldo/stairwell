@@ -21,6 +21,7 @@
 - **`users/<slug>/<slug>.db` is gitignored** by `.gitignore`'s `*.db` and must never be committed. `scripts/regen-synthetic.ts` must never touch it.
 - **Subprocess timeouts:** any test spawning a process declares `const SUBPROCESS_TIMEOUT_MS = 60_000` in its own file. Never a global `testTimeout`.
 - **Delete-the-guard discipline:** for every guard added, delete it, run the suite, confirm exactly its own test goes red, restore. State in the commit message which test reddened.
+- **The observation beats the template.** Every commit message below was written *before* its drill ran, so its claims about which tests redden are predictions. When a drill contradicts one, **change the message to what you observed** and say so in your report. Learned the hard way in Task 1: a message asserting "exactly those three go red" was committed over a report documenting four, and `git log` is what a future reader actually sees.
 - **Run tests with** `npx vitest run <path>`. Gates: pre-commit runs schema-drift, test-coverage and `tsc --noEmit`; pre-push runs the suite then `next build`. Do not use any `SKIP_*`.
 - **Branch:** `step6a-encrypted-user-data`, created from `main`. Never commit to `main`.
 - **Commit messages** end with: `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`
