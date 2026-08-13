@@ -13,22 +13,26 @@
 ```
 Friend's phone/browser
   ├── Dashboard (their code + their data, behind their login)
-  └── Persistent chat window (toggleable/hidden) — the agent surface:
-        first-join interview, goal planning, tweak requests
-        └──► you ──► Claude Code ──► tests pass ──► deploy
+  └── Persistent chat window (toggleable/hidden) — the agent surface for the
+        one proposal loop (§6): discovery → propose_spec → preview → confirm
+        └──► you ──► Claude Code ──► tests pass ──► deploy ──► agent announces in chat, above
 
 Server (single VPS)
   ├── /users/<name>/
   │     ├── dashboard code        (bespoke per user)
-  │     ├── spec.md               (agent-emitted, user-confirmed build spec)
+  │     ├── spec.md               (agent-emitted, user-confirmed build spec —
+  │     │                          rendered from the latest confirmed version)
   │     ├── mockup.html           (agent-rendered UI preview — the build contract)
   │     ├── schema.sql            (their table shapes)
   │     ├── seed.py               (synthetic data generator)
   │     ├── synthetic.db          (regenerated per session)
   │     ├── tests/                (scoped to this dashboard, run on synthetic.db)
   │     └── <name>.db             (real data, SQLCipher-encrypted)
-  ├── Admin portal (Nico only, read-only): transcripts, specs, request queue
-  ├── Alerts → ntfy.sh push (session start, spec confirmed / tweak requested)
+  ├── Admin portal (Nico only, read-only): transcripts, spec versions with
+  │     diffs, metrics (the `requests` table is dead schema, unused since
+  │     step 1 — superseded by the spec-version list, unified-loop ledger D12)
+  ├── Alerts → ntfy.sh push (session start; spec confirmed, now on every
+  │     confirmed version however small — the "run to the computer" signal)
   ├── Plaid sync (runs at login)
   └── Metrics log (from day one)
 ```
@@ -45,7 +49,7 @@ Server (single VPS)
 ### 1. One persistent chat surface — no separate onboarding flow
 - **A single chat window, toggleable to hidden, lives alongside the dashboard.** It is the agent surface for everything: first-join interview, goal planning, and tweak requests. No dedicated onboarding screens.
 - **First join:** the agent opens with a prompted chat message that kicks off the interview conversationally — what they worry about, what they'd want to see every morning, what accounts they have, what they'll realistically log.
-- Interview ends with a **concrete spec presented back for confirmation, alongside a rendered mockup**: the agent generates an HTML preview of the expected dashboard (synthetic numbers, rough styling) rendered inline in chat — HTML, not generated images, so the preview is honest and cheap. On confirmation, the agent **emits a structured `spec.md` + `mockup.html`** saved to the user's folder — rendered in the admin portal and consumed directly by Claude Code, which builds *toward the mockup*. The preview is a contract, not an illustration.
+- Interview ends with a **concrete spec version presented back for confirmation, alongside a rendered mockup**: the agent generates an HTML preview of the expected dashboard (synthetic numbers, rough styling) rendered inline in chat — HTML, not generated images, so the preview is honest and cheap. Every spec version is **whole-surface** — it describes the user's entire dashboard, all screens and panels, not just what the latest conversation touched — and **every change ships through a newly confirmed version, including small ones**: there is no fast path that deploys without a confirmation, however trivial the change looks. The preview card **leads with what changed** relative to the version before it (for version 1, "what changed" is the whole dashboard). On confirmation, the agent **emits a structured `spec.md` + `mockup.html`** rendered from that version, saved to the user's folder — rendered in the admin portal and consumed directly by Claude Code, which builds toward *"make the code match this version."* The preview is a contract, not an illustration.
 - Dashboard delivered **next morning** — first exposure happens inside the morning ritual being tested. 7am text with the link (delivery nudges stay out-of-app; everything else lives in the chat).
 - The agent system prompt (interview opening + ongoing behavior) is the highest-leverage artifact in the pilot; iterate on it by hand.
 
@@ -65,6 +69,7 @@ Server (single VPS)
   the onboarding promise. `transcripts` and `metrics` reject UPDATE and DELETE
   via SQLite triggers.
 - **Schemas are fully bespoke per user, assembled from optional modules.** No mandatory layers — the interview decides what exists; some users will have no finance data at all. You maintain a small library of reusable schema modules (first: `plaid.sql`, since Plaid dictates its shape and the sync job writes into it; workout/sleep modules emerge once hand-built twice). A user who wants finance includes the module; one who doesn't has no Plaid connection or sync job at all. **Rule: shared-module internals are never forked per user** — user-specific needs are met with views/derived tables on top, so shared sync code and each module's synthetic faker keep working for everyone. Custom tables outside modules are unlimited.
+- **Dashboards may render entry widgets — forms writing to the user's own database during their session.** This covers both creating new hand-logged data and annotating synced data (e.g. a note on a Plaid transaction). The render path never holds a writable handle to do this itself: the widget POSTs to a platform route, which is the only place holding the writable connection and the four ordered checks (CLAUDE.md > Dashboard folder conventions). **Annotations on synced rows live in the user's own tables, keyed to the synced rows — never as edits to a shared-module table.** This is the shared-module-internals rule above, applied to writes: it is what stops a login sync or a re-pull from trampling an annotation the user made in between.
 
 ### 2a. Hosting (step 1b)
 - **`app.stairwell.run`** on a DigitalOcean droplet (Ubuntu 24.04), Next.js
@@ -112,22 +117,34 @@ Server (single VPS)
   - *"If you forget your password, your logged data is gone forever — I can't recover it, on purpose, because I can't read it either."* The key is derived from the password and stored nowhere. There is no reset path and no backup, by design.
 - The whole paragraph is pinned sentence-by-sentence in `tests/routing/loginPage.test.ts`. It is a promise made to a person; it should not be able to drift through an unrelated edit without someone deciding to change it.
 
-### 5. The agent's core job — monitoring-first, goals optional
-- The product may end up replacing a horizontal shelf of apps (Quicken, MyFitnessPal, etc.) — so the agent's framing stays broad: its job is to find out **what this person would want to keep an eye on every morning.** What do they currently check (or wish they checked)? What do they worry about? What would they glance at over coffee?
+### 5. The agent's core job — PM for one stakeholder
+- **The agent is product manager for a product with exactly one stakeholder**, working over a single living, versioned spec that describes that person's whole dashboard. The product may end up replacing a horizontal shelf of apps (Quicken, MyFitnessPal, etc.) — so the agent's framing stays broad: its job is to find out **what this person would want to keep an eye on every morning.** What do they currently check (or wish they checked)? What do they worry about? What would they glance at over coffee?
 - **Goals are optional and emergent, never demanded.** "What are your goals?" is a hostile opening for non-introspective people — the exact self-knowledge this product exists to not require. Some users just want their finances visible a certain way; some have deep goals they can't articulate yet. The agent meets them at the monitoring level and lets goals surface over weeks of conversation.
-- Iteration is **user-initiated**: what they care about evolves, they say so in chat, the dashboard follows. No autonomous watcher reading their data — cut from scope. Side effect: no component reads real data unattended; the only unattended real-data touch is the Plaid sync pipe.
+- Iteration is **user-initiated**: what they care about evolves, they say so in chat, a new spec version follows. No autonomous watcher reading their data — cut from scope. Side effect: no component reads real data unattended; the only unattended real-data touch is the Plaid sync pipe.
+- **Product-identity convention: every app has a morning surface.** Each user's product is a bespoke personal app, and its screens may serve any rhythm — glanced at over coffee, or opened in the moment before and after a practice session. One invariant holds regardless of what else the app does: a glanceable daily front door, designed for every user, because it is the retention instrument the hypothesis at the top of this document measures.
 
-### 6. Tweak loop
-- Tweak requests come through the **in-app chat window** — same surface as everything else. Friends know you're behind it; the agent framing gives permission to ask freely. Explicit first-join line: "send anything, any time — every request is data I need." (Optional: a text/Telegram relay for when they're not in the app, but the chat is the canonical channel and the log of record.)
-- Response expectation: small tweaks within a few hours; consistency over speed.
-- **Live-build + notify:** requests come in, you build live via Claude Code, and when the deploy lands the agent posts in chat ("your eating-out panel is live"). No scheduled studio sessions — the chat is the whole loop.
-- Every request logged with timestamp before fulfilling. Later sorted into "expressible as config" vs "needed custom code" — this distribution settles the future architecture debate.
-- Deferred (build only if the week has room): message-mirror → headless Claude Code run → **approval gate** (diff summary + synthetic-render screenshot → you tap ✅ → deploy).
+### 6. The proposal loop
+- **There is exactly one loop.** Every request — the first-ever interview, a brand-new screen, a one-word relabel — travels it, through the same **in-app chat window**. They differ only in the size of the diff between spec versions and in how much discovery precedes the proposal:
+  ```
+  always-on chat (agent as PM, user present)
+    → discovery (proportional to ambiguity — may be one turn)
+    → readiness gate (want / cost accepted / context of use known)
+    → propose_spec
+    → spec version N+1 written, schema-validated, appended
+    → preview card (leads with what changed vs. version N) — Build this / Not quite yet
+    → confirm → ntfy → Nico + Claude Code build to "make the code match spec vN+1"
+    → deploy → agent announces in chat
+    → loop
+  ```
+  Friends know you're behind it; the agent framing gives permission to ask freely. Explicit first-join line: "send anything, any time — every request is data I need." (Optional: a text/Telegram relay for when they're not in the app, but the chat is the canonical channel and the log of record.)
+- Response expectation: small changes within a few hours; consistency over speed.
+- **Live-build + notify:** a request comes in, you build live via Claude Code against the newly confirmed version, and when the deploy lands the agent posts in chat ("your eating-out panel is live"). No scheduled studio sessions — the chat is the whole loop.
+- **The confirmed version *is* the approval gate, and it is never optional.** No version deploys unconfirmed, regardless of how trivial the change looks. This replaces an earlier, deferred idea of a separate message-mirror → headless-build → diff-summary-and-screenshot approval step: the preview card already leads with what changed, and the confirm button already is that gate, so there is nothing further to build.
 
 ### 7. Admin portal (Nico only) + real-time alerts
-- **Read-only portal behind your admin login:** user list; per-user three panes — full chat transcript, current confirmed `spec.md`, and a request queue (open asks with timestamps — doubles as a metrics view).
+- **Read-only portal behind your admin login:** user list; per-user three panes — full chat transcript, spec versions with their diffs against the version each was based on, and metrics. The original third pane, a "request queue (open asks with timestamps — doubles as a metrics view)," is superseded: the `requests` table it would have read from has been dead schema since step 1 — nothing ever wrote to it — and every request now lives as a spec-version diff instead (unified-loop ledger D12).
 - Transcript visibility is already covered by the onboarding promise ("I'll see what you tell the agent") — no new privacy surface.
-- **Alerts via ntfy.sh** (free push; phone app subscribes to a topic, server curls it): (1) session start — first message after 30+ min silence, debounced; (2) spec confirmed / tweak requested — the "run to the computer" signal.
+- **Alerts via ntfy.sh** (free push; phone app subscribes to a topic, server curls it): (1) session start — first message after 30+ min silence, debounced; (2) spec confirmed — now fires on every confirmed version, however small, not just the first — the "run to the computer" signal.
 
 ### 8. Agent system prompt (the chatbot spec)
 - A living, page-length artifact — draft v1 rough, iterate weekly against real transcripts starting with your own step-4 interview. Never "done."
@@ -136,8 +153,9 @@ Server (single VPS)
 ### 9. Metrics pipeline — build in week one, from user #1
 Retention curves cannot be reconstructed retroactively, and they are the fundraise.
 - Dashboard opens (timestamped)
-- Tweak requests and goal-planning conversations (timestamped, verbatim — the chat log is the log of record)
-- Token costs per user (interview, planning, tweak runs) and Plaid per-item cost
+- Every conversation in the proposal loop, timestamped, verbatim — the chat log is the log of record
+- **Spec-version diffs, first-class.** The structural diff between a confirmed version and the version it was based on (screens/panels added, removed, changed) is the canonical record of what a request was. It replaces classifying chat text after the fact, and it is what settles the "expressible as config" vs. "needed custom code" question — the distribution that decides the future architecture debate.
+- Token costs per user (interview, discovery, spec-authoring runs) and Plaid per-item cost
 - Every manual intervention you make that the agent flow didn't produce (= product backlog or evidence it doesn't automate)
 
 ---
