@@ -191,15 +191,21 @@ the merchant names.
 ### 4.3 The dashboard contract — `lib/dashboard/contract.ts`
 
 ```ts
-export type DashboardProps = { slug: string; data: DashboardData }
+export type DashboardProps = { slug: string; db: UserDb }
 export type DashboardComponent =
   (props: DashboardProps) => ReactElement | Promise<ReactElement>
 export type DashboardModule = { default: DashboardComponent }
 ```
 
-A dashboard is an async server component handed its own slug and its own data.
-It cannot obtain a handle to anyone else's, because it is never given one and
-`openUserDb` is called by the page, not by the dashboard.
+A dashboard is a server component handed its own slug and an open handle to its
+own database. It cannot obtain a handle to anyone else's, because it is never
+given one and `openUserDb` is called by the page, not by the dashboard.
+
+The props carry no `source` field and no undefined-`db` case: the page calls a
+dashboard only when it has resolved a real handle, so the component has no
+"what if there's no data" branch to get wrong. Step 6 widens this when there is
+a second source to distinguish; adding a discriminant now would be a union with
+one member.
 
 ### 4.4 `lib/dashboard/registry.ts`
 
@@ -296,9 +302,18 @@ CREATE INDEX IF NOT EXISTS transactions_at ON transactions(at);
 - *Recent transactions* — the ten most recent rows.
 
 **Seed** — 90 days of loudly-fake transactions: `COFFEE PALACE TEST`,
-`BURRITO BARN TEST`, `RENT PAYMENT TEST`, `GROCERY WORLD TEST`. Deterministic
-(`random.seed(...)` with a fixed constant) so a regenerated database does not
-produce a different test result than the one that passed five minutes ago.
+`BURRITO BARN TEST`, `RENT PAYMENT TEST`, `GROCERY WORLD TEST`. Amounts and
+which days get a row come from a fixed `random.Random(seed)`, so two runs on
+the same day produce identical numbers. **Timestamps are deliberately relative
+to the wall clock** — 90 days back from "now" — because a dashboard panel
+reading "this month" must have data in it whenever the generator last ran, and
+a fixed epoch would leave every panel empty within weeks.
+
+The two halves of that do not conflict, because **no test asserts against
+`seed.py`'s output.** `users/devone/tests/*` build their own fixture rows at
+exact timestamps (that is the only way to test a month boundary at all), and
+the conventions sweep in §7 checks shape, not values. `seed.py` exists to make
+a browser show something plausible, not to be an oracle.
 
 **Month boundaries.** "This month" is computed from an injected `now`, never
 from an implicit `Date.now()` inside the query. A query that reads the clock
