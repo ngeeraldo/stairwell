@@ -1,5 +1,6 @@
 import type { PlatformDb } from '@/lib/db/platform'
 import { hashPassword, newSalts, verifyPassword } from './password'
+import { RESERVED_SLUGS, SLUG_PATTERN } from './slug'
 
 export type Account = {
   id: number
@@ -10,29 +11,6 @@ export type Account = {
   salt_key: Buffer
   created_at: number
 }
-
-// Lowercase letters, digits, and hyphens only, 1-32 characters. This is
-// also the thing standing between account creation and an open redirect:
-// app/api/unlock/route.ts builds `new URL(`/${account.slug}`, request.url)`,
-// and a slug allowed to start with '/' (e.g. "/evil.com") would make that
-// resolve to "//evil.com" — a post-authentication redirect off the trusted
-// origin. A slug that can never contain '/' closes that off at the source,
-// for every caller, rather than re-sanitizing at each place a slug gets
-// interpolated into a path.
-const SLUG_PATTERN = /^[a-z0-9-]{1,32}$/
-
-// Route segments a slug must not collide with. admin/login/unlock are
-// real top-level routes (app/admin, app/(auth)/login, app/(auth)/unlock);
-// api and _next are reserved by the app/framework; favicon.ico is a static
-// asset route.
-const RESERVED_SLUGS = new Set([
-  'admin',
-  'login',
-  'unlock',
-  'api',
-  '_next',
-  'favicon.ico',
-])
 
 export async function createAccount(
   db: PlatformDb,
