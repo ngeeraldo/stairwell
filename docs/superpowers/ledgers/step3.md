@@ -188,6 +188,13 @@ catches residual 1. Presence checks cannot: a typo'd topic is present.
 > `nico` is an admin account and is suppressed by design. Testing as yourself
 > looks *identical* to a broken alerter: no push, no row, everything green.
 
+**Amendment, 2026-08-12 (step 4):** No longer true as written. The step-4
+admin-suppression change 403s an admin's `/api/chat` request before it ever
+reaches the alerter, so testing as `nico` now fails loudly and immediately —
+not silently. The alerter's own admin suppression in `lib/alerts/ntfy.ts`
+stays in place as belt-and-braces and remains tested; the trap this paragraph
+warned about is closed, not removed.
+
 ### Checkpoint 1 — local, against the dev topic — **PASSED 2026-08-12**
 
 Nico subscribed the phone to the dev topic, sent a message as a non-admin dev

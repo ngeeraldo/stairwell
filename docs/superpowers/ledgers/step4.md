@@ -117,6 +117,13 @@ broken feature.
 
 **Ruled: run it as `devtwo`.**
 
+**Amendment, 2026-08-12:** Closed, not just avoided. The step-4
+admin-suppression change gives `nico` no user space at all — `/nico` 404s via
+`canSeeUserSpace`, and `/api/chat` / `/api/spec/confirm` 403 — so running the
+checkpoint as `nico` now fails loudly and visibly instead of looking like a
+broken build. The ruling to run it as `devtwo` stands regardless;
+`architecture-overview.md` line 148 has been corrected to name `devtwo`.
+
 > Log in as `devtwo` at `app.stairwell.run` → run a real interview to
 > completion → the agent proposes → the card renders with a working mockup →
 > press **Build this** → the phone buzzes → the spec and mockup render in the

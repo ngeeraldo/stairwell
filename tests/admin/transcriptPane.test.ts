@@ -154,4 +154,17 @@ describe('app/admin/[user]/page.tsx', () => {
       Pane({ params: Promise.resolve({ user: 'ghost' }) }),
     ).rejects.toThrow('NEXT_NOT_FOUND')
   })
+
+  it("404s for the admin's own slug — /nico 404s at the user-space page too, and nothing should render it here either", async () => {
+    // The lookup query filters AND role = 'user'. Without that filter, this
+    // would resolve the admin's own account and render its (empty)
+    // transcript — the only thing standing between "no route serves the
+    // admin's own conversations" and one quietly doing so now that /nico
+    // 404s at app/[user]/page.tsx.
+    await setup('admin')
+    const { default: Pane } = await import('@/app/admin/[user]/page')
+    await expect(
+      Pane({ params: Promise.resolve({ user: 'nico' }) }),
+    ).rejects.toThrow('NEXT_NOT_FOUND')
+  })
 })

@@ -564,6 +564,11 @@ describe('app/admin/page.tsx (AdminPortal)', () => {
     const json = JSON.stringify(element)
     expect(json).toContain('devone')
     expect(json).toContain('devtwo')
+    // The listing query filters WHERE role = 'user'. Without that filter the
+    // admin's own account would list itself alongside devone/devtwo — not a
+    // boundary violation (an admin seeing their own row leaks nothing), but
+    // nothing else pins that the filter stays in place.
+    expect(json).not.toContain('nico')
   })
 
   it('404s for a non-admin (dev user) session — admin is not an override', async () => {

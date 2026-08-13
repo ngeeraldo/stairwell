@@ -104,14 +104,23 @@ time. Warm the routes first if you do use `npm run dev`.
 ## What you should see
 
 1. `/` redirects to `/login`
-2. Log in as `devone` → lands on `/unlock`, not the dashboard
-3. Unlock → `/devone`
-4. `/devtwo` → **404**, not 403 (a 403 would confirm devtwo exists)
-5. `/admin` as `devone` → **404**
-6. As `nico`: `/admin` lists `devone` and `devtwo`
-7. `/devone` as `nico` → **404** — admin is not an override
-8. Restart the server without clearing cookies → `/devone` redirects to
+2. Log in as `devone` → straight to `/devone`, not `/unlock`. Password login
+   derives the key itself; `/unlock` only comes back into play after a
+   restart (see the last step below), not on a fresh login.
+3. `/devtwo` → **404**, not 403 (a 403 would confirm devtwo exists)
+4. `/admin` as `devone` → **404**
+5. As `nico`: `/admin` lists `devone` and `devtwo`
+6. `/devone` as `nico` → **404** — admin is not an override
+7. Log in as `nico` → lands on `/admin`, not `/nico` — the admin account has
+   no user space of its own.
+8. `/nico` as `nico` → **404**, same as any other slug an admin has no user
+   space at.
+9. Restart the server without clearing cookies → `/devone` redirects to
    `/unlock`, not `/login`. The session survived; the key did not.
+9. Log in as `nico` → lands on `/admin`, not `/nico` — the admin account has
+   no user space of its own.
+10. `/nico` as `nico` → **404**, same as any other slug an admin has no user
+    space at.
 
 ## Pulling a confirmed spec into the repo
 

@@ -188,6 +188,30 @@ describe('POST /api/chat — admin', () => {
     const rows = handle!.prepare('SELECT event FROM metrics').all()
     expect(rows).toHaveLength(0)
   })
+
+  it('still 403s an admin whose client would throw on missing credentials — pins that the guard runs before the credential path, not merely that it exists', async () => {
+    // The test above stubs the client into its default healthy behaviour, so
+    // it stays green even if the isAdmin() check were moved below the body
+    // parse and chatClient() construction — it would just never exercise
+    // that ordering. Stubbing the SAME missing-credential behaviour used by
+    // the "no credential" suite below proves the guard runs first: if it
+    // didn't, this would write a permanent chat_error row against the
+    // admin's own account (metrics is append-only) and answer 503 instead
+    // of 403.
+    const { accountId } = await signInAdmin()
+    behaviour.value = 'no-credential'
+
+    const res = await post({ body: 'hi' })
+
+    expect(res.status).toBe(403)
+    expect(await res.text()).toBe('')
+
+    const { readTranscript } = await import('@/lib/db/appendOnly')
+    expect(readTranscript(handle!, accountId)).toHaveLength(0)
+
+    const rows = handle!.prepare('SELECT event FROM metrics').all()
+    expect(rows).toHaveLength(0)
+  })
 })
 
 describe('POST /api/chat', () => {
