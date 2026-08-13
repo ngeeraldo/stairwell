@@ -146,7 +146,7 @@ Retention curves cannot be reconstructed retroactively, and they are the fundrai
 | 2 | Chat window (toggleable) + LLM chatbot w/ system prompt v1 + transcript persistence + admin transcript pane | Dev user chats with the bot; transcript appears in admin |
 | 3 | ntfy.sh alerts (session start, spec confirmed) | Phone buzzes when dev user #2 sends a message |
 | 4 | Interview → structured spec flow: agent presents spec + renders HTML mockup inline in chat, user confirms, `spec.md` + `mockup.html` saved + shown in admin | `devtwo` runs an interview end-to-end; spec + mockup land in the portal |
-| 5 | Per-user dashboard hosting + folder conventions (`schema.sql` / `seed.py` / `tests/` / `synthetic.db`) | Nico builds his own dashboard from his own spec via Claude Code; deploys behind his login; dev user #2 can't see it |
+| 5 | Per-user dashboard hosting + folder conventions (`schema.sql` / `seed.py` / `tests/` / `synthetic.db`) | Nico builds `devtwo`'s dashboard from `devtwo`'s confirmed spec via Claude Code; it deploys behind `devtwo`'s login; `devone` can't see it |
 | 6 | Plaid module: Link flow, SQLCipher, login-triggered sync | Nico's real accounts sync into his encrypted DB; dev folder shows only COFFEE PALACE TEST |
 | 7 | Privacy toggle + metrics logging (append-only, off-VPS backup) | Metrics rows appear from Nico's own usage; backup verified |
 | → | **Onboard test user #1** | |
