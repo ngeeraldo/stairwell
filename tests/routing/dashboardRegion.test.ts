@@ -62,6 +62,16 @@ vi.mock('@/lib/db/userDb', () => ({
   openUserDb: (slug: string) => openUserDbMock(slug),
 }))
 
+const encryptedSlot: { exists: boolean; rows: unknown[] } = { exists: false, rows: [] }
+const openEncryptedMock = vi.fn(() => ({
+  prepare: () => ({ all: () => encryptedSlot.rows, get: () => encryptedSlot.rows[0] }),
+  close: () => {},
+}))
+vi.mock('@/lib/db/encryptedUserDb', () => ({
+  encryptedUserDbExists: () => encryptedSlot.exists,
+  openEncryptedUserDb: () => openEncryptedMock(),
+}))
+
 const SLUG = 'devone'
 
 let pageDir: string
@@ -128,6 +138,9 @@ beforeEach(() => {
   loaderSlot.value = undefined
   dataSlot.value = { source: 'none', db: undefined }
   handle = undefined
+  encryptedSlot.exists = false
+  encryptedSlot.rows = []
+  openEncryptedMock.mockClear()
 })
 
 afterEach(() => {
@@ -242,5 +255,46 @@ describe('app/[user]/page.tsx data region', () => {
 
     expect(JSON.stringify(element)).toContain('This dashboard failed to load')
     expect(metricEvents()).toContain('dashboard_error')
+  })
+
+  it('reads the encrypted database and drops the banner once real data exists', async () => {
+    encryptedSlot.exists = true
+    dataSlot.value = { source: 'synthetic', db: realDb() }
+    loaderSlot.value = async () => ({
+      default: () => React.createElement('section', null, 'REAL PANEL TEST'),
+    })
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    const json = JSON.stringify(element)
+    expect(json).toContain('REAL PANEL TEST')
+    // The banner is the ONLY thing distinguishing a screen of sample data from
+    // a screen of the friend's own. It must go when the data is real.
+    expect(json).not.toContain('SYNTHETIC DATA')
+    expect(openEncryptedMock).toHaveBeenCalled()
+  })
+
+  it('keeps the synthetic banner while no real database exists', async () => {
+    encryptedSlot.exists = false
+    dataSlot.value = { source: 'synthetic', db: realDb() }
+    loaderSlot.value = async () => ({
+      default: () => React.createElement('section', null, 'SAMPLE PANEL TEST'),
+    })
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    const json = JSON.stringify(element)
+    expect(json).toContain('SYNTHETIC DATA')
+    expect(openEncryptedMock).not.toHaveBeenCalled()
+  })
+
+  it('opens NEITHER database for a locked session', async () => {
+    encryptedSlot.exists = true
+    const UserSpace = await arrange({ lock: true })
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    expect(JSON.stringify(element)).toContain('Locked')
+    expect(openEncryptedMock).not.toHaveBeenCalled()
+    expect(openUserDbMock).not.toHaveBeenCalled()
   })
 })

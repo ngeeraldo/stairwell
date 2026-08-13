@@ -11,6 +11,9 @@ import { newestSpec } from '@/lib/db/specs'
 import { parseSpecPayload, SpecShapeError } from '@/lib/spec/schema'
 import type { Proposal } from '@/lib/spec/author'
 import { openUserDb } from '@/lib/db/userDb'
+import type { UserDb } from '@/lib/db/userDb'
+import { encryptedUserDbExists, openEncryptedUserDb } from '@/lib/db/encryptedUserDb'
+import { getKey } from '@/lib/session/keymap'
 import { dashboardLoaderFor } from '@/lib/dashboard/registry'
 import ChatPanel from './ChatPanel'
 
@@ -29,31 +32,62 @@ import ChatPanel from './ChatPanel'
  * function on purpose: it is the surface a friend uses to report that the
  * dashboard broke.
  */
-async function dashboardRegion(slug: string, accountId: number) {
+async function dashboardRegion(slug: string, accountId: number, sessionId: string) {
   const loader = dashboardLoaderFor(slug)
   if (!loader) {
     return <p>Nothing here yet. Your dashboard gets built from your interview.</p>
   }
 
-  const data = openUserDb(slug)
-  if (data.source === 'none') {
-    return <p>Your dashboard is built, but its data has not been generated yet.</p>
+  // Real data wins when it exists. The encrypted file is created lazily on the
+  // first write (design spec section 3), so a user who has logged nothing has
+  // no real database and reads the loudly-fake one under a banner — which is
+  // what keeps devone's reference dashboard working, since it is never written
+  // to and so never acquires a real file.
+  const key = getKey(sessionId)
+  const useReal = key !== undefined && encryptedUserDbExists(slug)
+
+  if (!useReal) {
+    const data = openUserDb(slug)
+    if (data.source === 'none') {
+      return <p>Your dashboard is built, but its data has not been generated yet.</p>
+    }
+    return renderDashboard(loader, slug, data.db, accountId, 'synthetic')
   }
 
+  const db = openEncryptedUserDb(slug, key!)
+  try {
+    return await renderDashboard(loader, slug, db, accountId, 'real')
+  } finally {
+    // Opened per request and closed here: a handle is scoped to one key, and a
+    // key is scoped to one session. Caching it process-wide is exactly the bug
+    // step 5's ledger (residual 4) warns against.
+    db.close()
+  }
+}
+
+async function renderDashboard(
+  loader: () => Promise<{ default: (p: { slug: string; db: UserDb }) => unknown }>,
+  slug: string,
+  db: UserDb,
+  accountId: number,
+  source: 'synthetic' | 'real',
+) {
   try {
     const { default: Dashboard } = await loader()
-    const rendered = await Dashboard({ slug, db: data.db })
-    // After a successful render, never before: a dashboard that threw is not
-    // an open, and metrics is append-only so a wrong row cannot be removed.
+    // CALLED, not returned as <Dashboard />: an element would defer execution
+    // to React's render, outside this try, and the catch is the whole point.
+    const rendered = await Dashboard({ slug, db })
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_open',
-      data: { slug, source: data.source },
+      data: { slug, source },
       at: Date.now(),
     })
     return (
       <>
-        <p role="status">SYNTHETIC DATA — every number below is fake.</p>
+        {source === 'synthetic' && (
+          <p role="status">SYNTHETIC DATA — every number below is fake.</p>
+        )}
         {rendered}
       </>
     )
@@ -129,7 +163,7 @@ export default async function UserSpace({
         proposal={proposal}
       />
       {unlocked ? (
-        await dashboardRegion(user, accountId)
+        await dashboardRegion(user, accountId, sessionId!)
       ) : (
         <p>
           Locked. <a href="/unlock">Unlock</a> to see your data.
