@@ -116,6 +116,38 @@ export function hasConfirmedSpec(db: PlatformDb, accountId: number): boolean {
   return row !== undefined
 }
 
+/**
+ * Whether a confirmed spec exists at a version BELOW `version` — i.e. whether
+ * anything was already being built before the proposal at `version` existed.
+ *
+ * Deliberately NOT hasConfirmedSpec above, and the difference is a promise
+ * made to a person. "Is the card on screen this account's first dashboard" is
+ * not "has this account ever confirmed anything": the instant a friend
+ * confirms their very first card, the unbounded reading flips, and on the next
+ * reload that same card — a whole first dashboard, nothing built yet — starts
+ * describing itself as a small change landing within hours. Bounding the
+ * question by the displayed version keeps it true for the card that IS the
+ * first dashboard, and turns it false only once an EARLIER spec was already
+ * confirmed underneath it.
+ *
+ * hasConfirmedSpec keeps its unbounded meaning because lib/chat/context.ts
+ * asks a genuinely different question of it — interview vs tweak is about the
+ * account's history, not about any one card.
+ *
+ * Walks readSpecs rather than adding a WHERE clause, for the same reason
+ * specByVersion does: version is derived from position, and a second
+ * derivation could disagree with the first.
+ */
+export function hasConfirmedSpecBelow(
+  db: PlatformDb,
+  accountId: number,
+  version: number,
+): boolean {
+  return readSpecs(db, accountId).some(
+    (s) => s.confirmed_at !== null && s.version < version,
+  )
+}
+
 export function confirmSpec(
   db: PlatformDb,
   row: { specId: number; accountId: number; at: number },

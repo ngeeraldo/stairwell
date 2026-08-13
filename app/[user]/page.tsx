@@ -7,7 +7,7 @@ import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
-import { hasConfirmedSpec, newestSpec } from '@/lib/db/specs'
+import { hasConfirmedSpecBelow, newestSpec } from '@/lib/db/specs'
 import { SpecShapeError } from '@/lib/spec/schema'
 import { readStoredSpec } from '@/lib/spec/stored'
 import type { Proposal } from '@/lib/spec/author'
@@ -221,10 +221,23 @@ export default async function UserSpace({
   // Which delivery promise every card on this page makes. Computed HERE, from
   // the record, because ChatPanel is a client component with no database and
   // the alternative — the agent remembering to say it — is exactly what the
-  // fixed chrome exists to replace. Keyed on a CONFIRMED spec, not a proposed
-  // one: someone still deciding on their first card has nothing being built
-  // yet, so "tomorrow morning" is still the honest promise for them.
-  const first = !hasConfirmedSpec(getDb(), accountId)
+  // fixed chrome exists to replace.
+  //
+  // The question is "is the card on screen this account's FIRST dashboard",
+  // which is NOT "has this account ever confirmed anything" — see
+  // hasConfirmedSpecBelow. Asking the unbounded version meant a friend who
+  // pressed "Build this" on their first card and then RELOADED saw that same
+  // card promise their whole first dashboard within a few hours. The card's
+  // own comment says a friend reloading afterwards should still see the
+  // timeframe; it has to be the right one.
+  //
+  // Bounded by the displayed proposal's version, so: nothing confirmed yet →
+  // true; only this card confirmed → still true, it really is their first
+  // dashboard; an earlier spec confirmed with a newer proposal above it →
+  // false. No proposal at all means no card to promise anything about, and
+  // true is the honest default for an account with no dashboard yet.
+  const first =
+    newest === undefined || !hasConfirmedSpecBelow(getDb(), accountId, newest.version)
 
   return (
     <main>

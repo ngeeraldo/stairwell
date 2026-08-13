@@ -8,6 +8,7 @@ import {
   confirmSpec,
   currentSpec,
   hasConfirmedSpec,
+  hasConfirmedSpecBelow,
   insertSpec,
   newestSpec,
   readSpecs,
@@ -60,6 +61,47 @@ describe('insertSpec / readSpecs', () => {
     write(2, 'theirs', 2_000)
     expect(readSpecs(db, 1)).toHaveLength(1)
     expect(readSpecs(db, 99)).toEqual([])
+  })
+})
+
+describe('hasConfirmedSpecBelow — "is this card the first dashboard?"', () => {
+  // The bounded question, and the reason it is not hasConfirmedSpec. See that
+  // function's docstring: the unbounded reading flips the instant a friend
+  // confirms their FIRST card, which made that same card start describing a
+  // whole first dashboard as a small change on the next page load.
+
+  it('is false for an account that has confirmed nothing', () => {
+    write(1, 'one', 1_000)
+    expect(hasConfirmedSpecBelow(db, 1, 1)).toBe(false)
+  })
+
+  it('is false when the ONLY confirmed spec is the one being asked about', () => {
+    // The card that IS the first dashboard. Nothing was being built before
+    // it, so nothing sits below it.
+    const id = write(1, 'one', 1_000)
+    confirmSpec(db, { specId: id, accountId: 1, at: 5_000 })
+    expect(hasConfirmedSpec(db, 1)).toBe(true)
+    expect(hasConfirmedSpecBelow(db, 1, 1)).toBe(false)
+  })
+
+  it('is true once an EARLIER spec was confirmed beneath the one being asked about', () => {
+    const first = write(1, 'one', 1_000)
+    confirmSpec(db, { specId: first, accountId: 1, at: 5_000 })
+    write(1, 'two', 2_000)
+    expect(hasConfirmedSpecBelow(db, 1, 2)).toBe(true)
+  })
+
+  it('ignores an unconfirmed earlier spec — a draft nobody accepted built nothing', () => {
+    write(1, 'an abandoned draft', 1_000)
+    write(1, 'two', 2_000)
+    expect(hasConfirmedSpecBelow(db, 1, 2)).toBe(false)
+  })
+
+  it('scopes to one account', () => {
+    const theirs = write(2, 'theirs', 1_000)
+    confirmSpec(db, { specId: theirs, accountId: 2, at: 5_000 })
+    write(1, 'mine', 2_000)
+    expect(hasConfirmedSpecBelow(db, 1, 1)).toBe(false)
   })
 })
 

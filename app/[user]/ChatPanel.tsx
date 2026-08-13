@@ -344,11 +344,19 @@ function cardTitle(spec: CardSpec): string {
  * to press "Build this" on. Each panel shows its title and its `display` —
  * what will be on the screen — rather than `intent`, which is the reason for
  * it and reads as the agent explaining itself back to them.
+ *
+ * Sorted by `order`, exactly as the admin pane sorts it
+ * (app/admin/[user]/page.tsx) and as renderSpecMarkdown sorts it before
+ * writing spec.md. Nothing stops a model emitting screens in an order other
+ * than `order`, and if this mapped the raw array the friend approving a
+ * proposal and the person building it would be reading the same proposal in
+ * two different sequences.
  */
 function VersionBody({ version }: { version: SpecVersionShape }) {
+  const screens = [...version.screens].sort((a, b) => a.order - b.order)
   return (
     <ul>
-      {version.screens.map((screen) => (
+      {screens.map((screen) => (
         <li key={screen.id}>
           <strong>{screen.title}</strong>
           <ul>

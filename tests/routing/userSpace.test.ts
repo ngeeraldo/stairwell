@@ -495,12 +495,20 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     expect(proposal?.confirmed).toBe(false)
   })
 
-  it('tells ChatPanel this is a first dashboard until the account has confirmed one', async () => {
+  it('keeps calling a first dashboard a first dashboard — through confirming it and reloading', async () => {
     // The delivery promise is chosen server-side, from the record, because
     // it is the one sentence in the pilot that must never be wrong: a
     // first-timer is promised tomorrow morning, someone tweaking an existing
     // dashboard is promised a few hours. ChatPanel cannot work that out —
     // it has no database — so the page must hand it over.
+    //
+    // The rule is "is the card on screen this account's FIRST dashboard",
+    // NOT "has this account ever confirmed anything". Under the unbounded
+    // reading, pressing "Build this" on a first card and then RELOADING made
+    // that same card promise a whole first dashboard within a few hours —
+    // a false promise, on the first-ever conversation, at the exact moment
+    // the card's own comment says the timeframe matters most. Each render
+    // below is a page load, so step 2 IS the reload that was broken.
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount: createAcct } = await import('@/lib/auth/accounts')
     const { createSession: createSess, SESSION_COOKIE } = await import(
@@ -533,14 +541,39 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
 
     const { default: UserSpace } = await import('@/app/[user]/page')
 
-    // Proposed but not confirmed: still a first dashboard.
-    const before = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
-    expect(findChatPanelProps(before)?.first).toBe(true)
+    // 1. Proposed, not yet confirmed: a first dashboard.
+    const proposed = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+    expect(findChatPanelProps(proposed)?.first).toBe(true)
 
+    // 2. They press "Build this", then reload. Nothing has been built for
+    //    this account yet — the card on screen IS the first dashboard, so the
+    //    promise must not change under them.
     confirmSpec(handle, { specId, accountId: id, at: 2_000 })
 
-    const after = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
-    expect(findChatPanelProps(after)?.first).toBe(false)
+    const reloaded = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+    expect(findChatPanelProps(reloaded)?.first).toBe(true)
+
+    // 3. They keep talking and a NEWER proposal arrives on top of the
+    //    confirmed one. Now there really is a dashboard being built
+    //    underneath this card, so this card is a change to it.
+    insertSpec(handle, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: {
+        title: 'Did I walk the dog today?',
+        summary: 'A one-tap tracker.',
+        background: 'Pivoted from weather TEST.',
+        panels: [{ name: 'Walked today?', shows: 'Yes/no', why: 'They asked', source: 'manual' }],
+        manual_logging: ['One tap per day.'],
+        open_questions: [],
+      },
+      mockupHtml: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+      at: 3_000,
+    })
+
+    const tweaked = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+    expect(findChatPanelProps(tweaked)?.first).toBe(false)
   })
 
   it('degrades a corrupt stored proposal to no card, not a 500', async () => {

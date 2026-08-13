@@ -177,8 +177,14 @@ const VERSION_PROPOSAL: CardProposal = {
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
 
-/** Two screens, so "lists every panel" cannot be satisfied by walking only
- * the first screen — the bug a single-screen fixture could never see. */
+/**
+ * Two screens, so "lists every panel" cannot be satisfied by walking only the
+ * first screen — the bug a single-screen fixture could never see.
+ *
+ * Stored with `order` DISAGREEING with array position, on purpose: nothing
+ * stops a model emitting screens in some other sequence, and the card, the
+ * admin pane and spec.md must all read the proposal the same way round.
+ */
 const TWO_SCREEN_PROPOSAL: CardProposal = {
   id: 44,
   version: 3,
@@ -187,8 +193,8 @@ const TWO_SCREEN_PROPOSAL: CardProposal = {
     version: {
       ...VERSION,
       screens: [
-        { id: 'today', title: 'Today', order: 1, panels: [walkedTodayPanel()] },
         { id: 'history', title: 'History', order: 2, panels: [streakPanel()] },
+        { id: 'today', title: 'Today', order: 1, panels: [walkedTodayPanel()] },
       ],
     },
   },
@@ -324,6 +330,10 @@ describe('the proposal card', () => {
     )
     expect(html).toContain('Walked today?')
     expect(html).toContain('Current streak')
+    // ...and in `order`, not in whatever sequence the model happened to emit.
+    // The admin pane and spec.md both sort by `order`; a card that did not
+    // would show the friend a different proposal from the one being built.
+    expect(html.indexOf('Walked today?')).toBeLessThan(html.indexOf('Current streak'))
   })
 
   it('still renders a legacy card exactly as before', () => {
