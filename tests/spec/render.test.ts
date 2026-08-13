@@ -274,6 +274,44 @@ const allSyncedVersion: SpecVersion = sealVersion(
   null,
 )
 
+/** Two screens whose ARRAY position is the reverse of their `order` field —
+ * "second" is stored first, "first" is stored second. Isolates the
+ * Entered-by-hand section's screen-walk order from its storage order, which
+ * a self-review round caught disagreeing (collectEnteredValues originally
+ * walked `version.screens` directly instead of the order-sorted copy the
+ * Screens section itself renders). */
+const outOfOrderVersion: SpecVersion = sealVersion(
+  parseSpecDraft(
+    draft({
+      screens: [
+        {
+          id: 'second',
+          title: 'Second',
+          order: 2,
+          panels: [
+            panel({
+              id: 'panel_two',
+              values: [{ kind: 'entered', id: 'value_two', description: 'Second value.' }],
+            }),
+          ],
+        },
+        {
+          id: 'first',
+          title: 'First',
+          order: 1,
+          panels: [
+            panel({
+              id: 'panel_one',
+              values: [{ kind: 'entered', id: 'value_one', description: 'First value.' }],
+            }),
+          ],
+        },
+      ],
+    }),
+  ),
+  null,
+)
+
 const meta = { slug: 'devtwo', version: 1, confirmedAt: 1_760_000_000_000 }
 
 /** Replaces one panel's intent in place, mirroring diff.test.ts's
@@ -316,6 +354,19 @@ describe('renderSpecMarkdown', () => {
 
   it('says so plainly when a version has no entered values', () => {
     expect(renderSpecMarkdown(allSyncedVersion, meta)).toMatch(/## Entered by hand\n\n_None\./)
+  })
+
+  it('lists entered values in screen ORDER, not array-storage order', () => {
+    // outOfOrderVersion stores "second" (order: 2) before "first" (order: 1).
+    // The Screens section renders by `order`, so Entered-by-hand — a
+    // DIFFERENT walk over the same version — must agree with it, or the two
+    // sections of one build contract would tell a reader two different
+    // stories about which screen came first.
+    const md = renderSpecMarkdown(outOfOrderVersion, meta)
+    const enteredBlock = md.slice(md.indexOf('## Entered by hand'), md.indexOf('## Data requirements'))
+    expect(enteredBlock.indexOf('First value')).toBeGreaterThanOrEqual(0)
+    expect(enteredBlock.indexOf('Second value')).toBeGreaterThanOrEqual(0)
+    expect(enteredBlock.indexOf('First value')).toBeLessThan(enteredBlock.indexOf('Second value'))
   })
 
   it('escapes a leading # or fence in every interpolated field', () => {

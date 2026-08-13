@@ -176,16 +176,20 @@ function dataRequirementLine(requirement: DataRequirement): string {
 }
 
 /**
- * Walk every screen and panel for values whose kind is `entered`. This is
- * the WHOLE basis of the "Entered by hand" section below: computed from the
- * values themselves rather than authored as a separate list, so it can never
- * name a value that isn't there or omit one that is. The old shape's
+ * Walk every screen and panel, in the SAME order the Screens section above
+ * renders them, for values whose kind is `entered`. This is the WHOLE basis
+ * of the "Entered by hand" section below: computed from the values
+ * themselves rather than authored as a separate list, so it can never name a
+ * value that isn't there or omit one that is. The old shape's
  * `manual_logging` was a model-authored list with no such guarantee — see
- * design ledger D1.
+ * design ledger D1. Taking the already-sorted screens (rather than
+ * `version.screens` directly) matters here: otherwise this section could
+ * list values in an order that disagrees with the Screens section a few
+ * paragraphs above it, for a version whose screens weren't stored in `order`.
  */
-function collectEnteredValues(version: SpecVersion): ValueSpec[] {
+function collectEnteredValues(screensInOrder: Screen[]): ValueSpec[] {
   const entered: ValueSpec[] = []
-  for (const screen of version.screens) {
+  for (const screen of screensInOrder) {
     for (const panel of screen.panels) {
       for (const value of panel.values) {
         if (value.kind === 'entered') entered.push(value)
@@ -206,12 +210,10 @@ function collectEnteredValues(version: SpecVersion): ValueSpec[] {
  * function of `version` and `meta`, so a re-export produces no spurious diff.
  */
 export function renderSpecMarkdown(version: SpecVersion, meta: RenderMeta): string {
-  const screensSection = [...version.screens]
-    .sort((a, b) => a.order - b.order)
-    .map(renderScreen)
-    .join('\n\n')
+  const screensInOrder = [...version.screens].sort((a, b) => a.order - b.order)
+  const screensSection = screensInOrder.map(renderScreen).join('\n\n')
 
-  const entered = collectEnteredValues(version)
+  const entered = collectEnteredValues(screensInOrder)
   const enteredSection = entered.length === 0 ? '_None._' : entered.map(valueLine).join('\n')
 
   const dataRequirementsSection =
