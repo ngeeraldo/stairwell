@@ -145,6 +145,13 @@ export default async function TranscriptPane({
           </section>
         ))
       )}
+
+      {/* Same reasoning as app/admin/page.tsx: an admin has no user space, so
+          without this the only logout on this page is the browser's cookie
+          jar. A POST form because /api/logout answers POST only. */}
+      <form method="post" action="/api/logout">
+        <button type="submit">Log out</button>
+      </form>
     </main>
   )
 }

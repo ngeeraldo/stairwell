@@ -27,6 +27,24 @@ export default async function AdminPortal() {
           ))}
         </ul>
       )}
+
+      {/*
+        The admin account's ONLY way out.
+
+        Step 4 gave admin accounts no user space at all — /nico 404s via
+        canSeeUserSpace — and app/[user]/page.tsx was where the logout control
+        lived. That change silently left an admin with no reachable logout,
+        which is how it was found: from the browser, mid-checkpoint, with no
+        way to end the session short of clearing the cookie by hand.
+
+        A POST form rather than a link, for the same reason /unlock's is:
+        app/api/logout/route.ts only answers POST, and a GET link would 405.
+        It deliberately does not call requireState, so it answers for an admin
+        session exactly as it does for a friend's.
+      */}
+      <form method="post" action="/api/logout">
+        <button type="submit">Log out</button>
+      </form>
     </main>
   )
 }

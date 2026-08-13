@@ -579,6 +579,14 @@ describe('app/admin/page.tsx (AdminPortal)', () => {
     // boundary violation (an admin seeing their own row leaks nothing), but
     // nothing else pins that the filter stays in place.
     expect(json).not.toContain('nico')
+
+    // The admin's only way out. Step 4 gave admin accounts no user space, and
+    // app/[user]/page.tsx was where the logout control lived — so an admin was
+    // left with no reachable logout at all, found from a browser mid-checkpoint
+    // rather than by any test. A POST form specifically: /api/logout answers
+    // POST only, so a link would 405.
+    expect(json).toContain('/api/logout')
+    expect(json).toContain('post')
   })
 
   it('404s for a non-admin (dev user) session — admin is not an override', async () => {
