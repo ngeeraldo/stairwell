@@ -27,7 +27,7 @@ exported deliberately in Task 2's fix round, because the review found it had
 zero tests and a UTC regression was invisible; the timezone tests that came
 with it are load-bearing. It now lives in `lib/time/dayKey.ts`, a platform
 module the route imports, with its tests moved to `tests/time/dayKey.test.ts`.
-The move was drilled on both sides — see "The fix round" at the end of this
+The move was drilled on both sides — see "Fix round 1" at the end of this
 ledger.
 
 Two things about it are worth more than the one-line cause.
@@ -71,16 +71,18 @@ able to catch a regression of this shape at all.
 
 `lib/db/encryptedUserDb.ts` opens (or lazily creates) `users/<slug>/<slug>.db`
 with `db.key(Buffer)` over a pinned `chacha20` cipher, executes that user's
-`schema.sql` as the first statement so the key check and the schema apply are
-the same operation, and names `WrongKeyError` for the one case the driver
-cannot distinguish on its own — a wrong key and a corrupt file are both
-`SQLITE_NOTADB`, and only the opener knows whether the file existed a moment
-ago. A failed create unlinks its own debris, because `new Database(path)`
-writes real bytes before the key is validated and a left-behind stub would make
-the *correct* key report as wrong forever after. It has two modes: the writable
-one above, and a `{ readonly: true }` one for render paths that neither creates
-nor migrates and whose key check is a read of `sqlite_schema` instead of the
-schema exec.
+`schema.sql` as the first statement on the writable path so the key check and
+the schema apply are the same operation, and names `WrongKeyError` for the one
+case the driver cannot distinguish on its own — a wrong key and a corrupt file
+are both `SQLITE_NOTADB`, and only the opener knows whether the file existed a
+moment ago. Creation is atomic: the database is built under a temp name in the same
+directory and `link()`ed into place only once it is complete and closed, so
+`<slug>.db` never exists without its schema and a concurrent first-write cannot
+clobber a row the winner already stored. It has two modes: the writable one
+above, and a `{ readonly: true }` one for render paths that neither creates nor
+migrates and whose key check is a read of `sqlite_schema` instead of the schema
+exec. Neither mode lets `new Database` create at the real path — `fileMustExist`
+on both.
 
 `POST /api/users/[user]/walk` is the only write path in the repo. Four checks in
 a fixed order — unlocked, then ownership (404, never 403), then a registered
@@ -248,27 +250,42 @@ the evidence that the practice pays.
    has no fast path. Not fixed here: forcing a build before every commit would
    make Gate C cost what Gate D costs, which is the trade the two-gate split
    exists to avoid.
-2. **The render path no longer applies `schema.sql`, so a schema change is
-   invisible to a read until the next write.** The direct consequence of the
-   read-only handle, and the intended division of labour — the walk route's
-   writable open is the only thing that creates or migrates a real database.
-   But it means that after a `schema.sql` gains a table, a user's real file
-   stays on the old shape until they next tap, and a dashboard reading the new
-   table in the meantime throws into the `dashboard_error` catch. Previously
-   the page's own open migrated it silently on render. Nothing warns about
-   this; the next dashboard that changes its schema is where it will be felt.
-3. **A table-less encrypted stub is unrecoverable from the UI.** Also from the
-   read-only handle. Two exceptional windows can leave `<slug>.db` present with
-   no schema: a failed create whose cleanup `unlinkSync` ALSO fails (the catch
-   swallows that deliberately, so it cannot mask the original error), and a
-   process killed between `new Database(path)` and the schema exec — a deploy
-   restart is exactly such a kill. Neither is a normal code path; both were
-   checked for before the flag shipped. With the flag, that state renders as
-   "This dashboard failed to load." and the tap control lives inside the failed
-   region, so the write path that would heal the file is unreachable from the
-   page. Before the flag, the render healed it. Recovery today is deleting the
-   file on the droplet. **Open for a ruling** — the alternative is a permanent
-   write capability on every render, which is the thing the flag removes.
+2. **THERE IS NO MIGRATION STORY FOR ENCRYPTED PER-USER DATABASES, and that is
+   a prerequisite for step 6b, not a note about read staleness.** Every other
+   database in this repo has one: `lib/db/reshape.ts` widens the platform
+   database's tables, and the synthetic per-user files are regenerated from
+   `schema.sql` on every deploy. A real `<slug>.db` has neither. It is created
+   once with whatever `schema.sql` said that day and **frozen at that shape** —
+   the only thing that re-executes `schema.sql` against it is the walk route's
+   writable open, which fires on a tap, and `CREATE TABLE IF NOT EXISTS` can
+   add a table but cannot alter one that already exists. The read path does not
+   apply the schema at all any more (residual 9's read-only handle), so a
+   render sees the frozen shape.
+
+   Harmless today, because no user schema has changed since any real file was
+   created and `devtwo`'s is one table. **It stops being harmless in step 6b**,
+   when Plaid tables arrive and every existing `<slug>.db` needs a shape it was
+   not born with — at which point a dashboard reading a new table throws into
+   `dashboard_error` for every user whose file predates it, and there is no
+   mechanism to fix that. Whoever plans 6b must design this before writing a
+   Plaid schema, and `reshape.ts` is not reusable as-is: it can prove a table
+   holds zero rows before dropping it, which is exactly the assumption that
+   fails on a database holding a real person's history.
+3. **CLOSED in fix round 2: a table-less encrypted stub can no longer exist at
+   the real path.** It was the sharp edge of residual 9's read-only handle —
+   two exceptional windows (a failed create whose cleanup `unlinkSync` ALSO
+   fails, and a process killed between `new Database(path)` and the schema
+   exec, which a deploy restart is) could leave `<slug>.db` present with no
+   tables, and the read-only render no longer healed it. The dashboard's first
+   SELECT throws, the tap control lives inside the region that just failed, so
+   the only healing path was unreachable from the only page that offers it. A
+   friend could not get out of it; ssh could. **Ruled by the controller: remove
+   the window rather than mitigate the consequence.** The database is now built
+   under a temp name in the same directory and `link()`ed into place once it is
+   complete and closed, so a kill at any point leaves debris under a name
+   nothing opens, never a schemaless file at the real path — which disposes of
+   the failed-`unlinkSync` case too, since that debris is no longer where
+   anything looks. See "Fix round 2" below.
 3. **A forgotten password destroys the data.** No reset, no backup, by design.
    Now stated on the login page. The `rm users/devtwo/devtwo.db` reset in
    `docs/local-dev.md` is the same property, deliberately.
@@ -306,7 +323,8 @@ the evidence that the practice pays.
    before it was true.** It is now enforced: the render path opens with
    `{ readonly: true }` and `fileMustExist`, and the pin is a test that makes
    the handle refuse a real `INSERT` — not one that checks a flag was passed.
-   The cost is residuals 2 and 3 above.
+   Its two consequences are residual 2 (no migration story, deferred to 6b) and
+   residual 3 (closed in the next round by making creation atomic).
 10. **`seed.py`'s loud-fake sentinel puts a non-day value
     (`'1970-01-01 SAMPLE TEST'`) in the `day` PRIMARY KEY**, contradicting what
     `schema.sql` documents that column to be. Harmless — both window queries are
@@ -409,24 +427,36 @@ At `4cf75b8`, before the fix round:
 | `npx next build` | **FAILED, exit 1** |
 | `.claude/hooks/test-hooks.sh` | 158/158 passed |
 
-After the fix round, on a clean tree:
+After fix round 1:
 
 | Layer | Result |
 |---|---|
-| `npx vitest run` | **637 passed**, 59 files, 0 failed |
-| `TZ=Asia/Tokyo npx vitest run` | **637 passed**, 59 files, 0 failed |
+| `npx vitest run` | 637 passed, 59 files, 0 failed |
+| `TZ=Asia/Tokyo npx vitest run` | 637 passed, 59 files, 0 failed |
+| `npx tsc --noEmit`, `.next` absent | exit 0, silent |
+| `npx next build` | exit 0, 13 routes generated |
+| `npx tsc --noEmit`, `.next/types` present | exit 0, silent |
+| `.claude/hooks/test-hooks.sh` | 158/158 passed |
+
+After fix round 2, on a clean tree — the numbers this ledger stands on:
+
+| Layer | Result |
+|---|---|
+| `npx vitest run` | **639 passed**, 59 files, 0 failed |
+| `TZ=Asia/Tokyo npx vitest run` | **639 passed**, 59 files, 0 failed |
 | `npx tsc --noEmit`, `.next` absent | **exit 0, silent** |
 | `npx next build` | **exit 0**, 13 routes generated |
 | `npx tsc --noEmit`, `.next/types` present | **exit 0, silent** — the two states now agree |
 | `.claude/hooks/test-hooks.sh` | **158/158 passed** |
 | `git status --short` | no `*.db`; `git ls-files` databases → `fake-real.db` only |
 
-The suite grew by four: one moved (`tests/time/dayKey.test.ts`, out of
-`tests/routing/walkRoute.test.ts`) and four added for the read-only handle.
-`TZ=Asia/Tokyo` rather than `TZ=UTC` for the second run because the timezone
-test moved this round and UTC is the one offset at which its divergence check
-asserts nothing — Task 4 had already measured that a `dayKeyOf` regression
-reddens 7 tests at UTC+9 and 0 at UTC.
+The suite went 633 → 639 across the two rounds: one test moved
+(`tests/time/dayKey.test.ts`, out of `tests/routing/walkRoute.test.ts`, hence
+58 → 59 files), four added for the read-only handle, and two for the atomic
+create. `TZ=Asia/Tokyo` rather than `TZ=UTC` for the second run because the
+timezone test moved in round 1 and UTC is the one offset at which its
+divergence check asserts nothing — Task 4 had already measured that a
+`dayKeyOf` regression reddens 7 tests at UTC+9 and 0 at UTC.
 
 ## Deferred, accepted
 
@@ -476,7 +506,7 @@ walkthrough above instead of a tidier false one.
 
 ---
 
-## The fix round — what Task 6's verification forced
+## Fix round 1 — what Task 6's verification forced
 
 Two changes, both to code, in a task whose brief was documentation. Each was
 drilled rather than argued.
@@ -565,3 +595,102 @@ of `<slug>.db` is `openEncryptedUserDb`'s writable branch, which applies
 `grep` confirms no other `new Database` in `lib/`, `app/` or `scripts/` touches
 that path. No normal code path leaves a table-less file. Two exceptional
 windows do, and they are residual 3, raised for a ruling rather than buried.
+
+---
+
+## Fix round 2 — atomic create
+
+One change. **Ruled by the controller against the implementer's own
+recommendation to carry it**, and the ruling is the interesting part: the odds
+were agreed to be tiny and the paths agreed to be unreachable, but the
+CONSEQUENCE had changed. Before the read-only render handle, a degenerate
+`<slug>.db` healed itself the next time the page was viewed. After it, the
+dashboard's first SELECT throws, and the tap control that would heal the file
+sits inside the region that just failed — so the only healing path is
+unreachable from the only page that offers it. Nico can recover with
+`rm users/<slug>/<slug>.db` over ssh; the friend it is landing on cannot. **A
+low-probability state a user cannot escape from is not the same risk as a
+low-probability state that self-heals**, and the second is what the earlier
+analysis was implicitly pricing.
+
+So: remove the window, do not mitigate it. `openEncryptedUserDb`'s creating
+branch now builds the database under a temp name in the same directory, keys
+it, applies `schema.sql`, closes it, and `link()`s it into place. Then it opens
+the real path normally. `fileMustExist` is now set on BOTH opens, so
+`new Database` is never the thing that brings a real database into existence.
+
+### Two questions were answered by measurement before the code was trusted
+
+**WAL sidecars.** If the opener leaves the database in WAL mode, moving the
+main file alone strands `-wal` and `-shm`, which hold rows the main file does
+not. Probed rather than reasoned: with the database open the directory holds
+`probe.db`, `probe.db-shm`, `probe.db-wal`; after `close()` it holds `probe.db`
+alone, 12288 bytes, complete — repeated with a row inserted, same result. A
+clean close checkpoints and removes the sidecars, so exactly one file is
+linked. This is why the close is inside the create rather than after it.
+
+**`link()` versus `rename()`.** Both are atomic within one directory, and the
+brief allowed last-rename-wins on the grounds that both racers build an empty
+database. **That reasoning does not hold, and rename is wrong here.** The
+loser's rename does not land at build time; it lands whenever it lands, which
+can be after the winner has already opened the file and written the first tap
+into it. That is a lost row, not a lost empty file. `linkSync` throws `EEXIST`
+instead — probed directly: a second `link` onto an existing name fails
+`EEXIST`, the target keeps the winner's content, and unlinking the temp name
+afterwards leaves the target intact at `nlink: 1`. The loser therefore keeps
+nothing and simply opens what the winner put there, which is correct because
+both keys are necessarily identical (the key derives from the account's
+password and salt, so two live sessions for one user cannot hold different
+ones).
+
+**The temp name is `.creating-<16 hex>.<slug>.db`.** It cannot collide with any
+real database because `SLUG_PATTERN` (`/^[a-z0-9-]{1,32}$/`) forbids dots, so
+no valid slug produces it. It still ENDS in `.db` on purpose, so
+`.claude/hooks/deny-sensitive-files.sh` denies reading it exactly like any
+other non-synthetic database and `.gitignore`'s `*.db` covers it. It is
+dot-prefixed so a person running `ls` in a user folder does not see something
+that looks like their data.
+
+### The unlink Task 1 added is now gone, deliberately
+
+Task 1's fix put an `unlinkSync(path)` in the catch, because a failed open
+could leave a table-less stub whose presence made `existedBefore` true on the
+retry — so the CORRECT key would be reported as `WrongKeyError` forever. That
+patch is not merely unnecessary now, it is harmful: whatever sits at `path` is
+by construction a complete database, and deleting it on a failed open would
+destroy a valid file, possibly one a concurrent request has already written to.
+The property Task 1 wanted is preserved by the create's own temp cleanup, and
+by the same test.
+
+### Drills
+
+Two, because the change has two independent properties and a test that cannot
+distinguish them is this branch's most-repeated defect.
+
+**Drill A — revert to the direct-create form** (`new Database(path)`, no temp,
+no link). Full suite: **2 failed / 639**.
+
+- `ATOMIC CREATE: <slug>.db is never observable without its schema` — the new
+  property test.
+- `leaves no file behind when the open fails on a brand-new file` — Task 1's
+  own test, from a year of this file's history.
+
+The second was not predicted and is worth recording: with the unlink removed
+(above) and the direct create restored, Task 1's original test fails again,
+because it was the unlink that made it pass. **The two are one mechanism: the
+unlink existed to patch exactly the hole the atomic create removes.** Reverting
+half the change reopens the bug the other half closed, and the pre-existing
+test says so.
+
+**Drill B — `renameSync` in place of `linkSync`**, everything else unchanged.
+Full suite: **1 failed / 639**, exactly
+`ATOMIC CREATE: a concurrent first-write cannot clobber a row the winner
+stored`. So the concurrency test discriminates link from rename specifically,
+and is not merely riding on Drill A's atomicity.
+
+The two new tests are properties, not mechanisms. The first spies on
+`Database.prototype.exec` and records whether the REAL path exists at the
+instant the schema is being applied — it asserts the window is absent, not that
+any particular file was used to avoid it. The second forces the race rather
+than hoping for it: it plants a complete, row-bearing database at the real path
+at exactly that instant, and requires the row to survive.

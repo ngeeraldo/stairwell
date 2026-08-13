@@ -5,7 +5,15 @@
 // happily against no encryption at all.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3-multiple-ciphers'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -157,6 +165,103 @@ describe('openEncryptedUserDb', () => {
     } finally {
       pragmaSpy.mockRestore()
       keySpy.mockRestore()
+    }
+  })
+
+  it('ATOMIC CREATE: <slug>.db is never observable without its schema', () => {
+    // The property, not the mechanism. A direct `new Database(path)` creates
+    // the file and writes pragma bytes BEFORE schema.sql is read, so there is
+    // a window in which <slug>.db exists with no tables. This asserts on that
+    // window from the inside: at the instant the schema is being applied, the
+    // real path must not exist yet. Whatever satisfies that — temp file plus
+    // link, or anything else — is fine; a file materialising at the real path
+    // before its tables is not.
+    //
+    // Why the window is worth closing rather than accepting: the render path
+    // is read-only now, so a table-less file no longer heals on the next page
+    // view. The dashboard's first SELECT throws, and the tap control that
+    // would heal it sits inside the region that just failed.
+    const realPath = encryptedUserDbPath('devtwo')
+    const originalExec = Database.prototype.exec
+    const realPathExistedDuringSchema: boolean[] = []
+
+    const execSpy = vi
+      .spyOn(Database.prototype, 'exec')
+      .mockImplementation(function (this: Database.Database, sql: string) {
+        if (/CREATE TABLE/i.test(sql)) realPathExistedDuringSchema.push(existsSync(realPath))
+        return originalExec.call(this, sql)
+      })
+
+    try {
+      expect(existsSync(realPath)).toBe(false)
+      const db = openEncryptedUserDb('devtwo', KEY)
+      db.close()
+
+      expect(realPathExistedDuringSchema.length).toBeGreaterThan(0)
+      expect(realPathExistedDuringSchema[0]).toBe(false)
+    } finally {
+      execSpy.mockRestore()
+    }
+
+    // And afterwards it is a real database with the schema applied...
+    const db = openEncryptedUserDb('devtwo', KEY)
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS n FROM walks').get()).toEqual({ n: 0 })
+    } finally {
+      db.close()
+    }
+    // ...with no half-built file left beside it. The temp name is dot-prefixed
+    // and still ends in .db, so it is covered by the guard hook and .gitignore
+    // while it exists — but it must not survive the call.
+    expect(readdirSync(join(root, 'devtwo')).filter((f) => f.includes('creating'))).toEqual(
+      [],
+    )
+  })
+
+  it('ATOMIC CREATE: a concurrent first-write cannot clobber a row the winner stored', () => {
+    // The reason this uses link() rather than rename(). Both are atomic within
+    // a directory, but rename CLOBBERS: two first-writes racing for one user
+    // each build an empty database, and the loser's rename lands on top of a
+    // file the winner has already written a tap into. That is a lost row, not
+    // a lost empty file.
+    //
+    // The race is forced rather than hoped for: the winner's database is
+    // planted at the real path at the exact instant this call is applying the
+    // schema to its own copy — the window in question.
+    const realPath = encryptedUserDbPath('devtwo')
+    const originalExec = Database.prototype.exec
+    let planted = false
+
+    const execSpy = vi
+      .spyOn(Database.prototype, 'exec')
+      .mockImplementation(function (this: Database.Database, sql: string) {
+        const result = originalExec.call(this, sql)
+        if (!planted && /CREATE TABLE/i.test(sql)) {
+          planted = true
+          const winner = new Database(realPath)
+          winner.pragma(`cipher='chacha20'`)
+          winner.key(KEY)
+          originalExec.call(winner, SCHEMA)
+          winner.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
+          winner.close()
+        }
+        return result
+      })
+
+    let db: ReturnType<typeof openEncryptedUserDb>
+    try {
+      db = openEncryptedUserDb('devtwo', KEY)
+    } finally {
+      execSpy.mockRestore()
+    }
+
+    try {
+      expect(planted).toBe(true)
+      // The winner's row survived, and the loser's empty database did not
+      // replace it.
+      expect(db.prepare('SELECT day FROM walks').all()).toEqual([{ day: '2026-08-13' }])
+    } finally {
+      db.close()
     }
   })
 

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3-multiple-ciphers'
-import { existsSync, readFileSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
+import { existsSync, linkSync, readFileSync, unlinkSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { SLUG_PATTERN } from '@/lib/auth/slug'
 import { usersRoot } from '@/lib/db/userDb'
 
@@ -69,6 +70,86 @@ export type OpenEncryptedOptions = {
 }
 
 /**
+ * Build a user's encrypted database somewhere else and LINK it into place, so
+ * that `<slug>.db` never exists without its schema.
+ *
+ * WHY THIS IS NOT `new Database(path)` FOLLOWED BY A SCHEMA EXEC:
+ * the driver creates the file and the WAL / foreign_keys pragmas write real
+ * bytes before `schema.sql` is read, so the direct form has a window in which
+ * `<slug>.db` exists with no tables. A failed create unlinks its own debris,
+ * which closes the window for a failure — but not for a KILL inside it, and a
+ * deploy restart is exactly such a kill. What made that worth removing rather
+ * than accepting is that the CONSEQUENCE changed when the render path became
+ * read-only: a table-less file no longer heals on the next page view, the
+ * dashboard's first SELECT throws into `dashboard_error`, and the tap control
+ * that would heal it lives inside the region that just failed. A friend cannot
+ * get out of that state; only ssh can. So the window is removed instead.
+ *
+ * `link()`, not `rename()`. Both are atomic within one directory, but rename
+ * CLOBBERS: two first-writes racing for the same user would each build an
+ * empty database and the second rename would overwrite a file that already
+ * held the first tap's row. `link()` fails with EEXIST instead, so the loser
+ * keeps nothing and simply opens what the winner put there. Last-writer-wins
+ * is not acceptable here even though both files are freshly schema'd and
+ * empty AT BUILD TIME — the loser's rename lands after the winner has already
+ * written, and that is a lost row, not a lost empty file.
+ *
+ * Closing before linking is required, not tidy: an open WAL database has
+ * `-wal` and `-shm` sidecars holding rows the main file does not, and moving
+ * the main file alone would strand them. Verified rather than assumed — with
+ * the database open the directory holds `probe.db`, `probe.db-shm` and
+ * `probe.db-wal`; after `close()` it holds `probe.db` alone, complete, with
+ * the sidecars checkpointed away. So exactly one file is linked.
+ */
+function createEncryptedUserDb(slug: string, path: string, key: Buffer): void {
+  // Same directory, so link() stays within one filesystem, and named so it can
+  // never collide with any real `<slug>.db`: SLUG_PATTERN forbids dots, so no
+  // valid slug can produce this name. It still ENDS in `.db`, deliberately, so
+  // the guard hook denies reading it exactly like any other non-synthetic
+  // database, and `.gitignore`'s `*.db` covers it. Dot-prefixed so a person
+  // running `ls` in a user folder does not see something that looks like their
+  // data.
+  const temp = join(
+    dirname(path),
+    `.creating-${randomBytes(8).toString('hex')}.${slug}.db`,
+  )
+
+  try {
+    const db = new Database(temp)
+    try {
+      db.pragma(`cipher='${CIPHER}'`)
+      db.key(key)
+      db.pragma('journal_mode = WAL')
+      db.pragma('foreign_keys = ON')
+      db.exec(readFileSync(join(usersRoot(), slug, 'schema.sql'), 'utf8'))
+    } finally {
+      db.close()
+    }
+
+    try {
+      linkSync(temp, path)
+    } catch (error) {
+      // EEXIST means a concurrent first-write already put a database there.
+      // That file is schema'd by this same code and keyed with this same key
+      // — the key derives from the account's password and salt, so two
+      // sessions for one user cannot hold different keys. Use theirs.
+      if ((error as { code?: string }).code !== 'EEXIST') throw error
+    }
+  } finally {
+    // The linked name and this one are two directory entries for one inode;
+    // dropping this one leaves the real path untouched. On the failure paths
+    // it is the only entry, so this is the cleanup. A process killed before
+    // here leaves debris under a name nothing ever opens — which is the whole
+    // point, and is why that debris is not at `path`.
+    try {
+      unlinkSync(temp)
+    } catch {
+      // Never let cleanup mask the real error.
+    }
+  }
+}
+
+/**
  * Open (or create) a user's encrypted database with `key`.
  *
  * The key is applied with db.key(Buffer), never a `key=` pragma: a pragma
@@ -93,13 +174,21 @@ export function openEncryptedUserDb(
   const path = encryptedUserDbPath(slug)
   const existedBefore = existsSync(path)
 
-  const db = readOnly
-    ? // fileMustExist, so a read can never be the thing that conjures a user's
-      // real database into existence. A missing file throws SQLITE_CANTOPEN
-      // here, OUTSIDE the try — nothing was created, so there is nothing to
-      // clean up, and it must not be relabelled as a wrong key.
-      new Database(path, { readonly: true, fileMustExist: true })
-    : new Database(path)
+  // Creation is its OWN step, and it happens somewhere else. Once it returns,
+  // `path` holds a complete, schema'd database — either the one it just built
+  // or the one a concurrent request won the race to link. Nothing below can
+  // observe a half-made file at that path, which is why neither open needs to
+  // be able to create one.
+  if (!readOnly && !existedBefore) createEncryptedUserDb(slug, path, key)
+
+  // fileMustExist on BOTH paths now: `new Database` is never the thing that
+  // brings a user's real database into being. On the read path that stops a
+  // render conjuring one; on the write path it means a file deleted between
+  // the create above and this open is an error rather than a silent, empty,
+  // schema-less replacement. A missing file throws SQLITE_CANTOPEN here,
+  // OUTSIDE the try — nothing was created, so there is nothing to clean up,
+  // and it must not be relabelled as a wrong key.
+  const db = new Database(path, { readonly: readOnly, fileMustExist: true })
   try {
     // Cipher and key are both applied before any statement touches the file
     // (WAL and foreign_keys, then schema.sql). This order is deliberate —
@@ -126,20 +215,17 @@ export function openEncryptedUserDb(
     }
   } catch (error) {
     db.close()
-    if (!readOnly && !existedBefore) {
-      // `new Database(path)` creates the file immediately, and the WAL /
-      // foreign_keys pragmas write real bytes before schema.sql is even
-      // read — so a failed open on a brand-new file leaves an encrypted
-      // but table-less stub behind. Left in place, that stub makes
-      // existedBefore true on the NEXT call for this slug, so a later
-      // failure (for any reason) would be misreported as a wrong key. A
-      // failed create must leave nothing behind.
-      try {
-        unlinkSync(path)
-      } catch {
-        // Do not let a failed cleanup mask the original error below.
-      }
-    }
+    // NO unlink of `path` here, deliberately, where Task 1's fix used to put
+    // one. That unlink existed because a failed open could leave a table-less
+    // stub at the real path, and the stub made `existedBefore` true on the
+    // retry, so the CORRECT key would be reported as wrong forever. Building
+    // the file elsewhere and linking it removes the stub instead of cleaning
+    // it up: whatever is at `path` is now always a complete database, and
+    // deleting it on a failed open would destroy a valid file — possibly one a
+    // concurrent request has already written a row into. The property Task 1
+    // wanted is preserved by `createEncryptedUserDb`'s own temp cleanup, which
+    // `leaves no file behind when the open fails on a brand-new file` still
+    // pins.
     const notADb =
       typeof error === 'object' &&
       error !== null &&

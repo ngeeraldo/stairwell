@@ -58,8 +58,11 @@ architectural changes; do not relitigate decided items).
     **SYNTHETIC DATA** banner. Safe to read locally.
   - `<slug>.db` — the user's real data, SQLCipher-encrypted with a key derived
     from their password at login and held only in the in-process keymap.
-    Created lazily on first write. Never regenerated, never committed, never
-    readable without that session's key — including by you.
+    Created lazily on first write, and **atomically** — built under a temp name
+    and linked into place, so it never exists without its schema. Never
+    regenerated, never committed, never readable without that session's key —
+    including by you. Nothing migrates it: see the step-6a ledger, residual 2,
+    before changing any `schema.sql` a real database was created from.
 - A dashboard reads the real database when it exists and the session is
   unlocked; otherwise the synthetic one, with the banner. The banner is the
   only thing distinguishing the two screens, so it is never rendered over real
