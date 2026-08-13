@@ -241,10 +241,10 @@ checkpoint.
 - `declaredObjects()`'s SQL comment-stripping (added during the Task 5 fix
   round) is not string-literal aware — a `--` inside a quoted default value
   would truncate a line early. No schema in the repo triggers this today.
-- The inline declared-tables regex in `newDashboard.test.ts` does not strip
-  `--` comments, unlike `tests/users/conventions.test.ts`'s
-  `declaredObjects()`. No template has a commented-out `CREATE TABLE` today,
-  so the gap is latent.
+- ~~The inline declared-tables regex in `newDashboard.test.ts` does not strip
+  `--` comments~~ — **closed in the fix wave.** `declaredObjects` was
+  extracted to `tests/support/declaredObjects.ts` and both files import it,
+  so the two copies cannot diverge again.
 - `${t.at}-${t.merchant}` as a React key in `users/devone/dashboard.tsx`
   cannot collide under today's `seed.py` (one row per merchant per day), but
   that is arithmetic luck from the generator's spacing, not a guarantee the
@@ -256,4 +256,90 @@ checkpoint.
   for real account activity.
 - `tests/deploy/deployScript.test.ts` pins script ordering with `indexOf`
   over the raw script text, so a match sitting inside a comment would satisfy
-  it. Pre-existing idiom, accepted rather than fixed here.
+  it. Pre-existing idiom, accepted rather than fixed here — **except for the
+  `npm ci` assertion added in the fix wave**, where exactly that happened and
+  the assertion is now an anchored regex. See the fix wave below.
+
+---
+
+## The fix wave — what the whole-branch review found
+
+The branch was reviewed end to end at `6df2f67` before merge. The security
+trace came back clean: the slug that reaches the filesystem is always the one
+`canSeeUserSpace` authorised, re-validated against `SLUG_PATTERN` before any
+filesystem call; the lock opens no database for a locked session and its test
+asserts on the *calls* rather than the markup, so it stays honest when step 6
+adds the key; no database is committed beyond the `fake-real.db` decoy;
+nothing anywhere opens a non-synthetic database; and `dashboard_open` and
+`dashboard_error` cannot both be written for one request.
+
+Twelve findings were applied in three commits (`f47fba7`, `40b808a`,
+`3364b3a`). Two were more than cleanup:
+
+**A locale bug that would have accepted an invalid slug.**
+`scripts/new-dashboard.sh`'s `case "$slug" in *[!a-z0-9-]*)` is a *collation*
+range, not a codepoint range. Measured: under `LC_ALL=en_US.UTF-8` it
+accepted `Devone`, `DEVONE` and `aÉb`; under `LC_ALL=C` it rejected all
+three. No traversal resulted — `/`, `.`, `\`, `&`, `$`, `;` and space are
+rejected in every locale — but `users/Devone/` would have been created and
+then swept by nothing, and `newDashboard.test.ts`'s `DEVTHREE` assertion
+would have failed on a collating host, aborting the deploy at the vitest
+gate. Closed with `export LC_ALL=C` in the script itself, so the pin does not
+depend on the droplet's environment. The comment claiming the check was "the
+same rule as `SLUG_PATTERN`" now says the equivalence holds *because*
+collation is pinned.
+
+**A test that would have blocked every future deploy.** The wave fixed a real
+inconsistency — `users/devone/dashboard.tsx` rendered dates in UTC while
+`queries.ts` bucketed months by the local calendar — and the test added to
+pin it passed only west of Greenwich. Under `TZ=UTC` and `TZ=Asia/Tokyo` its
+own vacuity guard failed, because there the local and UTC dates for the
+fixture are the same string. No timezone is pinned anywhere in this repo and
+DigitalOcean images normally run UTC, so `deploy/deploy.sh`'s vitest gate
+would have reddened on the droplet permanently, for reasons unrelated to
+whatever was being deployed. The wave's own green run was green only because
+the machine running it sits at `America/Chicago`.
+
+Fixed in `eb1fce0` by building the expected string from the fixture's own
+local calendar components and checking both ends of a local day. Verified
+under three timezones. **The limit is recorded in the test itself:** reverting
+`day()` to `toISOString()` reddens it wherever the offset is nonzero and
+cannot redden it at UTC, because there the two renderings are identical. That
+was observed, not assumed.
+
+**Two more claims that outran their evidence**, bringing this branch's total
+to nine:
+
+- `tests/db/userDb.test.ts`'s `closeUserDbs releases handles` asserted only
+  that a later open returned a different object — true whether or not
+  `close()` ever ran, since `new Database()` always returns a fresh object.
+  Deleting the `db.close()` loop left it green while every `afterEach` leaked
+  a file descriptor. Now asserts `.open === false`.
+- The `npm ci` ordering assertion added *during* the wave used a naive
+  `indexOf('npm ci')`, which matched an earlier comment in `deploy/deploy.sh`
+  and was permanently vacuous. Caught by its own drill and rewritten as an
+  anchored regex.
+
+A ninth was self-caught by the implementer mid-drill: a `toContain` per
+boundary instant could not discriminate which transaction produced a date
+string, since both boundary instants share a local date. Each expected date
+is now paired to its own merchant.
+
+**The tally for the branch: nine claims that asserted more than the code
+delivered. Five caught by deleting the guarded behaviour, three by review,
+one self-caught mid-drill.** None was caught by reading the code and finding
+it convincing — every one of them was convincing.
+
+## Verification at merge
+
+Run against `eb1fce0`, all four layers, by the controller rather than
+reported second-hand:
+
+| Layer | Result |
+|---|---|
+| `npx vitest run` | 571 passed, 53 files |
+| `TZ=UTC npx vitest run` | 571 passed, 53 files |
+| `npx tsc --noEmit` | clean, exit 0 |
+| `npx next build` | succeeded, 12 routes |
+| `.claude/hooks/test-hooks.sh` | 158/158 |
+| `git ls-files` databases | `fake-real.db` only |
