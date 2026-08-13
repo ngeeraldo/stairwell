@@ -76,6 +76,7 @@ describe('parseSpecDraft', () => {
     ['an id with a space', draft(screensWith(panel({ id: 'walked today' })))],
     ['an id with a capital', draft(screensWith(panel({ id: 'Walked' })))],
     ['a bad entry field type', draft(screensWith(panel({ entry: { description: 'd', fields: [{ name: 'n', type: 'blob', choices: [] }], annotates: null } })))],
+    ['a blank annotates string', draft(screensWith(panel({ entry: { description: 'd', fields: [], annotates: '   ' } })))],
     ['a bad requirement status', draft({ data_requirements: [{ table: 't', purpose: 'p', status: 'maybe' }] })],
     ['an absent entry key', draft(screensWith(omit(panel(), 'entry')))],
     ['an absent context_of_use key', draft(screensWith(omit(panel(), 'context_of_use')))],

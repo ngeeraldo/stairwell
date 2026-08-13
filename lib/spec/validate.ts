@@ -102,10 +102,10 @@ function entryField(raw: unknown, at: string): EntryField {
 
 function entryWidget(raw: unknown, at: string): EntryWidget {
   const src = record(raw, at)
-  const value = src.annotates
   if (!('annotates' in src)) {
     throw new SpecShapeError(`${at}.annotates is missing (use null if it does not apply)`)
   }
+  const value = src.annotates
   if (value !== null && typeof value !== 'string') {
     throw new SpecShapeError(`${at}.annotates is neither a string nor null`)
   }
@@ -114,7 +114,12 @@ function entryWidget(raw: unknown, at: string): EntryWidget {
     fields: (Array.isArray(src.fields) ? src.fields : []).map((f, i) =>
       entryField(f, `${at}.fields[${i}]`),
     ),
-    annotates: value === null ? null : value.trim() || null,
+    // A present-but-blank annotates is the same class of mistake as a blank
+    // required string anywhere else in this file (see text()): it must
+    // throw, not launder into null. Laundering it would make checkInvariants
+    // skip the annotation check entirely (it treats null as "annotates
+    // nothing"), letting junk through the last gate before an unrepairable row.
+    annotates: value === null ? null : text(src, 'annotates', at),
   }
 }
 
@@ -259,7 +264,7 @@ export function parseSpecVersion(json: string): SpecVersion {
   if (based !== null && (typeof based !== 'number' || !Number.isInteger(based))) {
     throw new SpecShapeError('based_on_version is neither an integer nor null')
   }
-  return { ...draftFrom(src), based_on_version: based }
+  return sealVersion(draftFrom(src), based)
 }
 
 export function parseMockupInput(raw: unknown): string {
