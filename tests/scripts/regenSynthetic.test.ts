@@ -1,7 +1,15 @@
 // tests/scripts/regenSynthetic.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3-multiple-ciphers'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { regenerateAll, userSlugsWithSeeds } from '@/scripts/regen-synthetic'
@@ -21,8 +29,8 @@ const SUBPROCESS_TIMEOUT_MS = 60_000
 let root: string
 
 /** A minimal, valid user folder: schema.sql + a seed.py that executes it. */
-function makeUser(slug: string, extraSql = '') {
-  const dir = join(root, slug)
+function makeUser(slug: string, extraSql = '', usersDir: string = root) {
+  const dir = join(usersDir, slug)
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'schema.sql'),
@@ -81,6 +89,15 @@ describe('userSlugsWithSeeds', () => {
   it('returns an empty list when the users directory does not exist', () => {
     expect(userSlugsWithSeeds(join(root, 'nope'))).toEqual([])
   })
+
+  it('skips a directory with a valid seed.py but a non-slug name', () => {
+    // This function's result gets EXECUTED — not just checked for existence,
+    // the way tests/users/conventions.test.ts's sweep does — so a dot-dir,
+    // an editor artifact, or an accidental mkdir under users/ must never be
+    // treated as an account, even if it happens to hold a working seed.py.
+    makeUser('.hidden')
+    expect(userSlugsWithSeeds(root)).toEqual([])
+  })
 })
 
 describe('regenerateAll', () => {
@@ -114,8 +131,15 @@ describe('regenerateAll', () => {
   )
 
   it(
-    'is idempotent — a second run replaces rather than doubles',
+    'targets a stable path, so a second run overwrites rather than creating a second file',
     () => {
+      // Replacement semantics belong to each generator, not to this script:
+      // the fixture's seed.py does its own `DELETE FROM spend` (see
+      // makeUser above), the same way every real users/<slug>/seed.py is
+      // expected to. What this test actually pins is narrower — that
+      // regenerateAll computes the same target path on every run, so the
+      // second run's DELETE lands in the same file the first run wrote
+      // rather than a fresh one.
       makeUser('devone')
       regenerateAll(root)
       regenerateAll(root)
@@ -144,6 +168,35 @@ describe('regenerateAll', () => {
       writeFileSync(join(root, 'devone', 'synthetic.db-wal'), 'stale')
       regenerateAll(root)
       expect(existsSync(join(root, 'devone', 'synthetic.db-wal'))).toBe(false)
+    },
+    SUBPROCESS_TIMEOUT_MS,
+  )
+
+  it(
+    'leaves a neighbouring platform database byte-identical',
+    () => {
+      // The header comment in scripts/regen-synthetic.ts claims the
+      // separation from platform/dev/synthetic.db is structural — this is
+      // what makes that claim tested rather than merely asserted. Mirrors
+      // tests/support/noCross.test.ts, which pins the same property for the
+      // SIBLING helpers in tests/support/synthetic.ts, not for this script.
+      const parent = mkdtempSync(join(tmpdir(), 'stairwell-regen-parent-'))
+      try {
+        const usersDir = join(parent, 'users')
+        mkdirSync(usersDir, { recursive: true })
+        const platformDir = join(parent, 'platform', 'dev')
+        mkdirSync(platformDir, { recursive: true })
+        const platformTarget = join(platformDir, 'synthetic.db')
+        writeFileSync(platformTarget, 'not a real database — just bytes to diff')
+        const before = readFileSync(platformTarget)
+
+        makeUser('devone', '', usersDir)
+        regenerateAll(usersDir)
+
+        expect(readFileSync(platformTarget).equals(before)).toBe(true)
+      } finally {
+        rmSync(parent, { recursive: true, force: true })
+      }
     },
     SUBPROCESS_TIMEOUT_MS,
   )

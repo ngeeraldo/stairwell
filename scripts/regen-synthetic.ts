@@ -9,18 +9,38 @@
 // start; this is that sentence as a command.
 //
 // This NEVER touches platform/dev/synthetic.db. That file holds accounts and
-// sessions and is seeded by scripts/create-dev-users.ts;
-// tests/support/noCross.test.ts pins the separation in both directions.
+// sessions and is seeded by scripts/create-dev-users.ts. The separation is
+// structural, not merely asserted: every path this script writes is built by
+// joining `usersDir` (the argument, or the CLI default `<cwd>/users`) with a
+// slug and `synthetic.db` — it never derives a path from `usersDir`'s parent
+// or from any other root, so it cannot reach a sibling directory like
+// `platform/dev`. tests/support/noCross.test.ts pins the same property for
+// the SIBLING helpers in tests/support/synthetic.ts (regeneratePlatform /
+// regenerateUser), not for this script — this file's own separation is
+// covered by the "leaves a neighbouring platform database byte-identical"
+// test in tests/scripts/regenSynthetic.test.ts.
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { SLUG_PATTERN } from '@/lib/auth/slug'
 
-/** Slugs under `usersDir` that have a seed.py, sorted for stable output. */
+/**
+ * Slugs under `usersDir` that have a seed.py, sorted for stable output.
+ *
+ * Filtered by SLUG_PATTERN (lib/auth/slug.ts) — the same pattern
+ * tests/users/conventions.test.ts uses for the same sweep, imported rather
+ * than re-declared. The case is stronger here than there: that test only
+ * fails loudly on a stray non-slug directory, whereas this script EXECUTES
+ * whatever seed.py it finds and writes a database into it, on every deploy —
+ * so a dot-dir, an editor artifact, or an accidental mkdir under users/ must
+ * never be treated as an account.
+ */
 export function userSlugsWithSeeds(usersDir: string): string[] {
   if (!existsSync(usersDir)) return []
   return readdirSync(usersDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
+    .filter((name) => SLUG_PATTERN.test(name))
     .filter((name) => existsSync(join(usersDir, name, 'seed.py')))
     .sort()
 }
