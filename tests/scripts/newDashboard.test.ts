@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import Database from 'better-sqlite3-multiple-ciphers'
 
 /** See tests/scripts/pullSpec.test.ts — the droplet spawns processes slowly. */
 const SUBPROCESS_TIMEOUT_MS = 60_000
@@ -86,6 +87,23 @@ describe('scripts/new-dashboard.sh', () => {
   )
 
   it(
+    'refuses each reserved slug and creates nothing',
+    () => {
+      // Mirrors RESERVED_SLUGS in lib/auth/slug.ts. Kept as a separate test
+      // from the invalid-charset one above so a reserved name that also
+      // happens to be charset-valid (every one of these is) is pinned on
+      // its own, not accidentally covered by a broader assertion.
+      const sandbox = makeSandbox()
+      for (const reserved of ['admin', 'login', 'unlock', 'api', '_next', 'favicon.ico']) {
+        const { status } = run(sandbox, [reserved])
+        expect(status).toBe(2)
+      }
+      expect(existsSync(join(sandbox, 'users'))).toBe(false)
+    },
+    SUBPROCESS_TIMEOUT_MS,
+  )
+
+  it(
     'refuses to overwrite an existing folder',
     () => {
       const sandbox = makeSandbox()
@@ -115,12 +133,62 @@ describe('scripts/new-dashboard.sh', () => {
       // The scaffold is only worth having if what comes out of it is valid on
       // the first run. This is the same check tests/users/conventions.test.ts
       // makes, applied to the generated folder rather than to a committed one.
+      //
+      // sqlite3.connect creates a 0-byte file before the generator does
+      // anything, so existsSync(target) alone would pass for a seed.py that
+      // connects and inserts nothing. Open the db and check what
+      // conventions.test.ts checks instead: every table schema.sql declares
+      // is actually present, at least one row was written, and at least one
+      // VALUE (never the serialised row — a column literally named e.g.
+      // "test_flag" would satisfy a stringify scan with no fake data in it)
+      // carries the loud TEST marker.
       const sandbox = makeSandbox()
       expect(run(sandbox, ['devthree']).status).toBe(0)
       const dir = join(sandbox, 'users', 'devthree')
       const target = join(dir, 'synthetic.db')
       execFileSync('python3', [join(dir, 'seed.py'), target], { stdio: 'pipe' })
       expect(existsSync(target)).toBe(true)
+
+      const db = new Database(target, { readonly: true, fileMustExist: true })
+      try {
+        const present = new Set(
+          (
+            db
+              .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+              .all() as { name: string }[]
+          ).map((r) => r.name),
+        )
+        const schema = readFileSync(join(dir, 'schema.sql'), 'utf8')
+        const declared = [
+          ...schema.matchAll(
+            /CREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?([A-Za-z_][A-Za-z0-9_]*)/gi,
+          ),
+        ].map((m) => m[1]!)
+        expect(declared.length).toBeGreaterThan(0)
+        for (const name of declared) expect(present.has(name)).toBe(true)
+
+        const tables = (
+          db
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .all() as { name: string }[]
+        ).map((r) => r.name)
+
+        let rows = 0
+        let loud = false
+        for (const table of tables) {
+          const all = db.prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[]
+          rows += all.length
+          for (const row of all) {
+            if (Object.values(row).some((v) => String(v).includes('TEST'))) loud = true
+          }
+        }
+        expect(rows).toBeGreaterThan(0)
+        expect(loud).toBe(true)
+      } finally {
+        db.close()
+      }
     },
     SUBPROCESS_TIMEOUT_MS,
   )

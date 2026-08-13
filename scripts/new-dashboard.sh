@@ -17,6 +17,9 @@ set -euo pipefail
 main() {
   local slug="${1:-}"
 
+  # ${1:-} cannot tell an explicitly-empty argument ("") apart from a missing
+  # one — both land here as usage, not as an invalid-slug message. Both exit
+  # 2 either way, so this is a cosmetic gap, not a validation gap: accepted.
   if [ -z "$slug" ]; then
     echo "usage: ./scripts/new-dashboard.sh <slug>" >&2
     exit 2
@@ -36,6 +39,19 @@ main() {
     echo "invalid slug '$slug': longer than 32 characters" >&2
     exit 2
   fi
+
+  # Mirrors RESERVED_SLUGS in lib/auth/slug.ts, which lib/auth/accounts.ts
+  # already treats as the list of names a slug may never be CREATED as. This
+  # script is also a creation-time decision point, so it restates the same
+  # list rather than skipping the check — the shell cannot import a
+  # TypeScript Set, so this is the same sanctioned duplication as the
+  # charset check above. Keep the two lists in step by hand.
+  case "$slug" in
+    admin|login|unlock|api|_next|favicon.ico)
+      echo "invalid slug '$slug': reserved for a route" >&2
+      exit 2
+      ;;
+  esac
 
   local dest="users/$slug"
   if [ -e "$dest" ]; then
