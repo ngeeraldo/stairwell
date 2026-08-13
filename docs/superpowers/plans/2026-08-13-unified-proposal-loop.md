@@ -15,7 +15,7 @@
 - **`specs` and `spec_confirmations` are append-only** and deliberately outside `lib/db/reshape.ts`. This change adds **no column to either**. Any task that thinks it needs one has misread the plan.
 - **No new npm dependencies.** Not zod, not ajv, not a diff library.
 - **Every model call that returns writes a metrics row carrying its real usage.** A cost log reporting zero for a billed turn is fiction (step-4 ledger). Retry attempts each write their own row.
-- **Nothing is written to `transcripts` that the friend did not say**, except the deploy announcement and operator question of Task 13, which are stamped `prompt_sha: 'operator'` so they are forever distinguishable from model output.
+- **Nothing is written to `transcripts` that the friend did not say**, except the deploy announcement and operator question of Task 12, which are stamped `prompt_sha: 'operator'` so they are forever distinguishable from model output.
 - **Prompt files are never edited, only added** (`lib/chat/prompt.ts:8`); `prompt_sha` is a content hash stamped on existing rows.
 - **`SPEC_JSON_SCHEMA` may only use the supported structured-output subset:** object/array/string/integer/number/boolean/null, `enum`, `const`, `anyOf`, `$ref`/`$defs`, and `additionalProperties: false` on every object. **`minItems`/`minLength`/`maxLength` are NOT supported** — every "min 1" rule in `03-spec-schema.md` is enforced by the hand-written validator, never by the JSON Schema.
 - **Test with `npx vitest run`.** Scope with a path. Gate B (pre-commit) needs a staged file under `tests/` for `app|lib|platform|middleware.ts` changes and under `users/<name>/tests/` for that user's folder. `platform/prompts/*` is Gate-B exempt by an explicit arm in `.githooks/pre-commit`.
@@ -78,8 +78,8 @@ Nothing imports the new types yet — the tree stays green because `legacy.ts` h
 
 - [ ] **Step 1: Move the current six-field implementation into `lib/spec/legacy.ts`**
 
-Copy today's `lib/spec/schema.ts` into `lib/spec/legacy.ts` and rename as it lands:
-`PANEL_SOURCES` → `LEGACY_PANEL_SOURCES`, `Panel` → `LegacyPanel`, `SpecPayload` → `LegacySpecPayload`, `parseSpecPayload` → `parseLegacySpecPayload`. Delete `SPEC_JSON_SCHEMA`, `SpecInput`, and `parseSpecInput` from the copy — nothing may ever author a legacy payload again. Import `SpecShapeError` from `./schema`. Head the file:
+Copy today's `lib/spec/schema.ts` into `lib/spec/legacy.ts` **in full — nothing is deleted** — and rename as it lands:
+`PANEL_SOURCES` → `LEGACY_PANEL_SOURCES`, `Panel` → `LegacyPanel`, `SpecPayload` → `LegacySpecPayload`, `parseSpecPayload` → `parseLegacySpecPayload`, `SPEC_JSON_SCHEMA` → `LEGACY_SPEC_JSON_SCHEMA`, `SpecInput` → `LegacySpecInput`, `parseSpecInput` → `parseLegacySpecInput`. Import `SpecShapeError` from `./schema`. Head the file:
 
 ```ts
 // lib/spec/legacy.ts
@@ -89,11 +89,28 @@ Copy today's `lib/spec/schema.ts` into `lib/spec/legacy.ts` and rename as it lan
 //
 // specs rejects UPDATE (platform/schema.sql), so those rows can never be
 // rewritten into the current shape — see the unified-loop ledger, D4. This
-// file therefore has no future: nothing authors this shape any more, and
-// nothing new is ever added here. It exists so old rows keep rendering.
+// file therefore has no future: nothing new is ever added here. It exists so
+// old rows keep rendering.
+//
+// The three AUTHORING exports — LEGACY_SPEC_JSON_SCHEMA, LegacySpecInput,
+// parseLegacySpecInput — are here only so the branch keeps working on the old
+// shape until Task 10 switches the authoring path over. Task 10 deletes them.
+// Nothing may author this shape after that.
 ```
 
-Repoint the four existing `parseSpecPayload` import sites (`app/[user]/page.tsx`, `app/admin/[user]/page.tsx`, `scripts/export-spec.ts`, `tests/spec/schema.test.ts`) at `parseLegacySpecPayload` from `@/lib/spec/legacy`. Move today's `parseSpecPayload` describe-block out of `tests/spec/schema.test.ts` into a new `tests/spec/legacy.test.ts`, unchanged except for the renames.
+**Repoint five import sites, not four** — `parseSpecInput`/`SPEC_JSON_SCHEMA` have call sites too, and missing them is what would stop the branch compiling at the end of this task:
+
+| File | Was | Now |
+|---|---|---|
+| `app/[user]/page.tsx` | `parseSpecPayload` | `parseLegacySpecPayload` |
+| `app/admin/[user]/page.tsx` | `parseSpecPayload`, `SpecPayload` | `parseLegacySpecPayload`, `LegacySpecPayload` |
+| `scripts/export-spec.ts` | `parseSpecPayload` | `parseLegacySpecPayload` |
+| `lib/spec/author.ts` | `parseSpecInput`, `SpecPayload` | `parseLegacySpecInput`, `LegacySpecPayload` |
+| `lib/chat/client.ts` | `SPEC_JSON_SCHEMA` | `LEGACY_SPEC_JSON_SCHEMA` |
+
+All from `@/lib/spec/legacy`. This keeps every commit between here and Task 10 **actually working end to end on the old shape**, not merely typechecking — `tests/spec/author.test.ts` drives a fake client, so a request contract that disagreed with the parser would pass the suite and fail only against the real API.
+
+Move today's `parseSpecPayload` describe-block out of `tests/spec/schema.test.ts` into a new `tests/spec/legacy.test.ts`, unchanged except for the renames.
 
 - [ ] **Step 2: Write the failing test for the new types and schemas**
 
@@ -201,6 +218,14 @@ export type FieldType = (typeof FIELD_TYPES)[number]
 export const REQUIREMENT_STATUSES = ['new', 'changed', 'unchanged'] as const
 export type RequirementStatus = (typeof REQUIREMENT_STATUSES)[number]
 
+/**
+ * `id` is NOT in 03-spec-schema.md's ValueSpec, and is added deliberately.
+ * That doc's own Rules section demands two invariants — a derived value's
+ * `inputs` must reference values that exist, and `annotates` must point at a
+ * synced value — and neither is checkable without an identifier on values.
+ * It describes `inputs` as "ids/descriptions", which concedes ids exist
+ * without giving them anywhere to live. Resolving an underspecification.
+ */
 export type ValueSpec =
   | { kind: 'synced'; id: string; module: string; description: string }
   | { kind: 'entered'; id: string; description: string }
@@ -410,7 +435,8 @@ Change `additionalProperties: false` to `true` on `PANEL_SCHEMA` only. Run `npx 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add lib/spec/schema.ts lib/spec/legacy.ts tests/spec/schema.test.ts tests/spec/legacy.test.ts \
+git add lib/spec/schema.ts lib/spec/legacy.ts lib/spec/author.ts lib/chat/client.ts \
+  tests/spec/schema.test.ts tests/spec/legacy.test.ts \
   app/\[user\]/page.tsx app/admin/\[user\]/page.tsx scripts/export-spec.ts
 git commit -m "Describe a whole dashboard, not one conversation's worth of panels"
 ```
@@ -479,6 +505,13 @@ const screensWith = (...panels: unknown[]) => ({
   screens: [{ id: 'today', title: 'Today', order: 1, panels }],
 })
 
+/** Absence, not null — the two are different failures and both are tested. */
+const omit = (o: Record<string, unknown>, key: string) => {
+  const copy = { ...o }
+  delete copy[key]
+  return copy
+}
+
 describe('parseSpecDraft', () => {
   it('accepts a well-formed draft', () => {
     const parsed = parseSpecDraft(draft())
@@ -508,6 +541,8 @@ describe('parseSpecDraft', () => {
     ['an id with a capital', draft(screensWith(panel({ id: 'Walked' })))],
     ['a bad entry field type', draft(screensWith(panel({ entry: { description: 'd', fields: [{ name: 'n', type: 'blob', choices: [] }], annotates: null } })))],
     ['a bad requirement status', draft({ data_requirements: [{ table: 't', purpose: 'p', status: 'maybe' }] })],
+    ['an absent entry key', draft(screensWith(omit(panel(), 'entry')))],
+    ['an absent context_of_use key', draft(screensWith(omit(panel(), 'context_of_use')))],
   ])('rejects %s', (_label, raw) => {
     expect(() => parseSpecDraft(raw)).toThrow(SpecShapeError)
   })
@@ -736,9 +771,19 @@ function panel(raw: unknown, at: string): Panel {
     display: text(src, 'display', at),
     context_of_use: nullableText(src, 'context_of_use', at),
     values: nonEmptyArray(src, 'values', at).map((v, i) => valueSpec(v, `${at}.values[${i}]`)),
-    entry:
-      'entry' in src && src.entry !== null ? entryWidget(src.entry, `${at}.entry`) : null,
+    // Presence is required, like context_of_use and annotates. A silently
+    // absent `entry` reads as "no entry widget" — which is a panel that
+    // quietly cannot be fed, on a dashboard whose whole point was logging.
+    // An explicit null is a decision; a missing key is an accident.
+    entry: entryOrNull(src, at),
   }
+}
+
+function entryOrNull(src: Record<string, unknown>, at: string): EntryWidget | null {
+  if (!('entry' in src)) {
+    throw new SpecShapeError(`${at}.entry is missing (use null if the panel takes no input)`)
+  }
+  return src.entry === null ? null : entryWidget(src.entry, `${at}.entry`)
 }
 
 function screen(raw: unknown, at: string): Screen {
@@ -1427,7 +1472,7 @@ git commit -m "Find a version by number, and stop calling a cost label a mode"
 This task lands **before** Task 10 on purpose. At this point no current-shape row exists anywhere, so every path still runs the legacy arm and the tree stays green — but the readers are ready when Task 10 starts writing the new shape. Reversing these two tasks ships a window where a friend's confirmed proposal renders as nothing.
 
 **Files:**
-- Modify: `app/[user]/page.tsx`, `app/[user]/ChatPanel.tsx`, `app/admin/[user]/page.tsx`, `scripts/export-spec.ts`
+- Modify: `app/[user]/page.tsx`, `app/[user]/ChatPanel.tsx`, `app/admin/[user]/page.tsx`, `scripts/export-spec.ts`, `lib/spec/author.ts` *(type + return site only — see below)*
 - Test: `tests/routing/userSpace.test.ts`, `tests/chat/panel.test.ts`, `tests/admin/specPane.test.ts`, `tests/scripts/exportSpec.test.ts`
 
 **Interfaces:**
@@ -1457,7 +1502,9 @@ export function SpecCard(props: {
 }): JSX.Element
 ```
 
-`Proposal` in `lib/spec/author.ts` changes shape to match (`spec: CardSpec` replacing `payload`); ChatPanel keeps importing it type-only.
+**`lib/spec/author.ts` changes here too, and the scope is exactly two things:** the `Proposal` type becomes `{ id: number; version: number; spec: CardSpec; mockup_html: string }`, and the single `return` at the end of the success path wraps the still-legacy payload as `spec: { kind: 'legacy', payload: parsed.payload }`. **Nothing else in that file moves — the authoring path is still Task 10's.**
+
+This is not optional tidying. `Proposal` is what the NDJSON `proposal` line carries (`app/api/chat/route.ts`), so a card streamed mid-turn and a card rendered on page load must have one shape at every commit. Leaving `Proposal` on the old shape here would mean `page.tsx` builds a `CardProposal` from `readStoredSpec` while the stream sends something else, and the two would disagree until Task 10. ChatPanel keeps importing `Proposal` type-only.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1817,7 +1864,9 @@ try {
 const id = insertSpec(db, { ...stamp, payload: sealVersion(draft, basedOn), mockupHtml, at: now() })
 ```
 
-The version read-back after `insertSpec`, the `spec_proposed` append (now carrying `attempt`), and the outer catch all stay exactly as they are. `Proposal` returns `spec: { kind: 'version', version: sealed }` so the NDJSON `proposal` line matches what `SpecCard` expects.
+The version read-back after `insertSpec`, the `spec_proposed` append (now carrying `attempt`), and the outer catch all stay exactly as they are. `Proposal` returns `spec: { kind: 'version', version: sealed }` — replacing the `kind: 'legacy'` wrapper Task 9 put at that return site — so the NDJSON `proposal` line matches what `SpecCard` expects.
+
+**Then delete the three legacy AUTHORING exports** that Task 1 kept alive only to carry the branch to here: `LEGACY_SPEC_JSON_SCHEMA`, `LegacySpecInput`, and `parseLegacySpecInput` come out of `lib/spec/legacy.ts`. Nothing authors the legacy shape after this commit — `legacy.ts` is a reader again, which is what its header says it is. `parseLegacySpecPayload` and `LegacySpecPayload` **stay**; four consumers still read old rows through them. `npx tsc --noEmit` is what proves nothing still references the deleted three.
 
 - [ ] **Step 4: Run everything**
 
