@@ -65,4 +65,12 @@ describe('registry / disk agreement', () => {
       expect(RESERVED_SLUGS.has(slug)).toBe(false)
     }
   })
+
+  // Pins THIS commit's registry.ts change specifically, rather than relying
+  // only on the generic disk-agreement sweep above to catch a forgotten or
+  // misspelled line.
+  it('devtwo is registered now that its dashboard is built', () => {
+    expect(registeredSlugs()).toContain('devtwo')
+    expect(dashboardLoaderFor('devtwo')).toBeDefined()
+  })
 })

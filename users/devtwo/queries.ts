@@ -1,6 +1,10 @@
 // users/devtwo/queries.ts
 //
-// Every SQL statement for devtwo's dashboard. The component holds none.
+// Every READ for devtwo's dashboard; the component holds none. The write
+// (the walk INSERT) lives in the platform walk route instead, deliberately —
+// a platform route must not import one user's queries file, which is also
+// why dayKey is duplicated between the route and this file rather than
+// shared from here.
 import type { UserDb } from '@/lib/db/userDb'
 
 export type Walk = { day: string; at: number }
