@@ -6,12 +6,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { confirmSpec, insertSpec } from '@/lib/db/specs'
-import { SpecShapeError, type SpecPayload } from '@/lib/spec/schema'
+import { SpecShapeError } from '@/lib/spec/schema'
+import { type LegacySpecPayload } from '@/lib/spec/legacy'
 import { exportSpec } from '@/scripts/export-spec'
 
 const MOCKUP = '<!doctype html><html><body>COFFEE PALACE TEST</body></html>'
 
-function payload(overrides: Partial<SpecPayload> = {}): SpecPayload {
+function payload(overrides: Partial<LegacySpecPayload> = {}): LegacySpecPayload {
   return {
     title: 'Some dashboard TEST',
     summary: 'A summary, COFFEE PALACE TEST.',
@@ -119,9 +120,9 @@ beforeAll(async () => {
   })
 
   // devthree: a CONFIRMED spec whose stored payload is corrupt JSON. Task 3
-  // finding: parseSpecPayload throws SpecShapeError on a row like this, and
-  // exportSpec must let that propagate as a clear, named failure rather than
-  // a generic crash or (worse) a silently empty export.
+  // finding: parseLegacySpecPayload throws SpecShapeError on a row like this,
+  // and exportSpec must let that propagate as a clear, named failure rather
+  // than a generic crash or (worse) a silently empty export.
   const corruptId = insertRawSpec(db, {
     accountId: devthreeId,
     conversationId: 'conv-devthree',

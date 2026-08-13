@@ -8,7 +8,8 @@ import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { newestSpec } from '@/lib/db/specs'
-import { parseSpecPayload, SpecShapeError } from '@/lib/spec/schema'
+import { SpecShapeError } from '@/lib/spec/schema'
+import { parseLegacySpecPayload } from '@/lib/spec/legacy'
 import type { Proposal } from '@/lib/spec/author'
 import { openUserDb } from '@/lib/db/userDb'
 import type { UserDb } from '@/lib/db/userDb'
@@ -198,7 +199,7 @@ export default async function UserSpace({
       proposal = {
         id: newest.id,
         version: newest.version,
-        payload: parseSpecPayload(newest.payload),
+        payload: parseLegacySpecPayload(newest.payload),
         mockup_html: newest.mockup_html,
         confirmed: newest.confirmed_at !== null,
       }

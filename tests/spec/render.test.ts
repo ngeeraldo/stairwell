@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { Panel, SpecPayload } from '@/lib/spec/schema'
+import type { LegacyPanel, LegacySpecPayload } from '@/lib/spec/legacy'
 import { renderSpecMarkdown } from '@/lib/spec/render'
 
-const PAYLOAD: SpecPayload = {
+const PAYLOAD: LegacySpecPayload = {
   title: 'Eating out and the car fund',
   summary: 'So mornings stop being a surprise.',
   background: 'Checks the banking app most days, does not trust it.',
@@ -137,7 +137,7 @@ Checks the banking app most days, does not trust it.
     // heading, a `## ` heading, a no-space `##` heading, an unterminated
     // fence, and the exact `## Summary` collision that defeated round 3
     // all appear somewhere below.
-    const DANGEROUS_PAYLOAD: SpecPayload = {
+    const DANGEROUS_PAYLOAD: LegacySpecPayload = {
       // Site: payload.title. Exact-string collision — the case that
       // defeated round 3: text equal to one of the renderer's own fixed
       // heading strings, indistinguishable from the real one by content.
@@ -167,7 +167,7 @@ And a line starting with hash:
           // past the type, because the escaping call exists at this site
           // regardless, and the test should hold it to the same standard.
           // Exact-string collision again, at a fifth different site.
-          source: 'plaid\n## Summary' as unknown as Panel['source'],
+          source: 'plaid\n## Summary' as unknown as LegacyPanel['source'],
         },
         {
           name: 'Car fund',

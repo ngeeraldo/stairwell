@@ -491,10 +491,11 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
 
   it('degrades a corrupt stored proposal to no card, not a 500', async () => {
     // specs is append-only (CLAUDE.md), so a corrupt row can never be
-    // deleted to make this go away. parseSpecPayload THROWS SpecShapeError
-    // on a payload missing the six frozen fields; an unhandled throw inside
-    // this server component would be a 500 page for the friend on every
-    // future visit. The page must degrade to no card instead.
+    // deleted to make this go away. parseLegacySpecPayload THROWS
+    // SpecShapeError on a payload missing the six frozen fields; an
+    // unhandled throw inside this server component would be a 500 page for
+    // the friend on every future visit. The page must degrade to no card
+    // instead.
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount: createAcct } = await import('@/lib/auth/accounts')
     const { createSession: createSess, SESSION_COOKIE } = await import(

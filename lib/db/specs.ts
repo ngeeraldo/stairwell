@@ -5,8 +5,8 @@ import type { PlatformDb } from './platform'
  * One proposal, with its derived version and confirmation state.
  *
  * `payload` is the raw JSON string as stored. Callers parse it with
- * parseSpecPayload (lib/spec/schema.ts) — this module does appends and reads
- * and nothing else, matching lib/db/appendOnly.ts.
+ * parseLegacySpecPayload (lib/spec/legacy.ts) — this module does appends and
+ * reads and nothing else, matching lib/db/appendOnly.ts.
  */
 export type SpecRecord = {
   id: number

@@ -16,7 +16,7 @@
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 import { currentSpec } from '@/lib/db/specs'
-import { parseSpecPayload } from '@/lib/spec/schema'
+import { parseLegacySpecPayload } from '@/lib/spec/legacy'
 import { renderSpecMarkdown } from '@/lib/spec/render'
 
 export function exportSpec(
@@ -32,14 +32,14 @@ export function exportSpec(
   // confirmation must fail, never silently export the newest draft.
   if (!spec) throw new Error(`no confirmed spec for '${slug}'`)
 
-  // parseSpecPayload throws SpecShapeError on a corrupt stored payload. Let
-  // it propagate: exportSpec must build BOTH output strings or return
+  // parseLegacySpecPayload throws SpecShapeError on a corrupt stored payload.
+  // Let it propagate: exportSpec must build BOTH output strings or return
   // NEITHER, never a spec_md from a half-parsed payload paired with a
   // mockup_html from nowhere. Computing spec_md first, before the return
   // object is constructed, is what guarantees that — a throw here means the
   // caller (the CLI entry point below, then pull-spec.sh) never sees a
   // result to write at all.
-  const spec_md = renderSpecMarkdown(parseSpecPayload(spec.payload), {
+  const spec_md = renderSpecMarkdown(parseLegacySpecPayload(spec.payload), {
     slug,
     version: spec.version,
     confirmedAt: spec.confirmed_at!,

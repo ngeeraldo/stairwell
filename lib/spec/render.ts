@@ -1,4 +1,4 @@
-import type { SpecPayload } from './schema'
+import type { LegacySpecPayload } from './legacy'
 
 /**
  * A confirmed spec, as the build contract on disk.
@@ -9,7 +9,7 @@ import type { SpecPayload } from './schema'
  * re-export produces no spurious diff.
  */
 export function renderSpecMarkdown(
-  payload: SpecPayload,
+  payload: LegacySpecPayload,
   meta: { slug: string; version: number; confirmedAt: number },
 ): string {
   /**

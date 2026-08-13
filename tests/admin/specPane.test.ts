@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as React from 'react'
 import type { PlatformDb } from '@/lib/db/platform'
-import type { SpecPayload } from '@/lib/spec/schema'
+import type { LegacySpecPayload } from '@/lib/spec/legacy'
 
 beforeEach(() => {
   vi.stubGlobal('React', React)
@@ -37,7 +37,7 @@ vi.mock('next/headers', () => ({
 
 // Every field loudly fake per CLAUDE.md's synthetic-data rule, even though
 // this fixture never touches seed.py — it's still data a human could read.
-const SPEC_V1: SpecPayload = {
+const SPEC_V1: LegacySpecPayload = {
   title: 'COFFEE PALACE TEST v1',
   summary: 'Round one summary TEST.',
   background: 'Round one background TEST.',
@@ -53,7 +53,7 @@ const SPEC_V1: SpecPayload = {
   open_questions: [],
 }
 
-const SPEC_V2: SpecPayload = {
+const SPEC_V2: LegacySpecPayload = {
   title: 'COFFEE PALACE TEST v2',
   summary: 'Round two summary TEST.',
   background: 'Round two background TEST.',
@@ -69,7 +69,7 @@ const SPEC_V2: SpecPayload = {
   open_questions: ['Which account holds the coffee budget TEST?'],
 }
 
-const SPEC_V3: SpecPayload = {
+const SPEC_V3: LegacySpecPayload = {
   title: 'COFFEE PALACE TEST v3',
   summary: 'So mornings stop being a surprise.',
   background: 'Round three background TEST.',
@@ -85,7 +85,7 @@ const SPEC_V3: SpecPayload = {
   open_questions: ['Is a Monzo pot reachable?'],
 }
 
-// Missing every required field except title — parseSpecPayload throws
+// Missing every required field except title — parseLegacySpecPayload throws
 // SpecShapeError on this, which is exactly the append-only-corrupt-row
 // hazard app/[user]/page.tsx already handles (Task 3 finding).
 const CORRUPT_PAYLOAD = { title: 'CORRUPT TEST — missing fields' }

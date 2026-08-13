@@ -6,7 +6,8 @@ import { SESSION_COOKIE } from '@/lib/session/store'
 import { isAdmin } from '@/lib/auth/authorize'
 import { readConversations } from '@/lib/db/appendOnly'
 import { readSpecs } from '@/lib/db/specs'
-import { parseSpecPayload, SpecShapeError, type SpecPayload } from '@/lib/spec/schema'
+import { SpecShapeError } from '@/lib/spec/schema'
+import { parseLegacySpecPayload, type LegacySpecPayload } from '@/lib/spec/legacy'
 
 /**
  * Read-only transcript + spec pane. The admin portal is not a back door into
@@ -47,9 +48,9 @@ export default async function TranscriptPane({
             // error still escapes, because that's a bug this page has no
             // business hiding — same narrow rethrow as app/[user]/page.tsx,
             // which handles the identical hazard (Task 3 finding).
-            let payload: SpecPayload | undefined
+            let payload: LegacySpecPayload | undefined
             try {
-              payload = parseSpecPayload(spec.payload)
+              payload = parseLegacySpecPayload(spec.payload)
             } catch (error) {
               if (!(error instanceof SpecShapeError)) throw error
               payload = undefined

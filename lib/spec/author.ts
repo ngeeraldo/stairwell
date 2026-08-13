@@ -15,12 +15,12 @@ import {
   type Served,
   type Usage,
 } from '@/lib/chat/client'
-import { parseSpecInput, type SpecPayload } from './schema'
+import { parseLegacySpecInput, type LegacySpecPayload } from './legacy'
 
 export type Proposal = {
   id: number
   version: number
-  payload: SpecPayload
+  payload: LegacySpecPayload
   mockup_html: string
 }
 
@@ -144,7 +144,7 @@ export async function authorSpec(
 
     let parsed
     try {
-      parsed = parseSpecInput(result.input)
+      parsed = parseLegacySpecInput(result.input)
     } catch (error) {
       // A schema-constrained REQUEST is not a guarantee about the row that
       // reaches an append-only table. This validator is the last gate.

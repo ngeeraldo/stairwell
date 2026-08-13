@@ -14,7 +14,7 @@ import Anthropic, {
   UnprocessableEntityError,
 } from '@anthropic-ai/sdk'
 import type { ChatMessage } from './history'
-import { SPEC_JSON_SCHEMA } from '@/lib/spec/schema'
+import { LEGACY_SPEC_JSON_SCHEMA } from '@/lib/spec/legacy'
 
 export type Usage = {
   input: number
@@ -388,7 +388,7 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
                 // the RESPONSE, so there is no tool_use block to extract and no
                 // tool/thinking interaction to reason about. Same guarantee,
                 // fewer moving parts (design spec section 4.1).
-                format: { type: 'json_schema', schema: SPEC_JSON_SCHEMA },
+                format: { type: 'json_schema', schema: LEGACY_SPEC_JSON_SCHEMA },
               },
               betas: [FALLBACK_BETA],
               fallbacks: 'default',

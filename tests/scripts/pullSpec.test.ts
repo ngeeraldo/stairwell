@@ -24,7 +24,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { openPlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { confirmSpec, insertSpec } from '@/lib/db/specs'
-import type { SpecPayload } from '@/lib/spec/schema'
+import type { LegacySpecPayload } from '@/lib/spec/legacy'
 
 const REPO = resolve(__dirname, '..', '..')
 
@@ -64,7 +64,7 @@ function userDir(sandbox: string, slug: string): string {
   return join(sandbox, 'users', slug)
 }
 
-const PANEL: SpecPayload['panels'][number] = {
+const PANEL: LegacySpecPayload['panels'][number] = {
   name: 'Panel',
   shows: 'Something',
   why: 'A reason',
