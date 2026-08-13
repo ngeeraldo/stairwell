@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3-multiple-ciphers'
 import { afterAll, describe, expect, it } from 'vitest'
+import { SLUG_PATTERN } from '@/lib/auth/slug'
 
 /**
  * Every test in this file spawns python3 once per user folder. vitest's
@@ -27,10 +28,15 @@ const SUBPROCESS_TIMEOUT_MS = 60_000
 
 const USERS = resolve(__dirname, '..', '..', 'users')
 
+// users/ holds one directory per account, and an account slug can never be
+// dot-prefixed or contain a slash (lib/auth/slug.ts). Anything else under
+// users/ — a dot-dir, an editor artifact, an accidental mkdir — is not a
+// user folder, and demanding schema.sql of it would be a false failure.
 const slugs = existsSync(USERS)
   ? readdirSync(USERS, { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
+      .filter((name) => SLUG_PATTERN.test(name))
       .sort()
   : []
 
@@ -39,12 +45,22 @@ afterAll(() => {
   for (const d of temps) rmSync(d, { recursive: true, force: true })
 })
 
-/** Table and view names declared in a schema file. */
+/**
+ * Table and view names declared in a schema file. Strips `--` line comments
+ * first, so a retired table documented in a comment (e.g. "-- CREATE TABLE
+ * old_thing (...)") is not read as a live declaration. SQL block comments are
+ * left alone — no schema.sql in this repo uses them, so handling them is not
+ * worth the added complexity.
+ */
 function declaredObjects(sql: string): string[] {
+  const withoutLineComments = sql
+    .split('\n')
+    .map((line) => line.replace(/--.*$/, ''))
+    .join('\n')
   const names: string[] = []
   const re = /CREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?([A-Za-z_][A-Za-z0-9_]*)/gi
   let match: RegExpExecArray | null
-  while ((match = re.exec(sql)) !== null) names.push(match[1]!)
+  while ((match = re.exec(withoutLineComments)) !== null) names.push(match[1]!)
   return names
 }
 
@@ -124,9 +140,19 @@ describe('users/ folder conventions', () => {
           let rows = 0
           let loud = false
           for (const table of tables) {
-            const all = db.prepare(`SELECT * FROM "${table}"`).all()
+            const all = db.prepare(`SELECT * FROM "${table}"`).all() as Record<
+              string,
+              unknown
+            >[]
             rows += all.length
-            if (JSON.stringify(all).includes('TEST')) loud = true
+            // Check VALUES only, never the serialised row: a column literally
+            // named e.g. "test_flag" would satisfy a JSON.stringify(all) scan
+            // while every row held realistic, non-fake data.
+            for (const row of all) {
+              if (Object.values(row).some((v) => String(v).includes('TEST'))) {
+                loud = true
+              }
+            }
           }
           expect(rows).toBeGreaterThan(0)
           expect(loud).toBe(true)
