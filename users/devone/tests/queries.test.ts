@@ -133,4 +133,18 @@ describe('recentTransactions', () => {
   it('returns an empty array on an empty table', () => {
     expect(recentTransactions(db)).toEqual([])
   })
+
+  it('breaks a same-timestamp tie by insertion order, newest row last inserted first', () => {
+    // A real Plaid import posts a batch of transactions sharing one
+    // timestamp. `ORDER BY at DESC` alone leaves SQLite free to return tied
+    // rows in any order it likes, so the list could reshuffle between two
+    // renders of the exact same data. `id DESC` pins a deterministic
+    // tiebreak: pins the regression where `at DESC, id DESC` is weakened to
+    // bare `at DESC`.
+    add({ merchant: 'FIRST TEST', category: 'eating out', amount_cents: 100, at: MID_MARCH })
+    add({ merchant: 'SECOND TEST', category: 'eating out', amount_cents: 200, at: MID_MARCH })
+    add({ merchant: 'THIRD TEST', category: 'eating out', amount_cents: 300, at: MID_MARCH })
+    const rows = recentTransactions(db)
+    expect(rows.map((r) => r.merchant)).toEqual(['THIRD TEST', 'SECOND TEST', 'FIRST TEST'])
+  })
 })
