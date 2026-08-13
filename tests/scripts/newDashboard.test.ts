@@ -70,6 +70,13 @@ describe('scripts/new-dashboard.sh', () => {
 
       // The registry is NOT edited — the script prints the line instead.
       expect(output).toContain("devthree: () => import('@/users/devthree/dashboard')")
+
+      // Task 13 / File 02 §5: per-user tests must cover write paths, not just
+      // rendering. A scaffolded dashboard starts with that shape sketched in
+      // a commented block, so a write-path test is something the folder is
+      // BORN with rather than something acquired later only if someone
+      // remembers users/devtwo/tests/write.test.ts existed as precedent.
+      expect(readFileSync(join(dir, 'tests', 'dashboard.test.ts'), 'utf8')).toContain('write path')
     },
     SUBPROCESS_TIMEOUT_MS,
   )

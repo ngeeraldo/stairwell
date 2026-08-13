@@ -48,3 +48,31 @@ describe('users/__SLUG__', () => {
     expect(json).toContain('$4.50')
   })
 })
+
+// WRITE PATH — if this dashboard has one (a platform route that inserts into
+// its schema, e.g. app/api/users/[user]/walk/route.ts's pattern), cover it
+// here, not only the read side above. File 02 §5: per-user tests must cover
+// write paths (inserts, annotation joins), not just rendering.
+//
+// The reason this matters is recorded in the step-6a ledger: its headline
+// defect existed ONLY where a write path and a read path met — seed.py
+// always marked today walked, and a dashboard hid its tap control once today
+// was walked, and each half was correct alone. Reviewing either half in
+// isolation could not have found it. Build the test database from
+// schema.sql (NOT synthetic.db — the point is the shape a real write lands
+// in), insert through the exact statement the platform route runs, and
+// assert queries.ts reads it back, e.g.:
+//
+//   function insertX(handle: UserDb, ...): void {
+//     handle.prepare('INSERT OR IGNORE INTO ... VALUES (?, ?)').run(...)
+//   }
+//
+//   it('a write becomes something the queries can see', () => {
+//     insertX(db, ...)
+//     expect(someQuery(db, ...)).toBe(...)
+//   })
+//
+// A read-only dashboard (nothing in app/api writes into its schema) has no
+// write path to cover — leave this block commented out rather than filling
+// it with a no-op test. See users/devtwo/tests/write.test.ts for a worked
+// example.
