@@ -124,12 +124,12 @@ time. Warm the routes first if you do use `npm run dev`.
    space at.
 9. Restart the server without clearing cookies → `/devone` redirects to
    `/unlock`, not `/login`. The session survived; the key did not.
-10. `/devone` shows the reference dashboard under a **SYNTHETIC DATA** banner:
-    an eating-out total and a recent-transactions list of loudly-fake
-    merchants, `COFFEE PALACE TEST` among them.
-11. `/devtwo` shows "Nothing here yet" — devtwo has no dashboard until its
-    spec is confirmed and one is built. Neither account can reach the other's
-    URL at all; both get a 404, not a 403.
+10. `/devone` as `devone` shows the reference dashboard under a **SYNTHETIC
+    DATA** banner: an eating-out total and a recent-transactions list of
+    loudly-fake merchants, `COFFEE PALACE TEST` among them.
+11. `/devtwo` as `devtwo` shows "Nothing here yet" — devtwo has no dashboard
+    until its spec is confirmed and one is built. Neither account can reach
+    the other's URL at all; both get a 404, not a 403.
 
 ## Pulling a confirmed spec into the repo
 

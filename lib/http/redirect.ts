@@ -43,7 +43,7 @@ export function relativeRedirect(path: string, status = 303): NextResponse {
   if (!path.startsWith('/') || path.startsWith('//')) {
     // A Location starting '//' is protocol-relative and resolves to a DIFFERENT
     // ORIGIN, which would turn every caller into an open redirect. Slugs are
-    // already constrained by SLUG_PATTERN in lib/auth/accounts.ts, so this is
+    // already constrained by SLUG_PATTERN in lib/auth/slug.ts, so this is
     // defence in depth for future callers rather than a live hole.
     throw new Error(
       `relativeRedirect: path must be host-relative and not protocol-relative, got '${path}'`,

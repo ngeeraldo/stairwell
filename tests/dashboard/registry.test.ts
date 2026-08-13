@@ -10,6 +10,15 @@ import { RESERVED_SLUGS, SLUG_PATTERN } from '@/lib/auth/slug'
 // at a fixture.
 const USERS = resolve(__dirname, '..', '..', 'users')
 
+// Deliberately NOT filtered through SLUG_PATTERN, unlike
+// tests/users/conventions.test.ts and scripts/regen-synthetic.ts. Those two
+// SWEEP or EXECUTE what they find under users/ — treating a stray directory
+// as a real account there would be the mistake. This test only checks that
+// registry.ts agrees with what dashboard.tsx files exist on disk, so a
+// dashboard file sitting in a non-slug directory (e.g. users/.scratch/) is
+// exactly the kind of mistake worth failing loudly on, not filtering out.
+// The divergence errs RED, which is the direction that is safe to leave
+// unfixed.
 function foldersWithADashboard(): string[] {
   if (!existsSync(USERS)) return []
   return readdirSync(USERS, { withFileTypes: true })

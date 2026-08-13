@@ -43,7 +43,7 @@ describe('relativeRedirect', () => {
   it('rejects a protocol-relative path, which would redirect off-origin', () => {
     // '//evil.example' is a valid URL reference resolving to a DIFFERENT
     // ORIGIN, so accepting it would make every caller an open redirect. This is
-    // the same hazard SLUG_PATTERN guards in lib/auth/accounts.ts, enforced
+    // the same hazard SLUG_PATTERN guards in lib/auth/slug.ts, enforced
     // again at the point of use.
     expect(() => relativeRedirect('//evil.example')).toThrow(
       /protocol-relative/,

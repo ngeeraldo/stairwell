@@ -66,10 +66,12 @@ describe('createAccount slug validation', () => {
   })
 
   it('rejects the exact open-redirect case: a slug beginning with a slash', async () => {
-    // app/api/unlock/route.ts builds `new URL(`/${account.slug}`, request.url)`.
-    // A slug of "/evil.com" would make that resolve to "//evil.com" — a
-    // post-authentication redirect off the trusted origin. The leading '/'
-    // alone is enough to be rejected by SLUG_PATTERN (not in [a-z0-9-]).
+    // app/api/unlock/route.ts builds `relativeRedirect(`/${account.slug}`)`
+    // (lib/http/redirect.ts). A slug of "/evil.com" would make that path
+    // "//evil.com" — protocol-relative, resolving to a DIFFERENT ORIGIN, which
+    // relativeRedirect itself also rejects. The leading '/' alone is enough to
+    // be rejected here first, by SLUG_PATTERN (lib/auth/slug.ts; not in
+    // [a-z0-9-]), before a slug with it could ever reach that redirect call.
     await expect(
       createAccount(db, { slug: '/evil.com', role: 'user', password: 'pw' }),
     ).rejects.toThrow(/invalid slug/)

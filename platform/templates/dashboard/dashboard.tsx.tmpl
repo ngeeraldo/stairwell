@@ -5,6 +5,15 @@
 //
 // Register it in lib/dashboard/registry.ts or it will not render:
 //   __SLUG__: () => import('@/users/__SLUG__/dashboard'),
+//
+// Compose only host elements (<div>, <section>, <ul>, ...) here — never a
+// nested function component (returning <Foo />, where Foo is itself a
+// function component). app/[user]/page.tsx wraps the direct call to this
+// component's body in a try/catch, but a nested component's body is deferred
+// to Next's own render pass, which runs after that function returns and
+// therefore OUTSIDE the catch. A throw there 500s the page after the
+// `dashboard_open` metric row has already been written, leaving an
+// append-only row saying "opened" for a request that failed.
 import type { DashboardProps } from '@/lib/dashboard/contract'
 import { recentTransactions } from './queries'
 

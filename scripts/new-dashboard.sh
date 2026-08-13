@@ -58,6 +58,12 @@ main() {
   # list rather than skipping the check — the shell cannot import a
   # TypeScript Set, so this is the same sanctioned duplication as the
   # charset check above. Keep the two lists in step by hand.
+  #
+  # Only FOUR of these six are live branches here. `_next` and
+  # `favicon.ico` contain `_` and `.`, which the charset check above already
+  # rejects — this case can never see either one. They are restated anyway
+  # so the two lists read the same; tests/auth/accounts.test.ts:88 makes the
+  # same point on the TypeScript side.
   case "$slug" in
     admin|login|unlock|api|_next|favicon.ico)
       echo "invalid slug '$slug': reserved for a route" >&2
