@@ -6,11 +6,70 @@ import { SESSION_COOKIE } from '@/lib/session/store'
 import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
-import { readTranscript } from '@/lib/db/appendOnly'
+import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { newestSpec } from '@/lib/db/specs'
 import { parseSpecPayload, SpecShapeError } from '@/lib/spec/schema'
 import type { Proposal } from '@/lib/spec/author'
+import { openUserDb } from '@/lib/db/userDb'
+import { dashboardLoaderFor } from '@/lib/dashboard/registry'
 import ChatPanel from './ChatPanel'
+
+/**
+ * The data region, for an owner whose session is already UNLOCKED.
+ *
+ * Called only from the unlocked branch below, so no database file is opened
+ * for a locked session — in step 6 that read needs a key a locked session does
+ * not have, and a page that opened first and hid the result afterwards would
+ * pass today and be wrong then.
+ *
+ * The dashboard component is CALLED, not returned as <Dashboard />. Returning
+ * an element would defer its execution to React's render, outside this
+ * try/catch, and the whole point of the catch is that bespoke per-user code is
+ * the least-reviewed code in the repo. The chat surface stays OUTSIDE this
+ * function on purpose: it is the surface a friend uses to report that the
+ * dashboard broke.
+ */
+async function dashboardRegion(slug: string, accountId: number) {
+  const loader = dashboardLoaderFor(slug)
+  if (!loader) {
+    return <p>Nothing here yet. Your dashboard gets built from your interview.</p>
+  }
+
+  const data = openUserDb(slug)
+  if (data.source === 'none') {
+    return <p>Your dashboard is built, but its data has not been generated yet.</p>
+  }
+
+  try {
+    const { default: Dashboard } = await loader()
+    const rendered = await Dashboard({ slug, db: data.db })
+    // After a successful render, never before: a dashboard that threw is not
+    // an open, and metrics is append-only so a wrong row cannot be removed.
+    appendMetric(getDb(), {
+      accountId,
+      event: 'dashboard_open',
+      data: { slug, source: data.source },
+      at: Date.now(),
+    })
+    return (
+      <>
+        <p role="status">SYNTHETIC DATA — every number below is fake.</p>
+        {rendered}
+      </>
+    )
+  } catch (error) {
+    appendMetric(getDb(), {
+      accountId,
+      event: 'dashboard_error',
+      data: {
+        slug,
+        message: error instanceof Error ? error.message : String(error),
+      },
+      at: Date.now(),
+    })
+    return <p>This dashboard failed to load.</p>
+  }
+}
 
 export default async function UserSpace({
   params,
@@ -70,7 +129,7 @@ export default async function UserSpace({
         proposal={proposal}
       />
       {unlocked ? (
-        <p>Nothing here yet. Your dashboard gets built from your interview.</p>
+        await dashboardRegion(user, accountId)
       ) : (
         <p>
           Locked. <a href="/unlock">Unlock</a> to see your data.
