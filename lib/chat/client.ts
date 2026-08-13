@@ -14,7 +14,6 @@ import Anthropic, {
   UnprocessableEntityError,
 } from '@anthropic-ai/sdk'
 import type { ChatMessage } from './history'
-import { LEGACY_SPEC_JSON_SCHEMA } from '@/lib/spec/legacy'
 
 export type Usage = {
   input: number
@@ -77,6 +76,13 @@ export type ChatClient = {
     system: string
     messages: ChatMessage[]
     signal: AbortSignal
+    /**
+     * The structured-output contract for THIS call. Not fixed here because a
+     * second caller (rendering a mockup from an already-validated spec) is
+     * about to reuse this same method with a different schema — the shape
+     * being asked for is a property of the request, not of propose() itself.
+     */
+    schema: object
   }): Promise<ProposeResult>
 }
 
@@ -109,9 +115,10 @@ export const PROPOSE_TOOL_NAME = 'propose_spec'
 export const PROPOSE_TOOL = {
   name: PROPOSE_TOOL_NAME,
   description:
-    'Signal that the interview has enough to describe a dashboard. Takes no ' +
+    'Propose the next version of this person\'s whole dashboard. Takes no ' +
     'arguments. Calling this ends your turn; a preview is written and shown ' +
-    'to the person as a card they can accept or push back on.',
+    'to them as a card leading with what changed, which they can accept or ' +
+    'push back on.',
   input_schema: {
     type: 'object' as const,
     properties: {},
@@ -368,7 +375,7 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
       }
     },
 
-    async propose({ system, messages, signal }) {
+    async propose({ system, messages, signal, schema }) {
       try {
         // STREAMS, and must keep streaming. A non-streaming call at
         // SPEC_MAX_TOKENS is rejected by the SDK before it opens a socket —
@@ -387,8 +394,18 @@ export function anthropicClient(sdk: Anthropic = new Anthropic()): ChatClient {
                 // Structured outputs rather than a forced tool: it constrains
                 // the RESPONSE, so there is no tool_use block to extract and no
                 // tool/thinking interaction to reason about. Same guarantee,
-                // fewer moving parts (design spec section 4.1).
-                format: { type: 'json_schema', schema: LEGACY_SPEC_JSON_SCHEMA },
+                // fewer moving parts (design spec section 4.1). The schema
+                // itself is the caller's, not this method's — see the
+                // `schema` parameter's doc comment on ChatClient above.
+                //
+                // The cast: ChatClient's public `schema: object` is
+                // deliberately loose so any JSON Schema object literal (which
+                // TS narrows to precise, non-indexed property types via `as
+                // const`) satisfies it. The SDK's own field wants an indexed
+                // `{ [key: string]: unknown }`, which the bare `object` type
+                // cannot structurally prove — every caller's schema is in
+                // fact a plain object, so this is a widening, not a lie.
+                format: { type: 'json_schema', schema: schema as Record<string, unknown> },
               },
               betas: [FALLBACK_BETA],
               fallbacks: 'default',

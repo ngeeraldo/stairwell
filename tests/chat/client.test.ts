@@ -9,6 +9,7 @@ import {
   SPEC_TIMEOUT_MS,
   anthropicClient,
 } from '@/lib/chat/client'
+import { MOCKUP_JSON_SCHEMA } from '@/lib/spec/schema'
 
 /**
  * The narrowest fake that satisfies anthropicClient's credential guard.
@@ -82,6 +83,9 @@ function failingSdk(error: unknown) {
 const CALL = {
   system: 's',
   messages: [{ role: 'user' as const, content: 'hi' }],
+  // Any valid schema does here — these tests exercise usage/error handling,
+  // not the schema plumbing itself. That gets its own dedicated test below.
+  schema: MOCKUP_JSON_SCHEMA as object,
 }
 
 describe('propose()', () => {
@@ -114,6 +118,37 @@ describe('propose()', () => {
     expect(seen!.max_tokens).toBe(SPEC_MAX_TOKENS)
     expect(options!.timeout).toBe(SPEC_TIMEOUT_MS)
     expect((seen!.output_config as Record<string, unknown>).format).toBeDefined()
+  })
+
+  it('sends the caller-supplied schema as output_config.format', async () => {
+    // propose() is about to grow a second caller (rendering a mockup from a
+    // validated spec) that needs a DIFFERENT schema than the authoring call.
+    // This pins that the schema comes from the argument, not from something
+    // client.ts hardcodes — MOCKUP_JSON_SCHEMA here is deliberately not the
+    // authoring schema, so a client.ts that ignored this argument and used
+    // its own constant would fail this assertion.
+    let seen: Record<string, unknown> | undefined
+    const sdk = streamingSdk(
+      {
+        content: [{ type: 'text', text: '{"mockup_html":"<p>hi</p>"}' }],
+        stop_reason: 'end_turn',
+        model: 'claude-opus-5',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+      (body) => {
+        seen = body
+      },
+    )
+
+    await anthropicClient(sdk as never).propose({
+      ...CALL,
+      schema: MOCKUP_JSON_SCHEMA,
+      signal: new AbortController().signal,
+    })
+
+    expect(seen!.output_config).toMatchObject({
+      format: { type: 'json_schema', schema: MOCKUP_JSON_SCHEMA },
+    })
   })
 
   it('wraps an SDK failure as a ChatStreamError with a usable kind', async () => {
@@ -278,5 +313,12 @@ describe('PROPOSE_TOOL', () => {
     expect(PROPOSE_TOOL.name).toBe(PROPOSE_TOOL_NAME)
     expect(PROPOSE_TOOL.input_schema.properties).toEqual({})
     expect(PROPOSE_TOOL.input_schema.required).toEqual([])
+  })
+
+  it('describes propose_spec as proposing a whole next version', () => {
+    // The unified proposal loop replaces "the interview has enough" —
+    // propose() now covers every turn, not just a first-time interview.
+    expect(PROPOSE_TOOL.description).not.toMatch(/interview/i)
+    expect(PROPOSE_TOOL.input_schema.properties).toEqual({})
   })
 })

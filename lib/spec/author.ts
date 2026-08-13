@@ -15,7 +15,7 @@ import {
   type Served,
   type Usage,
 } from '@/lib/chat/client'
-import { parseLegacySpecInput, type LegacySpecPayload } from './legacy'
+import { LEGACY_SPEC_JSON_SCHEMA, parseLegacySpecInput, type LegacySpecPayload } from './legacy'
 
 export type Proposal = {
   id: number
@@ -106,7 +106,17 @@ export async function authorSpec(
         : history
 
     try {
-      result = await client.propose({ system, messages, signal: input.signal })
+      // LEGACY_SPEC_JSON_SCHEMA, not the current SPEC_JSON_SCHEMA: this path
+      // still parses with parseLegacySpecInput below, and pairing a new
+      // request schema with the old parser would produce a branch that
+      // passes its tests (which drive a fake client) yet fails against the
+      // real API. Task 10 switches both the schema and the parser together.
+      result = await client.propose({
+        system,
+        messages,
+        signal: input.signal,
+        schema: LEGACY_SPEC_JSON_SCHEMA,
+      })
     } catch (error) {
       if (input.signal.aborted) {
         appendMetric(db, {
