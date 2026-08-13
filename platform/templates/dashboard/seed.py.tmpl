@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Synthetic data generator for __SLUG__'s dashboard.
+
+    python3 seed.py <target.db>
+
+Writes ONLY to argv[1]. Executes schema.sql before inserting anything.
+
+Every value here is loudly fake (CLAUDE.md > Data safety) — a screen full of
+these must read as obviously synthetic at a glance.
+"""
+
+import os
+import random
+import sqlite3
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCHEMA = os.path.join(HERE, "schema.sql")
+
+MERCHANTS = [
+    ("COFFEE PALACE TEST", "eating out", 350, 900),
+    ("GROCERY WORLD TEST", "groceries", 1500, 9000),
+]
+
+DAYS = 90
+DAY_MS = 86_400_000
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: seed.py <target.db>", file=sys.stderr)
+        return 2
+    target = sys.argv[1]
+
+    with open(SCHEMA, encoding="utf-8") as handle:
+        schema = handle.read()
+
+    rng = random.Random(1)
+    now = int(time.time() * 1000)
+
+    rows = [
+        (
+            merchant,
+            category,
+            rng.randint(low, high),
+            now - back * DAY_MS + rng.randrange(DAY_MS),
+        )
+        for back in range(DAYS)
+        for merchant, category, low, high in MERCHANTS
+        if rng.random() >= 0.35
+    ]
+
+    db = sqlite3.connect(target)
+    try:
+        db.executescript(schema)
+        db.execute("DELETE FROM transactions")
+        db.executemany(
+            "INSERT INTO transactions (merchant, category, amount_cents, at)"
+            " VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    print(f"__SLUG__: {len(rows)} synthetic transactions -> {target}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

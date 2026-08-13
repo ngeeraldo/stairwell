@@ -1,0 +1,34 @@
+// users/__SLUG__/dashboard.tsx
+//
+// __SLUG__'s dashboard. Handed its own slug and an open read-only handle on
+// its own database; it never resolves either itself.
+//
+// Register it in lib/dashboard/registry.ts or it will not render:
+//   __SLUG__: () => import('@/users/__SLUG__/dashboard'),
+import type { DashboardProps } from '@/lib/dashboard/contract'
+import { recentTransactions } from './queries'
+
+function money(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`
+}
+
+export default function Dashboard({ db }: DashboardProps) {
+  const recent = recentTransactions(db)
+
+  return (
+    <section>
+      <h2>Recent transactions</h2>
+      {recent.length === 0 ? (
+        <p>No transactions yet.</p>
+      ) : (
+        <ul>
+          {recent.map((t) => (
+            <li key={`${t.at}-${t.merchant}`}>
+              {t.merchant} — {money(t.amount_cents)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}

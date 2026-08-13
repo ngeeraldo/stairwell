@@ -1,0 +1,30 @@
+// users/__SLUG__/queries.ts
+//
+// Every SQL statement for __SLUG__'s dashboard. The component holds none —
+// data logic in a .tsx file can only be tested by rendering it.
+import type { UserDb } from '@/lib/db/userDb'
+
+export type Transaction = {
+  merchant: string
+  category: string
+  amount_cents: number
+  at: number
+}
+
+/**
+ * The most recent transactions, newest first.
+ *
+ * Replace this with __SLUG__'s real panels. Anything that needs "today" or
+ * "this month" takes `now` as a PARAMETER — a query that reads the clock
+ * itself is a query whose test passes for twenty-nine days a month.
+ */
+export function recentTransactions(db: UserDb, limit = 10): Transaction[] {
+  return db
+    .prepare(
+      `SELECT merchant, category, amount_cents, at
+         FROM transactions
+        ORDER BY at DESC, id DESC
+        LIMIT ?`,
+    )
+    .all(limit) as Transaction[]
+}
