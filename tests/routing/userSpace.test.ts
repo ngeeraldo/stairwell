@@ -64,6 +64,16 @@ vi.mock('next/headers', () => ({
   cookies: async () => ({ get: cookieGet }),
 }))
 
+// devone gains a real dashboard in step 5. This file tests AUTHORISATION —
+// 404-vs-403, admin-is-not-an-override, the proposal card — and
+// tests/routing/dashboardRegion.test.ts owns the data region. Stub the
+// registry empty here so these assertions do not move every time a dashboard
+// is added to or removed from the repo.
+vi.mock('@/lib/dashboard/registry', () => ({
+  dashboardLoaderFor: () => undefined,
+  registeredSlugs: () => [],
+}))
+
 // ChatPanel is a 'use client' component. Calling UserSpace() directly (as
 // every test below does) never invokes it — React only expands a component
 // when something actually renders the tree (ReactDOM, a test renderer),

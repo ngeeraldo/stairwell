@@ -14,7 +14,9 @@ import type { DashboardModule } from './contract'
  * shared changes happen from the repo root, never inside /users/<name>/. It is
  * also inside a scope the pre-commit gate already guards.
  */
-const DASHBOARDS: Record<string, () => Promise<DashboardModule>> = {}
+const DASHBOARDS: Record<string, () => Promise<DashboardModule>> = {
+  devone: () => import('@/users/devone/dashboard'),
+}
 
 /**
  * Object.hasOwn, not a bare index. A Record literal inherits Object.prototype,
