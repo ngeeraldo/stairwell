@@ -111,6 +111,11 @@ describe('diffVersions', () => {
     // change freely; the id is what says "this is the same panel".
     const renamed = withPanelTitle(v1, 'walked_today', 'Did you walk?')
     expect(diffVersions(v1, renamed).panels).toEqual({ added: [], removed: [], changed: ['walked_today'] })
+    // Pins the design point that a screen compares on its own fields plus
+    // the SET of panel ids it contains, never on the panels' own content.
+    // Only a panel's title changed here, so its containing screen — same
+    // id, same title, same order, same panel-id set — must report clean.
+    expect(diffVersions(v1, renamed).screens.changed).toEqual([])
   })
 
   it('reports a new panel as added and leaves the untouched one out of changed', () => {
@@ -126,7 +131,16 @@ describe('diffVersions', () => {
   it('reports a panel moved between screens as changed, not moved', () => {
     // A move is not its own category for the pilot; the panel's containing
     // screen is part of what changed about it.
-    expect(diffVersions(v1, movedToNewScreen(v1, 'walked_today')).panels.changed).toEqual(['walked_today'])
+    const moved = movedToNewScreen(v1, 'walked_today')
+    expect(diffVersions(v1, moved).panels.changed).toEqual(['walked_today'])
+    // The whole screens object, not just one field: the new screen is
+    // added, the old screen is changed (its panel-id set shrank to empty),
+    // and nothing is removed — pins the shape, not just a fragment of it.
+    expect(diffVersions(v1, moved).screens).toEqual({
+      added: ['elsewhere'],
+      removed: [],
+      changed: ['today'],
+    })
   })
 
   it('ignores key order and whitespace when deciding "changed"', () => {
@@ -134,6 +148,15 @@ describe('diffVersions', () => {
   })
 
   it('counts what it found', () => {
-    expect(diffCounts(diffVersions(null, v1))).toMatchObject({ panels_added: 1, panels_removed: 0 })
+    // All six named fields, not a subset — this is the only test that
+    // exercises the screens_* half of diffCounts' output.
+    expect(diffCounts(diffVersions(null, v1))).toEqual({
+      screens_added: 1,
+      screens_removed: 0,
+      screens_changed: 0,
+      panels_added: 1,
+      panels_removed: 0,
+      panels_changed: 0,
+    })
   })
 })
