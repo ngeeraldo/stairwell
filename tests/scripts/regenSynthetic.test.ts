@@ -220,4 +220,23 @@ describe('regenerateAll', () => {
     },
     SUBPROCESS_TIMEOUT_MS,
   )
+
+  it(
+    'leaves a real <slug>.db byte-identical — this is "survives a deploy"',
+    () => {
+      // regen-synthetic runs on every deploy. If it touched the encrypted
+      // database, every tap a friend had logged would be destroyed by the next
+      // deploy, silently. The checkpoint phrase "the row survives a deploy" is
+      // exactly this assertion.
+      makeUser('devtwo')
+      const real = join(root, 'devtwo', 'devtwo.db')
+      writeFileSync(real, 'PRETEND ENCRYPTED BYTES')
+      const before = readFileSync(real)
+
+      regenerateAll(root)
+
+      expect(readFileSync(real).equals(before)).toBe(true)
+    },
+    SUBPROCESS_TIMEOUT_MS,
+  )
 })
