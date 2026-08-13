@@ -1,9 +1,14 @@
 // tests/routing/walkRoute.test.ts
 //
-// The order of the four checks is the security property, so the lock test
-// asserts on the CALLS (no key fetched, no file opened) rather than on the
-// response — a route that opened first and refused afterwards would look
-// identical from the outside and be wrong.
+// The order of the four checks is the security property. resolveState()
+// itself calls getKey() internally (see lib/session/resolve.ts), so "no key
+// was fetched" can never be an assertion this suite can make — it would be
+// false the moment resolveState runs, whether or not check 1 short-circuits.
+// Instead the lock test asserts that canSeeUserSpace (check 2) is never
+// called, alongside the response status and the absence of the encrypted
+// file: a route that opened the file and refused afterwards would look
+// identical from the outside on status and file-existence alone, and would
+// still be wrong.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -23,6 +28,28 @@ vi.mock('@/lib/dashboard/registry', () => ({
   registeredSlugs: () => ['devtwo'],
 }))
 
+// canSeeUserSpace and accountIdFor delegate to the real implementations, so
+// every test but the lock test sees real behaviour. The spies are declared
+// here, outside the factory, and the factory only calls mockImplementation
+// on them — vi.resetModules() in beforeEach re-runs the factory on the next
+// dynamic import, but it re-targets these same persistent vi.fn identities
+// rather than replacing them, so call counts survive until mockClear().
+const canSeeUserSpaceSpy = vi.fn()
+const accountIdForSpy = vi.fn()
+vi.mock('@/lib/auth/authorize', async () => {
+  const actual =
+    await vi.importActual<typeof import('@/lib/auth/authorize')>(
+      '@/lib/auth/authorize',
+    )
+  canSeeUserSpaceSpy.mockImplementation(actual.canSeeUserSpace)
+  accountIdForSpy.mockImplementation(actual.accountIdFor)
+  return {
+    ...actual,
+    canSeeUserSpace: canSeeUserSpaceSpy,
+    accountIdFor: accountIdForSpy,
+  }
+})
+
 const SCHEMA = `CREATE TABLE IF NOT EXISTS walks (
   day TEXT PRIMARY KEY,
   at  INTEGER NOT NULL
@@ -40,6 +67,8 @@ beforeEach(() => {
   writeFileSync(join(dir, 'users', 'devtwo', 'schema.sql'), SCHEMA)
   vi.resetModules()
   cookieGet.mockClear()
+  canSeeUserSpaceSpy.mockClear()
+  accountIdForSpy.mockClear()
   cookieSlot.value = undefined
   loaderSlot.value = async () => ({ default: () => null })
   handle = undefined
@@ -74,6 +103,18 @@ async function arrange(opts: { lock?: boolean; slug?: string } = {}) {
 
 const params = (user: string) => ({ params: Promise.resolve({ user }) })
 
+/**
+ * dayKey is pure and does not depend on any mocked module, but it lives in
+ * route.ts alongside imports of the mocked '@/lib/auth/authorize'. A static
+ * top-level `import { dayKey } from '...'` would force route.ts to be
+ * evaluated during vi.mock's hoisting pass — before the module-scope spy
+ * declarations below run — and throw a TDZ error. A dynamic import, used
+ * only inside test bodies, defers that evaluation until after setup.
+ */
+async function importDayKey() {
+  return (await import('@/app/api/users/[user]/walk/route')).dayKey
+}
+
 function walkRows(dbPath: string, key: Buffer) {
   // Opened directly rather than through the route's own opener, so the test
   // proves the row is really on disk under that key.
@@ -88,6 +129,39 @@ function walkRows(dbPath: string, key: Buffer) {
   }
 }
 
+describe('dayKey', () => {
+  it('yields the LOCAL calendar day, and diverges from ISO/UTC off-UTC', async () => {
+    const dayKey = await importDayKey()
+    // Two fixed local instants, chosen to straddle midnight from each side:
+    // a late evening (23:30) and an early morning (00:30) on the same
+    // nominal local date. dayKey must report that same local date for both,
+    // regardless of the host's timezone.
+    const evening = new Date(2026, 7, 12, 23, 30, 0).getTime() // Aug is month 7 (0-based)
+    const morning = new Date(2026, 7, 12, 0, 30, 0).getTime()
+    expect(dayKey(evening)).toBe('2026-08-12')
+    expect(dayKey(morning)).toBe('2026-08-12')
+
+    // Pinning that dayKey is NOT `new Date(at).toISOString().slice(0, 10)`:
+    // a late-evening local instant rolls onto the NEXT UTC day when local
+    // time is BEHIND UTC (getTimezoneOffset() > 0, e.g. the Americas); an
+    // early-morning local instant rolls onto the PREVIOUS UTC day when
+    // local time is AHEAD of UTC (getTimezoneOffset() < 0, e.g.
+    // Asia/Tokyo). Exactly one of the two diverges for any real non-UTC
+    // timezone, which is why the branch is picked from the host's own
+    // offset rather than hardcoded. At UTC itself (offset === 0) neither
+    // instant can diverge — the two equality checks above are the only
+    // assertions this test can make in that environment, and this branch
+    // asserts nothing further. This is stated plainly rather than silently
+    // passing: the divergence check below is only discriminating off-UTC.
+    const offsetMinutes = new Date().getTimezoneOffset()
+    if (offsetMinutes > 0) {
+      expect(dayKey(evening)).not.toBe(new Date(evening).toISOString().slice(0, 10))
+    } else if (offsetMinutes < 0) {
+      expect(dayKey(morning)).not.toBe(new Date(morning).toISOString().slice(0, 10))
+    }
+  })
+})
+
 describe('POST /api/users/[user]/walk', () => {
   it('writes today exactly once, however many times it is tapped', async () => {
     const POST = await arrange()
@@ -98,15 +172,21 @@ describe('POST /api/users/[user]/walk', () => {
     expect(second.status).toBe(303)
     const rows = walkRows(join(dir, 'users', 'devtwo', 'devtwo.db'), Buffer.alloc(32, 7))
     expect(rows).toHaveLength(1)
+    const dayKey = await importDayKey()
+    expect(rows[0]?.day).toBe(dayKey(Date.now()))
   })
 
-  it('refuses a LOCKED session without fetching a key or touching the file', async () => {
+  it('refuses a LOCKED session without reaching check 2 or touching the file', async () => {
     const POST = await arrange({ lock: true })
     const response = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
 
     expect(response.status).toBe(403)
-    // The property that matters in step 6a: a locked session has no key, so
-    // the file must not be opened — not merely not written.
+    // The property that matters in step 6a: check 1 must short-circuit
+    // before check 2 (ownership) ever runs. canSeeUserSpace is the earliest
+    // call a locked session must never reach.
+    expect(canSeeUserSpaceSpy).not.toHaveBeenCalled()
+    // A locked session has no key, so the file must not be opened — not
+    // merely not written.
     expect(existsSync(join(dir, 'users', 'devtwo', 'devtwo.db'))).toBe(false)
   })
 
