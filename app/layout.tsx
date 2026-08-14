@@ -20,6 +20,30 @@ export default function RootLayout({
     <html lang="en">
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        {/*
+          The only script tag in this app.
+
+          It writes a three-value enum into a cookie so server-side metrics
+          emitters know what kind of screen a row came from (onboarding ledger
+          D4). No user data, no analytics vendor, no network call — the whole
+          thing is one assignment.
+
+          Inline and synchronous so the cookie exists before the first metric
+          of the session is written; a deferred script would miss the very
+          request it is describing. SameSite=Lax and a one-year Max-Age so it
+          survives the redirect chain a login is.
+
+          The breakpoints are Tailwind's md and lg, and are named in
+          lib/metrics/deviceClass.ts — so the class a row reports and the
+          arrangement the shell actually chose agree with each other.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "var w=window.innerWidth,c=w<768?'phone':w<1024?'tablet':'desktop';" +
+              "document.cookie='stairwell_dc='+c+';path=/;max-age=31536000;samesite=lax';",
+          }}
+        />
       </head>
       <body className="min-h-dvh bg-background text-foreground antialiased">
         {children}

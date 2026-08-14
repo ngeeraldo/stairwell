@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers'
 import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { appendMetric } from '@/lib/db/appendOnly'
+import { readDeviceClass } from '@/lib/metrics/deviceClass'
 import { openEncryptedUserDb } from '@/lib/db/encryptedUserDb'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getDb } from '@/lib/db/instance'
@@ -52,6 +53,11 @@ export async function POST(
     return new Response(null, { status: 403 })
   }
 
+  // Resolved ONCE per request, not per emit: three of the four rows below
+  // fire on mutually exclusive paths, and re-reading the request headers per
+  // row would be three reads of a value that cannot have changed.
+  const device_class = await readDeviceClass()
+
   let userDb
   try {
     userDb = openEncryptedUserDb(user, key)
@@ -66,7 +72,7 @@ export async function POST(
     appendMetric(db, {
       accountId,
       event: 'dashboard_write_error',
-      data: { slug: user, panel: 'walked_today' },
+      data: { slug: user, panel: 'walked_today', device_class },
       at: Date.now(),
     })
     return new Response(null, { status: 500 })
@@ -90,7 +96,7 @@ export async function POST(
     appendMetric(db, {
       accountId,
       event: 'dashboard_write_error',
-      data: { slug: user, panel: 'walked_today' },
+      data: { slug: user, panel: 'walked_today', device_class },
       at: Date.now(),
     })
     return new Response(null, { status: 500 })
@@ -105,7 +111,7 @@ export async function POST(
   appendMetric(db, {
     accountId,
     event: 'dashboard_write',
-    data: { slug: user, panel: 'walked_today' },
+    data: { slug: user, panel: 'walked_today', device_class },
     at: Date.now(),
   })
 

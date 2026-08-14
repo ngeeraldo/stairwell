@@ -26,7 +26,20 @@ let sessionCookieName = 'sid'
 const cookieGet = vi.fn((name: string) =>
   name === sessionCookieName ? cookieSlot.value : undefined,
 )
-vi.mock('next/headers', () => ({ cookies: async () => ({ get: cookieGet }) }))
+/**
+ * `headers` is stubbed alongside `cookies` because lib/metrics/deviceClass.ts
+ * reads the User-Agent as its fallback when no stairwell_dc cookie exists
+ * (onboarding ledger D4). An empty header map is the honest fixture — it is
+ * exactly what a request with neither cookie nor UA looks like — and it
+ * resolves to 'desktop', which is what the device_class assertions below
+ * expect.
+ */
+const emptyHeaders = { get: () => null }
+
+vi.mock('next/headers', () => ({
+  cookies: async () => ({ get: cookieGet }),
+  headers: async () => emptyHeaders,
+}))
 
 const loaderSlot: { value: unknown } = { value: undefined }
 vi.mock('@/lib/dashboard/registry', () => ({
@@ -225,7 +238,11 @@ describe('POST /api/users/[user]/walk', () => {
     expect(row).toBeDefined()
     // Slug and panel, never the exception text — the abort message is the
     // planted string above, and it must not reach the append-only column.
-    expect(JSON.parse(row!.data)).toEqual({ slug: 'devtwo', panel: 'walked_today' })
+    expect(JSON.parse(row!.data)).toEqual({
+      slug: 'devtwo',
+      panel: 'walked_today',
+      device_class: 'desktop',
+    })
     expect(row!.data).not.toContain('SIMULATED')
 
     // And no success row: a failed tap must not look like a logged day.
@@ -278,7 +295,11 @@ describe('POST /api/users/[user]/walk', () => {
       .get() as { data: string } | undefined
     expect(row).toBeDefined()
     const data = JSON.parse(row!.data) as Record<string, unknown>
-    expect(data).toEqual({ slug: 'devtwo', panel: 'walked_today' })
+    expect(data).toEqual({
+      slug: 'devtwo',
+      panel: 'walked_today',
+      device_class: 'desktop',
+    })
     expect(JSON.stringify(data)).not.toContain('20')
   })
 
@@ -322,7 +343,11 @@ describe('POST /api/users/[user]/walk', () => {
     // Slug and panel, never the error message: the metrics policy is a slug
     // and a panel and never a value, and the wrong-key message could carry
     // more than that.
-    expect(data).toEqual({ slug: 'devtwo', panel: 'walked_today' })
+    expect(data).toEqual({
+      slug: 'devtwo',
+      panel: 'walked_today',
+      device_class: 'desktop',
+    })
 
     expect(
       handle!.prepare("SELECT 1 FROM metrics WHERE event = 'dashboard_write'").get(),

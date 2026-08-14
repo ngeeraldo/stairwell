@@ -60,8 +60,19 @@ const cookieGet = vi.fn((name: string) =>
   name === sessionCookieName ? cookieSlot.value : undefined,
 )
 
+/**
+ * `headers` is stubbed alongside `cookies` because lib/metrics/deviceClass.ts
+ * reads the User-Agent as its fallback when no stairwell_dc cookie exists
+ * (onboarding ledger D4). An empty header map is the honest fixture — it is
+ * exactly what a request with neither cookie nor UA looks like — and it
+ * resolves to 'desktop', which is what the device_class assertions below
+ * expect.
+ */
+const emptyHeaders = { get: () => null }
+
 vi.mock('next/headers', () => ({
   cookies: async () => ({ get: cookieGet }),
+  headers: async () => emptyHeaders,
 }))
 
 // devone gains a real dashboard in step 5. This file tests AUTHORISATION —

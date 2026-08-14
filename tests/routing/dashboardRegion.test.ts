@@ -42,8 +42,19 @@ let sessionCookieName = 'sid'
 const cookieGet = vi.fn((name: string) =>
   name === sessionCookieName ? cookieSlot.value : undefined,
 )
+/**
+ * `headers` is stubbed alongside `cookies` because lib/metrics/deviceClass.ts
+ * reads the User-Agent as its fallback when no stairwell_dc cookie exists
+ * (onboarding ledger D4). An empty header map is the honest fixture — it is
+ * exactly what a request with neither cookie nor UA looks like — and it
+ * resolves to 'desktop', which is what the device_class assertions below
+ * expect.
+ */
+const emptyHeaders = { get: () => null }
+
 vi.mock('next/headers', () => ({
   cookies: async () => ({ get: cookieGet }),
+  headers: async () => emptyHeaders,
 }))
 
 // --- the two seams under test ---------------------------------------------
@@ -293,9 +304,16 @@ describe('app/[user]/page.tsx data region', () => {
     expect(loaderFor).toHaveBeenCalledWith(SLUG)
     expect(openUserDbMock).toHaveBeenCalledWith(SLUG)
     expect(metricEvents()).toContain('dashboard_open')
+    // EXACT shape, not a subset match. dashboard_open carries a slug, a
+    // source and a device class and nothing else — the permanent policy is
+    // that metrics never carry user values, and an exact assertion is what
+    // makes an added field a decision somebody had to come here and make.
+    // device_class is 'desktop' because this fixture has neither the
+    // stairwell_dc cookie nor a User-Agent (onboarding ledger D4).
     expect(metricData('dashboard_open')).toEqual({
       slug: SLUG,
       source: 'synthetic',
+      device_class: 'desktop',
     })
   })
 
@@ -326,6 +344,7 @@ describe('app/[user]/page.tsx data region', () => {
     expect(metricData('dashboard_error')).toEqual({
       slug: SLUG,
       kind: 'error',
+      device_class: 'desktop',
     })
     expect(rawMetricData('dashboard_error')).not.toContain('panel query blew up TEST')
   })
@@ -417,6 +436,7 @@ describe('app/[user]/page.tsx data region', () => {
     expect(metricData('dashboard_error')).toEqual({
       slug: SLUG,
       kind: 'wrong_key',
+      device_class: 'desktop',
     })
   })
 
@@ -440,6 +460,7 @@ describe('app/[user]/page.tsx data region', () => {
     expect(metricData('dashboard_error')).toEqual({
       slug: SLUG,
       kind: 'error',
+      device_class: 'desktop',
     })
     // The raw stored column, not just the parsed object's keys: the
     // recognisable fragment must never have touched the append-only bytes.

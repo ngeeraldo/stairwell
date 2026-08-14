@@ -7,12 +7,14 @@ import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
+import { readDeviceClass } from '@/lib/metrics/deviceClass'
 import { hasConfirmedSpecBelow, newestSpec } from '@/lib/db/specs'
 import { SpecShapeError } from '@/lib/spec/schema'
 import { readStoredSpec } from '@/lib/spec/stored'
 import type { Proposal } from '@/lib/spec/author'
 import { openUserDb } from '@/lib/db/userDb'
 import type { UserDb } from '@/lib/db/userDb'
+import type { DeviceClass } from '@/lib/metrics/deviceClass'
 import {
   encryptedUserDbExists,
   openEncryptedUserDb,
@@ -54,7 +56,12 @@ function dashboardErrorKind(error: unknown): 'wrong_key' | 'error' {
   return error instanceof WrongKeyError ? 'wrong_key' : 'error'
 }
 
-async function dashboardRegion(slug: string, accountId: number, sessionId: string) {
+async function dashboardRegion(
+  slug: string,
+  accountId: number,
+  sessionId: string,
+  device_class: DeviceClass,
+) {
   const loader = dashboardLoaderFor(slug)
   if (!loader) {
     return <p>Nothing here yet. Your dashboard gets built from your interview.</p>
@@ -73,7 +80,7 @@ async function dashboardRegion(slug: string, accountId: number, sessionId: strin
     if (data.source === 'none') {
       return <p>Your dashboard is built, but its data has not been generated yet.</p>
     }
-    return renderDashboard(loader, slug, data.db, accountId, 'synthetic')
+    return renderDashboard(loader, slug, data.db, accountId, 'synthetic', device_class)
   }
 
   let db: UserDb | undefined
@@ -91,13 +98,13 @@ async function dashboardRegion(slug: string, accountId: number, sessionId: strin
     // only thing that may create or migrate it — so this open also does NOT
     // apply schema.sql, which is a write. See lib/db/encryptedUserDb.ts.
     db = openEncryptedUserDb(slug, key!, { readonly: true })
-    return await renderDashboard(loader, slug, db, accountId, 'real')
+    return await renderDashboard(loader, slug, db, accountId, 'real', device_class)
   } catch (error) {
     logDbFailure('dashboard_error', slug, error)
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_error',
-      data: { slug, kind: dashboardErrorKind(error) },
+      data: { slug, kind: dashboardErrorKind(error), device_class },
       at: Date.now(),
     })
     return <p>This dashboard failed to load.</p>
@@ -116,6 +123,7 @@ async function renderDashboard(
   db: UserDb,
   accountId: number,
   source: 'synthetic' | 'real',
+  device_class: DeviceClass,
 ) {
   try {
     const { default: Dashboard } = await loader()
@@ -125,7 +133,7 @@ async function renderDashboard(
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_open',
-      data: { slug, source },
+      data: { slug, source, device_class },
       at: Date.now(),
     })
     return (
@@ -160,7 +168,7 @@ async function renderDashboard(
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_error',
-      data: { slug, kind: dashboardErrorKind(error) },
+      data: { slug, kind: dashboardErrorKind(error), device_class },
       at: Date.now(),
     })
     return <p>This dashboard failed to load.</p>
@@ -257,7 +265,7 @@ export default async function UserSpace({
         first={first}
       />
       {unlocked ? (
-        await dashboardRegion(user, accountId, sessionId!)
+        await dashboardRegion(user, accountId, sessionId!, await readDeviceClass())
       ) : (
         <p>
           Locked. <a href="/unlock">Unlock</a> to see your data.
