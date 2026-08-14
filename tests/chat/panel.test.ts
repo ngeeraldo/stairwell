@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import {
+import ChatPanel, {
   applyLine,
   applyTurn,
   attemptConfirm,
@@ -621,6 +621,119 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
     )
     expect(text.split(DELIVERY_CHANGE)).toHaveLength(3)
     expect(text).not.toContain(DELIVERY_FIRST)
+  })
+})
+
+describe('a card that arrives mid-session carries its own delivery promise', () => {
+  it('prefers the streamed card\'s own answer over the page-load one', () => {
+    // The whole sequence, in the order it actually happens: the friend
+    // confirmed v1 yesterday, so today's page load says first=true (correct
+    // for v1's card). They then ask for a one-word relabel, and v2 streams in
+    // through the `proposal` line. Only that line knows v2 is a change — the
+    // page computed `first` once, before v2 existed, and never re-renders.
+    // Driving applyTurn means this goes through the literal per-line reducer
+    // send()'s read loop calls, which is the path page-load tests cannot see.
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('call it eating out') }
+    const state = applyTurn(seeded, [
+      { authoring: true },
+      { proposal: { ...VERSION_PROPOSAL, id: 99, first: false } },
+      { done: true },
+    ])
+
+    const text = htmlText(
+      renderToStaticMarkup(
+        ProposalRegion({
+          authoring: state.authoring,
+          proposalError: state.proposalError,
+          proposals: state.proposals,
+          confirming: false,
+          confirmError: false,
+          first: true,
+          onConfirm: noop,
+        }),
+      ),
+    )
+    expect(text).toContain(DELIVERY_CHANGE)
+    expect(text).not.toContain(DELIVERY_FIRST)
+  })
+
+  it('falls back to the page-load answer for a card that carries none', () => {
+    // The page-load card is built by app/[user]/page.tsx and does carry its
+    // own answer, but the streamed one is JSON.parse output cast to a type
+    // nothing validates. `undefined` is falsy, so a bare `first ? … : …` would
+    // silently pick the CHANGE wording — the wrong promise, on the one
+    // sentence in the pilot that must never be wrong. Falling back to the
+    // page's server-computed boolean degrades that to "right for the card the
+    // page rendered" instead.
+    const text = htmlText(
+      renderToStaticMarkup(
+        SpecCard({
+          proposal: VERSION_PROPOSAL,
+          live: true,
+          busy: false,
+          first: true,
+          onConfirm: noop,
+        }),
+      ),
+    )
+    expect(text).toContain(DELIVERY_FIRST)
+  })
+
+  it('lets two cards on the same screen make different promises', () => {
+    // v1 (their first dashboard, confirmed) and v2 (a relabel) coexist in the
+    // scrollback after a tweak. A single page-level boolean cannot be right
+    // for both, which is the defect in one sentence.
+    const older = { ...VERSION_PROPOSAL, id: 42, first: true, confirmed: true }
+    const newer = { ...VERSION_PROPOSAL, id: 43, first: false }
+    const text = htmlText(
+      renderToStaticMarkup(
+        ProposalRegion({
+          authoring: false,
+          proposalError: false,
+          proposals: [older, newer],
+          confirming: false,
+          confirmError: false,
+          first: true,
+          onConfirm: noop,
+        }),
+      ),
+    )
+    expect(text).toContain(DELIVERY_FIRST)
+    expect(text).toContain(DELIVERY_CHANGE)
+  })
+
+  describe('ChatPanel wires the page\'s answer into the region', () => {
+    // ChatPanel's own <ProposalRegion first={first}> call site was unpinned:
+    // every other delivery test drives SpecCard or ProposalRegion directly, so
+    // hardcoding `first` HERE reds none of them. ChatPanel uses hooks, so —
+    // unlike every other component in this file — it cannot be called as a
+    // plain function: React needs to own the render for a dispatcher to exist.
+    // createElement + renderToStaticMarkup gives it one. useState works there
+    // and useEffect simply never runs, which is fine: the seam is the FIRST
+    // render, and the only thing the effect does is read localStorage for the
+    // open/closed toggle (default open, which is what this needs).
+    //
+    // The proposal deliberately carries NO `first` of its own, so the only
+    // thing that can decide the wording is the prop being threaded through.
+    const pageLoadCard = { ...VERSION_PROPOSAL, confirmed: false }
+    const renderPanel = (first: boolean) =>
+      htmlText(
+        renderToStaticMarkup(
+          React.createElement(ChatPanel, { initial: [], proposal: pageLoadCard, first }),
+        ),
+      )
+
+    it('threads first=true through to the card', () => {
+      const text = renderPanel(true)
+      expect(text).toContain(DELIVERY_FIRST)
+      expect(text).not.toContain(DELIVERY_CHANGE)
+    })
+
+    it('threads first=false through to the card', () => {
+      const text = renderPanel(false)
+      expect(text).toContain(DELIVERY_CHANGE)
+      expect(text).not.toContain(DELIVERY_FIRST)
+    })
   })
 })
 

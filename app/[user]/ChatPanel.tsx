@@ -88,8 +88,19 @@ type SpecVersionShape = Extract<CardSpec, { kind: 'version' }>['version']
 
 /** What SpecCard needs. `confirmed` is optional because a proposal freshly
  * streamed in from the `proposal` NDJSON line has none yet — only the record
- * read back from the DB (page.tsx) carries a definite value. */
-export type CardProposal = Proposal & { confirmed?: boolean }
+ * read back from the DB (page.tsx) carries a definite value.
+ *
+ * `first` is re-declared OPTIONAL, against a server type that requires it,
+ * because on this side of the wire it genuinely can be missing: a streamed
+ * card is JSON.parse output cast to this type, and nothing validates it.
+ * `undefined` is falsy, so a bare `first ? … : …` would silently render the
+ * change wording — the wrong promise — for a first dashboard. Typing it as
+ * possibly-absent forces the read site to say what happens then (it falls back
+ * to the page's own server-computed answer, see SpecCard). */
+export type CardProposal = Omit<Proposal, 'first'> & {
+  first?: boolean
+  confirmed?: boolean
+}
 
 /**
  * Everything ChatPanel holds about the transcript and the proposal flow,
@@ -381,9 +392,20 @@ function VersionBody({ version }: { version: SpecVersionShape }) {
  * not bound by what this rendered.
  *
  * `first` selects the delivery promise, and is computed server-side from the
- * record (app/[user]/page.tsx) — this component has no database and must not
- * guess. It has no default for the same reason: a defaulted `first` is a
- * wrong promise made silently.
+ * record — this component has no database and must not guess. It has no
+ * default for the same reason: a defaulted `first` is a wrong promise made
+ * silently.
+ *
+ * The card's OWN answer wins over the prop, and that ordering is the fix for
+ * a real contradiction: the prop is computed once, during a page render, for
+ * the card that existed then. A card proposed later in the same conversation
+ * arrives through the `proposal` NDJSON line with no re-render behind it, so
+ * the prop describes a different card — and a friend who confirmed their first
+ * dashboard yesterday and asked for a one-word relabel today was told the
+ * relabel would be here "at the latest, tomorrow morning". Every card the
+ * server emits now carries its own answer (lib/spec/author.ts); the prop is
+ * what a card that somehow carries none falls back to, which is right for the
+ * page-load card and never worse than guessing.
  *
  * `confirmError` is honest, brief failure feedback for a confirm attempt
  * that did not succeed (§Important 3, fix round 1) — no invented promise,
@@ -410,7 +432,7 @@ export function SpecCard({
   const title = cardTitle(spec)
   // One expression, read twice below, so the confirmed and unconfirmed halves
   // of this card cannot disagree about what was promised.
-  const delivery = first ? DELIVERY_FIRST : DELIVERY_CHANGE
+  const delivery = (proposal.first ?? first) ? DELIVERY_FIRST : DELIVERY_CHANGE
   return (
     <section aria-label="Proposed dashboard" data-spec-id={proposal.id}>
       <h3>{title}</h3>
@@ -504,9 +526,11 @@ export function ProposalRegion({
   proposals: CardProposal[]
   confirming: boolean
   confirmError: boolean
-  /** Threaded straight through from the page. Passed to EVERY card, not just
-   * the live one: a superseded or already-confirmed card shows the same
-   * promise, and the account's history is what decided it either way. */
+  /** Threaded straight through from the page, and the FALLBACK each card uses
+   * when it carries no answer of its own. Passed to every card, not just the
+   * live one: a superseded or already-confirmed card still shows a promise.
+   * It is not the answer for cards that arrived after the page rendered —
+   * those bring their own (see SpecCard's `first`). */
   first: boolean
   onConfirm: (specId: number) => void
 }) {
@@ -573,9 +597,13 @@ export default function ChatPanel({
   first,
 }: {
   initial: Turn[]
-  proposal?: Proposal & { confirmed: boolean }
-  /** True when this account has no confirmed spec yet. Server-computed —
-   * see SpecCard's `first`. */
+  /** Typed as the CLIENT-side shape, not the server's `Proposal`, because that
+   * is what it becomes the moment it is seeded into panel state alongside
+   * cards decoded off the wire. A full server-built proposal is assignable. */
+  proposal?: CardProposal & { confirmed: boolean }
+  /** True when the card the page rendered is this account's first dashboard.
+   * Server-computed, and the fallback for any card that carries no answer of
+   * its own — see SpecCard's `first`. */
   first: boolean
 }) {
   const [open, setOpen] = useState(true)

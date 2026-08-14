@@ -775,6 +775,41 @@ describe('authorSpec', () => {
     })
   })
 
+  describe('the delivery promise rides on the proposal', () => {
+    // The card that streams in mid-turn arrives through the `proposal` NDJSON
+    // line, and the page never re-renders — so a `first` computed once at page
+    // load and handed to every card promised "tomorrow morning" for a one-word
+    // relabel proposed later in the same session. The answer has to be
+    // computed for THIS card, at the moment the row is written.
+
+    it('calls a first-ever proposal a first dashboard', async () => {
+      const proposal = await authorSpec(deps(fake().client), INPUT)
+      expect(proposal!.first).toBe(true)
+    })
+
+    it('calls a proposal above an already-confirmed version a change, not a first dashboard', async () => {
+      confirmed(CURRENT_V1)
+      const proposal = await authorSpec(deps(fake().client), INPUT)
+      expect(proposal!.first).toBe(false)
+    })
+
+    it('still calls it a first dashboard when the version below it was only PROPOSED', async () => {
+      // hasConfirmedSpecBelow, not hasConfirmedSpec: a rejected v1 means
+      // nothing has ever been built, so v2 really is their first dashboard.
+      insertSpec(db, {
+        accountId: 1,
+        conversationId: 'conv-0',
+        promptSha: 'abc123abc123',
+        payload: CURRENT_V1,
+        mockupHtml: '<html></html>',
+        at: 1,
+      })
+      const proposal = await authorSpec(deps(fake().client), INPUT)
+      expect(proposal!.version).toBe(2)
+      expect(proposal!.first).toBe(true)
+    })
+  })
+
   describe('the messages sent to propose()', () => {
     it('appends the synthetic "Write the spec now." message when the transcript ends on an assistant turn', async () => {
       seedConversation()

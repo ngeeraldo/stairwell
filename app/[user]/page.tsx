@@ -191,6 +191,27 @@ export default async function UserSpace({
   const unlocked = resolveState(getDb(), sessionId) === 'unlocked'
 
   const newest = newestSpec(getDb(), accountId)
+  // Which delivery promise the card rendered from the record makes. Computed
+  // HERE, from the record, because ChatPanel is a client component with no
+  // database and the alternative — the agent remembering to say it — is
+  // exactly what the fixed chrome exists to replace.
+  //
+  // The question is "is the card on screen this account's FIRST dashboard",
+  // which is NOT "has this account ever confirmed anything" — see
+  // hasConfirmedSpecBelow. Asking the unbounded version meant a friend who
+  // pressed "Build this" on their first card and then RELOADED saw that same
+  // card promise their whole first dashboard within a few hours. The card's
+  // own comment says a friend reloading afterwards should still see the
+  // timeframe; it has to be the right one.
+  //
+  // Bounded by the displayed proposal's version, so: nothing confirmed yet →
+  // true; only this card confirmed → still true, it really is their first
+  // dashboard; an earlier spec confirmed with a newer proposal above it →
+  // false. No proposal at all means no card to promise anything about, and
+  // true is the honest default for an account with no dashboard yet.
+  const first =
+    newest === undefined || !hasConfirmedSpecBelow(getDb(), accountId, newest.version)
+
   // Rendered from the record on load, so a friend who closes the tab
   // mid-decision comes back to the same card, still confirmable.
   let proposal: (Proposal & { confirmed: boolean }) | undefined
@@ -199,6 +220,12 @@ export default async function UserSpace({
       proposal = {
         id: newest.id,
         version: newest.version,
+        // Carried on the card itself, not only handed to ChatPanel as a prop:
+        // every card must answer for itself, because a card proposed later in
+        // this same session arrives through the `proposal` NDJSON line with no
+        // re-render behind it (see Proposal.first). The prop stays as the
+        // fallback for a streamed card that somehow carries none.
+        first,
         // readStoredSpec, not either parser directly: it is the one place
         // that decides which shape a row is, and the card renders whichever
         // arm comes back. A row written before the unified loop can never be
@@ -217,27 +244,6 @@ export default async function UserSpace({
       proposal = undefined
     }
   }
-
-  // Which delivery promise every card on this page makes. Computed HERE, from
-  // the record, because ChatPanel is a client component with no database and
-  // the alternative — the agent remembering to say it — is exactly what the
-  // fixed chrome exists to replace.
-  //
-  // The question is "is the card on screen this account's FIRST dashboard",
-  // which is NOT "has this account ever confirmed anything" — see
-  // hasConfirmedSpecBelow. Asking the unbounded version meant a friend who
-  // pressed "Build this" on their first card and then RELOADED saw that same
-  // card promise their whole first dashboard within a few hours. The card's
-  // own comment says a friend reloading afterwards should still see the
-  // timeframe; it has to be the right one.
-  //
-  // Bounded by the displayed proposal's version, so: nothing confirmed yet →
-  // true; only this card confirmed → still true, it really is their first
-  // dashboard; an earlier spec confirmed with a newer proposal above it →
-  // false. No proposal at all means no card to promise anything about, and
-  // true is the honest default for an account with no dashboard yet.
-  const first =
-    newest === undefined || !hasConfirmedSpecBelow(getDb(), accountId, newest.version)
 
   return (
     <main>

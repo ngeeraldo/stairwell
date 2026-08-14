@@ -574,6 +574,13 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
 
     const tweaked = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
     expect(findChatPanelProps(tweaked)?.first).toBe(false)
+
+    // And the CARD carries the same answer, not just the panel. A card
+    // proposed later in the same session arrives through the `proposal`
+    // NDJSON line with no re-render behind it, so every card has to answer
+    // for itself; the page-load card is the one this component builds.
+    const card = findChatPanelProps(tweaked)?.proposal as { first?: boolean } | undefined
+    expect(card?.first).toBe(false)
   })
 
   it('degrades a corrupt stored proposal to no card, not a 500', async () => {

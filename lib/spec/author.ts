@@ -1,7 +1,13 @@
 // lib/spec/author.ts
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
-import { currentSpec, insertSpec, readSpecs, type SpecRecord } from '@/lib/db/specs'
+import {
+  currentSpec,
+  hasConfirmedSpecBelow,
+  insertSpec,
+  readSpecs,
+  type SpecRecord,
+} from '@/lib/db/specs'
 import { toMessages } from '@/lib/chat/history'
 import { MOCKUP_PROMPT, SPEC_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import type { ChatContext } from '@/lib/chat/context'
@@ -44,6 +50,21 @@ export type Proposal = {
   version: number
   spec: StoredSpec
   mockup_html: string
+  /**
+   * Whether THIS card is the account's first dashboard, and therefore which
+   * delivery promise it makes (ledger D9). Server-computed, per card, and
+   * carried on the proposal itself rather than passed down the page.
+   *
+   * It has to ride here because the two ways a card reaches the screen do not
+   * share a moment in time: the page-load card is built by app/[user]/page.tsx
+   * during a render, but a card proposed mid-conversation arrives through the
+   * `proposal` NDJSON line and the page never re-renders. A boolean computed
+   * once per page load and applied to every card said "at the latest, it'll be
+   * here tomorrow morning" about a one-word relabel proposed an hour later —
+   * exactly the contradiction D9 exists to prevent, on the most load-bearing
+   * promise in the pilot.
+   */
+  first: boolean
 }
 
 export type AuthorDeps = {
@@ -533,6 +554,14 @@ export async function authorSpec(
       // about the payload.
       spec: { kind: 'version', version: sealed },
       mockup_html: mockupHtml,
+      // Asked of the record, for THIS version, at the moment the row exists —
+      // the same question app/[user]/page.tsx asks of the page-load card, and
+      // the same helper, so the two answers cannot drift. Bounded by `version`
+      // rather than "has this account ever confirmed anything": the instant a
+      // friend confirms their very first card the unbounded reading flips, and
+      // that card — a whole first dashboard, nothing built yet — would start
+      // describing itself as a small change landing within hours.
+      first: !hasConfirmedSpecBelow(db, input.accountId, version),
     }
   } catch (error) {
     // Anything with no dedicated branch above. promptSha may or may not be
