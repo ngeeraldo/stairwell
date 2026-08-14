@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers'
 import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { appendMetric } from '@/lib/db/appendOnly'
-import { readDeviceClass } from '@/lib/metrics/deviceClass'
+import { readDeviceClass, readTimeZone } from '@/lib/metrics/deviceClass'
 import { openEncryptedUserDb } from '@/lib/db/encryptedUserDb'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getDb } from '@/lib/db/instance'
@@ -57,6 +57,11 @@ export async function POST(
   // fire on mutually exclusive paths, and re-reading the request headers per
   // row would be three reads of a value that cannot have changed.
   const device_class = await readDeviceClass()
+  // The day this tap belongs to is the friend's day, not the droplet's — the
+  // droplet is UTC, and a tap at 21:03 in New York is 01:03Z. See
+  // lib/time/dayKey.ts. Read here, once, beside the device class, because both
+  // are the same kind of fact: something only the browser knows.
+  const timeZone = await readTimeZone()
 
   let userDb
   try {
@@ -82,7 +87,7 @@ export async function POST(
     // no-op with no race between the check and the insert.
     userDb
       .prepare('INSERT OR IGNORE INTO walks (day, at) VALUES (?, ?)')
-      .run(dayKey(Date.now()), Date.now())
+      .run(dayKey(Date.now(), timeZone), Date.now())
   } catch (error) {
     // The WRITE needs the same catch as the open above, and for longer than it
     // had one. Until this existed, a full disk, a SQLITE_BUSY outliving the
