@@ -92,25 +92,29 @@ main() {
     > "$dest/tests/dashboard.test.ts"
   chmod +x "$dest/seed.py"
 
+  # Deliberately prints only what this script alone knows: the folder it just
+  # made, and the registry line for this slug. It does NOT restate the build
+  # sequence. It used to, and the copy went stale within two days of
+  # docs/runbook.md being written — the list here never learned about the
+  # <slug>/v<n> branch (so following it landed you on main, which the runbook
+  # now names as a thing never to do) and never learned about `npm run shots`
+  # (so it skipped the picture review CLAUDE.md requires before a commit).
+  # A second copy of a sequence is a second thing to keep true. One pointer is
+  # not. tests/scripts/newDashboard.test.ts pins that this stays a pointer.
   cat <<MSG
 
 Created $dest
 
-1. Add this line to DASHBOARDS in lib/dashboard/registry.ts:
+Add this line to DASHBOARDS in lib/dashboard/registry.ts:
 
      $slug: () => import('@/users/$slug/dashboard'),
 
-   Until you do, tests/dashboard/registry.test.ts fails and the page renders
-   the not-built placeholder.
+Until you do, tests/dashboard/registry.test.ts fails and the page renders
+the not-built placeholder.
 
-2. Generate data and run the new tests:
-
-     npm run synthetic
-     npx vitest run users/$slug
-
-3. Build toward users/$slug/mockup.html. Pull the confirmed spec first:
-
-     ./scripts/pull-spec.sh $slug
+Next: docs/runbook.md, step 7 — it owns the build sequence from here.
+Do not build on main; step 0 there says why, and this script cannot see
+which branch you are on.
 
 MSG
 }

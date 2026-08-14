@@ -175,8 +175,17 @@ architectural changes; do not relitigate decided items).
 
 ## Onboarding
 - The end-to-end operator process — invite, spec import, build, deploy,
-  announce — is docs/runbook.md. It is Nico's, run by hand; nothing in it is
-  automated, and several steps are deliberately not.
+  announce — is docs/runbook.md. It runs as one of two flows: **A** for a friend
+  who has never had a dashboard, **B** for a new confirmed version of one that
+  exists. It is Nico's, run by hand; nothing in it is automated, and several
+  steps are deliberately not.
+- **Dashboard work happens on a `<slug>/v<n>` branch, one per confirmed spec
+  version, never on `main`** — main is the line `deploy.sh` pulls, so a
+  half-built dashboard there blocks every unrelated fix. Nico creates the branch
+  and runs anything that scaffolds a folder; check `git branch --show-current`
+  before writing code and stop if it says `main`. Never create a branch named
+  `<slug>` alone: git stores it as a file under `refs/heads/`, which makes
+  `<slug>/v2` permanently impossible.
 - A friend arrives through an invite: `npx tsx scripts/create-invite.ts <slug>`
   prints ONE line, the link to text them. **The token is never stored — only
   its SHA-256** — so a lost link is re-minted, not recovered. Revoke an unused

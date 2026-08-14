@@ -82,6 +82,34 @@ describe('scripts/new-dashboard.sh', () => {
   )
 
   it(
+    'points at the runbook instead of restating the build sequence',
+    () => {
+      // The epilogue used to list `npm run synthetic`, `npx vitest` and
+      // `pull-spec.sh` as a three-step flow of its own. That copy went stale
+      // within two days of docs/runbook.md being written: it never learned
+      // about the <slug>/v<n> branch, so following it built on main, and it
+      // never learned about `npm run shots`, so it skipped the picture review
+      // CLAUDE.md requires before a commit.
+      //
+      // Pinned as absences, not just as a present pointer, because a pointer
+      // sitting underneath a stale command list is exactly the state this
+      // replaced — the reader follows the commands and never reaches the line
+      // telling them not to.
+      const sandbox = makeSandbox()
+      const { status, output } = run(sandbox, ['devthree'])
+
+      expect(status).toBe(0)
+      expect(output).toContain('docs/runbook.md')
+      expect(output).toMatch(/do not build on main/i)
+
+      for (const restated of ['npm run synthetic', 'npx vitest', 'pull-spec.sh', 'npm run shots']) {
+        expect(output).not.toContain(restated)
+      }
+    },
+    SUBPROCESS_TIMEOUT_MS,
+  )
+
+  it(
     'refuses an invalid slug and creates nothing',
     () => {
       const sandbox = makeSandbox()

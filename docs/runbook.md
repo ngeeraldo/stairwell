@@ -53,6 +53,51 @@ script print its usage line. Both are loud.
 
 ---
 
+## Which flow am I in?
+
+Two paths through one set of steps. The steps are written once, below.
+
+| | **Flow A — a new friend** | **Flow B — a new version** |
+|---|---|---|
+| When | They have never had a dashboard | They have one, and confirmed a new spec |
+| Run | 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 | 0 → 4 → 5 → 6 → 7 → 8 → 9 |
+| What you skip | nothing | 1–3 — the slug, invite and account already exist |
+| Extra work | scaffold the folder (step 6), add the registry line (step 7) | neither — both already exist |
+
+Everything else is identical: same branch rule, same pull, same build, same
+deploy, same announce. A friend's second version is not a lighter version of
+their first — it is the same work done over a folder that already exists.
+
+---
+
+## Step 0 — Start from a clean main
+
+```bash
+git checkout main && git pull --ff-only
+```
+
+**Main is the deployable line**, and not merely by convention: `deploy.sh` runs
+`git pull --ff-only` inside the droplet's own checkout, so whichever branch is
+checked out *there* is what ships. Confirm that once, read-only:
+
+```bash
+ssh "$DROPLET" 'git -C /home/deploy/stairwell branch --show-current'
+```
+
+The build itself happens on a branch named for the confirmed spec version —
+`sam/v1`, `sam/v2` — created at **step 6**, which is the first moment that
+number exists on the laptop. One branch per version: merged to main at step 8,
+deleted at step 9. A version is already the atomic unit everywhere else in this
+system (whole-surface, a permanent `specs` row, announced exactly once), so the
+branch is named after the thing that gets announced.
+
+**Never create a branch named for the slug alone.** Git stores `sam` as a *file*
+under `refs/heads/`, which cannot coexist with the *directory* `refs/heads/sam/`.
+One `git branch sam` makes `sam/v2` impossible for as long as it exists, and the
+error git throws (`cannot lock ref`) never mentions the branch that caused it.
+
+---
+
 ## Step 1 — Pick a slug
 
 The slug is **permanent and load-bearing**. It is their URL (`/<slug>`), their
@@ -185,9 +230,23 @@ Two properties worth holding in your head when you read a spec in `/admin`:
 
 ---
 
-## Step 6 — Import their spec into the repo
+## Step 6 — Import their spec, and branch
 
-On the **laptop**, from the repo root:
+On the **laptop**, from the repo root.
+
+**Flow A scaffolds first, before the pull.** `pull-spec.sh` creates
+`users/<slug>/` in order to write into it, and `new-dashboard.sh` refuses a
+folder that already exists — it prints `already exists — refusing to overwrite`
+and exits 2 without writing. Run it the other way round and you are stuck
+moving files by hand:
+
+```bash
+./scripts/new-dashboard.sh "$FRIEND"   # Flow A only — Flow B skips this, the folder is there
+```
+
+Keep the registry line it prints; step 7 is where that goes.
+
+Then pull, in both flows:
 
 ```bash
 ./scripts/pull-spec.sh "$FRIEND"
@@ -204,20 +263,45 @@ spec is wrong, the fix is a new confirmed version in chat, not an edit here.
 
 The write is atomic as a pair: either both files land or neither does.
 
+Now branch. **The pull comes first and the branch second**, because the version
+number you need for the branch name is written *by* the pull — `lib/spec/render.ts`
+puts a `- **Spec version:** v3` line near the top of `spec.md`. Read it from the
+file rather than from memory or a second look at `/admin`:
+
 ```bash
-git add "users/$FRIEND/spec.md" "users/$FRIEND/mockup.html"
-git commit -m "Pull $FRIEND's confirmed spec"   # both files are Gate B exempt
+V=$(sed -n 's/^- \*\*Spec version:\*\* v//p' "users/$FRIEND/spec.md")
+echo "$V"                                       # sanity-check: a bare number
+
+git checkout -b "$FRIEND/v$V"                   # everything written above rides along, untracked
+git add "users/$FRIEND"                         # the whole folder: *.db is gitignored, so no
+                                                # database can be staged by this
+git commit -m "Scaffold $FRIEND and pull confirmed spec v$V"   # Flow B: drop "Scaffold and"
 ```
+
+Adding the folder rather than the pair is what makes one command work for both
+flows: in Flow A it picks up the scaffold too, and the scaffold ships its own
+`tests/dashboard.test.ts`, which is what satisfies Gate B for a change under
+`users/<slug>/`. The spec pair itself is Gate B exempt either way.
+
+Identical in both flows. There is deliberately no "Flow A is always v1" shortcut:
+a new friend can iterate in chat and confirm v2 before you ever sit down to
+build, and a branch named `v1` holding v2's spec is a lie you would not notice
+until the announce step disagreed with it.
 
 ---
 
 ## Step 7 — Build the dashboard
 
+Confirm you are on the version branch before anything else here — this is the
+step that writes code, and main is the line the droplet pulls:
+
 ```bash
-./scripts/new-dashboard.sh "$FRIEND"   # scaffolds the folder; prints the registry line
+git branch --show-current               # expect <slug>/v<n>
 ```
 
-Then add the printed line to `lib/dashboard/registry.ts`:
+**Flow A only:** add the line that `new-dashboard.sh` printed at step 6 to
+`lib/dashboard/registry.ts`. Flow B's line is already there — skip to "Build
+toward `mockup.html`".
 
 ```ts
 <slug>: () => import('@/users/<slug>/dashboard'),
@@ -254,11 +338,27 @@ first time.
 
 ## Step 8 — Ship it
 
+Merge the version branch into main, then push main. The merge is `--no-ff` on
+purpose: one merge commit reads as one version's worth of work, the way
+`friend-timezone` and `chat-shell-polish` came back in.
+
 ```bash
+git checkout main && git pull --ff-only
+git merge --no-ff "$FRIEND/v$V" -m "Build $FRIEND's dashboard v$V"
+
 git push          # Gate E (full suite) then Gate D (next build), unconditionally
 
 ssh "$DROPLET" '/home/deploy/stairwell/deploy/deploy.sh'
 ```
+
+If `$V` has gone (a new terminal, a day later), read it back out of the file
+rather than guessing — `sed -n 's/^- \*\*Spec version:\*\* v//p' "users/$FRIEND/spec.md"`,
+same line as step 6, or just `git branch --list "$FRIEND/*"`.
+
+Pushing the version branch to `origin` before merging is optional and yours to
+call: it buys an off-laptop copy of work in progress, and costs a second full
+run of Gate E and Gate D, since both gates run on every push regardless of
+branch.
 
 Single quotes are fine on this one — there is nothing in it for your local
 shell to expand, and `deploy.sh` supplies its own environment through systemd.
@@ -298,14 +398,25 @@ This is deliberately not wired into `deploy.sh`. That script deploys the whole
 service; calling this from it would post "your dashboard is live" into *every*
 account's chat on *every* push — a permanent lie in an append-only transcript.
 
+Once it has announced, the branch has done its job — main carries the merge and
+the version is on record:
+
+```bash
+git branch -d "$FRIEND/v$V"     # -d, never -D: it refuses if the merge never happened
+```
+
 ---
 
 ## Step 10 — The next version
 
-Versions 2, 3, … are the same loop from **step 5**: they confirm a new
-whole-surface spec in chat → `./scripts/pull-spec.sh "$FRIEND"` (overwrites the
-pair) → rebuild → push → deploy → `announce-deploy.ts` again. The announce
-script tracks versions, so the second run announces v2 and stays quiet about v1.
+Versions 2, 3, … are **Flow B** in the table at the top: they confirm a new
+whole-surface spec in chat, and you run 0 → 4 → 5 → 6 → 7 → 8 → 9 again on a
+fresh `<slug>/v<n>` branch. `pull-spec.sh` overwrites the pair, step 7 skips the
+scaffold and the registry line, and everything else is the same work as the
+first time.
+
+The announce script tracks versions, so the second run announces v2 and stays
+quiet about v1.
 
 ---
 
@@ -320,6 +431,8 @@ script tracks versions, so the second run announces v2 and stays quiet about v1.
 | Call `announce-deploy.ts` from `deploy.sh` | Announces to every account on every push. |
 | Prune or archive `deploy_announced` or `first_session_start` metric rows | Both are read for correctness, not observed. Pruning makes a weeks-old build re-announce itself, or a months-old account report a first session again. They look like telemetry and are not. |
 | Edit files on the droplet | Clobbered by `git pull --ff-only` on the next deploy, and invisible where the dashboard is actually built. |
+| Create a branch named `<slug>` alone | Git stores it as a file under `refs/heads/`, so it can never coexist with `<slug>/v2`. Branches are `<slug>/v<n>`, always. |
+| Build a dashboard directly on `main` | Main is what the droplet pulls. A half-built dashboard sitting there means an unrelated urgent fix cannot ship without it. |
 | Run `export-spec.ts` / `announce-deploy.ts` / `ask-user.ts` locally against a real database | They read non-synthetic data by design *on the server*. Locally, point `PLATFORM_DB` at synthetic. |
 | Copy or delete `<slug>.db` without the `*` | `-wal` and `-shm` sidecars hold the same rows. Always `users/<slug>/<slug>.db*`. |
 
