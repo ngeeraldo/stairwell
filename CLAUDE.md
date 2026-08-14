@@ -1,6 +1,6 @@
 # Personal Dashboard Pilot
 
-Full rationale and build order: architecture-overview.md (read it before
+Full rationale and build state: architecture-overview.md (read it before
 architectural changes; do not relitigate decided items).
 
 ## Stack (decided — do not relitigate)

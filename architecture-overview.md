@@ -167,30 +167,47 @@ Retention curves cannot be reconstructed retroactively, and they are the fundrai
 
 ---
 
-## Build order (each step ends with a verifiable checkpoint — Nico is user #0 throughout)
+## Build state
 
-| Step | Build | ✅ Checkpoint |
-|---|---|---|
-| 1 | Auth, site up, user routing, password/session handling, admin login | Nico logs in as two dev users; each sees only their own (empty) space; admin portal loads, empty |
-| 2 | Chat window (toggleable) + LLM chatbot w/ system prompt v1 + transcript persistence + admin transcript pane | Dev user chats with the bot; transcript appears in admin |
-| 3 | ntfy.sh alerts (session start, spec confirmed) | Phone buzzes when dev user #2 sends a message |
-| 4 | Interview → structured spec flow: agent presents spec + renders HTML mockup inline in chat, user confirms, `spec.md` + `mockup.html` saved + shown in admin | `devtwo` runs an interview end-to-end; spec + mockup land in the portal |
-| 5 | Per-user dashboard hosting + folder conventions (`schema.sql` / `seed.py` / `tests/` / `synthetic.db`) | Nico builds `devtwo`'s dashboard from `devtwo`'s confirmed spec via Claude Code; it deploys behind `devtwo`'s login; `devone` can't see it |
+The build-order table this section used to hold has been retired. It described
+a plan; what follows describes the system, and the pilot path from here is
+task-by-task rather than step-by-step.
 
-Step 6 was split on 2026-08-13, during the step-5 build. `devtwo`'s confirmed spec is a
-manual-logging tracker whose primary control is a tap, and step 5 shipped a deliberately
-read-only data layer — so the first real dashboard needs a write path before it can be
-what it says it is. Writing to `synthetic.db` was rejected twice over: `deploy.sh`
-regenerates it on every deploy, and real taps sharing a file with loudly-fake seeded rows
-breaks the rule that any screen reads instantly as fake or real. Encryption therefore
-lands **before** the first real byte rather than after it, which is also the only ordering
-the onboarding promise supports.
-| 6a | Per-user encrypted data layer: SQLCipher `<name>.db`, key derived at login, and the first write path (manual logging) behind the lock | `devtwo` taps "walked" on their own dashboard; the row survives a deploy; a locked session can neither read it nor write it |
-| 6b | Plaid module: Link flow, login-triggered sync | Nico's real accounts sync into his encrypted DB; dev folder shows only COFFEE PALACE TEST |
-| 7 | Privacy toggle + metrics logging (append-only, off-VPS backup) | Metrics rows appear from Nico's own usage; backup verified |
-| → | **Onboard test user #1** | |
+**What exists**, each shipped behind a passed checkpoint, each with a ledger
+under `docs/superpowers/ledgers/`:
 
-Note: after step 4 a user could technically be onboarded with everything downstream hand-delivered — the critical path to a live test is shorter than the full list. Ugly versions of everything are fine; it needs to exist by test-user #1's first morning. **Code is disposable; conventions are cheap; data (metrics log + chat transcripts) is sacred — the retention curve is the raise and cannot be regenerated.**
+| Ledger | What it left behind |
+|---|---|
+| `step1a.md` | Auth, sessions, the two-tier lock, the admin login, the test gates |
+| `step1b.md` | `app.stairwell.run` on the droplet, Caddy, `deploy.sh`, `smoke.sh` |
+| `step2.md` | The chat window, the agent, append-only transcripts, the admin transcript pane |
+| `step3.md` | ntfy alerts on session start and on every confirmed spec |
+| `step4.md` | Structured specs, the inline mockup, the confirm gate, `spec.md` + `mockup.html` |
+| `step5.md` | Per-user dashboard hosting, and the `users/<slug>/` folder conventions |
+| `step6a.md` | Per-user encrypted `<slug>.db`, the key derived at login, the first write path behind the lock |
+| `unified-loop.md` | One proposal loop for a first interview and a one-word relabel alike: whole-surface versions, schema validation, a separate mockup call, structural diffs |
+
+The metrics log has run since the first of those and the transcripts since the
+second. Both are append-only, both are sacred (CLAUDE.md), and neither has ever
+been migrated.
+
+**In progress: the onboarding and invite flow.** Spec: `onboarding-ux-spec.md`.
+Plan: `docs/superpowers/plans/2026-08-13-onboarding-and-invite-flow.md`.
+Ledger: `docs/superpowers/ledgers/onboarding.md`. It is the first build aimed
+at a person who is not Nico — an invite link, a first-login password that is
+the encryption key, the privacy promise read before an account exists, and the
+app shell every login lands in from then on. Its internals are written into
+this document when that branch lands, not before.
+
+**One named future task, carried here so it does not evaporate: an off-VPS
+backup of the metrics log.** The log is append-only and sacred precisely
+because the retention curve is the raise and cannot be regenerated — and it
+currently exists on exactly one droplet. Nothing else in this document depends
+on it; it is written down because a single copy of an irreplaceable file is not
+a backup strategy, and the cost of discovering that is total.
+
+**Code is disposable; conventions are cheap; data (metrics log + chat
+transcripts) is sacred.**
 
 ---
 
