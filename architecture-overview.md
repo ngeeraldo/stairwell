@@ -15,7 +15,9 @@ Friend's phone/browser
   ├── Dashboard (their code + their data, behind their login)
   └── Persistent chat window (toggleable/hidden) — the agent surface for the
         one proposal loop (§6): discovery → propose_spec → preview → confirm
-        └──► you ──► Claude Code ──► tests pass ──► deploy ──► agent announces in chat, above
+        └──► you ──► Claude Code ──► tests pass ──► deploy
+              ──► you run the announce command, by hand, never automatic
+              ──► agent announces in chat, above
 
 Server (single VPS)
   ├── /users/<name>/
@@ -47,7 +49,7 @@ Server (single VPS)
 ## Core decisions
 
 ### 1. One persistent chat surface — no separate onboarding flow
-- **A single chat window, toggleable to hidden, lives alongside the dashboard.** It is the agent surface for everything: first-join interview, goal planning, and tweak requests. No dedicated onboarding screens.
+- **A single chat window, toggleable to hidden, lives alongside the dashboard.** It is the agent surface for the whole proposal loop (§6) — the first-ever interview and every later request travel the same journey, differing only in diff size. No dedicated onboarding screens.
 - **First join:** the agent opens with a prompted chat message that kicks off the interview conversationally — what they worry about, what they'd want to see every morning, what accounts they have, what they'll realistically log.
 - Interview ends with a **concrete spec version presented back for confirmation, alongside a rendered mockup**: the agent generates an HTML preview of the expected dashboard (synthetic numbers, rough styling) rendered inline in chat — HTML, not generated images, so the preview is honest and cheap. Every spec version is **whole-surface** — it describes the user's entire dashboard, all screens and panels, not just what the latest conversation touched — and **every change ships through a newly confirmed version, including small ones**: there is no fast path that deploys without a confirmation, however trivial the change looks. The preview card **leads with what changed** relative to the version before it (for version 1, "what changed" is the whole dashboard). On confirmation, the agent **emits a structured `spec.md` + `mockup.html`** rendered from that version, saved to the user's folder — rendered in the admin portal and consumed directly by Claude Code, which builds toward *"make the code match this version."* The preview is a contract, not an illustration.
 - Dashboard delivered **next morning** — first exposure happens inside the morning ritual being tested. 7am text with the link (delivery nudges stay out-of-app; everything else lives in the chat).
@@ -60,8 +62,8 @@ Server (single VPS)
 - **Two-tier session (step 1a).** The session row persists in the platform
   database; the derived key lives only in an in-process map with a 4h idle TTL
   and a 12h absolute ceiling. A deploy therefore leaves users logged in but
-  locked — the chat surface keeps working across the tweak loop, and data
-  panels ask for the password again. The key cannot survive overnight, which is
+  locked — the chat surface keeps working across the proposal loop (§6), and
+  data panels ask for the password again. The key cannot survive overnight, which is
   what keeps login-triggered sync from serving stale data.
 - **Platform database.** Accounts, sessions, transcripts, metrics, and the
   request queue live in a single unencrypted `platform.db`, separate from the
@@ -104,7 +106,7 @@ Server (single VPS)
 - SimpleFIN dropped from the build entirely.
 
 ### 4. Privacy model — "can't see it by accident"
-- **All building/tweaking happens against synthetic data.** Real numbers exist only in the encrypted per-user DB, rendered at runtime behind their login.
+- **All building happens against synthetic data.** Real numbers exist only in the encrypted per-user DB, rendered at runtime behind their login.
 - `schema.sql` + `seed.py` + `tests/` are **co-located and updated in the same commit** — any migration that changes the schema updates the generator and the tests in the same Claude Code change. This is the anti-drift rule.
 - **Per-user test suites** (`/users/<name>/tests/`) run against `synthetic.db` — scoped to that dashboard's panels and data logic. Tests pass before any deploy to that user. Because tests run on synthetic data, the full test cycle never touches real numbers.
 - `synthetic.db` regenerated fresh at the start of any dev session; tailored per user only by account *types* and interests stated in the interview (never their numbers, which you don't have).
@@ -133,9 +135,14 @@ Server (single VPS)
     → spec version N+1 written, schema-validated, appended
     → preview card (leads with what changed vs. version N) — Build this / Not quite yet
     → confirm → ntfy → Nico + Claude Code build to "make the code match spec vN+1"
-    → deploy → agent announces in chat
+    → deploy → Nico runs the announce command → agent announces in chat
     → loop
   ```
+  The announce step is a command Nico runs by hand for the account whose
+  build just shipped (`docs/local-dev.md`), never automatic — `deploy.sh`
+  deploys the whole service, and an automatic announcement would post into
+  every account's chat on every push, a permanent lie in an append-only
+  transcript for every account not being deployed for.
   Friends know you're behind it; the agent framing gives permission to ask freely. Explicit first-join line: "send anything, any time — every request is data I need." (Optional: a text/Telegram relay for when they're not in the app, but the chat is the canonical channel and the log of record.)
 - Response expectation: small changes within a few hours; consistency over speed.
 - **Live-build + notify:** a request comes in, you build live via Claude Code against the newly confirmed version, and when the deploy lands the agent posts in chat ("your eating-out panel is live"). No scheduled studio sessions — the chat is the whole loop.
@@ -148,7 +155,7 @@ Server (single VPS)
 
 ### 8. Agent system prompt (the chatbot spec)
 - A living, page-length artifact — draft v1 rough, iterate weekly against real transcripts starting with your own step-4 interview. Never "done."
-- Must cover: persona & tone; interview behavior (**monitoring-first framing** — what they'd keep an eye on, what apps they check, what they worry about; goals optional/emergent, never demanded; plus accounts and what they'll realistically log); **spec-confirmation output contract** (the structured format that becomes `spec.md` + the HTML mockup generation — the load-bearing pieces); honest expectation-setting (builds arrive next morning, tweaks within hours — never promise instant); escalation rules (feasibility questions it can't answer get flagged to Nico, not guessed at).
+- Must cover: persona & tone; interview behavior (**monitoring-first framing** — what they'd keep an eye on, what apps they check, what they worry about; goals optional/emergent, never demanded; plus accounts and what they'll realistically log); **spec-confirmation output contract** (the structured format that becomes `spec.md` + the HTML mockup generation — the load-bearing pieces); honest expectation-setting (a first-ever build arrives next morning, later changes within a few hours — never promise instant, matching §6's timing); escalation rules (feasibility questions it can't answer get flagged to Nico, not guessed at).
 
 ### 9. Metrics pipeline — build in week one, from user #1
 Retention curves cannot be reconstructed retroactively, and they are the fundraise.

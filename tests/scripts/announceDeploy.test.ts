@@ -162,6 +162,11 @@ describe('announceDeploy', () => {
     expect(
       readTranscript(db, accountId).filter((r) => r.prompt_sha === OPERATOR_SHA),
     ).toHaveLength(2)
+    // Not just "announced again" — announced the NEW version's own summary.
+    // Without this, the assertion above would still pass if announceDeploy
+    // had a bug that re-announced the OLD version's change_summary a second
+    // time instead of the new one.
+    expect(readTranscript(db, accountId).at(-1)!.body).toContain('Added an export button')
   })
 
   it('announces a legacy confirmed spec using its title', async () => {

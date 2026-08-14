@@ -126,17 +126,28 @@ export function announceDeploy(
   const body = `Your dashboard was just rebuilt: ${headline}`
 
   const at = now()
-  announce(db, { accountId: account.id, body, at })
-  // Written AFTER announce() succeeds: if the transcript write ever threw
-  // (it can't on a non-blank body, but the ordering itself is the contract),
-  // this metric row must not exist to claim an announcement that never
-  // landed — this is the row the next run's `alreadyAnnounced` check trusts.
-  appendMetric(db, {
-    accountId: account.id,
-    event: 'deploy_announced',
-    at,
-    data: { spec_id: spec.id, version: spec.version },
-  })
+  // Both inserts commit together or not at all. Two independent INSERTs
+  // here would leave one direction of failure open: transcript commits,
+  // metric insert fails (disk full, a constraint, anything) — the
+  // announcement is now permanently in the log, but the guard row
+  // `alreadyAnnounced` checks does not exist, so the next run sees "not yet
+  // announced" and posts a second, permanent duplicate into a table that
+  // rejects DELETE. That is exactly the failure this idempotency check
+  // exists to prevent, so it cannot be left open by the write that
+  // implements the check. Wrapping both in one transaction closes it: a
+  // failure on either insert rolls back both, so no half-announced state is
+  // ever observable by a later run. A rollback of an uncommitted INSERT is
+  // neither an UPDATE nor a DELETE against a committed row, so the
+  // append-only triggers on `transcripts` and `metrics` are untouched.
+  db.transaction(() => {
+    announce(db, { accountId: account.id, body, at })
+    appendMetric(db, {
+      accountId: account.id,
+      event: 'deploy_announced',
+      at,
+      data: { spec_id: spec.id, version: spec.version },
+    })
+  })()
 
   return { announced: true }
 }
