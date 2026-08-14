@@ -106,9 +106,26 @@ source of truth for a number already stamped into append-only `spec_proposed` an
 
 **Ruling: `based_on_version` is injected by `authorSpec`, not emitted by the model.**
 It is omitted from `SPEC_JSON_SCHEMA` entirely and set from
-`currentSpec(db, accountId)?.version ?? null` immediately before `insertSpec`. A
-model-authored lineage pointer is a hallucination waiting to become a permanent row
-in an append-only table; a server-computed one cannot be wrong.
+`currentSpec(db, accountId)?.version ?? null`. A model-authored lineage pointer is a
+hallucination waiting to become a permanent row in an append-only table; a
+server-computed one cannot be hallucinated.
+
+**It can, however, be stale — so it is read at WRITE time, immediately before
+`sealVersion`, not before the authoring call.** Added in the pre-merge fix round.
+Authoring is two model calls that can run three minutes, and `ChatPanel`'s confirm
+buttons are gated by `confirming`, not by `busy`: the card already on screen stays
+clickable for that entire wait. A friend who presses "Build this" while watching
+"Putting together a preview…" changes which version is newest-confirmed, and a
+pointer read before the call would name the version that confirmation superseded —
+permanently, in a table that rejects UPDATE, corrupting the admin pane's diff and the
+`spec_confirmed` counts for that version forever.
+
+The version handed to the WRITER is still read before the call, because that is when
+the prompt is built; the two reads are deliberately separate. A version is a
+whole-surface spec and the build contract is "the newest confirmed version", so the
+base that means something is the one this version supersedes when confirmed — the
+record at write time. What the writer was shown is a different fact, and the
+transcript already carries it.
 
 ### D3. Version numbering counts PROPOSALS, not confirmations — and that is kept
 

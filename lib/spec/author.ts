@@ -313,12 +313,11 @@ export async function authorSpec(
       context,
     }
 
-    // The lineage pointer is computed HERE, from the record, and never read
-    // from the model's reply: `parseSpecDraft` rejects a draft that carries
-    // one outright. A model-authored lineage pointer is a hallucination that
-    // becomes a permanent wrong row in an append-only table (ledger D2).
+    // What the writer is SHOWN as the current confirmed version. Read here
+    // because that is when the prompt is built; the lineage pointer stored on
+    // the row is read again at write time instead, and the two reads are
+    // deliberately separate — see sealVersion below.
     const current = currentSpec(db, input.accountId)
-    const basedOn = current?.version ?? null
 
     const history = toMessages(readTranscript(db, input.accountId))
     const last = history[history.length - 1]
@@ -505,9 +504,29 @@ export async function authorSpec(
     }
 
     // The one place a SpecVersion is constructed on this path, and the lineage
-    // pointer comes from `basedOn` — computed from the record before the first
-    // call, never from anything the model wrote.
-    const sealed = sealVersion(draft, basedOn)
+    // pointer comes from the RECORD, never from anything the model wrote:
+    // `parseSpecDraft` rejects a draft carrying one outright, because a
+    // model-authored lineage pointer is a hallucination that becomes a
+    // permanent wrong row in an append-only table (ledger D2).
+    //
+    // Re-read here rather than reused from the `current` above, and the gap
+    // between the two is the whole point. Everything between them is two model
+    // calls that can run three minutes, and the confirm buttons on the card
+    // already on screen are gated by `confirming`, not by `busy` — so that
+    // card stays clickable for the entire wait while the friend watches
+    // "Putting together a preview…". A friend who presses "Build this" in that
+    // window changes what the newest confirmed version IS, and a pointer read
+    // before the call would name the version it superseded. `specs` rejects
+    // UPDATE, so that row could never be repaired: the admin pane's diff and
+    // the spec_confirmed counts for this version would be computed against the
+    // wrong base forever.
+    //
+    // A version is a WHOLE-SURFACE spec and the build contract is "the newest
+    // confirmed version", so the base that means something is the one this
+    // version would supersede when confirmed — which is the record at write
+    // time. That the writer was shown an older version is a separate fact, and
+    // it is one the transcript and the prompt already carry.
+    const sealed = sealVersion(draft, currentSpec(db, input.accountId)?.version ?? null)
 
     const id = insertSpec(db, {
       accountId: input.accountId,

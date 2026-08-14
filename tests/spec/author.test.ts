@@ -761,6 +761,40 @@ describe('authorSpec', () => {
       expect(stored.version.based_on_version).toBe(1)
     })
 
+    it('reads the pointer at WRITE time, so a confirmation mid-authoring is not missed', async () => {
+      // The authoring call can run for three minutes, and the confirm buttons
+      // are gated by `confirming`, not by `busy` — so the card already on
+      // screen stays clickable for the whole wait while the friend watches
+      // "Putting together a preview…". If they press "Build this" in that
+      // window, the row this function writes must not name a base that stopped
+      // being current before the row existed: `specs` rejects UPDATE, so the
+      // diff for that version is computed against the wrong base forever.
+      //
+      // onCall fires while the spec call is in flight, which is exactly when
+      // the button is live.
+      confirmed(CURRENT_V1)
+      let fired = false
+      const client = fake({
+        onCall: () => {
+          if (fired) return
+          fired = true
+          confirmed({ ...CURRENT_V1, change_summary: 'the card that was on screen' })
+        },
+      })
+
+      await authorSpec(deps(client.client), INPUT)
+
+      const rows = readSpecs(db, 1)
+      expect(rows).toHaveLength(3)
+      const written = rows[0]!
+      expect(written.version).toBe(3)
+      const stored = readStoredSpec(written.payload)
+      if (stored.kind !== 'version') throw new Error('unreachable')
+      // v2 — the version confirmed mid-flight — not v1, which was current
+      // when the call started.
+      expect(stored.version.based_on_version).toBe(2)
+    })
+
     it('rejects a draft that authored its own based_on_version', async () => {
       // A model-authored lineage pointer becomes a permanent wrong row in an
       // append-only table.
