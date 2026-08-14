@@ -373,18 +373,21 @@ export default async function UserSpace({
               to see your data.
             </p>
           )}
-
-          {/*
-            Inside the content column's footer rather than floating: the shell
-            is the whole page now, and a logout control pinned outside it would
-            have to pick one of the two arrangements to belong to.
-          */}
-          <form method="post" action="/api/logout" className="pt-4">
-            <Button type="submit" variant="ghost" size="sm">
-              Log out
-            </Button>
-          </form>
         </div>
+      }
+      /*
+        The bottom of the chat column, in both arrangements — see Shell.
+        It used to sit in the content column, under the dashboard, where it
+        read as the last row of the friend's own app rather than as platform
+        chrome. Still a plain form POSTing to a route: no JavaScript, so it
+        works on the locked screen and on a degraded one.
+      */
+      footer={
+        <form method="post" action="/api/logout">
+          <Button type="submit" variant="ghost" size="sm">
+            Log out
+          </Button>
+        </form>
       }
     />
   )

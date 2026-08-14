@@ -17,6 +17,7 @@ import ChatPanel, {
   SpecCard,
   startTurn,
   TurnRow,
+  scrollToNewest,
   withLiveness,
   type CardProposal,
   type PanelState,
@@ -782,6 +783,26 @@ describe('a card that arrives mid-session carries its own delivery promise', () 
   })
 })
 
+describe('scrollToNewest', () => {
+  it('puts the bottom of the list in view', () => {
+    // Found by the screenshot review, not by this suite: the friend's chat
+    // opened at the TOP of the conversation, so a returning friend landed on
+    // their own first message and the proposal card they were meant to press
+    // "Build this" on was below the fold. It had been true since the surface
+    // was built, and stayed invisible because the shot fixture's transcript
+    // was empty until the fixture gained a conversation.
+    const el = { scrollTop: 0, scrollHeight: 4000 }
+    scrollToNewest(el)
+    expect(el.scrollTop).toBe(4000)
+  })
+
+  it('does nothing when there is no list yet', () => {
+    // The ref is null on the render before the <ol> exists, and a chat that
+    // threw on first paint would be a worse bug than the one this fixes.
+    expect(() => scrollToNewest(null)).not.toThrow()
+  })
+})
+
 describe('TurnRow', () => {
   it('renders the interrupted marker and a retry button', () => {
     const row = TurnRow({
@@ -797,6 +818,42 @@ describe('TurnRow', () => {
   it('renders nothing extra for a turn that was not interrupted', () => {
     const row = TurnRow({ turn: { role: 'assistant', body: 'done', at: 1000 }, busy: false, onRetry: () => {} })
     expect(JSON.stringify(row)).not.toContain('interrupted')
+  })
+
+  it('makes the speaker VISIBLE, not just machine-readable', () => {
+    // data-role was the only thing separating the two, which means a friend
+    // reading their own interview saw one undifferentiated column of text.
+    // This asserts the two roles render DIFFERENTLY — not the exact classes,
+    // which are a design choice somebody should be free to change — plus the
+    // one property the difference has to have: the user's turn is the one in
+    // a bubble, and the agent's is plain.
+    const props = { busy: false, onRetry: () => {} }
+    const userRow = JSON.stringify(
+      TurnRow({ turn: { role: 'user', body: 'A QUESTION TEST', at: 100 }, ...props }),
+    )
+    const agentRow = JSON.stringify(
+      TurnRow({ turn: { role: 'assistant', body: 'AN ANSWER TEST', at: 200 }, ...props }),
+    )
+
+    expect(userRow).toContain('data-role')
+    expect(agentRow).toContain('data-role')
+    // The bubble, on one side only.
+    expect(userRow).toContain('rounded-2xl')
+    expect(userRow).toContain('bg-muted')
+    expect(agentRow).not.toContain('rounded-2xl')
+    expect(agentRow).not.toContain('bg-muted')
+  })
+
+  it('keeps the blank lines the agent wrote', () => {
+    // Not cosmetic. The agent's replies contain paragraph breaks, and HTML
+    // collapses every run of whitespace into one space — so a structured
+    // answer arrived as a single unbroken block. whitespace-pre-wrap is what
+    // makes the rendered turn agree with the stored transcript, on BOTH roles.
+    const props = { busy: false, onRetry: () => {} }
+    for (const role of ['user', 'assistant'] as const) {
+      const row = JSON.stringify(TurnRow({ turn: { role, body: 'a\n\nb', at: 1 }, ...props }))
+      expect(row).toContain('whitespace-pre-wrap')
+    }
   })
 })
 
