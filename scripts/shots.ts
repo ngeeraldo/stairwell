@@ -285,6 +285,18 @@ async function main(): Promise<void> {
   const usersDir = join(root, 'users')
   mkdirSync(usersDir, { recursive: true })
 
+  // SET IN THIS PROCESS, not only in the server's environment.
+  //
+  // The seeders below run HERE, and registerFromInvite creates a friend's
+  // encrypted database through lib/db/encryptedUserDb.ts, which resolves
+  // USERS_DIR at call time. Setting it only on the spawned server left the
+  // seeders writing into the repo's own users/ tree — a stray
+  // users/<fixture>/<fixture>.db that this file's docstring promises never to
+  // create. Caught by tests/users/conventions.test.ts, which swept the stray
+  // folder and skipped three checks over it; the harness now sets the variable
+  // for itself as well.
+  process.env.USERS_DIR = usersDir
+
   const outDir = join(OUT_ROOT, `task-${args.task}`)
   mkdirSync(outDir, { recursive: true })
 

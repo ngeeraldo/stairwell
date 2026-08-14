@@ -107,6 +107,30 @@ describe('a live screen can actually be photographed', () => {
   )
 })
 
+describe('the temp tree', () => {
+  it('is pointed at by the HARNESS process, not only by the server it spawns', () => {
+    // The seeders run in the harness process and create real encrypted
+    // databases through lib/db/encryptedUserDb.ts, which resolves USERS_DIR at
+    // call time. Setting it only in the spawned server's env left a stray
+    // users/<fixture>/ folder in the repo — which tests/users/conventions.test.ts
+    // then swept and skipped three checks over, the closest this suite gets to
+    // a silent failure.
+    //
+    // A source check, like seedableStates above: the alternative is running
+    // the whole harness inside a test, which downloads nothing and proves
+    // little for thirty seconds of Chromium.
+    const source = readFileSync(join(REPO, 'scripts', 'shots.ts'), 'utf8')
+    const assignment = source.indexOf('process.env.USERS_DIR = usersDir')
+    const firstSeed = source.indexOf('const SEEDERS')
+    expect(assignment, 'harness must set USERS_DIR for itself').toBeGreaterThan(-1)
+    expect(
+      source.indexOf('await seed(dbPath, usersDir)'),
+      'USERS_DIR must be set before any seeder runs',
+    ).toBeGreaterThan(assignment)
+    expect(firstSeed).toBeGreaterThan(-1)
+  })
+})
+
 describe('the data-safety refusal', () => {
   it('refuses to run when PLATFORM_DB points inside the repo', () => {
     // The one guard in this file that protects data rather than bookkeeping.
