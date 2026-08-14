@@ -236,6 +236,35 @@ raw stored column.
 worth writing down only if someone reads them at the moment they name; this is
 the evidence that the practice pays.
 
+## The step-6a checkpoint — PASSED 2026-08-13, in production
+
+Run against `app.stairwell.run` as `devtwo`, immediately after the deploy that
+first carried step 6a to the droplet. Step 6a shipped alongside the unified
+proposal loop in one 53-commit deploy (`8117b6e` → `2c1ee04`), so this is the
+first time any of this code has run outside a test.
+
+> `devtwo` taps "walked" on their own dashboard → the row survives a deploy →
+> a locked session can neither read it nor write it
+
+- **The tap.** Before it, the SYNTHETIC DATA banner over `NOT YET` with the tap
+  control present — so the handover-morning defect this ledger records above did
+  not regress. After it, the banner gone, `WALKED`, and the 30-day figure down
+  from ~77% to ~3%. **The banner disappearing is the whole event**: it means
+  `users/devtwo/devtwo.db` was created by that tap and the dashboard switched to
+  reading it. The streak stayed at 1 for the reason documented in
+  `docs/local-dev.md` — the sample's streak was already exactly one day.
+- **Encryption verified** by hand on the droplet — see residual 6, now closed.
+- **Survived a deploy.** A second `deploy.sh` run regenerated every
+  `synthetic.db`, and `/devtwo` still read `WALKED` with no banner afterwards.
+- **The locked path was verified by the deploy itself, not by logging out.**
+  Worth recording because the obvious test is the wrong one: `api/login`
+  derives the SQLCipher key and calls `putKey` in the same request, so a fresh
+  login is never locked. The state the checkpoint names is produced by a session
+  that outlives its key — the 4h idle TTL, the 12h ceiling, or a process
+  restart. The deploy restarted the process, so `devtwo` returned to a live
+  session with no key and had to unlock before the data region would render.
+  That is the real-world path, and it is the one that ran.
+
 ## Residual risks
 
 1. **Gate C's verdict depends on a gitignored build artifact.**
@@ -293,13 +322,23 @@ the evidence that the practice pays.
    is no backup mechanism anywhere in `deploy/`, and an encrypted file that only
    the user's password opens is not something the operator can back up usefully
    without a design decision nobody has made yet.
-6. **Nothing verifies the DEPLOYED file is encrypted.**
+6. **CLOSED 2026-08-13 — the deployed file is verified encrypted.**
    `tests/db/encryptedUserDb.test.ts` byte-checks a file it creates in a temp
-   tree — that proves the opener encrypts, not that the file on the droplet is
-   encrypted. `head -c 16 users/devtwo/devtwo.db | xxd` must be run once on the
-   droplet against the first real `devtwo.db`. It is documented in
-   `docs/local-dev.md` and it is a human's job: CLAUDE.md forbids Claude opening
-   any `*.db` that is not `synthetic.db`, and that includes this one.
+   tree, which proves the opener encrypts, not that the file on the droplet is
+   encrypted. Nico ran the check by hand on the droplet, against the first real
+   `devtwo.db`, immediately after the tap that created it:
+
+   ```
+   $ head -c 16 users/devtwo/devtwo.db | xxd
+   00000000: 8651 d05b c23a c3e9 0b5c f565 d542 1131  .Q.[.:...\.e.B.1
+   ```
+
+   An unencrypted SQLite file begins `5351 4c69 7465 2066 6f72 6d61 7420 3300`
+   (`SQLite format 3.`). This one does not. **This is the only form of the check
+   that says anything about a real deployment**, and it remains a human's job —
+   CLAUDE.md forbids Claude opening any `*.db` that is not `synthetic.db`, and
+   that includes this one, so the same verification after any future change to
+   `lib/db/encryptedUserDb.ts` has to be run by hand again.
 7. **The wrong-key narrowing (`notADb && existedBefore`) is reasoned, not
    test-pinned.** Widening it to `notADb` alone breaks no test. The plan
    expected this drill to come back green; it did. The answer is this line, not
