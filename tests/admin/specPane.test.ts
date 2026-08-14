@@ -288,11 +288,17 @@ describe('the spec pane', () => {
     return renderToStaticMarkup(element)
   }
 
-  it('lists every proposal, newest first, marking the confirmed one', async () => {
+  it('lists every proposal in CONVERSATION order, marking the confirmed one', async () => {
     // A friend stuck on round three is visible as a friend stuck on round
     // three, not as silence.
+    //
+    // The order flipped with the timeline change (onboarding ledger D5): the
+    // proposals are merged into the transcript now, so they read
+    // oldest-at-top like the conversation they belong to, and the pane scrolls
+    // to the newest on mount. "Newest first" was right for a standalone list
+    // and would now put a proposal above the message that asked for it.
     const html = await render('devone')
-    expect(html.indexOf('v3')).toBeLessThan(html.indexOf('v1'))
+    expect(html.indexOf('v1')).toBeLessThan(html.indexOf('v3'))
     expect(html).toContain('Confirmed')
   })
 
@@ -312,7 +318,13 @@ describe('the spec pane', () => {
   })
 
   it('says so plainly when there are no proposals yet', async () => {
-    expect(await render('devtwo')).toContain('No spec yet.')
+    // Two different absences now, and they are worth distinguishing: an empty
+    // conversation, and a conversation with nothing confirmed in it. The Spec
+    // tab shows the CONFIRMED version, so it is the second one that decides
+    // what that tab says.
+    const html = await render('devtwo')
+    expect(html).toContain('No confirmed spec yet.')
+    expect(html).toContain('No confirmed mockup yet.')
   })
 
   it('still 404s a non-admin session', async () => {

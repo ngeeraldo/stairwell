@@ -23,16 +23,22 @@ import {
  * Stretched with className rather than by editing components/ui/dialog.tsx:
  * that file is what the CLI wrote and stays that way (onboarding ledger D1).
  *
- * THE SAME `src` AS THE CARD PREVIEW, and the same empty sandbox. One serving
- * route means the thing a friend inspects at full size is byte-identical to
- * the thing they were shown — a second source would be a promise made on their
- * behalf that nobody checked.
+ * THE SAME `src` AS THE PREVIEW BESIDE IT, and the same empty sandbox. One
+ * serving route means the thing a friend inspects at full size is
+ * byte-identical to the thing they were shown — a second source would be a
+ * promise made on their behalf that nobody checked.
+ *
+ * `src` is a prop rather than a version number because the ADMIN PORTAL uses
+ * this same component against its own serving route
+ * (/admin/mockup/<user>/<version>). The spec asks for exactly that: "the same
+ * View full screen dialog affordance users get (same component, same serving
+ * route) — Nico reviews it the way the user saw it."
  *
  * Quiet double duty, from the spec: mockups are built against the fluid
  * container contract, and this dialog exercises it at confirmation time for
  * free — full viewport width on a desktop, phone width on a phone.
  */
-export function MockupDialog({ version, title }: { version: number; title: string }) {
+export function MockupDialog({ src, title }: { src: string; title: string }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -63,7 +69,7 @@ export function MockupDialog({ version, title }: { version: number; title: strin
 
         <iframe
           title={`Preview of ${title}`}
-          src={`/mockup/${version}`}
+          src={src}
           sandbox=""
           className="h-full w-full border-0"
         />

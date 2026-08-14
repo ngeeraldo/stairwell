@@ -91,6 +91,9 @@ type Fixture = {
   password?: string
   slug?: string
   token?: string
+  /** Log in as `nico` rather than as `slug` — the admin screens' path segment
+   *  is the FRIEND's slug while the session belongs to the admin. */
+  admin?: boolean
 }
 
 type Seeder = (dbPath: string, usersDir: string) => Promise<Fixture>
@@ -116,7 +119,11 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
     try {
       // Loudly fake, like every other fixture in this repo: nobody reviewing a
       // screenshot should have to wonder whether they are looking at a person.
-      return { token: mintInvite(db, { slug: 'friendtest', at: Date.now() }), slug: 'friendtest' }
+      // EVERY STATE IN A RUN SHARES ONE DATABASE, so every fixture needs its
+      // own slug: accounts.slug and invites.slug are both UNIQUE, and two
+      // fixtures reaching for the same name is a constraint violation rather
+      // than a coincidence. They are all loudly fake and all end in `test`.
+      return { token: mintInvite(db, { slug: 'invitetest', at: Date.now() }), slug: 'invitetest' }
     } finally {
       db.close()
     }
@@ -252,6 +259,66 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
     }
   },
 
+  /** Nico, plus a friend with a conversation, a proposal and a confirmation. */
+  admin: async (dbPath) => {
+    const { openPlatformDb } = await import('../lib/db/platform')
+    const { createAccount } = await import('../lib/auth/accounts')
+    const { appendTranscript } = await import('../lib/db/appendOnly')
+    const { insertSpec, confirmSpec } = await import('../lib/db/specs')
+    const db = openPlatformDb(dbPath)
+    try {
+      const password = 'TEST-SHOTS-NOT-A-REAL-PASSWORD'
+      await createAccount(db, { slug: 'nico', role: 'admin', password })
+      const friend = await createAccount(db, {
+        slug: 'admintest',
+        role: 'user',
+        password,
+      })
+
+      const base = Date.now() - 60_000
+      const say = (role: string, body: string, at: number) =>
+        appendTranscript(db, {
+          accountId: friend,
+          sessionId: 'shots-session',
+          conversationId: 'shots-conversation',
+          promptSha: 'shots-fixture',
+          role,
+          body,
+          at,
+        })
+      say('user', 'I want to see whether I walked the dog. TEST', base)
+      say('assistant', 'Got it — one tap a day, and a streak. TEST', base + 1000)
+      const specId = insertSpec(db, {
+        accountId: friend,
+        conversationId: 'shots-conversation',
+        promptSha: 'shots-fixture',
+        payload: {
+          title: 'COFFEE PALACE TEST tracker',
+          summary: 'A one-tap tracker.',
+          background: 'Walks the dog every morning TEST.',
+          panels: [
+            { name: 'Streak', shows: 'Days in a row', why: 'Momentum TEST', source: 'manual' },
+          ],
+          manual_logging: ['the walk'],
+          open_questions: [],
+        },
+        mockupHtml:
+          '<!doctype html><html><body style="font-family:system-ui;padding:24px">' +
+          '<h1 style="margin:0 0 8px">COFFEE PALACE TEST tracker</h1>' +
+          '<p style="color:#666">Every number here is fake.</p></body></html>',
+        at: base + 2000,
+      })
+      say('user', 'That is exactly it. TEST', base + 3000)
+      confirmSpec(db, { specId, accountId: friend, at: base + 4000 })
+
+      // NOT the friend's slug: the admin index and the per-user pane both take
+      // the SLUG in the path, and the session belongs to nico.
+      return { slug: 'admintest', password, admin: true }
+    } finally {
+      db.close()
+    }
+  },
+
   'friend-locked': async (dbPath) => {
     const { openPlatformDb } = await import('../lib/db/platform')
     const { createAccount } = await import('../lib/auth/accounts')
@@ -263,11 +330,11 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
       // to photograph /unlock. The key map lives in the SERVER process, so a
       // cookie minted here can never be unlocked from here by construction.
       const id = await createAccount(db, {
-        slug: 'friendtest',
+        slug: 'lockedtest',
         role: 'user',
         password: 'TEST-SHOTS-NOT-A-REAL-PASSWORD',
       })
-      return { sessionId: createSession(db, id), slug: 'friendtest' }
+      return { sessionId: createSession(db, id), slug: 'lockedtest' }
     } finally {
       db.close()
     }
@@ -302,10 +369,10 @@ async function performAct(page: Page, act: string): Promise<void> {
       await page.getByRole('button', { name: /view full screen/i }).click()
       break
     case 'tab-spec':
-      await page.getByRole('tab', { name: /spec/i }).click()
+      await page.getByRole('tab', { name: /^spec$/i }).click()
       break
     case 'tab-mockup':
-      await page.getByRole('tab', { name: /mockup/i }).click()
+      await page.getByRole('tab', { name: /^mockup$/i }).click()
       break
     default:
       throw new Error(`unknown act: ${act}`)
@@ -420,7 +487,7 @@ async function main(): Promise<void> {
           // The real form, because an unlocked session needs the key put into
           // the SERVER's keymap by the server itself.
           await page.goto(`${ORIGIN}/login`, { waitUntil: 'networkidle' })
-          await page.fill('input[name="slug"]', fixture.slug ?? '')
+          await page.fill('input[name="slug"]', fixture.admin ? 'nico' : (fixture.slug ?? ''))
           await page.fill('input[name="password"]', fixture.password)
           await page.click('button[type="submit"]')
           await page.waitForLoadState('networkidle')

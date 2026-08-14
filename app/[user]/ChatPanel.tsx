@@ -527,7 +527,7 @@ export function SpecCard({
       </div>
 
       <div className="flex items-center gap-2">
-        <MockupDialog version={proposal.version} title={title} />
+        <MockupDialog src={`/mockup/${proposal.version}`} title={title} />
       </div>
 
       {/* Collapsed by default, and always present. The visual carries the

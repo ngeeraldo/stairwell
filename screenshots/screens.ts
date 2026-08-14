@@ -221,7 +221,7 @@ export const SCREENS: Screen[] = [
     path: '/admin',
     routeFile: 'app/admin/page.tsx',
     state: 'admin',
-    live: false,
+    live: true,
     assertions: [
       'A user list with a last-activity timestamp per row, newest first.',
       'An account that has done nothing says so, rather than showing a 1970 date.',
@@ -232,7 +232,7 @@ export const SCREENS: Screen[] = [
     path: '/admin/SLUG',
     routeFile: 'app/admin/[user]/page.tsx',
     state: 'admin',
-    live: false,
+    live: true,
     assertions: [
       'Reading measure is roughly 680px at 1440 — not the full window width.',
       'User and agent turns are clearly distinguishable at a glance.',
@@ -247,7 +247,7 @@ export const SCREENS: Screen[] = [
     routeFile: 'app/admin/[user]/page.tsx',
     state: 'admin',
     act: 'tab-spec',
-    live: false,
+    live: true,
     assertions: [
       'The spec renders as real markdown — headings are headings, lists are lists. Not a wall of preformatted text.',
       'A version label and a confirmation timestamp sit at the top.',
@@ -259,7 +259,7 @@ export const SCREENS: Screen[] = [
     routeFile: 'app/admin/[user]/page.tsx',
     state: 'admin',
     act: 'tab-mockup',
-    live: false,
+    live: true,
     assertions: [
       'The mockup renders in an iframe with a full-screen control — the same affordance the friend gets.',
       'The iframe shows the mockup itself, not a blank box or an error page: the admin route must be serving it.',

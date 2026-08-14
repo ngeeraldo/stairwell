@@ -108,6 +108,39 @@ export function readConversations(
  * no way to tell afterwards which rows were real. CLAUDE.md's sacred-data
  * section names both events for exactly that reason.
  */
+/**
+ * When this account last did anything, or `undefined` if they never have.
+ *
+ * The admin index sorts by it, so Nico opens the portal and sees who has been
+ * using the thing rather than an alphabetical list — which is the whole point
+ * of a monitoring surface during a pilot.
+ *
+ * MAX over both append-only tables: transcripts alone would miss a friend who
+ * opened their dashboard every morning and never typed anything, and metrics
+ * alone would miss nothing today but would the moment an event stops being
+ * written for some interaction. Neither table is read for CONTENT here — only
+ * for the timestamp — so this stays inside what the onboarding promise covers.
+ *
+ * `undefined`, never 0. A friend who has done nothing has no last activity,
+ * and rendering that as a 1970 date would be a small lie in the one place
+ * Nico looks to decide whether to worry about someone.
+ */
+export function lastActivityAt(
+  db: PlatformDb,
+  accountId: number,
+): number | undefined {
+  const row = db
+    .prepare(
+      `SELECT MAX(at) AS at FROM (
+         SELECT at FROM transcripts WHERE account_id = ?
+         UNION ALL
+         SELECT at FROM metrics WHERE account_id = ?
+       )`,
+    )
+    .get(accountId, accountId) as { at: number | null }
+  return row.at ?? undefined
+}
+
 export function hasMetric(
   db: PlatformDb,
   accountId: number,
