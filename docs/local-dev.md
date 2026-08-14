@@ -263,6 +263,12 @@ in again, and both work. It is the same dev-compiler artifact described under
 
 ## Inviting someone
 
+**Walking the onboarding flow uses a fresh throwaway slug every time —
+`walk1`, `walk2`, and so on.** There is no reset: a slug is used once and
+abandoned, which is also the only way to get the true first-ever experience,
+since a slug with a line in `lib/dashboard/registry.ts` lands in its own
+dashboard rather than on the placeholder card.
+
 ```bash
 # Mint an invite. Prints ONE line: the link to text or email them.
 # INVITE_ORIGIN only matters locally — the default is the production URL.
