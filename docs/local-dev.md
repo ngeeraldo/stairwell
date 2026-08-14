@@ -261,6 +261,63 @@ until each of those routes has been compiled at least once. Request both, log
 in again, and both work. It is the same dev-compiler artifact described under
 "Run it" — it just has two more places to show up now.
 
+## Inviting someone
+
+```bash
+# Mint an invite. Prints ONE line: the link to text or email them.
+# INVITE_ORIGIN only matters locally — the default is the production URL.
+INVITE_ORIGIN=http://localhost:3000 npx tsx scripts/create-invite.ts friendone
+
+# On the droplet:
+PLATFORM_DB=/home/deploy/stairwell/platform.db \
+  npx tsx scripts/create-invite.ts friendone
+
+# Revoke one that has not been used yet. By SLUG, because the token is the
+# thing you do not have — only its hash was stored. A lost link is re-minted,
+# never recovered.
+npx tsx scripts/revoke-invite.ts friendone
+```
+
+Walk it: open the printed link, press **Sounds good →**, set a password of 10+
+characters, and you land in the shell. Then check what it actually created:
+
+```bash
+sqlite3 platform/dev/synthetic.db \
+  "SELECT slug, used_at IS NOT NULL AS used, revoked_at IS NOT NULL AS revoked FROM invites;"
+
+# The onboarding funnel, newest first, with the device class on every row.
+sqlite3 platform/dev/synthetic.db \
+  "SELECT event, json_extract(data,'\$.device_class') FROM metrics ORDER BY at DESC LIMIT 8;"
+
+# An account_keys row means the envelope is in the path (a legacy account has
+# none and derives its key directly — CLAUDE.md > Dashboard folder conventions).
+sqlite3 platform/dev/synthetic.db \
+  "SELECT a.slug, k.account_id IS NOT NULL AS enveloped
+     FROM accounts a LEFT JOIN account_keys k ON k.account_id = a.id;"
+
+# Their database exists and holds NO tables yet — which is why the dashboard
+# still reads synthetic under the banner.
+ls -la users/friendone/
+```
+
+## Looking at every screen
+
+```bash
+# Boots the app against its OWN synthetic database in a temp directory,
+# captures every live screen at 375 and 1440, and prints what each one has to
+# look like. Refuses to run if PLATFORM_DB is set — it must never photograph
+# real data.
+npm run shots -- --task=manual
+
+# One screen, reusing the existing build:
+npm run shots -- --task=manual --only=s2-set-password --no-build
+```
+
+Shots land in `.screenshots/task-<n>/` (gitignored). The assertions live in
+`screenshots/screens.ts`; a screen marked `live: false` there is skipped and
+listed at the end of the run, so partial coverage never reads as full
+coverage.
+
 ## Reset
 
 ```bash

@@ -48,8 +48,10 @@ Server (single VPS)
 
 ## Core decisions
 
-### 1. One persistent chat surface — no separate onboarding flow
-- **A single chat window, toggleable to hidden, lives alongside the dashboard.** It is the agent surface for the whole proposal loop (§6) — the first-ever interview and every later request travel the same journey, differing only in diff size. No dedicated onboarding screens.
+### 1. One persistent chat surface — and a short way in to it
+- **A single chat window, toggleable to hidden, lives alongside the dashboard.** It is the agent surface for the whole proposal loop (§6) — the first-ever interview and every later request travel the same journey, differing only in diff size. There are no onboarding screens **inside the product**: the interview is the chat, as designed.
+- **What there IS, since the onboarding build, is a way in.** Four screens a person passes through exactly once — an invite link, the privacy promise, the password that becomes their encryption key, and then the shell — plus a returning login and an honest forgot-password dead end. They exist because the encryption is real: the password must exist before the first byte is written, and there is no reset, so both facts have to be said plainly before an account exists rather than discovered afterwards. Spec: `onboarding-ux-spec.md`.
+- **Every login lands in one shell** (`app/[user]/Shell.tsx`) for the product's whole life: the chat surface and a content area, with the content area holding a placeholder card until a dashboard is deployed and the dashboard afterwards. No first-run mode, no conditional routing. The chat is open by default during the interview and collapsed once a dashboard exists — the morning glance is dashboard-first. Which arrangement those two occupy is decided by CSS at a breakpoint, never by JavaScript.
 - **First join:** the agent opens with a prompted chat message that kicks off the interview conversationally — what they worry about, what they'd want to see every morning, what accounts they have, what they'll realistically log.
 - Interview ends with a **concrete spec version presented back for confirmation, alongside a rendered mockup**: the agent generates an HTML preview of the expected dashboard (synthetic numbers, rough styling) rendered inline in chat — HTML, not generated images, so the preview is honest and cheap. Every spec version is **whole-surface** — it describes the user's entire dashboard, all screens and panels, not just what the latest conversation touched — and **every change ships through a newly confirmed version, including small ones**: there is no fast path that deploys without a confirmation, however trivial the change looks. The preview card **leads with what changed** relative to the version before it (for version 1, "what changed" is the whole dashboard). On confirmation, the agent **emits a structured `spec.md` + `mockup.html`** rendered from that version, saved to the user's folder — rendered in the admin portal and consumed directly by Claude Code, which builds toward *"make the code match this version."* The preview is a contract, not an illustration.
 - Dashboard delivered **next morning** — first exposure happens inside the morning ritual being tested. 7am text with the link (delivery nudges stay out-of-app; everything else lives in the chat).
@@ -60,8 +62,14 @@ Server (single VPS)
 - **Encrypted at rest with SQLCipher; key derived from the user's login password via KDF.** Key stored nowhere. DB unlocks in memory during their session only. You cannot open it accidentally or casually — requires their password.
 - **Consequence: no background jobs.** Sync **runs at login** — morning open triggers: unlock → Plaid sync pulls new transactions → dashboard renders fresh. Matches the ritual; simpler than cron.
 - **Two-tier session (step 1a).** The session row persists in the platform
-  database; the derived key lives only in an in-process map with a 4h idle TTL
-  and a 12h absolute ceiling. A deploy therefore leaves users logged in but
+  database; the database key lives only in an in-process map with a 4h idle TTL
+  and a 12h absolute ceiling. **The password no longer IS that key**: it derives
+  a key-encrypting key that unwraps a random data key, stored wrapped in
+  `account_keys` (onboarding ledger D2). The friend-visible behaviour is
+  identical; what it buys is that changing a password later re-wraps 32 bytes
+  instead of re-encrypting a whole history. Accounts created before that —
+  `devone`, `devtwo`, `nico` — have no wrapped key and derive the database key
+  directly, forever. A deploy therefore leaves users logged in but
   locked — the chat surface keeps working across the proposal loop (§6), and
   data panels ask for the password again. The key cannot survive overnight, which is
   what keeps login-triggered sync from serving stale data.
@@ -113,7 +121,7 @@ Server (single VPS)
 - Synthetic data uses **loud fake merchants** ("COFFEE PALACE TEST") so any screen instantly reads as fake or real.
 - **Dev laptop never contains production DBs.** Real files live on the server; deploys go out through git; Claude Code runs only in folders where synthetic.db is the only database.
 - **Privacy toggle** on every dashboard: swaps live numbers for synthetic ones (for studio sessions / screen shares).
-- Honest residue, stated plainly to users at onboarding: *"My tools run on fake data. I'll see what you tell the agent and what you ask for. I won't open your transactions. I'd have to deliberately modify the system to see anything, and I won't. Everything's deleted when the pilot ends."* Written down where they can see it (login page paragraph).
+- Honest residue, stated plainly to users at onboarding. **The wording now lives in `lib/copy/onboarding.ts` as `PROMISE_BLOCK`** and is rendered from that one constant on BOTH the invite page (before an account exists) and the login page — two copies of a promise are two things that can drift apart. It is pinned sentence by sentence in `tests/copy/onboarding.test.ts` and `tests/routing/loginPage.test.ts`; `onboarding-ux-spec.md` supersedes the paragraph that used to be quoted here.
 - **Extended in step 6a, when real per-user data first became possible.** Two sentences, both consequences of decisions rather than caveats on them:
   - *"I can see when you use it — which days you open it and log things — but not what you log."* Engagement is recorded because the retention curve is the fundraise and cannot be reconstructed later. The **permanent policy** is `dashboard_write` carrying a slug and a panel and **never a value** — for every panel type, now and in future, not just this dashboard. That bound is what makes the sentence true, so the sentence and the policy stand or fall together.
   - *"If you forget your password, your logged data is gone forever — I can't recover it, on purpose, because I can't read it either."* The key is derived from the password and stored nowhere. There is no reset path and no backup, by design.
@@ -149,7 +157,7 @@ Server (single VPS)
 - **The confirmed version *is* the approval gate, and it is never optional.** No version deploys unconfirmed, regardless of how trivial the change looks. This replaces an earlier, deferred idea of a separate message-mirror → headless-build → diff-summary-and-screenshot approval step: the preview card already leads with what changed, and the confirm button already is that gate, so there is nothing further to build.
 
 ### 7. Admin portal (Nico only) + real-time alerts
-- **Read-only portal behind your admin login:** user list; per-user two panes — spec versions with their diffs against the version each was based on, and the full chat transcript. There is no metrics pane: `app/admin/[user]/page.tsx` reads no metrics, and the metrics log is queried directly (§9). The original third pane, a "request queue (open asks with timestamps — doubles as a metrics view)," is superseded: the `requests` table it would have read from has been dead schema since step 1 — nothing ever wrote to it — and every request now lives as a spec-version diff instead (unified-loop ledger D12).
+- **Read-only portal behind your admin login:** a user list ordered by LAST ACTIVITY (the question it is opened to answer is who has been using it), and per-user three tabs — **Transcript**, with proposal cards and confirmations rendered inline in conversation order, because a transcript with a hole where the proposal happened is a broken transcript; **Spec**, the current confirmed version as rendered markdown; **Mockup**, served from the same route and shown with the same full-screen affordance the friend gets, so Nico reviews it the way they saw it. Manual refresh only — nothing polls. There is no metrics pane: `app/admin/[user]/page.tsx` reads no metrics, and the metrics log is queried directly (§9). The original third pane, a "request queue (open asks with timestamps — doubles as a metrics view)," is superseded: the `requests` table it would have read from has been dead schema since step 1 — nothing ever wrote to it — and every request now lives as a spec-version diff instead (unified-loop ledger D12).
 - Transcript visibility is already covered by the onboarding promise ("I'll see what you tell the agent") — no new privacy surface.
 - **Alerts via ntfy.sh** (free push; phone app subscribes to a topic, server curls it): (1) session start — first message after 30+ min silence, debounced; (2) spec confirmed — now fires on every confirmed version, however small, not just the first — the "run to the computer" signal.
 
@@ -160,6 +168,8 @@ Server (single VPS)
 ### 9. Metrics pipeline — build in week one, from user #1
 Retention curves cannot be reconstructed retroactively, and they are the fundraise.
 - Dashboard opens (timestamped)
+- **The onboarding funnel**, from the first click of an invite link to the first session: `invite_opened`, `promise_accepted`, `password_set`, `db_created`, `first_session_start`, `login`, `forgot_password_viewed`. It cannot be reconstructed later, and `forgot_password_viewed` is the early signal that a friend may be about to lose everything they have logged.
+- **A `device_class` on every row of that funnel and on every dashboard open** (`phone`/`tablet`/`desktop`, a field inside `metrics.data` — never a column, since `metrics` is never migrated). It answers the one question the pilot cannot answer retroactively and cannot guess: where do people actually glance from. Dashboard-era layout investment follows that data rather than an assumption.
 - Every conversation in the proposal loop, timestamped, verbatim — the chat log is the log of record
 - **Spec-version diffs, first-class.** The structural diff between a confirmed version and the version it was based on (screens/panels added, removed, changed) is the canonical record of what a request was. It replaces classifying chat text after the fact, and it is what settles the "expressible as config" vs. "needed custom code" question — the distribution that decides the future architecture debate.
 - Token costs per user (interview, discovery, spec-authoring runs) and Plaid per-item cost

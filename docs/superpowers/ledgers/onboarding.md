@@ -2,7 +2,7 @@
 
 Spec: `onboarding-ux-spec.md` (repo root, approved 2026-08-13)
 Plan: `docs/superpowers/plans/2026-08-13-onboarding-and-invite-flow.md`
-Branch: `onboarding-invite-flow` (to be cut from `checkpoint-records`)
+Branch: `onboarding-invite-flow`, cut from `checkpoint-records`.
 
 Opened **before** the build, in the shape the unified-loop ledger established:
 the rulings the plan depends on are written down first, "Built" and "Residual
@@ -112,23 +112,36 @@ the plan said to stop and check rather than accept a surprise:
   approved. `--preset nova`, `baseColor: neutral`.
 - **`--defaults` would have wired next/font's Geist.** Removed — see D1a.
 
-### D1a. The shadcn theme is kept; exactly two tokens are set
+### D1a. The shadcn theme is kept; FOUR things are set, each named by the spec
 
 "Defaults barely touched" is taken literally: `init` writes its own
-`app/globals.css` token block and it is kept as written, with two edits, both
-of which the spec names explicitly.
+`app/globals.css` token block and it is kept as written, with these edits and
+no others. The ruling said TWO when it was written; it ended at four, and the
+two additions are recorded here rather than absorbed silently — each is a
+sentence in the spec, not a preference.
 
-- **The `.dark` block is deleted**, and `color-scheme: light` is pinned. The
-  spec: "Light mode only. No dark mode, no theme toggle." Leaving the block in
-  would make the whole product follow the reader's OS setting, which is a
-  design decision nobody made.
-- **`--primary` is set to stock Tailwind blue.** Base colour `slate` gives a
+- **The `.dark` block and its `@custom-variant` are deleted**, and
+  `color-scheme: light` is pinned. The spec: "Light mode only. No dark mode,
+  no theme toggle." Leaving them in would make the whole product follow the
+  reader's OS setting, which is a design decision nobody made.
+- **`--primary` is stock Tailwind blue** (blue-600). The neutral base gives a
   near-black primary; the spec rules "Neutral palette + one accent: blue …
   everything else stays gray-scale." Destructive contexts (S2's warning block,
-  S5) keep shadcn's own `destructive`/amber treatment and never use the accent.
+  S5) keep shadcn's own `destructive` treatment and never take the accent.
+- **`--background` is slightly tinted** where the CLI wrote pure white, so a
+  card reads as a card. Added after the first screenshot review: the spec says
+  "cards with subtle border + shadow on a slightly-tinted background", and
+  white-on-white left the login card as "bare content floating in an empty
+  viewport" — the thing Viewport rules forbid in so many words.
+- **`--font-sans` is the system stack.** The preset wires next/font's Geist;
+  the spec says "Inter or the system-ui stack. One family." No font is
+  fetched or self-hosted at all — a font request is a third-party request on a
+  page that makes a privacy promise, and a self-hosted one is still bytes for
+  a typeface the spec did not ask for.
 
-Nothing else in the token block is edited. A third edit is a design decision
-and belongs to the taste memo, not to this build.
+A FIFTH edit is a design decision and belongs to the taste memo. In
+particular `--ring` stays neutral: a blue focus ring would be defensible and is
+exactly the kind of call this build did not make on its own.
 
 ### D2. Envelope encryption ships, in a **table**, with a legacy arm
 
@@ -460,27 +473,136 @@ Three things this deliberately is and is not:
 
 ---
 
+## Built
+
+Eighteen tasks, executed inline with a test cycle, a mutation drill and a
+screenshot review per task. **1000 tests pass**, `tsc --noEmit` is clean,
+`next build` succeeds, `.claude/hooks/test-hooks.sh` is 160/160.
+
+A friend now receives a link, reads the promise before an account exists, sets
+a password that becomes their encryption key, and lands in the shell they will
+use for the product's whole life. The returning login says what a wrong
+password means without implying a reset; `/forgot` says why there cannot be
+one. The admin portal reads the conversation the way the friend had it.
+
+**What the drills caught, and this is the part worth reading.** Fifty-one
+mutations were applied across the branch. Six reddened nothing, and every one
+of those six was the CODE or the TEST being wrong rather than the drill:
+
+1. **The Radix jsdom shims were unnecessary** (Task 2). The plan asserted
+   Dialog, Tabs, Checkbox and Collapsible would need `ResizeObserver`,
+   `DOMRect`, `matchMedia`, pointer-capture and `scrollIntoView`. jsdom lacks
+   all of them; none of the four components touches any of them.
+   `installDomShims()` is one line now.
+2. **`user_version` was not what made the empty database real** (Task 8) —
+   `journal_mode = WAL` had already written the encrypted header.
+3. **The no-schema writable open needed no substitute key check** (Task 8);
+   the WAL pragma already throws on a wrong key. Which also means this
+   codebase's long-standing claim that "the schema exec doubles as the key
+   check" was never quite true.
+4. **`createEmptyEncryptedUserDb`'s `existsSync` is an optimisation, not the
+   guarantee** (Task 8). `link()` EEXIST is.
+5. **The timeline's tie-break was decorative** (Task 14): a stable sort plus a
+   convenient construction order was doing the work. The array is built in
+   reverse now, so the rule is the mechanism.
+6. **The dead-link page could grow copy the constant never saw** (Task 9).
+
+And three drills reported their target MISSING, which caught two real defects:
+the page imported `readConfirmations` and never called it, so confirmations
+would never have appeared after a reload; and the spec's own named red-test
+("a used token cannot re-register") passed against a build with no invite
+consumption at all, because `accounts.slug` is UNIQUE and caught it anyway.
+
+**Two tests were wrong rather than the code**, both found by drilling: an
+assertion that the XSS fixture's `onerror=` never appears would have required
+a friend's own words to vanish, and a walker looking for raw `<button>`
+elements found nothing once the card rendered shadcn's `Button`, which would
+have made every card assertion vacuous.
+
 ## What the screenshot review caught
 
 Kept as a running list, per D16, because whether that gate was worth building
-is answered by this section and nothing else.
+is answered by this section and nothing else. **Seven findings, none of which
+any test in this repo could have seen:**
 
-- **Task 3, first run ever.** Installing Tailwind's preflight in Task 2 stripped
-  the browser's default form styling from `/login` and `/unlock`, leaving
-  invisible inputs and a "Log in" button that rendered as plain text. Every
-  test stayed green — nothing in this repo asserts that an input is visible.
-  The plan would not have restyled login until Task 11, so seven commits would
-  have carried a login page that looked broken. Fixed in Task 3, where it was
-  found.
+- **Task 3, first run ever.** Installing Tailwind's preflight in Task 2
+  stripped the browser's default form styling from `/login` and `/unlock`,
+  leaving invisible inputs and a "Log in" button that rendered as plain text.
+  Every test stayed green — nothing here asserts that an input is visible. The
+  plan would not have restyled login until Task 11, so seven commits would
+  have carried a login page that looked broken.
 - **Task 3, second run.** The card was white on a white page — "bare content
-  floating in an empty viewport", which is the exact thing the spec's Viewport
-  rules forbid. `--background` is now slightly tinted while `--card` stays
-  white, which is what the design direction describes in so many words.
+  floating in an empty viewport", the exact thing the spec's Viewport rules
+  forbid. `--background` is tinted now.
+- **Task 10.** The stock destructive Alert is red text in a NEUTRAL border on
+  white: S2's destruction warning read as prose that happened to be red, not
+  as a warning. Tinted, per the spec's "bordered/tinted".
+- **Task 13.** The SYNTHETIC DATA banner rendered as one more line of the
+  dashboard, in the same type as the numbers it warns about. CLAUDE.md calls
+  it "the only thing distinguishing the two screens".
+- **Task 15.** The proposal card rendered NO preview at all: a hand-written
+  fixture failed validation and the page did exactly the right thing with an
+  unreadable row — degrade silently — which looks a great deal like a working
+  empty chat. Fixtures are built through `parseSpecDraft` + `sealVersion` now,
+  so a bad one throws in the harness instead.
+- **Task 15.** The preview was cropped at 1:1 rather than scaled down.
+- **Task 16.** `spec.md`'s "do not hand-edit" banner — addressed to whoever
+  opens the file in an editor — rendered as visible body copy in the portal.
+  (The first fix anchored to the start of the document and stripped nothing,
+  because the banner sits after the H1.)
 
-## Built
-
-*(written after the branch lands)*
+The gate also caught one thing about ITSELF that mattered more than any of the
+above: the harness seeded fixtures in its own process while setting
+`USERS_DIR` only for the server it spawned, so registration wrote a stray
+`users/newfriendtest/` into the repo. `tests/users/conventions.test.ts` swept
+the stray folder and **skipped three checks over it** — three skips where
+there had been none, which is the quietest failure this suite produces.
 
 ## Residual risks
 
-*(written after the branch lands)*
+1. **No screen has been seen by a human, on a real device.** Everything above
+   is headless Chromium at two fixed widths. A phone has a software keyboard
+   that covers half the viewport, Safari has its own viewport quirks, and
+   autocorrect — named in this product's own copy as a leading cause of
+   lockouts — does not exist in a screenshot. The morning walk is not
+   optional.
+2. **The `devtwo` end-to-end interview has not been run.** The spec makes it
+   the required follow-up to touching `ChatPanel`, and this branch rewrote how
+   that component renders everything. All six of step-4 residual 1's call-site
+   mutations still redden, and the composition is covered by
+   `tests/chat/panelWiring.test.tsx` — but step-4's own ledger says a green
+   suite is not sufficient evidence for this component, and that is still true.
+3. **`devtwo`'s real database has not been opened since envelope encryption
+   landed.** The legacy arm is tested at the route layer and drilled (making
+   `databaseKeyFor` always unwrap reddens seven tests), but no real
+   SQLCipher file written under a directly-derived key has been opened by this
+   build. It is the one place D2 meets real data.
+4. **Nothing has been deployed.** `next build` succeeds and `deploy/smoke.sh`
+   is unchanged, but the branch has never run behind Caddy — where the
+   redirect asymmetry that produced two production outages lives.
+5. **`first_session_start` is the second load-bearing metrics row** (D8). The
+   hazard is human: someone pruning `metrics` as disposable telemetry makes a
+   months-old account report a first session again, and nothing afterwards can
+   tell which rows were real. Now named in CLAUDE.md beside `deploy_announced`.
+6. **The screenshot fixtures share one database, so every fixture needs its own
+   slug.** Three separate runs failed on a UNIQUE violation before that was
+   true. It is a footgun for whoever adds the next state, and the only thing
+   stopping it is a comment.
+7. **`registerFromInvite` can leave an orphan database.** If the transaction
+   fails after the file is linked, an empty encrypted database sits in a folder
+   no account points at — inert, unreadable by anyone including us, and reused
+   by the next attempt for that slug. Accepted (D13), because the alternative
+   is a consumed token with no database, which is the state the spec forbids.
+8. **The confirmation event's timestamp is the CLIENT's clock** for a confirm
+   made in the current session. The server's `spec_confirmations.at` replaces
+   it on the next load, and the two only ever have to agree about order — but
+   a badly-skewed clock could sort one confirmation oddly until reload.
+9. **Unified-loop residual 13 is untouched and now easier to hit.** The
+   proposal that intermittently dies telling the friend "interrupted — not
+   saved" about a message that WAS saved is the next branch (D15). This build
+   rewrote the panel around it without fixing it.
+10. **`INVITE_ORIGIN` is not in `deploy/required-env`.** Its default is the
+    correct production value, so it cannot produce a wrong link on the droplet
+    — the same reasoning that file already applies to `USERS_DIR`. A local run
+    that forgets it prints a production URL, which is a person's problem for
+    one second.
