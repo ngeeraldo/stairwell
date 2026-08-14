@@ -10,6 +10,12 @@ import type { Proposal } from '@/lib/spec/author'
 import type { StoredSpec } from '@/lib/spec/stored'
 import { Button } from '@/components/ui/button'
 import { buildTimeline } from '@/lib/chat/timeline'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
+import { MockupDialog } from './MockupDialog'
 
 type Turn = {
   role: 'user' | 'assistant'
@@ -450,70 +456,156 @@ export function SpecCard({
   // of this card cannot disagree about what was promised.
   const delivery = (proposal.first ?? first) ? DELIVERY_FIRST : DELIVERY_CHANGE
   return (
-    <section aria-label="Proposed dashboard" data-spec-id={proposal.id}>
-      <h3>{title}</h3>
-      {spec.kind === 'version' ? (
-        <>
-          {/* What changed comes FIRST, above the summary. On a tweak the
-              summary is text they already read last time, and burying the
-              one new sentence underneath it is how a one-word relabel
-              becomes invisible on the card where they approve it. */}
-          <p>{spec.version.change_summary}</p>
-          <p>{spec.version.summary}</p>
-          <VersionBody version={spec.version} />
-        </>
-      ) : (
-        <>
-          {/* The frozen arm, rendered exactly as it was before the unified
-              loop. `specs` rejects UPDATE, so these rows can never be
-              rewritten into the current shape and this markup has no end
-              date — see lib/spec/legacy.ts. */}
-          <p>{spec.payload.summary}</p>
-          <ul>
-            {spec.payload.panels.map((panel) => (
-              <li key={panel.name}>
-                <strong>{panel.name}</strong> — {panel.shows}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
+    /*
+      CARD ANATOMY, top to bottom, exactly as onboarding-ux-spec.md lists it:
+      version label + title + one-line description → scaled-down live mockup
+      preview → collapsed "Details" disclosure → confirm control.
+      
+      The order is the argument. The visual carries the pitch, so it comes
+      before the words; the behavioural spec is present but collapsed, because
+      "the mockup renders synthetic numbers and cannot communicate behaviour —
+      and what the user confirms is the whole versioned spec, not just the
+      picture."
+      
+      NO CARD STATE MACHINE. Nothing here is stored per card: what renders is a
+      conditional over spec-version data the loop already has. Confirmed →
+      label; else newest → confirm control; else → an inert card, version label
+      only. Correctness lives server-side, where a confirm on any non-newest
+      version is rejected with a 409.
+    */
+    <section
+      aria-label="Proposed dashboard"
+      data-spec-id={proposal.id}
+      className="space-y-4 rounded-lg border bg-card p-4"
+    >
+      <div className="space-y-1">
+        <p className="text-xs font-medium text-muted-foreground">v{proposal.version}</p>
+        <h3 className="font-semibold">{title}</h3>
+        {/* What changed comes FIRST, above the summary. On a tweak the summary
+            is text they already read last time, and burying the one new
+            sentence underneath it is how a one-word relabel becomes invisible
+            on the card where they approve it. */}
+        <p className="text-sm">
+          {spec.kind === 'version' ? spec.version.change_summary : spec.payload.summary}
+        </p>
+      </div>
 
-      {/* Sealed off: an empty sandbox grants nothing — no scripts, no
-          same-origin, no forms, no top-level navigation. Model-authored
-          markup can therefore never run code in a friend's session, and the
-          preview stays a LAYOUT promise rather than a behaviour promise
-          somebody then has to build. tests/spec/sandbox.test.ts pins this. */}
-      <iframe
-        title={`Preview of ${title}`}
-        srcDoc={proposal.mockup_html}
-        sandbox=""
-      />
+      {/* Scaled to the column, and non-interactive at card size — which the
+          spec explicitly allows, and `pointer-events-none` implements without
+          a second mechanism.
+          
+          `src`, not `srcDoc`: one serving route for the card and the dialog
+          (onboarding ledger D14), so what a friend inspects at full size is
+          byte-identical to what they were shown here.
+          
+          Sealed off either way. An empty sandbox grants nothing — no scripts,
+          no same-origin, no forms, no top-level navigation — so model-authored
+          markup can never run code in a friend's session, and the preview
+          stays a LAYOUT promise rather than a behaviour promise somebody then
+          has to build. tests/spec/sandbox.test.ts pins this. */}
+      {/*
+        SCALED DOWN, not cropped. The iframe is laid out at twice the column's
+        width and half scale, so the preview shows the mockup as a small whole
+        rather than the top-left corner of a full-size one — which is what the
+        first screenshot review found.
+        
+        CSS only: a JS-measured scale factor would be a second implementation
+        of the arrangement rule the shell exists to avoid, and it would render
+        differently on the server than on the client for a frame.
+        
+        `pointer-events-none` implements "non-interactive at card size is
+        fine" without a second mechanism; the full-screen dialog is where a
+        friend actually looks.
+      */}
+      <div className="h-64 w-full overflow-hidden rounded-md border bg-background">
+        <iframe
+          title={`Preview of ${title}`}
+          src={`/mockup/${proposal.version}`}
+          sandbox=""
+          className="pointer-events-none h-[32rem] w-[200%] origin-top-left scale-50 border-0"
+        />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <MockupDialog version={proposal.version} title={title} />
+      </div>
+
+      {/* Collapsed by default, and always present. The visual carries the
+          pitch; this is what they are actually confirming. */}
+      <Collapsible>
+        <CollapsibleTrigger asChild>
+          <Button type="button" variant="ghost" size="sm" className="px-0">
+            Details
+          </Button>
+        </CollapsibleTrigger>
+        {/*
+          forceMount: the content stays in the DOM and Radix marks it `hidden`
+          when closed, rather than unmounting it. Two reasons, and neither is
+          about tests — the build contract a friend is confirming should be
+          findable by a browser's own find-in-page and by assistive tech, and a
+          Details block that does not exist until clicked is not "always
+          present" in any sense the spec would recognise.
+        */}
+        <CollapsibleContent forceMount className="pt-2 text-sm data-[state=closed]:hidden">
+          {spec.kind === 'version' ? (
+            <>
+              <p className="mb-2 text-muted-foreground">{spec.version.summary}</p>
+              <VersionBody version={spec.version} />
+            </>
+          ) : (
+            <>
+              {/* The frozen arm, rendered as it always was. `specs` rejects
+                  UPDATE, so these rows can never be rewritten into the current
+                  shape and this markup has no end date — lib/spec/legacy.ts. */}
+              <ul className="list-disc space-y-1 pl-5">
+                {spec.payload.panels.map((panel) => (
+                  <li key={panel.name}>
+                    <strong>{panel.name}</strong> — {panel.shows}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
 
       {proposal.confirmed ? (
-        <>
-          <p><em>Building this one.</em></p>
-          {/* The promise becomes operative exactly when it's confirmed, and
-              a friend reloading afterwards should still see the timeframe —
+        <div className="space-y-1">
+          <p className="text-sm font-medium">Building this one.</p>
+          {/* The promise becomes operative exactly when it's confirmed, and a
+              friend reloading afterwards should still see the timeframe —
               dropping this line here would be the one moment it matters
               most. */}
-          <p><small>{delivery}</small></p>
-        </>
+          <p className="text-xs text-muted-foreground">{delivery}</p>
+        </div>
       ) : live ? (
-        <>
-          <p>
-            <button type="button" disabled={busy} onClick={() => onConfirm(proposal.id)}>
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              disabled={busy}
+              onClick={() => onConfirm(proposal.id)}
+            >
               Build this
-            </button>{' '}
-            <button type="button" disabled={busy} onClick={() => { /* just keep talking */ }}>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                /* just keep talking */
+              }}
+            >
               Not quite yet
-            </button>
-          </p>
+            </Button>
+          </div>
           {confirmError && (
-            <p><em>That didn&apos;t go through — try again.</em></p>
+            <p className="text-sm text-destructive">
+              <em>That didn&apos;t go through — try again.</em>
+            </p>
           )}
-          <p><small>{delivery}</small></p>
-        </>
+          <p className="text-xs text-muted-foreground">{delivery}</p>
+        </div>
       ) : null}
     </section>
   )

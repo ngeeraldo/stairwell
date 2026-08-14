@@ -252,9 +252,28 @@ function textOf(node: unknown): string {
   return ''
 }
 
+/**
+ * Every CONFIRM control on a card.
+ *
+ * It matches shadcn's `Button` component as well as a raw `<button>`, because
+ * the card renders the former now — a walker looking only for the string
+ * 'button' finds nothing and every assertion built on it passes vacuously,
+ * which is the failure mode this suite keeps catching in itself.
+ *
+ * It also EXCLUDES the chrome controls: "View full screen" opens a dialog and
+ * "Details" toggles a disclosure. Neither confirms anything, and counting them
+ * would make "an inert card has no buttons" false for a card that is inert.
+ */
+const CHROME_LABELS = ['View full screen', 'Details', 'Close']
+
 function findButtons(node: unknown, out: Elem[] = []): Elem[] {
   if (!isElement(node)) return out
-  if (node.type === 'button') out.push(node)
+  const isButton =
+    node.type === 'button' ||
+    (typeof node.type === 'function' && (node.type as { name?: string }).name === 'Button')
+  if (isButton && !CHROME_LABELS.includes(textOf((node.props as { children?: unknown }).children).trim())) {
+    out.push(node)
+  }
   const children = (node.props as { children?: unknown }).children
   if (Array.isArray(children)) {
     for (const child of children) findButtons(child, out)

@@ -195,7 +195,7 @@ export const SCREENS: Screen[] = [
     path: '/SLUG',
     routeFile: 'app/[user]/page.tsx',
     state: 'friend-new',
-    live: false,
+    live: true,
     assertions: [
       'Card anatomy, top to bottom: version label, title, one-line description, then the scaled mockup preview, then a COLLAPSED "Details", then the confirm control.',
       'The mockup preview renders actual content — not a blank white box, which is what a broken /mockup route looks like.',
@@ -209,7 +209,7 @@ export const SCREENS: Screen[] = [
     routeFile: 'app/[user]/page.tsx',
     state: 'friend-new',
     act: 'open-fullscreen',
-    live: false,
+    live: true,
     assertions: [
       'The dialog fills the viewport at both widths, with one close X top-right and nothing else.',
       'The page behind is dimmed and inert; there is no second overlay and no nesting.',

@@ -223,6 +223,73 @@ describe('ChatPanel wiring', () => {
     await unmount()
   })
 
+  it('previews the mockup from the serving route, sealed off', async () => {
+    // onboarding ledger D14. One route for the card and the dialog, so what a
+    // friend inspects at full size is byte-identical to what they were shown.
+    const { container, unmount } = await mount(
+      <ChatPanel initial={[]} proposal={{ ...PROPOSAL, confirmed: false }} first={true} />,
+    )
+
+    const frame = container.querySelector('iframe')!
+    expect(frame.getAttribute('src')).toBe('/mockup/1')
+    expect(frame.getAttribute('sandbox')).toBe('')
+
+    await unmount()
+  })
+
+  it('keeps Details COLLAPSED until it is asked for', async () => {
+    // "Collapsed by default because the visual carries the pitch, but always
+    // present, because the mockup renders synthetic numbers and cannot
+    // communicate behaviour." Both halves: present in the DOM, and hidden.
+    const { container, unmount } = await mount(
+      <ChatPanel initial={[]} proposal={{ ...PROPOSAL, confirmed: false }} first={true} />,
+    )
+
+    const details = container.querySelector('[data-slot="collapsible-content"]')
+    expect(details).not.toBeNull()
+    expect(details!.getAttribute('data-state')).toBe('closed')
+    expect(details!.textContent).toContain('Streak')
+
+    await click(buttonLabelled(container, 'Details'))
+    expect(
+      container.querySelector('[data-slot="collapsible-content"]')!.getAttribute('data-state'),
+    ).toBe('open')
+
+    await unmount()
+  })
+
+  it('opens the full-screen dialog onto the SAME document', async () => {
+    const { container, unmount } = await mount(
+      <ChatPanel initial={[]} proposal={{ ...PROPOSAL, confirmed: false }} first={true} />,
+    )
+
+    await click(buttonLabelled(container, 'View full screen'))
+
+    // Radix portals dialog content onto document.body — see
+    // tests/ui/primitives.test.tsx, where that fact is recorded.
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+    const frame = dialog!.querySelector('iframe')!
+    expect(frame.getAttribute('src')).toBe('/mockup/1')
+    expect(frame.getAttribute('sandbox')).toBe('')
+
+    await unmount()
+  })
+
+  it('shows no confirm control on a card that is already confirmed', async () => {
+    // The spec's "no card state machine": what renders is a conditional over
+    // spec-version data, not a stored per-card field.
+    const { container, unmount } = await mount(
+      <ChatPanel initial={[]} proposal={{ ...PROPOSAL, confirmed: true }} first={true} />,
+    )
+
+    expect(container.textContent).toContain('Building this one.')
+    expect(buttonLabelled(container, 'Build this')).toBeUndefined()
+    expect(buttonLabelled(container, 'Not quite yet')).toBeUndefined()
+
+    await unmount()
+  })
+
   it('the retry button re-sends ITS OWN message, not the newest one', async () => {
     // Two interrupted turns on screen. Step 4 moved `source` onto the Turn for
     // exactly this: with one component-level ref, the OLDER button re-sent the

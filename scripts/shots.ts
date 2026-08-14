@@ -161,6 +161,69 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
       const token = mintInvite(db, { slug: 'newfriendtest', at: Date.now() })
       const result = await registerFromInvite(db, { token, password, at: Date.now() })
       if (!result.ok) throw new Error(`friend-new seed failed: ${result.reason}`)
+
+      // A proposal to look at, so the card screens have a card.
+      //
+      // Built through parseSpecDraft + sealVersion, NOT hand-written into the
+      // payload column. The first attempt was hand-written, failed validation
+      // for a reason that was not obvious (a panel with no values), and the
+      // page did exactly what it is supposed to do with an unreadable row:
+      // degrade silently to no card. A screenshot of an empty chat panel looks
+      // a lot like a screenshot of a working one.
+      //
+      // Validating here means a bad fixture THROWS in the harness instead.
+      const { insertSpec } = await import('../lib/db/specs')
+      const { findAccountBySlug } = await import('../lib/auth/accounts')
+      const { parseSpecDraft, sealVersion } = await import('../lib/spec/validate')
+      const account = findAccountBySlug(db, 'newfriendtest')!
+      const draft = parseSpecDraft({
+        title: 'COFFEE PALACE TEST tracker',
+        summary: 'A one-tap tracker for the walk and the coffee.',
+        change_summary: 'Added a streak panel and a coffee count.',
+        background: 'Walks the dog every morning TEST.',
+        open_questions: [],
+        data_requirements: [],
+        screens: [
+          {
+            id: 'home',
+            title: 'Home',
+            order: 1,
+            panels: [
+              {
+                id: 'streak',
+                title: 'Streak',
+                intent: 'So the run is visible at a glance.',
+                display: 'Days in a row you walked.',
+                context_of_use: null,
+                values: [
+                  {
+                    kind: 'entered',
+                    id: 'walk_flag',
+                    description: 'Whether the walk happened today.',
+                  },
+                ],
+                entry: null,
+              },
+            ],
+          },
+        ],
+      })
+      insertSpec(db, {
+        accountId: account.id,
+        conversationId: 'shots-conversation',
+        promptSha: 'shots-fixture',
+        payload: sealVersion(draft, null),
+        mockupHtml:
+          '<!doctype html><html><body style="font-family:system-ui;padding:24px">' +
+          '<h1 style="margin:0 0 8px">COFFEE PALACE TEST tracker</h1>' +
+          '<p style="color:#666;margin:0 0 24px">Every number here is fake.</p>' +
+          '<div style="border:1px solid #ddd;border-radius:12px;padding:16px">' +
+          '<div style="font-size:12px;color:#666">Streak</div>' +
+          '<div style="font-size:40px;font-weight:600">7 days</div></div>' +
+          '</body></html>',
+        at: Date.now(),
+      })
+
       return { slug: 'newfriendtest', password }
     } finally {
       db.close()
