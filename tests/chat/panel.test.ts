@@ -312,9 +312,13 @@ describe('the proposal card', () => {
     expect(findButtons(element)).toEqual([])
   })
 
-  it('keeps the delivery line on a confirmed card', () => {
-    // The promise becomes operative exactly when it's confirmed, and a
-    // friend reloading afterwards should still see the timeframe.
+  it('states the fact on a confirmed card and leaves the timeframe to the agent', () => {
+    // INVERTED 2026-08-14. This test used to require the opposite, on the
+    // reasoning that a friend reloading later should still see the timeframe —
+    // sound while nothing else spoke after a confirmation. The agent now sees
+    // confirmations (lib/chat/confirmations.ts) and agent-v4.md's "After they
+    // confirm" makes those commitments its job, so the card repeating them
+    // would be a second copy of a promise, free to drift from the first.
     const json = JSON.stringify(
       SpecCard({
         proposal: { ...PROPOSAL, confirmed: true },
@@ -325,7 +329,7 @@ describe('the proposal card', () => {
       }),
     )
     expect(json).toContain('Building this one.')
-    expect(json).toContain(
+    expect(json).not.toContain(
       "Your dashboard gets built as soon as possible — at the latest, it'll be here tomorrow morning.",
     )
   })
@@ -415,8 +419,20 @@ describe('the proposal card', () => {
     expect(text).not.toContain(DELIVERY_FIRST)
   })
 
-  it('shows the same delivery line on a confirmed card as on the live one', () => {
+  it('makes the promise on the LIVE card and hands the rest to the agent', () => {
+    // CHANGED 2026-08-14, and the direction matters. The confirmed card used
+    // to repeat the timeframe on the reasoning that a friend reloading later
+    // should still see it. That held while nothing else spoke after a
+    // confirmation — but the agent now SEES confirmations
+    // (lib/chat/confirmations.ts) and agent-v4.md's "After they confirm" makes
+    // those two commitments its job, in its own words. Two copies of one
+    // promise are two things that can drift, which is the argument
+    // lib/copy/onboarding.ts makes about the promise block.
+    //
+    // The live card keeps its line: that is the promise a friend reads BEFORE
+    // deciding, and nothing else says it at the moment the decision is made.
     for (const first of [true, false]) {
+      const line = first ? DELIVERY_FIRST : DELIVERY_CHANGE
       const live = htmlText(
         renderToStaticMarkup(
           SpecCard({
@@ -439,9 +455,10 @@ describe('the proposal card', () => {
           }),
         ),
       )
-      const line = first ? DELIVERY_FIRST : DELIVERY_CHANGE
       expect(live).toContain(line)
-      expect(done).toContain(line)
+      expect(done).not.toContain(line)
+      // It still says the thing that IS the card's own job: what state it is in.
+      expect(done).toContain('Building this one.')
     }
   })
 
@@ -650,6 +667,11 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
     // asserted — the older one confirmed, so it renders the promise through
     // SpecCard's OTHER branch, and a mutation that fixes `first` on only one
     // of the two still reds this.
+    // Both cards LIVE-eligible would be a different scenario; here the older
+    // is confirmed, so after the 2026-08-14 change only the newer renders a
+    // delivery line. The mutation this test exists to kill — ProposalRegion
+    // hardcoding `first` instead of threading the page's answer — still reds
+    // it, because the line that IS rendered is the wrong one.
     const older = { ...PROPOSAL, id: 42, confirmed: true }
     const newer = { ...PROPOSAL, id: 43 }
     const text = htmlText(
@@ -665,7 +687,7 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
         }),
       ),
     )
-    expect(text.split(DELIVERY_CHANGE)).toHaveLength(3)
+    expect(text.split(DELIVERY_CHANGE)).toHaveLength(2)
     expect(text).not.toContain(DELIVERY_FIRST)
   })
 })
@@ -725,10 +747,17 @@ describe('a card that arrives mid-session carries its own delivery promise', () 
     expect(text).toContain(DELIVERY_FIRST)
   })
 
-  it('lets two cards on the same screen make different promises', () => {
+  it('lets the live card contradict the page-level answer', () => {
     // v1 (their first dashboard, confirmed) and v2 (a relabel) coexist in the
     // scrollback after a tweak. A single page-level boolean cannot be right
     // for both, which is the defect in one sentence.
+    //
+    // NARROWED 2026-08-14: only the live card carries a delivery line now, so
+    // the property is no longer "two different promises on screen" but "the one
+    // promise on screen is the LIVE card's own, not the page's". The mutation
+    // this defends against — a hardcoded `first` at the region's call site — is
+    // unchanged, because the page here says first=true and the correct render
+    // says the opposite.
     const older = { ...VERSION_PROPOSAL, id: 42, first: true, confirmed: true }
     const newer = { ...VERSION_PROPOSAL, id: 43, first: false }
     const text = htmlText(
@@ -744,8 +773,8 @@ describe('a card that arrives mid-session carries its own delivery promise', () 
         }),
       ),
     )
-    expect(text).toContain(DELIVERY_FIRST)
     expect(text).toContain(DELIVERY_CHANGE)
+    expect(text).not.toContain(DELIVERY_FIRST)
   })
 
   describe('ChatPanel wires the page\'s answer into the region', () => {

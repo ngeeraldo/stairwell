@@ -290,6 +290,53 @@ describe('ChatPanel wiring', () => {
     await unmount()
   })
 
+  it('shows a thinking indicator between send and the first token', async () => {
+    // The gap this fills is real on a thinking model: several seconds in which
+    // a friend has no evidence their message went anywhere. Driven through a
+    // real render because the indicator is derived state, not a prop.
+    let release: ((r: Response) => void) | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>((resolve) => { release = resolve })),
+    )
+
+    const { container, unmount } = await mount(<ChatPanel initial={[]} first={true} />)
+    await type(container.querySelector('textarea'), 'what should I track?')
+    await click(container.querySelector('button[type="submit"]'))
+
+    expect(container.querySelector('[data-role="thinking"]')).not.toBeNull()
+
+    release!(ndjson([{ t: 'hi' }, { done: true }]))
+    await flush()
+    // Gone once the words are there — otherwise it pulses under a reply the
+    // friend is already reading.
+    expect(container.querySelector('[data-role="thinking"]')).toBeNull()
+    expect(container.textContent).toContain('hi')
+
+    await unmount()
+  })
+
+  it('anchors the newest item when a reply finishes, not only when it starts', async () => {
+    // itemCount alone anchored the turn at its START and let the reply grow
+    // past the fold as it streamed — the friend watched the answer they asked
+    // for scroll out of view. jsdom reports 0 for every layout measurement, so
+    // this stubs a real scrollHeight and asserts the effect ran against it.
+    vi.stubGlobal('fetch', fetchDouble(() => ndjson([{ t: 'a long reply' }, { done: true }])))
+
+    const { container, unmount } = await mount(<ChatPanel initial={[]} first={true} />)
+    const list = container.querySelector('ol')!
+    Object.defineProperty(list, 'scrollHeight', { value: 900, configurable: true })
+    list.scrollTop = 0
+
+    await type(container.querySelector('textarea'), 'hello')
+    await click(container.querySelector('button[type="submit"]'))
+    await flush()
+
+    expect(list.scrollTop).toBe(900)
+
+    await unmount()
+  })
+
   it('the retry button re-sends ITS OWN message, not the newest one', async () => {
     // Two interrupted turns on screen. Step 4 moved `source` onto the Turn for
     // exactly this: with one component-level ref, the OLDER button re-sent the

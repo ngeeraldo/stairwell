@@ -630,8 +630,10 @@ there had been none, which is the quietest failure this suite produces.
 2. **The `devtwo` end-to-end interview has not been run.** The spec makes it
    the required follow-up to touching `ChatPanel`, and this branch rewrote how
    that component renders everything. All six of step-4 residual 1's call-site
-   mutations still redden, and the composition is covered by
-   `tests/chat/panelWiring.test.tsx` — but step-4's own ledger says a green
+   mutations still redden — re-drilled 2026-08-14 with the per-mutation tally
+   now recorded in the step-4 ledger, which also corrects that residual's
+   unenumerated "nine" to the six that actually exist — and the composition is
+   covered by `tests/chat/panelWiring.test.tsx` — but step-4's own ledger says a green
    suite is not sufficient evidence for this component, and that is still true.
 3. **`devtwo`'s real database has not been opened since envelope encryption
    landed.** The legacy arm is tested at the route layer and drilled (making

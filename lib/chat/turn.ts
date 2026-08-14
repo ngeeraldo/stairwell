@@ -4,6 +4,8 @@ import { appendMetric, appendTranscript, readTranscript } from '@/lib/db/appendO
 import type { ChatContext } from './context'
 import { conversationIdFor } from './conversation'
 import { toMessages } from './history'
+import { applyConfirmationNote, confirmationNote } from './confirmations'
+import { readConfirmations } from '@/lib/db/specs'
 import { loadPrompt } from './prompt'
 import {
   CHAT_EFFORT,
@@ -112,7 +114,21 @@ export async function runTurn(
   // alert that fired.
   if (started) alert(input.accountId)
 
-  const messages = toMessages(readTranscript(db, input.accountId))
+  // THE CONFIRMATION MERGE. Everything above builds the model's context from
+  // `transcripts` alone, which is why the agent could not see that anyone had
+  // ever pressed "Build this" — that fact lives in `spec_confirmations`. Read
+  // and merged here, written nowhere (onboarding ledger D5/D5a); the same
+  // read-time merge lib/chat/timeline.ts performs for the screen.
+  const rows = readTranscript(db, input.accountId)
+  const lastAssistantAt =
+    rows.filter((r) => r.role === 'assistant').pop()?.at ?? null
+  const merged = applyConfirmationNote(
+    toMessages(rows),
+    system,
+    confirmationNote(readConfirmations(db, input.accountId), lastAssistantAt),
+    CHAT_MODEL,
+  )
+  const messages = merged.messages
 
   let delivered = ''
   let usage: Usage = { input: 0, output: 0, cache_read: 0, cache_creation: 0 }
@@ -125,12 +141,18 @@ export async function runTurn(
     effort: CHAT_EFFORT,
     prompt_sha: promptSha,
     context,
+    // Which channel carried the confirmation note. 'system_prompt' is the
+    // degraded path — see lib/chat/confirmations.ts. A channel name, never a
+    // version or a timestamp or any content.
+    note_channel: merged.channel,
   }
 
   let final: StreamResult
   try {
     final = await client.stream({
-      system,
+      // merged.system, not `system`: on a model without mid-conversation
+      // system messages the note rides here instead of in the message list.
+      system: merged.system,
       messages,
       signal: input.signal,
       onText: (text) => {

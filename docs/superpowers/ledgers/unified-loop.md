@@ -704,3 +704,59 @@ block anything, and all are cheap:
 - `readStoredSpec`'s un-discriminable edges (null body, top-level array, non-array
   `screens`) are traced but untested; all route to the legacy arm and throw
   `SpecShapeError`, which every consumer handles.
+
+---
+
+## D18. Confirmations reach the agent by a read-time merge, and the model allowlist is coupled to CHAT_MODEL — Nico's ruling, 2026-08-14
+
+**The defect.** The agent's entire conversational context is `transcripts`
+(`runTurn` -> `toMessages`). Pressing **Build this** writes `specs`,
+`spec_confirmations` and `metrics` and touches none of it, so the agent could
+not tell a confirmation had happened — observed in testing as an identical v2
+proposed straight after v1 was confirmed. Every "After they confirm" instruction
+in `agent-v4.md` was dead text against this codebase.
+
+**The fix keeps D5/D5a intact.** `lib/chat/confirmations.ts` merges
+`spec_confirmations` into the model request at build time, exactly as
+`lib/chat/timeline.ts` merges them into the rendered conversation at read time.
+**Nothing new is persisted** — the alternative, appending a transcript row on
+confirm, would put a second un-deletable copy of a permanent fact in the sacred
+table, and would not have fixed the already-confirmed version without inventing
+history. One idea, two consumers, zero new rows.
+
+**Placement is dictated by the API, not by taste.** A `system` message inside
+`messages[]` must FOLLOW a user message and be last (or followed by an assistant
+turn). A confirmation always follows an ASSISTANT proposal in our transcript, so
+the position the reading eye wants is the one placement the API rejects. The
+note is appended last, after the turn's own user row.
+
+**THE ALLOWLIST IS COUPLED TO `CHAT_MODEL` AND MUST CHANGE WITH IT.**
+Mid-conversation system messages are model-gated:
+`MODELS_WITH_MID_CONVERSATION_SYSTEM` lists the models that accept them, and an
+unsupported model does **not** degrade — it returns a 400 and the friend's chat
+stops entirely. `CHAT_MODEL` is an env override (`deploy/required-env`: "has an
+intended default"), so an operator pointing it at, say, `claude-sonnet-5` would
+take chat down with a change that looks unrelated to chat. Two consequences,
+both permanent:
+
+1. **Changing `CHAT_MODEL` means checking that list.** A model not on it falls
+   back to appending the note to the system prompt — chat keeps working, but the
+   note loses its position in the conversation, which is the property that makes
+   the prompt's "respond to it once" work. That is a degradation, not a fix.
+2. **The degradation is observable on purpose.** Every metrics row for a turn
+   carries `note_channel`: `messages` (healthy), `system_prompt` (degraded), or
+   `none` (nothing confirmed yet). Without it a model swap could silently
+   disable half this feature and nothing would say which change did it. It
+   carries a channel name and nothing else — no version, no timestamp, no
+   content.
+
+**The opener is parsed, not retyped.** `lib/chat/opening.ts` reads the verbatim
+message out of the prompt file, anchored to the `## Your first message`
+heading — never "the first blockquote", which would silently return the wrong
+quote the first time a version adds an example above that section. A failed
+parse throws rather than writing an empty row: `transcripts` rejects DELETE, so
+a blank opener would be a permanent blank first impression indistinguishable
+from the bug it replaced. Its write guard is an EMPTY TRANSCRIPT, deliberately
+not `first_session_start` — that metric is load-bearing system state with one
+job (onboarding ledger D8), and an account that reached the shell before this
+existed has the metric and an empty chat, and should still be greeted.

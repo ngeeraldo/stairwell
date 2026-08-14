@@ -48,3 +48,7 @@ yarn-error.log*
 # they change on every styling edit, and they are worthless as history.
 .screenshots/
 test-results/
+
+# Local credentials scratch file. The pattern here had a trailing 's' and so
+# matched nothing, leaving logins.txt tracked-able in the repo root.
+logins.txt

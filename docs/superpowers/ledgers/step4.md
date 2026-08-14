@@ -85,16 +85,43 @@ nobody has watched fail is not yet evidence of anything.
 
 ## Residual risks
 
-1. **`ChatPanel`'s wiring has no test coverage.** Nine call-site mutations
-   survive the full suite, including `proposals={[]}` — which disconnects the
+1. **`ChatPanel`'s wiring has no test coverage.** ~~Nine call-site mutations
+   survive the full suite~~, including `proposals={[]}` — which disconnects the
    entire proposal card region, so the product silently does nothing while the
    suite stays green. The code is correct by inspection and by trace; this is
    regression risk, not a present defect. jsdom and testing-library are not
    installed and were disallowed as new dependencies.
 
-   **The control is the step-4 checkpoint below**, which walks exactly this
-   wiring. Treat a change to `ChatPanel`'s `send()`/`onConfirm` body or its
-   render props as requiring a manual pass, not just a green suite.
+   **CLOSED 2026-08-14, and the count corrected.** `tests/chat/panelWiring.test.tsx`
+   (added by the onboarding branch, jsdom opted in per file) covers this wiring,
+   and every documented mutation was re-drilled on 2026-08-14 — all six redden:
+
+   | # | Mutation | Tests reddened |
+   |---|---|---|
+   | 1 | `proposals={[]}` at the `ProposalRegion` call site | 10 |
+   | 2 | `body: JSON.stringify({ text })` in `send()` | 2 |
+   | 3 | Drop `setPanel((p) => applyLine(p, raw))` from the read loop | 3 |
+   | 4 | `onConfirm={() => {}}` on `ProposalRegion` | 3 |
+   | 5 | Delete the `else { setPanel(… confirmError: true) }` branch | 1 |
+   | 6 | `onRetry={() => void send(draft)}` on `TurnRow` | 1 |
+
+   **THE NUMBER NINE HAS NO ENUMERATION BEHIND IT ANYWHERE IN THIS REPO.** It
+   was written here as a tally and never itemised; when the onboarding plan came
+   to drill them it listed **six**, and the onboarding ledger then reported "all
+   six still redden" — which is how the two ledgers came to disagree. Six is the
+   number that can be checked, and it is the number that was checked. Treat
+   "nine" as an unverifiable historical figure, not as three mutations still
+   hiding somewhere.
+
+   A stale ledger note about test coverage is worse than no note: it is exactly
+   the kind of line someone in a hurry trusts instead of verifying. Two
+   mutations drilled by hand on 2026-08-14 — before this reconciliation — were
+   what established the coverage was real; the table above is what makes doing
+   that again unnecessary.
+
+   Still true, and unchanged by the above: a change to `ChatPanel`'s
+   `send()`/`onConfirm` body or its render props deserves the manual pass, not
+   just a green suite.
 
 2. **A kill signal mid-export, or a failure during rollback itself, can leave a
    half-written pair.** `scripts/write-spec-pair.ts` guards the precondition,

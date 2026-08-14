@@ -220,6 +220,39 @@ export const SCREENS: Screen[] = [
       'The dialog fills the viewport at both widths, with one close X top-right and nothing else.',
       'The page behind is dimmed and inert; there is no second overlay and no nesting.',
       'The mockup inside is the same document as the card preview, at full width.',
+      'AT 1440: the mockup uses the width. It is NOT a phone-width column centred in empty space — panels sit beside each other where the content supports it, and prose stays at a readable measure rather than running the full width.',
+      'AT 375: the same document reads as a single-column phone dashboard, nothing clipped, no horizontal scroll.',
+    ],
+  },
+  {
+    // The mockup document on its own, without the dialog around it — the only
+    // shot where a container defect has nowhere to hide. mockup-v1 told the
+    // model to render "on a phone-width screen" and got exactly that: a ~430px
+    // column centred on a 1440px monitor; mockup-v2 replaces it with a fluid
+    // contract.
+    //
+    // WHAT THIS SHOT CANNOT TELL YOU, stated so nobody over-trusts it: the
+    // HTML here is the SEED FIXTURE from scripts/shots.ts, not model output.
+    // The harness never calls the live API (CLAUDE.md > Testing), so no
+    // screenshot in this repo can verify that the model obeys mockup-v2. This
+    // guards the route, the iframe, and the fixture's own responsiveness — a
+    // real container regression in generated HTML shows up only in a live
+    // walkthrough, or in a mockup pulled by scripts/pull-spec.sh and opened by
+    // hand. Read the assertions below as "what a correct document looks like",
+    // and check them against a REAL generated mockup at least once per prompt
+    // version.
+    id: 'mockup-document',
+    path: '/mockup/1',
+    routeFile: 'app/mockup/[version]/route.ts',
+    state: 'friend-new',
+    live: true,
+    assertions: [
+      'AT 1440 the layout is composed for the width — several panels across where the content allows, not one narrow column with empty margins either side.',
+      'AT 1440 no line of prose runs the entire window width; measure stays readable.',
+      'AT 375 it is a single comfortable column: nothing clipped, no horizontal scrolling.',
+      'It is ONE document behaving differently at the two widths — not two different layouts and not a fixed-width card.',
+      'No annotation furniture: no "also appears as", no "other one-line answers this shows", no caption explaining what a panel is for. Panels show data, not commentary about themselves.',
+      'Every value is loudly fake (TEST merchants, £000.00) — nothing that could be mistaken for real money.',
     ],
   },
   {

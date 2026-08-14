@@ -4,8 +4,16 @@ import { relative, resolve } from 'node:path'
 
 const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
 
-/** The interview prompt. New versions are new FILES, never edits. */
-export const AGENT_PROMPT = 'agent-v3.md'
+/**
+ * The interview prompt. New versions are new FILES, never edits.
+ *
+ * v4 adds a verbatim opening message the agent speaks first (delivered by
+ * lib/chat/opening.ts, not by a model call) and an "After they confirm"
+ * section — which was dead text against this codebase until
+ * lib/chat/confirmations.ts started putting confirmations in front of the
+ * model at all.
+ */
+export const AGENT_PROMPT = 'agent-v4.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output
@@ -20,8 +28,16 @@ export const SPEC_PROMPT = 'spec-v2.md'
  * emits the self-contained HTML preview — split out from SPEC_PROMPT so a
  * spec can be authored and validated without also generating and discarding
  * HTML on a rejected draft.
+ *
+ * v2 adds the two things v1's output kept getting wrong: a fluid container
+ * (v1 said "on a phone-width screen", and got a ~430px column centred on a
+ * 1440px monitor) and an explicit rule that spec METADATA — `intent`,
+ * `context_of_use`, descriptions — is used to decide how to render a panel and
+ * never rendered as visible caption. Nothing in v1 asked for those captions;
+ * the model inferred them from "every panel appears in the mockup", which is
+ * why the fix is an instruction rather than a deletion.
  */
-export const MOCKUP_PROMPT = 'mockup-v1.md'
+export const MOCKUP_PROMPT = 'mockup-v2.md'
 
 export type LoadedPrompt = { text: string; sha: string }
 

@@ -1,6 +1,18 @@
 import type { TranscriptRow } from '@/lib/db/appendOnly'
 
-export type ChatMessage = { role: 'user' | 'assistant'; content: string }
+/**
+ * `system` is NOT a transcript role — toMessages never produces one, and
+ * `transcripts` never stores one. It exists here because the request the model
+ * receives can carry one more message than the transcript holds: the
+ * confirmation note (lib/chat/confirmations.ts), merged in at request-build
+ * time the way timeline.ts merges confirmations in at render time. Keeping it
+ * in this union is what stops that note from being typed as a user or
+ * assistant turn — which is to say, from being attributed to someone.
+ */
+export type ChatMessage = {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+}
 
 /**
  * Transcript rows to API messages.

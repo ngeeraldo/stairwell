@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Proposal } from '@/lib/spec/author'
 import type { StoredSpec } from '@/lib/spec/stored'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { buildTimeline } from '@/lib/chat/timeline'
 import {
   Collapsible,
@@ -46,6 +47,25 @@ type Turn = {
  * OLDER button re-sent the NEWER message — writing a permanent transcript row
  * the user never asked to send, to a table that cannot be corrected.
  */
+/**
+ * Whether to show the thinking indicator.
+ *
+ * A pure predicate rather than a piece of state, for the reason everything in
+ * this file is pulled out: derived state that only exists inside a component
+ * is state no test here can drive.
+ *
+ * The condition is BUSY AND the reply is still empty. `pendingTurns` appends
+ * the assistant turn the instant send() fires, so "busy" alone would keep the
+ * skeleton on screen underneath the words as they stream. The gap this fills
+ * is the one between pressing send and the first token — which on a thinking
+ * model is long enough to wonder whether the send worked.
+ */
+export function isThinking(turns: Turn[], busy: boolean): boolean {
+  if (!busy) return false
+  const last = turns[turns.length - 1]
+  return last?.role === 'assistant' && last.body === ''
+}
+
 export function pendingTurns(text: string, at: number): Turn[] {
   return [
     { role: 'user', body: text, at },
@@ -570,13 +590,23 @@ export function SpecCard({
       </Collapsible>
 
       {proposal.confirmed ? (
+        /*
+          THE CARD STATES THE FACT AND SAYS NOTHING ELSE. The timeframe used to
+          be repeated here, on the reasoning that a friend reloading later
+          should still see it. That reasoning was right while nothing else
+          spoke after a confirmation — but the agent now sees the confirmation
+          (lib/chat/confirmations.ts) and agent-v4.md's "After they confirm"
+          makes those two commitments its job, in its own words, in the
+          conversation. Keeping a copy here would be two versions of one
+          promise that can drift apart, which is the argument
+          lib/copy/onboarding.ts makes about the promise block.
+
+          The LIVE card below keeps its delivery line: that one is part of the
+          pitch a friend reads BEFORE deciding, and nothing else says it at the
+          moment the decision is made.
+        */
         <div className="space-y-1">
           <p className="text-sm font-medium">Building this one.</p>
-          {/* The promise becomes operative exactly when it's confirmed, and a
-              friend reloading afterwards should still see the timeframe —
-              dropping this line here would be the one moment it matters
-              most. */}
-          <p className="text-xs text-muted-foreground">{delivery}</p>
         </div>
       ) : live ? (
         <div className="space-y-2">
@@ -694,6 +724,7 @@ export function Timeline({
   proposals,
   confirmations,
   busy,
+  thinking = false,
   confirming,
   confirmError,
   first,
@@ -705,6 +736,7 @@ export function Timeline({
   proposals: CardProposal[]
   confirmations: { version: number; at: number }[]
   busy: boolean
+  thinking?: boolean
   confirming: boolean
   confirmError: boolean
   /** Threaded straight through from the page, and the FALLBACK each card uses
@@ -768,7 +800,34 @@ export function Timeline({
           </li>
         )
       })}
+      {thinking && <ThinkingRow />}
     </ol>
+  )
+}
+
+/**
+ * What the friend looks at between pressing send and the first word arriving.
+ *
+ * STOCK shadcn `Skeleton` and nothing else — Nico's ruling. It is
+ * `animate-pulse`, a Tailwind built-in, on the vendored component the CLI
+ * wrote; there is no bespoke keyframe, no dot-bounce, no timing to maintain.
+ * `components/ui/*` stays exactly as `npx shadcn@latest add` produced it
+ * (CLAUDE.md), so the whole treatment lives here in two lines of layout.
+ *
+ * Shaped like the agent's reply that is about to replace it — full width, left
+ * aligned, two lines — so the column does not jump when the real text lands.
+ *
+ * `aria-live="polite"` and a real label, because a pulsing grey rectangle
+ * announces nothing to a screen reader and "did it hear me" is exactly the
+ * question this element exists to answer.
+ */
+export function ThinkingRow() {
+  return (
+    <li data-role="thinking" aria-live="polite" className="space-y-2">
+      <span className="sr-only">Thinking…</span>
+      <Skeleton className="h-4 w-[85%]" />
+      <Skeleton className="h-4 w-[60%]" />
+    </li>
   )
 }
 
@@ -883,12 +942,23 @@ export default function ChatPanel({
   // something mid-reply, and the turn they are watching was already anchored
   // when it started. The cost is that a long reply grows past the fold; the
   // alternative takes the scrollbar away from them, which is worse.
-  const itemCount = panel.turns.length + panel.proposals.length + panel.confirmations.length
-  useEffect(() => {
-    scrollToNewest(listRef.current)
-  }, [itemCount])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+
+  const itemCount = panel.turns.length + panel.proposals.length + panel.confirmations.length
+  // itemCount AND busy. Count alone anchored the turn when it STARTED and then
+  // let the reply grow past the fold as it streamed — the friend watched the
+  // answer they asked for scroll out of view. `busy` flips false the moment the
+  // reply is complete, so this scrolls once more when the message has actually
+  // arrived, which is the thing the friend wanted to see.
+  //
+  // Still NOT per streamed chunk, and that restraint is unchanged: following
+  // token by token yanks a friend back down the instant they scroll up to
+  // re-read something mid-reply. Two anchors per turn, not two hundred.
+  useEffect(() => {
+    scrollToNewest(listRef.current)
+  }, [itemCount, busy])
+
   // Guards the confirm buttons across ALL cards, not just the live one — a
   // second click while the first POST is in flight must not fire twice.
   const [confirming, setConfirming] = useState(false)
@@ -984,6 +1054,7 @@ export default function ChatPanel({
         proposals={panel.proposals}
         confirmations={panel.confirmations}
         busy={busy}
+        thinking={isThinking(panel.turns, busy)}
         confirming={confirming}
         confirmError={panel.confirmError}
         first={first}

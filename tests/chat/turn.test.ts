@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { APIError } from '@anthropic-ai/sdk'
 import { openPlatformDb } from '@/lib/db/platform'
 import { appendTranscript, readTranscript } from '@/lib/db/appendOnly'
+import { confirmSpec, insertSpec } from '@/lib/db/specs'
 import {
   CHAT_MODEL,
   ChatStreamError,
@@ -993,6 +994,121 @@ describe('the completion rule with propose_spec', () => {
       expect(outcome.kind).toBe('empty')
       expect(outcome.proposal).toBeUndefined()
       expect(outcome.proposalFailed).toBe(true)
+    })
+  })
+
+  // --- THE SEAM, not the unit. tests/chat/confirmations.test.ts proves the
+  // note is built and placed correctly; nothing there proves runTurn actually
+  // ASKS for it. That gap is the shape of the ChatPanel wiring gap recorded in
+  // step-4 residual 1 — every piece correct, none of them connected — so it
+  // gets a test that drives a whole turn and reads what the client received.
+  describe('confirmations reaching the model', () => {
+    /** Captures the request instead of asserting on a reply. */
+    function capturingClient(seen: {
+      system?: string
+      messages?: { role: string; content: string }[]
+    }): ChatClient {
+      return {
+        async stream({ system, messages, onText, onUsage, onServed }) {
+          seen.system = system
+          seen.messages = messages
+          onUsage({ input: 100, cache_read: 40, cache_creation: 0 })
+          onServed({ model_served: CHAT_MODEL })
+          onText('ok')
+          return { usage: USAGE, stop_reason: 'end_turn', served: SERVED, tools_called: [] }
+        },
+        async propose() {
+          throw new Error('unused')
+        },
+      }
+    }
+
+    function confirmOne(at: number): void {
+      const specId = insertSpec(db, {
+        accountId: 1,
+        conversationId: 'c1',
+        promptSha: 'abc123',
+        payload: { title: 'A dashboard' },
+        mockupHtml: '<p>mock</p>',
+        at,
+      })
+      confirmSpec(db, { specId, accountId: 1, at })
+    }
+
+    async function turn(seen: Parameters<typeof capturingClient>[0]) {
+      await runTurn(
+        { db, client: capturingClient(seen), now: () => 5_000, context: 'interview', alert: noAlert, authorSpec: fakeAuthorSpec },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      )
+    }
+
+    it('tells the model a version was confirmed, and where', async () => {
+      confirmOne(2_000)
+      const seen: { system?: string; messages?: { role: string; content: string }[] } = {}
+      await turn(seen)
+
+      const last = seen.messages![seen.messages!.length - 1]!
+      expect(last.role).toBe('system')
+      expect(last.content).toContain('v1')
+      // NEW, because no assistant row exists yet — the agent has not spoken
+      // since the confirmation, so this is the turn it should respond on.
+      expect(last.content).toContain('new since your last message')
+    })
+
+    it('says nothing at all when nothing has been confirmed', async () => {
+      const seen: { system?: string; messages?: { role: string; content: string }[] } = {}
+      await turn(seen)
+      expect(seen.messages!.some((m) => m.role === 'system')).toBe(false)
+    })
+
+    it('stops flagging it as new once the agent has spoken since', async () => {
+      // THE FLIP, at the seam rather than in the unit. agent-v4 says "Respond
+      // to it once" — if the note kept reading as fresh, the agent would be
+      // invited to re-acknowledge a settled confirmation on every subsequent
+      // turn, which is a different wrong behaviour from the one this whole
+      // change set out to fix.
+      confirmOne(2_000)
+      appendTranscript(db, {
+        accountId: 1,
+        sessionId: 's',
+        conversationId: 'c1',
+        promptSha: 'abc123',
+        role: 'assistant',
+        body: 'Locked in — the build is on.',
+        at: 3_000,
+      })
+
+      const seen: { system?: string; messages?: { role: string; content: string }[] } = {}
+      await turn(seen)
+
+      const last = seen.messages![seen.messages!.length - 1]!
+      expect(last.role).toBe('system')
+      expect(last.content).not.toContain('new since')
+      expect(last.content).toContain('current confirmed version is v1')
+    })
+
+    it('records which channel carried the note', async () => {
+      // The degraded path is otherwise invisible: chat keeps working and only
+      // the agent's behaviour gets subtly worse. CHAT_MODEL defaults to a model
+      // that supports the message channel, so this asserts the healthy value —
+      // its job is to make a future swap show up as a changed metric.
+      confirmOne(2_000)
+      await turn({})
+      const rows = metrics()
+      expect(rows.some((m) => m.data.note_channel === 'messages')).toBe(true)
+    })
+
+    it('writes NO transcript row for the confirmation', async () => {
+      // The whole point of merging at request time (onboarding ledger D5/D5a).
+      // If this ever goes red, a permanent duplicate of a permanent fact is
+      // being written into the sacred table and cannot be deleted.
+      confirmOne(2_000)
+      await turn({})
+      const rows = db
+        .prepare('SELECT role, body FROM transcripts WHERE account_id = 1')
+        .all() as { role: string; body: string }[]
+      expect(rows.map((r) => r.role).sort()).toEqual(['assistant', 'user'])
+      expect(rows.some((r) => r.body.includes('confirmed'))).toBe(false)
     })
   })
 })

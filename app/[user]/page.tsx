@@ -24,6 +24,7 @@ import {
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getKey } from '@/lib/session/keymap'
 import { dashboardLoaderFor, hasDashboard } from '@/lib/dashboard/registry'
+import { ensureOpeningMessage } from '@/lib/chat/opening'
 import { hasMetric } from '@/lib/db/appendOnly'
 import ChatPanel from './ChatPanel'
 import { Button } from '@/components/ui/button'
@@ -338,6 +339,21 @@ export default async function UserSpace({
       data: { device_class },
       at: Date.now(),
     })
+  }
+
+  // The agent speaks first (onboarding-ux-spec.md S3; agent-v4.md "Your first
+  // message"). Written HERE rather than by a model call, because the model is
+  // only ever invoked in response to a user message and there is none yet —
+  // which is why the chat used to open empty.
+  //
+  // Deliberately NOT folded into the branch above. first_session_start is
+  // load-bearing system state with exactly one job (ledger D8), and the two
+  // questions genuinely differ: an account that reached the shell before this
+  // existed has the metric and an empty chat, and should still be greeted.
+  // ensureOpeningMessage asks the honest question — is the transcript empty —
+  // and is a no-op every time after the first.
+  if (sessionId) {
+    ensureOpeningMessage(getDb(), { accountId, sessionId, at: Date.now() })
   }
 
   return (
