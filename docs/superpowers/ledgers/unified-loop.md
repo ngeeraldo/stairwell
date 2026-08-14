@@ -516,6 +516,47 @@ that reddened nothing because no test drove the component doing the threading; a
 caught them is the one step 4 adopted — delete the guarded code, confirm exactly the
 intended test goes red — now run on every task.
 
+## The checkpoint — PASSED 2026-08-13, in production
+
+Run as `devtwo` against `app.stairwell.run`, on the same 53-commit deploy that
+first carried step 6a to the droplet (`8117b6e` → `2c1ee04`). `devtwo` asked for
+"a simple counter that counts up by 1 with a reset button" — a genuine new panel
+requested against an account whose only confirmed spec is a **legacy** one, so
+this exercised the legacy arm rather than the easy path.
+
+What it proves, all of which was previously untestable because the suite drives a
+fake client:
+
+- **`SPEC_JSON_SCHEMA` is accepted by the API.** Fifteen fields, nested `anyOf`
+  for the three value kinds, required-and-nullable throughout. Nothing before this
+  had ever sent one.
+- **`spec-v2.md` produces output `parseSpecDraft` accepts.** A prompt describing a
+  shape the validator rejects would have been invisible to every test.
+- **The separate mockup call works** (D7), and the card rendered its preview.
+- **The legacy arm works end to end**: `currentVersionBlock` fed the writer
+  devtwo's v1 legacy spec as rendered markdown with the assign-ids-fresh note, and
+  the new version was written with `based_on_version: 1`.
+- **The card led with what changed**, not the summary.
+- **The delivery line read "small changes usually land within a few hours."** This
+  is the one worth recording: `first` is false because a confirmed spec exists
+  *below* this version. The plan's original rule (`!hasConfirmedSpec`) would have
+  said "tomorrow morning" for a one-word counter, and the version the whole-branch
+  review forced — `first` riding on the proposal, computed with
+  `hasConfirmedSpecBelow` — is what produced the right sentence on a real card.
+  Both halves of D9's amendment are confirmed live.
+- **ntfy fired on confirmation**, and the card settled to "Building this one."
+
+**Not verified, and left for whenever it is next convenient** — none of these
+block anything, and all are cheap:
+
+- The `attempt` value on the `spec_proposed` row. If proposals routinely need two
+  attempts, every one silently costs two model calls; the number is one query away
+  and nobody has looked.
+- `./scripts/pull-spec.sh devtwo` against the new renderer — `renderSpecMarkdown`
+  has never run on live data, only fixtures.
+- The admin pane's structural diff on a real pair of versions.
+- `scripts/announce-deploy.ts` and `scripts/ask-user.ts` against the droplet.
+
 ## Residual risks
 
 1. **Nobody has confirmed what the Messages API actually does with consecutive
@@ -581,6 +622,74 @@ intended test goes red — now run on every task.
 12. **`devone` and `devtwo` remain live production logins with published passwords**
     (step-3 residual 7, step-4 residual 8, unchanged). Should close before the first
     real user account exists.
+
+13. **OPEN, UNDIAGNOSED — a proposal intermittently dies with the friend told a lie.**
+    Seen twice in a row on the checkpoint run, then not on the third attempt, with
+    no code change in between. It is the most user-visible defect known about this
+    branch and it has no root cause. Everything below is fact, gathered before the
+    trail went cold; the theories that were *ruled out* are recorded because
+    re-deriving them costs an hour.
+
+    **What the friend sees.** The agent replies, "Putting together a preview…"
+    appears, and then the turn is marked **"interrupted — not saved"** with a retry
+    button, and no card ever arrives.
+
+    **What actually happened.** The turn succeeded completely. `chat_turn` was
+    written both times, with the user row and the assistant row committed to
+    `transcripts`. The model called `propose_spec`. Then the client connection went
+    away, which aborted the authoring call — `spec_aborted` with all-zero counters,
+    which is the honest record of a call that died before the API returned anything.
+    The route withholds `{done:true}` when `request.signal.aborted`, and the panel
+    treats a missing `done` as "interrupted".
+
+    **So the marker is wrong, and this is the part worth fixing first.**
+    `finishTurn(state, false)` cannot distinguish *nothing was saved* from *the turn
+    was saved and only the preview was lost*. In this failure it says "not saved"
+    about a message that IS saved, and offers a retry button that writes a duplicate
+    user row into an append-only transcript. That is a correctness bug in the panel
+    independent of whatever causes the disconnect, and it predates this branch —
+    step 4 shipped the rule. This branch made it much likelier to fire by making the
+    authoring window two model calls plus a possible retry where it was one.
+
+    **Evidence from Caddy** (`journalctl -u caddy`), which logs errors even with no
+    access log configured:
+
+    ```
+    "msg":"aborting with incomplete response","duration":4.592647519,
+    "proto":"HTTP/2.0","method":"POST","uri":"/api/chat",
+    "error":"reading: context canceled"
+    ```
+
+    Two such warnings, durations **4.59s** and **3.03s**, each landing within 10ms
+    of a `spec_aborted` row. `context canceled` means the downstream client's
+    context died while Caddy was reading from Next.js — the browser went away, not
+    a proxy or server timeout.
+
+    **The unexplained part.** Those request windows do not contain the `chat_turn`
+    timestamps. The first `chat_turn` was written at `01:12:06.693`; the first
+    aborted request did not start until `~01:12:38.6`. So **there were more
+    `/api/chat` requests than messages the friend sent**, and the ones being
+    cancelled were short-lived. On the successful third attempt, DevTools showed
+    exactly one `/api/chat` request. Something occasionally fires extra POSTs and
+    abandons them; the mechanism is unknown and is client-side.
+
+    **Ruled out, with reasons:**
+    - *Compression buffering hiding the spinner.* The friend confirmed
+      "Putting together a preview…" rendered, so `{"authoring":true}` reached the
+      browser and `encode zstd gzip` is flushing.
+    - *A proxy or server idle timeout.* `deploy/Caddyfile` configures none, the
+      observed durations were 3–5s rather than a constant, and Caddy's own log
+      attributes the cancellation to the client.
+
+    **The fix that is justified regardless of root cause**, and was not made because
+    the trail went cold rather than because it was judged unnecessary: the server
+    sends nothing for the entire authoring wait. A heartbeat line the panel ignores
+    would keep the connection non-idle and make the wait legible. Alongside it, two
+    design questions that are Nico's: whether the panel should distinguish
+    "preview failed" from "nothing saved" (it should), and whether `authorSpec`
+    should be tied to `request.signal` at all — today a friend closing a laptop
+    mid-preview cancels billed work and gets nothing, where the proposal could
+    instead be waiting when they come back.
 
 ## Deferred, accepted
 
