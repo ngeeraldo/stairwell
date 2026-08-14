@@ -2,9 +2,10 @@
 
 Spec: `docs/superpowers/specs/2026-08-13-unified-proposal-loop/` (three handoff files)
 Plan: `docs/superpowers/plans/2026-08-13-unified-proposal-loop.md`
-Branch: not yet cut — this ledger is opened **before** the build, to record the
-§7 resolutions and the rulings the plan depends on. The "Built" and "Residual
-risks" sections get written after the branch lands, as in every other ledger here.
+Branch: `unified-proposal-loop`, 31 commits, `94c540d..4c5f6f4`.
+
+Opened **before** the build to record the §7 resolutions and the rulings the plan
+depends on; "Built" and "Residual risks" written after it landed.
 
 ---
 
@@ -256,8 +257,30 @@ way to make un-driftable.
 **Ruling: two constants, both fixed chrome, chosen by whether this is the account's
 first confirmed version.** `DELIVERY_FIRST` keeps today's wording verbatim (so the
 v1 path is byte-identical); `DELIVERY_CHANGE` reads "This gets built as soon as
-possible — small changes usually land within a few hours." Selection is by
-`hasConfirmedSpec`, computed server-side and passed to the card as a boolean.
+possible — small changes usually land within a few hours."
+
+**Amended twice during the build, and the second amendment matters most.** The
+selector is `hasConfirmedSpecBelow(db, accountId, version)` — "is there a confirmed
+spec BELOW this card's version" — not `hasConfirmedSpec`. The unbounded question
+made a friend's own first dashboard switch to "a few hours" the moment they
+confirmed it and reloaded.
+
+And the answer **rides on the proposal itself**, computed server-side at insert
+time, with the page-load boolean as a fallback for the card that already existed
+when the page rendered. A single page-level boolean was wrong for the same reason:
+cards arrive mid-session through the `proposal` NDJSON line, so a relabel's card
+inherited the answer computed before it existed and promised tomorrow morning.
+
+Both defects are the same shape and worth naming, because this ruling caused them:
+**D9 settled which constant and how to choose, and left unstated WHEN the choice is
+made.** A ruling that fixes a value and not its lifetime is only half a ruling —
+D2 had the identical gap and produced the identical class of bug.
+
+The fallback is held in place by tests, not by the compiler: `first` is required on
+the server's `Proposal` and optional on the client's `CardProposal`, and TypeScript
+does not object to a possibly-undefined value in a boolean position, so a future
+edit dropping `?? first` would compile clean and silently promise the wrong thing.
+`tests/chat/panel.test.ts` is what catches that.
 
 ### D10. Dashboards RENDER entry widgets; platform routes do the writing
 
@@ -389,3 +412,145 @@ shipped weeks ago. Recorded here and in CLAUDE.md's sacred-data section so the
   derived on demand by `lib/spec/diff.ts`. File 02 §2 permits "or make it cheaply
   derivable." Counts (not content) ride on the `spec_confirmed` metric row so the
   metrics pipeline has a time series without a join.
+
+---
+
+## Built
+
+Fourteen tasks, executed subagent-driven with a task review after each and a
+whole-branch review at the end. 789 tests pass, `tsc --noEmit` is clean,
+`next build` succeeds, `.claude/hooks/test-hooks.sh` is 158/158.
+
+The design held. There is one loop: the agent raises its hand with the same
+zero-payload `propose_spec`, a second call authors the **whole surface** under
+structured output, a third renders the mockup from the *validated* payload, the
+friend confirms, and the diff between confirmed versions is the record of what
+they asked for. A first interview and a one-word relabel travel the same path.
+
+**What the pre-flight scan caught, before any code was written.** Two blocking
+defects in the plan itself: Task 1 deleted `parseSpecInput` while `author.ts` still
+imported it (the branch would not have compiled at the end of the first task), and
+Task 9 omitted `author.ts` from its file list although `Proposal` — the type the
+NDJSON `proposal` line carries — lives there. Both would have surfaced as
+mid-branch breakage; the scan cost twenty minutes.
+
+**Three amendments were ruled during implementation**, each recorded above:
+
+- **D15 extended.** The mockup call's counters were specified on the failure row
+  only, leaving the *success* path as the one place a returning, billed model call
+  reached no metrics row. Caught by an implementer reading the constraint rather
+  than the instruction.
+- **D2 given a lifetime.** "Server-computed cannot be wrong" conflated *not
+  hallucinated* with *not stale*. The pointer is now read at write time.
+- **D9 given a lifetime.** Same gap: which constant was settled, when the choice is
+  made was not. The promise now rides on the proposal.
+
+**The recurring lesson, and it is the same one step 4 recorded:** every
+Important finding on this branch originated in the plan, not in an implementer's
+work. Implementers were fast and accurate against a well-specified brief — and
+faithfully shipped the brief's own defects until something independent looked at
+the result. Twice an implementer disagreed with a brief and was right both times:
+the derived-input error message that contradicted its own test, and a red-test
+control instrument that would have proved the wrong thing.
+
+**Defects that only existed in the composition**, invisible to any per-task review:
+
+- An operator announcement appends an `assistant` transcript row after a turn's own
+  `assistant` row — the first path in this codebase able to produce consecutive
+  same-role messages. Anthropic's own documentation contradicts itself on whether
+  that is a 400 or a silent merge. On the 400 reading, the *first* announcement
+  bricks that account's chat forever, since `transcripts` rejects DELETE. Closed by
+  folding same-role runs in `toMessages`, which makes the question moot.
+- `first` was computed once per page load and applied to every card, including cards
+  that stream in later — so after confirming v1, a relabel's card promised "tomorrow
+  morning". The page-load tests could not see it; only a test driving `applyTurn`
+  could.
+- `based_on_version` was read before a call that can run three minutes, while the
+  previous card's confirm button stayed live.
+
+**Tests that could not fail**, found and fixed: a `not.toContain` that was
+vacuously true because `renderToStaticMarkup` escapes the apostrophe in "it'll";
+admin assertions matching serialized props rather than rendered output; a mutation
+that reddened nothing because no test drove the component doing the threading; a
+`not.toContain` for a value the fixture could never have produced. The control that
+caught them is the one step 4 adopted — delete the guarded code, confirm exactly the
+intended test goes red — now run on every task.
+
+## Residual risks
+
+1. **`toMessages` now folds consecutive same-role rows, and nobody has confirmed
+   which API behaviour that was working around.** The fold is safe under both
+   readings, so this is closed as a hazard — but the underlying question ("does the
+   Messages API 400 on consecutive same-role messages, or merge them?") is still
+   unanswered, and the next person to reason about transcript shape should know it
+   was never settled, only routed around.
+
+2. **The metrics redactor is coupled to a convention in a different file.**
+   `metricMessage()` strips double-quoted segments, which assumes
+   `lib/spec/validate.ts` double-quotes every interpolated content value. It mostly
+   does — but `parseSpecVersion` throws ``JSON parse error: ${err.message}`` with the
+   inner message unquoted by our code, reachable through the outer catch on a corrupt
+   current row. Bounded (~30 chars, and V8 quotes the offending snippet itself), but
+   an unquoted interpolation added to `validate.ts` later would silently widen it.
+
+3. **The announce transaction's atomicity is proven by inspection, not by a test.**
+   No test induces a mid-transaction failure and asserts the transcript row rolled
+   back.
+
+4. **`deploy_announced` metric rows are load-bearing for correctness** — the first
+   such row in this codebase (D16). Pruning one makes a weeks-old build announce
+   itself again into an append-only transcript. Now stated in CLAUDE.md's sacred-data
+   section, because the "never clean up" rule needed the consequence attached.
+
+5. **`scripts/ask-user.ts` writes to an append-only transcript with zero tests** and
+   takes no injected clock, unlike its sibling. `scripts/` sits outside the
+   pre-commit gate's scopes, so nothing catches it — and it is the model the next
+   operator CLI will be copied from.
+
+6. **`alreadyAnnounced` swallows `JSON.parse` failures**, so one corrupt
+   `deploy_announced` blob produces a duplicate announcement — the exact permanent
+   outcome the function exists to prevent.
+
+7. **The `first` fallback is held by tests, not by the compiler.** `first` is
+   required on the server's `Proposal` and optional on the client's `CardProposal`;
+   TypeScript does not object to a possibly-undefined value in a boolean position and
+   this repo has no ESLint. An edit dropping `?? first` compiles clean and silently
+   promises the wrong thing. `tests/chat/panel.test.ts` is the only thing catching it.
+
+8. **`EntryWidget.fields[].choices` never reaches `spec.md`.** A `choice`-typed entry
+   field arrives at the builder with no rendered options — an under-specified build
+   contract, small but real once a choice field exists.
+
+9. **A generalized entry-widget write route does not exist and is deliberately out of
+   scope** (D10). Every panel that accepts input still needs its own hand-written
+   platform route holding the four ordered checks. This is the hand-pain the roadmap
+   says to automate rung-by-rung; the trigger is spec versions routinely declaring
+   entry widgets.
+
+10. **`lib/spec/author.ts` is ~505 lines with five hand-built `appendMetric` sites**
+    that each repeat their field shape. Deliberately not factored — the reviewer
+    agreed a premature builder would hide the D15 distinctions the comments work to
+    make explicit — but a sixth site is where this stops being true.
+
+11. **Pre-existing dangling citations** to `.superpowers/sdd/…` scratch reports
+    survive in `app/[user]/ChatPanel.tsx` and `tests/session/keymap.test.ts`, from
+    steps 4 and 6a. Not introduced here; noted because this branch fixed its own and
+    the pattern will keep recurring until someone sweeps them.
+
+12. **`devone` and `devtwo` remain live production logins with published passwords**
+    (step-3 residual 7, step-4 residual 8, unchanged). Should close before the first
+    real user account exists.
+
+## Deferred, accepted
+
+- The internal critique pass (D8) — never built. Named place to add it:
+  between `parseSpecDraft` succeeding and the mockup call in `lib/spec/author.ts`.
+- Highlighting only changed panels in the mockup; full re-render ships.
+- Storing the structural diff. Derived on demand by `lib/spec/diff.ts`; counts ride
+  on the `spec_confirmed` metric row so the pipeline has a time series without a join.
+- An abort during the retry gap writes no `spec_aborted` row. A lone
+  `malformed_spec` with `attempt: 1` and nothing after it is already distinguishable
+  from a give-up, since a non-aborted first attempt always produces a second row.
+- `readStoredSpec`'s un-discriminable edges (null body, top-level array, non-array
+  `screens`) are traced but untested; all route to the legacy arm and throw
+  `SpecShapeError`, which every consumer handles.
