@@ -18,6 +18,8 @@ import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { PLACEHOLDER_CARD } from '@/lib/copy/onboarding'
 import type { PlatformDb } from '@/lib/db/platform'
+import { TIME_ZONE_COOKIE } from '@/lib/metrics/deviceClass'
+import { dayKey } from '@/lib/time/dayKey'
 
 // Same reason as tests/routing/userSpace.test.ts: vitest's esbuild transform
 // emits classic React.createElement calls for "jsx": "preserve".
@@ -40,10 +42,18 @@ vi.mock('next/navigation', () => ({
 }))
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
+/**
+ * The friend's timezone, as the root layout's inline script would have left
+ * it. Undefined by default, which is a real request shape — the very first
+ * one of a session, before the script has run — and resolves to UTC.
+ */
+const tzSlot: { value: string | undefined } = { value: undefined }
 let sessionCookieName = 'sid'
-const cookieGet = vi.fn((name: string) =>
-  name === sessionCookieName ? cookieSlot.value : undefined,
-)
+const cookieGet = vi.fn((name: string) => {
+  if (name === sessionCookieName) return cookieSlot.value
+  if (name === TIME_ZONE_COOKIE && tzSlot.value) return { value: tzSlot.value }
+  return undefined
+})
 /**
  * `headers` is stubbed alongside `cookies` because lib/metrics/deviceClass.ts
  * reads the User-Agent as its fallback when no stairwell_dc cookie exists
@@ -242,6 +252,7 @@ beforeEach(() => {
   loaderFor.mockClear()
   openUserDbMock.mockClear()
   cookieSlot.value = undefined
+  tzSlot.value = undefined
   loaderSlot.value = undefined
   dataSlot.value = { source: 'none', db: undefined }
   handle = undefined
@@ -341,6 +352,75 @@ describe('app/[user]/page.tsx data region', () => {
       source: 'synthetic',
       device_class: 'desktop',
     })
+  })
+
+  it("hands the dashboard the day in the FRIEND'S zone, not the server's", async () => {
+    // The read half of the bug this branch exists for. The write half is
+    // covered in tests/routing/walkRoute.test.ts; this is the assertion that
+    // the page RESOLVES a day rather than leaving each dashboard to derive
+    // one — because if it did not, every dashboard would derive it from the
+    // droplet's clock and quietly disagree with what was stored.
+    //
+    // Not compared against a literal: the test runs at whatever instant it
+    // runs at, so the oracle is dayKey(now) in the same zone. What makes it
+    // discriminating is the SECOND zone — one request, two zones, and at the
+    // instants where they disagree only a page that actually reads the cookie
+    // can produce both answers.
+    dataSlot.value = { source: 'synthetic', db: realDb() }
+    const seen: unknown[] = []
+    loaderSlot.value = async () => ({
+      default: (props: unknown) => {
+        seen.push(props)
+        return React.createElement('section', null, 'PANEL RENDERED TEST')
+      },
+    })
+
+    // One arrange, two requests. arrange() creates the account, so calling it
+    // twice trips accounts.slug UNIQUE — and two requests against ONE page
+    // module is the more honest fixture anyway: the zone is read per request,
+    // not captured when the module loads.
+    const UserSpace = await arrange()
+
+    tzSlot.value = 'Pacific/Kiritimati'
+    await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    tzSlot.value = 'Pacific/Niue'
+    await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    expect(seen).toHaveLength(2)
+    const east = seen[0] as { today: string; timeZone: string | undefined }
+    const west = seen[1] as { today: string; timeZone: string | undefined }
+    expect(east.timeZone).toBe('Pacific/Kiritimati')
+    expect(west.timeZone).toBe('Pacific/Niue')
+    expect(east.today).toBe(dayKey(Date.now(), 'Pacific/Kiritimati'))
+    expect(west.today).toBe(dayKey(Date.now(), 'Pacific/Niue'))
+    // +14 and -11: 25 hours apart, so these two are a different calendar day
+    // from each other for all but one hour in twenty-five. Asserting they
+    // differ outright would be flaky in that hour; asserting each against its
+    // own zone is not, and the pair still cannot both be satisfied by a page
+    // that ignores the cookie and formats one day for everybody.
+    expect(east.today >= west.today).toBe(true)
+  })
+
+  it('falls back to UTC when the zone cookie has not been written yet', async () => {
+    // The first render of a session, inherently — the script that writes the
+    // cookie has not run when the server builds the very first page. Recorded
+    // as a residual rather than fixed: it costs one render, at most one day
+    // of skew, on a page that has nothing to write yet.
+    dataSlot.value = { source: 'synthetic', db: realDb() }
+    const seen: unknown[] = []
+    loaderSlot.value = async () => ({
+      default: (props: unknown) => {
+        seen.push(props)
+        return React.createElement('section', null, 'PANEL RENDERED TEST')
+      },
+    })
+    const UserSpace = await arrange()
+    await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    const props = seen[0] as { today: string; timeZone: string | undefined }
+    expect(props.timeZone).toBeUndefined()
+    expect(props.today).toBe(dayKey(Date.now(), 'UTC'))
   })
 
   it('degrades a throwing dashboard instead of 500ing the whole page', async () => {

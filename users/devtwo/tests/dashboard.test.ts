@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path'
 import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
 import DevTwoDashboard from '@/users/devtwo/dashboard'
-import { dayKeyOf } from '@/users/devtwo/queries'
+import { dayKey } from '@/lib/time/dayKey'
 
 const SCHEMA = resolve(__dirname, '..', 'schema.sql')
 
@@ -19,8 +19,19 @@ let dir: string
 let db: UserDb
 
 const DAY = 86_400_000
-const today = () => dayKeyOf(Date.now())
-const daysAgo = (n: number) => dayKeyOf(Date.now() - n * DAY)
+
+/**
+ * The day the DASHBOARD will be told it is, and the days around it.
+ *
+ * A fixed zone, so the fixtures are the same wherever this suite runs — and
+ * the same function the platform uses, so a test can never assert against a
+ * calendar the product does not have. `dayKeyOf` used to be imported from
+ * queries.ts for this; it is private now, because exporting it is what let the
+ * dashboard derive its own day.
+ */
+const ZONE = 'America/New_York'
+const today = () => dayKey(Date.now(), ZONE)
+const daysAgo = (n: number) => dayKey(Date.now() - n * DAY, ZONE)
 
 function walked(...days: string[]) {
   const stmt = db.prepare('INSERT OR IGNORE INTO walks (day, at) VALUES (?, ?)')
@@ -44,7 +55,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   it('shows today as walked, with the streak and percentage computed', async () => {
     walked(today(), daysAgo(1), daysAgo(2))
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
 
     expect(json).toContain('WALKED')
     // 3 of 30 = 10%. A hard-coded panel cannot produce this.
@@ -70,7 +81,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   it('singularises the streak label to "day in a row" at exactly one', async () => {
     walked(today())
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
 
     expect(json).toContain('{"type":"p","key":null,"props":{"children":1}')
     expect(json).toContain('"children":"day in a row"}')
@@ -79,7 +90,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   it('shows the not-yet state and offers the tap when today is unlogged', async () => {
     walked(daysAgo(1))
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
 
     expect(json).toContain('NOT YET')
     // The control is the whole product. It must post to the write path.
@@ -88,7 +99,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   })
 
   it('renders 14 day markers whatever the data', async () => {
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
     // JSON.stringify renders an object key as `"data-day":`, never
     // `data-day=` — that HTML-attribute syntax only exists once Next
     // renders this element tree to a markup string, which this unit test
@@ -105,7 +116,7 @@ describe('users/devtwo/dashboard.tsx', () => {
     // alone.
     walked(today(), daysAgo(2))
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
 
     const order = [...json.matchAll(/"data-day":"([^"]+)"/g)].map((m) => m[1])
     expect(order).toEqual(Array.from({ length: 14 }, (_, i) => daysAgo(13 - i)))
@@ -115,7 +126,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   })
 
   it('renders an empty database without throwing', async () => {
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
     expect(json).toContain('NOT YET')
     expect(json).toContain('[0,"%"]')
   })

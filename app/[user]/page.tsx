@@ -7,7 +7,8 @@ import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
-import { readDeviceClass } from '@/lib/metrics/deviceClass'
+import { readDeviceClass, readTimeZone } from '@/lib/metrics/deviceClass'
+import { dayKey } from '@/lib/time/dayKey'
 import { hasConfirmedSpecBelow, newestSpec, readConfirmations } from '@/lib/db/specs'
 import { SpecShapeError } from '@/lib/spec/schema'
 import { readStoredSpec } from '@/lib/spec/stored'
@@ -65,6 +66,7 @@ async function dashboardRegion(
   accountId: number,
   sessionId: string,
   device_class: DeviceClass,
+  day: { today: string; timeZone: string | undefined },
 ) {
   const loader = dashboardLoaderFor(slug)
   // The placeholder card, not a sentence. onboarding-ux-spec.md S3: it is what
@@ -115,7 +117,7 @@ async function dashboardRegion(
     if (data.source === 'none') {
       return <p>Your dashboard is built, but its data has not been generated yet.</p>
     }
-    return renderDashboard(loader, slug, data.db, accountId, 'synthetic', device_class)
+    return renderDashboard(loader, slug, data.db, accountId, 'synthetic', device_class, day)
   }
 
   let db: UserDb | undefined
@@ -133,7 +135,7 @@ async function dashboardRegion(
     // only thing that may create or migrate it — so this open also does NOT
     // apply schema.sql, which is a write. See lib/db/encryptedUserDb.ts.
     db = openEncryptedUserDb(slug, key!, { readonly: true })
-    return await renderDashboard(loader, slug, db, accountId, 'real', device_class)
+    return await renderDashboard(loader, slug, db, accountId, 'real', device_class, day)
   } catch (error) {
     logDbFailure('dashboard_error', slug, error)
     appendMetric(getDb(), {
@@ -153,18 +155,26 @@ async function dashboardRegion(
 }
 
 async function renderDashboard(
-  loader: () => Promise<{ default: (p: { slug: string; db: UserDb }) => unknown }>,
+  loader: () => Promise<{
+    default: (p: {
+      slug: string
+      db: UserDb
+      today: string
+      timeZone: string | undefined
+    }) => unknown
+  }>,
   slug: string,
   db: UserDb,
   accountId: number,
   source: 'synthetic' | 'real',
   device_class: DeviceClass,
+  day: { today: string; timeZone: string | undefined },
 ) {
   try {
     const { default: Dashboard } = await loader()
     // CALLED, not returned as <Dashboard />: an element would defer execution
     // to React's render, outside this try, and the catch is the whole point.
-    const rendered = await Dashboard({ slug, db })
+    const rendered = await Dashboard({ slug, db, today: day.today, timeZone: day.timeZone })
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_open',
@@ -246,6 +256,11 @@ export default async function UserSpace({
   // Resolved once for the whole render: first_session_start and the dashboard
   // region's own rows should agree about what kind of screen this is.
   const device_class = await readDeviceClass()
+  // The friend's calendar, resolved ONCE for this render and handed to the
+  // dashboard. Deriving it inside a dashboard is what let the read and the
+  // write disagree about what day it is — see lib/dashboard/contract.ts.
+  const timeZone = await readTimeZone()
+  const day = { today: dayKey(Date.now(), timeZone), timeZone }
 
   const newest = newestSpec(getDb(), accountId)
   // Which delivery promise the card rendered from the record makes. Computed
@@ -348,7 +363,7 @@ export default async function UserSpace({
       content={
         <div className="space-y-8">
           {unlocked ? (
-            await dashboardRegion(user, accountId, sessionId!, device_class)
+            await dashboardRegion(user, accountId, sessionId!, device_class, day)
           ) : (
             <p className="text-sm text-muted-foreground">
               Locked.{' '}

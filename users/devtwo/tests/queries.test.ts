@@ -12,7 +12,6 @@ import { join, resolve } from 'node:path'
 import type { UserDb } from '@/lib/db/userDb'
 import {
   currentStreak,
-  dayKeyOf,
   last14,
   last30,
   walkedOn,
@@ -39,16 +38,36 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-describe('dayKeyOf', () => {
-  it('formats the LOCAL calendar day, zero-padded', () => {
-    expect(dayKeyOf(new Date(2026, 0, 5, 23, 30).getTime())).toBe('2026-01-05')
+// The `dayKeyOf` tests that stood here are gone with the export.
+//
+// They asserted that it returned the HOST's local calendar day — which was
+// true, and was the bug: the host is a UTC droplet, so a friend's evening tap
+// was filed as tomorrow. `today` is handed in as a prop now
+// (lib/dashboard/contract.ts) and the zone-aware version is pinned in
+// tests/time/dayKey.test.ts.
+//
+// What survived into `shift` is pure calendar arithmetic — "what is 13 days
+// before 2026-03-01" — which never reads a clock and is therefore correct in
+// any zone. It is exercised through the exported functions below rather than
+// directly, because it is private for the same reason `dayKeyOf` is: nothing
+// outside this file should be able to turn a number into a day.
+describe('calendar arithmetic across boundaries', () => {
+  it('walks a streak backwards over a month boundary', () => {
+    walked('2026-03-01', '2026-02-28', '2026-02-27')
+    expect(currentStreak(db, '2026-03-01')).toBe(3)
   })
 
-  it('uses local components, not the UTC date of the same instant', () => {
-    // devone shipped the UTC version of this bug. For a tracker whose unit IS
-    // the day, an off-by-one here is the whole product being wrong.
-    const at = new Date(2026, 7, 13, 23, 30).getTime()
-    expect(dayKeyOf(at)).toBe('2026-08-13')
+  it('walks a streak backwards over a year boundary', () => {
+    walked('2026-01-01', '2025-12-31', '2025-12-30')
+    expect(currentStreak(db, '2026-01-01')).toBe(3)
+  })
+
+  it('builds a 14-day window that crosses a month boundary in order', () => {
+    const days = last14(db, '2026-03-05').map((d) => d.day)
+    expect(days).toHaveLength(14)
+    expect(days[0]).toBe('2026-02-20')
+    expect(days[13]).toBe('2026-03-05')
+    expect([...days].sort()).toEqual(days)
   })
 })
 
