@@ -18,8 +18,24 @@ export function resolveState(
   return getKey(sessionId) ? 'unlocked' : 'authenticated'
 }
 
-const PUBLIC = new Set(['/login'])
+const PUBLIC = new Set(['/login', '/forgot'])
 const LOCKED_OK = new Set(['/unlock'])
+
+/**
+ * An invite link is reachable in EVERY state, not just anonymously.
+ *
+ * A logged-in Nico opening a friend's link to check it must see the page, not
+ * be bounced to /unlock — and a friend who accepted, closed the tab, and came
+ * back with a live session must land back on the same screen rather than
+ * somewhere that cannot finish what they started. Nothing on the invite path
+ * reads user data, so there is nothing for a lock to protect.
+ *
+ * `/invite/` with the trailing slash, so a future `/invitedguests` route would
+ * not silently inherit this. Same care as isAdminPath below.
+ */
+function isInvitePath(pathname: string): boolean {
+  return pathname.startsWith('/invite/')
+}
 
 /**
  * A path segment boundary, not a string prefix: '/admin' must match itself
@@ -35,7 +51,20 @@ function isAdminPath(pathname: string): boolean {
  * SLUG_PATTERN, so a real account can never be named one of these — this set
  * is about classifying the URL, not about trusting it.
  */
-const RESERVED_SEGMENTS = new Set(['login', 'unlock', 'admin', 'api'])
+const RESERVED_SEGMENTS = new Set([
+  'login',
+  'unlock',
+  'admin',
+  'api',
+  // Added with the onboarding flow. Without these, isUserSpacePath would
+  // classify '/forgot' as a single-segment user space and let a locked
+  // session through to it as though it were their own page — harmless today,
+  // but the classification would be wrong, and lib/auth/slug.ts already
+  // refuses to create accounts with these names.
+  'invite',
+  'forgot',
+  'mockup',
+])
 
 /**
  * A single non-reserved segment: '/devone', not '/devone/settings' and not
@@ -50,6 +79,9 @@ export function isUserSpacePath(pathname: string): boolean {
 
 /** The path to redirect to, or null to allow the request through. */
 export function routeFor(state: AuthState, pathname: string): string | null {
+  // Before every other rule: an invite link renders in every state.
+  if (isInvitePath(pathname)) return null
+
   if (state === 'anonymous') {
     return PUBLIC.has(pathname) ? null : '/login'
   }

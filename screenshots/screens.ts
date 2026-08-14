@@ -67,7 +67,7 @@ export const SCREENS: Screen[] = [
     path: '/invite/TOKEN',
     routeFile: 'app/(auth)/invite/[token]/page.tsx',
     state: 'invite-valid',
-    live: false,
+    live: true,
     assertions: [
       'One centred card, not bare text floating in an empty viewport (Viewport rules).',
       'At 1440 the card is capped near 420px wide and centred; at 375 it fills the width with page padding.',
@@ -98,7 +98,7 @@ export const SCREENS: Screen[] = [
     path: '/invite/TOKEN',
     routeFile: 'app/(auth)/invite/[token]/page.tsx',
     state: 'invite-used',
-    live: false,
+    live: true,
     assertions: [
       'One line, one card. No form, no branding effort, no error styling that looks like a crash.',
       'It says to text Nico. It does NOT say whether the link was used or unknown.',

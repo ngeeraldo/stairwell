@@ -93,6 +93,41 @@ type Seeder = (dbPath: string, usersDir: string) => Promise<Fixture>
 const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
   anonymous: async () => ({}),
 
+  'invite-valid': async (dbPath) => {
+    const { openPlatformDb } = await import('../lib/db/platform')
+    const { mintInvite } = await import('../lib/invite/tokens')
+    const db = openPlatformDb(dbPath)
+    try {
+      // Loudly fake, like every other fixture in this repo: nobody reviewing a
+      // screenshot should have to wonder whether they are looking at a person.
+      return { token: mintInvite(db, { slug: 'friendtest', at: Date.now() }), slug: 'friendtest' }
+    } finally {
+      db.close()
+    }
+  },
+
+  'invite-used': async (dbPath) => {
+    const { openPlatformDb } = await import('../lib/db/platform')
+    const { createAccount } = await import('../lib/auth/accounts')
+    const { mintInvite, consumeInvite } = await import('../lib/invite/tokens')
+    const db = openPlatformDb(dbPath)
+    try {
+      const token = mintInvite(db, { slug: 'spenttest', at: Date.now() })
+      // Consumed through the real function, against a real account, because
+      // the invites.account_id foreign key is real — and because a fixture
+      // built by hand drifts from what the app writes.
+      const id = await createAccount(db, {
+        slug: 'spenttest',
+        role: 'user',
+        password: 'TEST-SHOTS-NOT-A-REAL-PASSWORD',
+      })
+      consumeInvite(db, { token, accountId: id, at: Date.now() })
+      return { token, slug: 'spenttest' }
+    } finally {
+      db.close()
+    }
+  },
+
   'friend-locked': async (dbPath) => {
     const { openPlatformDb } = await import('../lib/db/platform')
     const { createAccount } = await import('../lib/auth/accounts')

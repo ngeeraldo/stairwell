@@ -267,6 +267,62 @@ describe('requireState', () => {
 
 // --- B: a wrong matcher silently disables the middleware everywhere, a
 // failure no other test would notice.
+/**
+ * The doors the onboarding flow had to open, and the ones it must not.
+ *
+ * A friend's very first link arrives with no session cookie at all, so
+ * /invite/<token> has to be reachable from a cold browser or the whole flow
+ * is a redirect to a login form for an account that does not exist yet.
+ */
+describe('paths a person with no session can reach', () => {
+  it('lets an invite link through', () => {
+    const response = middleware(new NextRequest('http://localhost/invite/sometoken'))
+    expect(response.headers.get('location')).toBeNull()
+  })
+
+  it('lets the forgot page through', () => {
+    const response = middleware(new NextRequest('http://localhost/forgot'))
+    expect(response.headers.get('location')).toBeNull()
+  })
+
+  it('still bounces a path that merely STARTS with the word invite', () => {
+    // The segment-boundary bug isAdminPath already guards against, in its new
+    // home: `startsWith('/invite')` would open '/invitations' and anything
+    // else someone adds later that happens to share the prefix.
+    const response = middleware(new NextRequest('http://localhost/invitations'))
+    expect(new URL(response.headers.get('location')!).pathname).toBe('/login')
+  })
+
+  it('still bounces the bare /invite with no token', () => {
+    const response = middleware(new NextRequest('http://localhost/invite'))
+    expect(new URL(response.headers.get('location')!).pathname).toBe('/login')
+  })
+})
+
+describe('routeFor and the invite path', () => {
+  it('lets an invite render in EVERY session state', () => {
+    // A logged-in Nico opening a friend's link to check it must see the page,
+    // not be bounced to /unlock. Nothing on the invite path reads user data,
+    // so there is nothing for a lock to protect.
+    for (const state of ['anonymous', 'authenticated', 'unlocked'] as const) {
+      expect(routeFor(state, '/invite/sometoken')).toBeNull()
+    }
+  })
+
+  it('lets an anonymous visitor reach /forgot', () => {
+    expect(routeFor('anonymous', '/forgot')).toBeNull()
+  })
+
+  it('does not classify /forgot or /mockup as somebody user space', () => {
+    // isUserSpacePath decides what a LOCKED session may reach. Without these
+    // reserved, '/forgot' would look like a single-segment user page.
+    expect(isUserSpacePath('/forgot')).toBe(false)
+    expect(isUserSpacePath('/invite')).toBe(false)
+    expect(isUserSpacePath('/mockup')).toBe(false)
+    expect(isUserSpacePath('/nico')).toBe(true)
+  })
+})
+
 describe('middleware', () => {
   it('redirects a cookie-less request to /login', () => {
     const request = new NextRequest('http://localhost/nico')

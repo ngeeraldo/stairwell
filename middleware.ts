@@ -8,11 +8,34 @@ import { middlewareRedirect } from '@/lib/http/redirect'
  * cannot open SQLite, so the full state resolution happens in the route
  * handlers. Here we only bounce requests with no cookie at all.
  */
+/**
+ * Paths a person with NO SESSION must be able to reach.
+ *
+ * /login has always been one. /invite/<token> and /forgot arrived with the
+ * onboarding flow, and both are meaningless to anyone who already has a
+ * session: an invite creates the account a session already proves, and the
+ * forgot page is read by someone who cannot get one. Bouncing either to
+ * /login would make a friend's very first link look broken.
+ *
+ * A PREFIX for invite, an exact match for the other two — and the prefix is
+ * `/invite/` with its trailing slash on purpose, so `/invitations` is still
+ * bounced. Same segment-boundary care as isAdminPath in lib/session/resolve.ts,
+ * and for the same reason: `startsWith('/invite')` would open a door nobody
+ * meant to open.
+ */
+function isPublicPath(pathname: string): boolean {
+  return (
+    pathname === '/login' ||
+    pathname === '/forgot' ||
+    pathname.startsWith('/invite/')
+  )
+}
+
 export function middleware(request: NextRequest) {
   const hasCookie = request.cookies.has(SESSION_COOKIE)
   const { pathname } = request.nextUrl
 
-  if (!hasCookie && pathname !== '/login') {
+  if (!hasCookie && !isPublicPath(pathname)) {
     // An API caller with no session cookie gets a 401, not a redirect. A
     // redirect() here defaults to 307 (method-preserving) to /login, which
     // has no POST handler — the caller would see a 405 instead of the 401
