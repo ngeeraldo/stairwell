@@ -9,10 +9,18 @@ import { useState } from 'react'
 import type { Proposal } from '@/lib/spec/author'
 import type { StoredSpec } from '@/lib/spec/stored'
 import { Button } from '@/components/ui/button'
+import { buildTimeline } from '@/lib/chat/timeline'
 
 type Turn = {
   role: 'user' | 'assistant'
   body: string
+  /**
+   * When this turn happened, so it can be ordered against proposals and
+   * confirmations (lib/chat/timeline.ts). Transcript rows bring the stored
+   * value; a turn created by send() stamps Date.now(), which is naturally
+   * later than anything already on screen.
+   */
+  at: number
   /** True when the stream ended without a {done:true} line — nothing saved. */
   interrupted?: boolean
   /**
@@ -32,10 +40,12 @@ type Turn = {
  * OLDER button re-sent the NEWER message — writing a permanent transcript row
  * the user never asked to send, to a table that cannot be corrected.
  */
-export function pendingTurns(text: string): Turn[] {
+export function pendingTurns(text: string, at: number): Turn[] {
   return [
-    { role: 'user', body: text },
-    { role: 'assistant', body: '', source: text },
+    { role: 'user', body: text, at },
+    // One millisecond later, so the reply can never sort above the message it
+    // is replying to when both are stamped in the same tick.
+    { role: 'assistant', body: '', source: text, at: at + 1 },
   ]
 }
 
@@ -124,6 +134,13 @@ export type PanelState = {
    * the turn simply ending) resolves the wait. */
   authoring: boolean
   proposalError: boolean
+  /**
+   * Confirmations, as timeline events (onboarding ledger D5a). Seeded from
+   * `spec_confirmations` on page load and appended when a confirm succeeds in
+   * this session, so the event appears where the friend actually decided
+   * rather than where the card was offered — which can be days earlier.
+   */
+  confirmations: { version: number; at: number }[]
   /** Set when a confirm attempt resolved false (see attemptConfirm) — a
    * plain, brief failure shown on the live card. Cleared by startTurn (a
    * new turn starting) and by applyLine's proposal branch (a new card
@@ -192,10 +209,10 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
  * confirm attempt on a now-irrelevant card. Pure: the literal function
  * send() calls to begin a turn.
  */
-export function startTurn(state: PanelState, text: string): PanelState {
+export function startTurn(state: PanelState, text: string, at: number): PanelState {
   return {
     ...state,
-    turns: [...state.turns, ...pendingTurns(text)],
+    turns: [...state.turns, ...pendingTurns(text, at)],
     authoring: false,
     proposalError: false,
     confirmError: false,
@@ -514,15 +531,65 @@ export function SpecCard({
 export function ProposalRegion({
   authoring,
   proposalError,
+}: {
+  authoring: boolean
+  proposalError: boolean
+}) {
+  return (
+    <>
+      {authoring && <p className="text-muted-foreground">Putting together a preview…</p>}
+      {proposalError && (
+        <p className="text-muted-foreground">
+          <em>Couldn&apos;t put together a preview this time — say more and I&apos;ll try again.</em>
+        </p>
+      )}
+    </>
+  )
+}
+
+/**
+ * A confirmation, where it happened.
+ *
+ * Small and inert on purpose. It is a FACT, not a card: giving it card weight
+ * would make the scrollback read as two proposals, and what actually happened
+ * is that one of them was accepted.
+ */
+export function ConfirmationRow({ version, at }: { version: number; at: number }) {
+  return (
+    <li data-confirmation={version} className="text-xs text-muted-foreground">
+      Confirmed v{version} — {new Date(at).toLocaleString()}
+    </li>
+  )
+}
+
+/**
+ * The conversation as one ordered list: turns, proposal cards, and
+ * confirmations, each where it happened.
+ *
+ * Cards used to render in a region BELOW the whole transcript, so a proposal
+ * made on Tuesday sat at the bottom of Thursday's conversation, detached from
+ * the exchange that produced it (onboarding ledger D5). The confirmation was
+ * worse: it showed as the card changing state at the moment it was OFFERED,
+ * and those two timestamps can be days apart (D5a).
+ *
+ * A component with no hooks, so a test can drive it directly — the same reason
+ * SpecCard and TurnRow were pulled out.
+ */
+export function Timeline({
+  turns,
   proposals,
+  confirmations,
+  busy,
   confirming,
   confirmError,
   first,
   onConfirm,
+  onRetry,
 }: {
-  authoring: boolean
-  proposalError: boolean
+  turns: Turn[]
   proposals: CardProposal[]
+  confirmations: { version: number; at: number }[]
+  busy: boolean
   confirming: boolean
   confirmError: boolean
   /** Threaded straight through from the page, and the FALLBACK each card uses
@@ -532,27 +599,54 @@ export function ProposalRegion({
    * those bring their own (see SpecCard's `first`). */
   first: boolean
   onConfirm: (specId: number) => void
+  onRetry: (source: string) => void
 }) {
+  const live = withLiveness(proposals)
+  const liveById = new Map(live.map(({ proposal, live: isLive }) => [proposal.id, isLive]))
+
+  const items = buildTimeline<Turn, CardProposal>({
+    turns: turns.map((turn) => ({ at: turn.at, turn })),
+    proposals: proposals.map((proposal) => ({ at: proposal.at, proposal })),
+    confirmations,
+  })
+
   return (
-    <>
-      {authoring && <p>Putting together a preview…</p>}
-      {proposalError && (
-        <p>
-          <em>Couldn&apos;t put together a preview this time — say more and I&apos;ll try again.</em>
-        </p>
-      )}
-      {withLiveness(proposals).map(({ proposal, live }) => (
-        <SpecCard
-          key={proposal.id}
-          proposal={proposal}
-          live={live}
-          busy={confirming}
-          first={first}
-          confirmError={live && confirmError}
-          onConfirm={onConfirm}
-        />
-      ))}
-    </>
+    <ol className="min-h-0 flex-1 space-y-3 overflow-y-auto text-sm">
+      {items.map((item, index) => {
+        if (item.kind === 'turn') {
+          return (
+            <TurnRow
+              key={`turn-${index}`}
+              turn={item.turn}
+              busy={busy}
+              onRetry={onRetry}
+            />
+          )
+        }
+        if (item.kind === 'confirmation') {
+          return (
+            <ConfirmationRow
+              key={`confirmed-${item.version}-${item.at}`}
+              version={item.version}
+              at={item.at}
+            />
+          )
+        }
+        const isLive = liveById.get(item.proposal.id) ?? false
+        return (
+          <li key={`spec-${item.proposal.id}`}>
+            <SpecCard
+              proposal={item.proposal}
+              live={isLive}
+              busy={confirming}
+              first={first}
+              confirmError={isLive && confirmError}
+              onConfirm={onConfirm}
+            />
+          </li>
+        )
+      })}
+    </ol>
   )
 }
 
@@ -593,9 +687,13 @@ export function TurnRow({
 export default function ChatPanel({
   initial,
   proposal,
+  confirmations = [],
   first,
 }: {
   initial: Turn[]
+  /** Seeded from `spec_confirmations`, so a decision made last week still
+   * shows where it was made (onboarding ledger D5a). */
+  confirmations?: { version: number; at: number }[]
   /** Typed as the CLIENT-side shape, not the server's `Proposal`, because that
    * is what it becomes the moment it is seeded into panel state alongside
    * cards decoded off the wire. A full server-built proposal is assignable. */
@@ -610,6 +708,7 @@ export default function ChatPanel({
   const [panel, setPanel] = useState<PanelState>({
     turns: initial,
     proposals: proposal ? [proposal] : [],
+    confirmations,
     authoring: false,
     proposalError: false,
     confirmError: false,
@@ -629,6 +728,14 @@ export default function ChatPanel({
       setPanel((p) => ({
         ...p,
         proposals: p.proposals.map((x) => (x.id === specId ? { ...x, confirmed: true } : x)),
+        // The event, at the moment they decided. Stamped from the client
+        // clock, which is the only clock this side of the wire has — the
+        // server's own `spec_confirmations.at` replaces it on the next load,
+        // and the two only have to agree about ORDER, not about the value.
+        confirmations: [
+          ...p.confirmations,
+          { version: p.proposals.find((x) => x.id === specId)?.version ?? 0, at: Date.now() },
+        ],
       }))
     } else {
       // A non-ok response (404/409) means the card is stale or gone; a
@@ -645,7 +752,7 @@ export default function ChatPanel({
   async function send(text: string) {
     if (!text.trim() || busy) return
     setBusy(true)
-    setPanel((p) => startTurn(p, text))
+    setPanel((p) => startTurn(p, text, Date.now()))
     setDraft('')
 
     let done = false
@@ -697,21 +804,21 @@ export default function ChatPanel({
   // dashboard landed.
   return (
     <section aria-label="Chat" className="flex h-full min-h-0 flex-col gap-4">
-      <ol className="min-h-0 flex-1 space-y-3 overflow-y-auto text-sm">
-        {panel.turns.map((turn, i) => (
-          <TurnRow key={i} turn={turn} busy={busy} onRetry={(source) => void send(source)} />
-        ))}
-      </ol>
-
-      <ProposalRegion
-        authoring={panel.authoring}
-        proposalError={panel.proposalError}
+      <Timeline
+        turns={panel.turns}
         proposals={panel.proposals}
+        confirmations={panel.confirmations}
+        busy={busy}
         confirming={confirming}
         confirmError={panel.confirmError}
         first={first}
         onConfirm={onConfirm}
+        onRetry={(source) => void send(source)}
       />
+
+      {/* Below the list, not in it: these describe what is happening NOW,
+          rather than something that happened at a point in the conversation. */}
+      <ProposalRegion authoring={panel.authoring} proposalError={panel.proposalError} />
 
       <form
         className="space-y-2"

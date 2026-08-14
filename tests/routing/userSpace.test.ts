@@ -748,6 +748,30 @@ describe('the shell, from the page', () => {
     expect(shellProps(await render()).chatOpenByDefault).toBe(false)
   })
 
+  it('hands the panel the confirmations, so a past decision still shows', async () => {
+    // onboarding ledger D5a, at the wiring layer. The pure ordering is covered
+    // in tests/chat/timeline.test.ts; without this, the page could import
+    // readConfirmations and never call it — which is exactly what happened,
+    // and a drill is what found it.
+    const { insertSpec, confirmSpec } = await import('@/lib/db/specs')
+    const { id, render } = await arrangeOwner()
+
+    const specId = insertSpec(handle!, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: { title: 'x' },
+      mockupHtml: '<!doctype html><p>COFFEE PALACE TEST</p>',
+      at: 1000,
+    })
+    confirmSpec(handle!, { specId, accountId: id, at: 5000 })
+
+    const props = findChatPanelProps(await render()) as unknown as {
+      confirmations?: { version: number; at: number }[]
+    }
+    expect(props.confirmations).toEqual([{ version: 1, at: 5000 }])
+  })
+
   it('writes first_session_start ONCE, ever', async () => {
     // The guard reads an append-only table to decide whether to write to it,
     // which makes this the second metrics row in the codebase that is system

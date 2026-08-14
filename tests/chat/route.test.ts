@@ -70,6 +70,7 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
 const PROPOSAL_FIXTURE = {
   id: 7,
   version: 1,
+  at: 1_000_001,
   payload: {
     title: 'T',
     summary: 's',

@@ -48,6 +48,15 @@ import { readStoredSpec, type StoredSpec } from './stored'
 export type Proposal = {
   id: number
   version: number
+  /**
+   * The spec row's own timestamp, so the card can be placed in conversation
+   * order rather than collected at the bottom (onboarding ledger D5).
+   *
+   * It rides on the proposal for the same reason `first` does: a card that
+   * arrives mid-conversation through the NDJSON line has no page render behind
+   * it, so anything the page computed once cannot describe it.
+   */
+  at: number
   spec: StoredSpec
   mockup_html: string
   /**
@@ -528,13 +537,17 @@ export async function authorSpec(
     // it is one the transcript and the prompt already carry.
     const sealed = sealVersion(draft, currentSpec(db, input.accountId)?.version ?? null)
 
+    // Read ONCE and used for both the row and the proposal that describes it.
+    // Two calls to now() would put the card at a different moment from the row
+    // it renders, and after a reload the card would move.
+    const at = now()
     const id = insertSpec(db, {
       accountId: input.accountId,
       conversationId: input.conversationId,
       promptSha,
       payload: sealed,
       mockupHtml,
-      at: now(),
+      at,
     })
     // Read back rather than counting: version is derived from position, and
     // this is the one place that must agree with what the admin pane
@@ -567,6 +580,7 @@ export async function authorSpec(
     return {
       id,
       version,
+      at,
       // `version`, because that is what this path genuinely produced:
       // parseSpecDraft validated the whole-surface shape and sealVersion
       // attached the server's lineage pointer. The tag is a statement of fact

@@ -13,6 +13,7 @@ import ChatPanel, {
   parseNdjson,
   pendingTurns,
   ProposalRegion,
+  Timeline,
   SpecCard,
   startTurn,
   TurnRow,
@@ -68,7 +69,7 @@ describe('pendingTurns — what a retry re-sends', () => {
     // meant the older button re-sent the newer message — writing a permanent
     // transcript row the user never asked to send. Each assistant turn must
     // therefore carry the message that produced it.
-    const turns = [...pendingTurns('first'), ...pendingTurns('second')]
+    const turns = [...pendingTurns('first', 1000), ...pendingTurns('second', 1000)]
     const retryable = turns.filter((t) => t.role === 'assistant')
 
     expect(retryable.map((t) => t.source)).toEqual(['first', 'second'])
@@ -76,9 +77,12 @@ describe('pendingTurns — what a retry re-sends', () => {
   })
 
   it('appends the user message and an empty assistant turn to stream into', () => {
-    expect(pendingTurns('what should I watch?')).toEqual([
-      { role: 'user', body: 'what should I watch?' },
-      { role: 'assistant', body: '', source: 'what should I watch?' },
+    // The assistant turn is stamped one millisecond later, so a reply can
+    // never sort above the message it is replying to when both land in the
+    // same tick (lib/chat/timeline.ts).
+    expect(pendingTurns('what should I watch?', 1000)).toEqual([
+      { role: 'user', body: 'what should I watch?', at: 1000 },
+      { role: 'assistant', body: '', source: 'what should I watch?', at: 1001 },
     ])
   })
 })
@@ -86,6 +90,7 @@ describe('pendingTurns — what a retry re-sends', () => {
 const PROPOSAL: CardProposal = {
   id: 42,
   version: 1,
+  at: 1_000_001,
   spec: {
     kind: 'legacy',
     payload: {
@@ -110,6 +115,7 @@ const PROPOSAL: CardProposal = {
 const LEGACY_PROPOSAL: CardProposal = {
   id: 7,
   version: 1,
+  at: 1_000_001,
   spec: {
     kind: 'legacy',
     payload: {
@@ -173,6 +179,7 @@ const VERSION: SpecVersion = {
 const VERSION_PROPOSAL: CardProposal = {
   id: 43,
   version: 2,
+  at: 1_000_002,
   spec: { kind: 'version', version: VERSION },
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
@@ -188,6 +195,7 @@ const VERSION_PROPOSAL: CardProposal = {
 const TWO_SCREEN_PROPOSAL: CardProposal = {
   id: 44,
   version: 3,
+  at: 1_000_003,
   spec: {
     kind: 'version',
     version: {
@@ -225,6 +233,7 @@ const EMPTY_PANEL: PanelState = {
   authoring: false,
   proposalError: false,
   confirmError: false,
+  confirmations: [],
 }
 
 /** A React element as produced by createElement — enough shape to walk. */
@@ -532,17 +541,42 @@ describe('withLiveness — only the newest proposal is confirmable', () => {
   })
 })
 
+
+/**
+ * ProposalRegion stopped rendering cards in the timeline change (onboarding
+ * ledger D5): they are merged into the conversation by `Timeline` now, so they
+ * appear where they happened rather than in a block below everything.
+ *
+ * These call sites were written to pin JSX PLUMBING — that `live` is threaded
+ * per card, that `first` reaches every card — and that plumbing simply moved.
+ * Routing them here keeps the properties pinned at their new home instead of
+ * deleting tests that still describe something true.
+ */
+function cards(props: {
+  authoring?: boolean
+  proposalError?: boolean
+  proposals: CardProposal[]
+  confirming: boolean
+  confirmError: boolean
+  first: boolean
+  onConfirm: (specId: number) => void
+}) {
+  return Timeline({
+    turns: [],
+    proposals: props.proposals,
+    confirmations: [],
+    busy: false,
+    confirming: props.confirming,
+    confirmError: props.confirmError,
+    first: props.first,
+    onConfirm: props.onConfirm,
+    onRetry: () => {},
+  })
+}
+
 describe('ProposalRegion — the authoring wait, an honest failure, and the cards', () => {
   it('renders the authoring wait from an authoring line', () => {
-    const region = ProposalRegion({
-      authoring: true,
-      proposalError: false,
-      proposals: [],
-      confirming: false,
-      confirmError: false,
-      first: true,
-      onConfirm: () => {},
-    })
+    const region = ProposalRegion({ authoring: true, proposalError: false })
     expect(JSON.stringify(region)).toContain('Putting together a preview')
   })
 
@@ -551,15 +585,7 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
     // parseNdjson's JSON parsing was vacuous — deleting the entire error
     // paragraph AND the proposal_error branch left it green. This drives
     // ProposalRegion itself, the real function ChatPanel renders from.
-    const region = ProposalRegion({
-      authoring: false,
-      proposalError: true,
-      proposals: [],
-      confirming: false,
-      confirmError: false,
-      first: true,
-      onConfirm: () => {},
-    })
+    const region = ProposalRegion({ authoring: false, proposalError: true })
     const json = JSON.stringify(region)
     expect(json).toContain("Couldn't put together a preview this time")
     expect(json).not.toContain('aria-label="Proposed dashboard"')
@@ -576,7 +602,7 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
     const older = { ...PROPOSAL, id: 42 }
     const newer = { ...PROPOSAL, id: 43 }
     const html = renderToStaticMarkup(
-      ProposalRegion({
+      cards({
         authoring: false,
         proposalError: false,
         proposals: [older, newer],
@@ -608,7 +634,7 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
     const newer = { ...PROPOSAL, id: 43 }
     const text = htmlText(
       renderToStaticMarkup(
-        ProposalRegion({
+        cards({
           authoring: false,
           proposalError: false,
           proposals: [older, newer],
@@ -633,7 +659,7 @@ describe('a card that arrives mid-session carries its own delivery promise', () 
     // page computed `first` once, before v2 existed, and never re-renders.
     // Driving applyTurn means this goes through the literal per-line reducer
     // send()'s read loop calls, which is the path page-load tests cannot see.
-    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('call it eating out') }
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('call it eating out', 1000) }
     const state = applyTurn(seeded, [
       { authoring: true },
       { proposal: { ...VERSION_PROPOSAL, id: 99, first: false } },
@@ -642,7 +668,7 @@ describe('a card that arrives mid-session carries its own delivery promise', () 
 
     const text = htmlText(
       renderToStaticMarkup(
-        ProposalRegion({
+        cards({
           authoring: state.authoring,
           proposalError: state.proposalError,
           proposals: state.proposals,
@@ -687,7 +713,7 @@ describe('a card that arrives mid-session carries its own delivery promise', () 
     const newer = { ...VERSION_PROPOSAL, id: 43, first: false }
     const text = htmlText(
       renderToStaticMarkup(
-        ProposalRegion({
+        cards({
           authoring: false,
           proposalError: false,
           proposals: [older, newer],
@@ -740,7 +766,7 @@ describe('a card that arrives mid-session carries its own delivery promise', () 
 describe('TurnRow', () => {
   it('renders the interrupted marker and a retry button', () => {
     const row = TurnRow({
-      turn: { role: 'assistant', body: 'partial', interrupted: true, source: 'hi' },
+      turn: { role: 'assistant', body: 'partial', at: 1000, interrupted: true, source: 'hi' },
       busy: false,
       onRetry: () => {},
     })
@@ -750,7 +776,7 @@ describe('TurnRow', () => {
   })
 
   it('renders nothing extra for a turn that was not interrupted', () => {
-    const row = TurnRow({ turn: { role: 'assistant', body: 'done' }, busy: false, onRetry: () => {} })
+    const row = TurnRow({ turn: { role: 'assistant', body: 'done', at: 1000 }, busy: false, onRetry: () => {} })
     expect(JSON.stringify(row)).not.toContain('interrupted')
   })
 })
@@ -776,7 +802,7 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
   })
 
   it('finishTurn marks the last turn interrupted only when done never arrived', () => {
-    const state: PanelState = { ...EMPTY_PANEL, turns: [{ role: 'assistant', body: 'partial' }] }
+    const state: PanelState = { ...EMPTY_PANEL, turns: [{ role: 'assistant', body: 'partial', at: 1000 }] }
     expect(finishTurn(state, false).turns[0]?.interrupted).toBe(true)
     expect(finishTurn(state, true).turns[0]?.interrupted).toBeUndefined()
   })
@@ -790,7 +816,7 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
 
     it('startTurn clears a stale confirmError when a new turn begins', () => {
       const stale: PanelState = { ...EMPTY_PANEL, confirmError: true }
-      expect(startTurn(stale, 'anything else').confirmError).toBe(false)
+      expect(startTurn(stale, 'anything else', 1000).confirmError).toBe(false)
     })
 
     it('applyLine clears a stale confirmError the moment a new proposal card arrives', () => {
@@ -805,7 +831,7 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
     // `{"done":true}`. Drives applyTurn (the same applyLine/finishTurn
     // pieces send() calls) with exactly that line sequence, then renders
     // both halves for real through TurnRow and ProposalRegion.
-    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('build me something') }
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('build me something', 1000) }
     const state = applyTurn(seeded, [
       { t: 'sure, ' },
       { authoring: true },
@@ -832,7 +858,7 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
     // because neither ProposalRegion nor SpecCard uses hooks, so there's no
     // dispatcher/DOM requirement SSR can't satisfy.
     const regionHtml = renderToStaticMarkup(
-      ProposalRegion({
+      cards({
         authoring: state.authoring,
         proposalError: state.proposalError,
         proposals: state.proposals,
@@ -847,7 +873,7 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
   })
 
   it('a completed turn with a proposal is not marked interrupted', () => {
-    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('build me something') }
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('build me something', 1000) }
     const state = applyTurn(seeded, [{ t: 'sure, ' }, { proposal: PROPOSAL }, { done: true }])
     const assistantTurn = state.turns.find((t) => t.role === 'assistant')
     expect(assistantTurn?.interrupted).toBeUndefined()

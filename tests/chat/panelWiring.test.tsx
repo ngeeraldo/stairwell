@@ -77,7 +77,7 @@ const SPEC = {
   },
 }
 
-const PROPOSAL = { id: 7, version: 1, spec: SPEC, mockup_html: '<p>x</p>', first: true }
+const PROPOSAL = { id: 7, version: 1, at: 1_000_000, spec: SPEC, mockup_html: '<p>x</p>', first: true }
 
 function buttonLabelled(container: HTMLElement, label: string): HTMLButtonElement | undefined {
   return Array.from(container.querySelectorAll('button')).find((b) => b.textContent === label)
@@ -164,6 +164,61 @@ describe('ChatPanel wiring', () => {
     await flush()
 
     expect(container.textContent).toContain("That didn't go through")
+
+    await unmount()
+  })
+
+  it('renders the card WHERE IT HAPPENED, not below the whole transcript', async () => {
+    // onboarding ledger D5. The pure ordering is covered in
+    // tests/chat/timeline.test.ts; this proves ChatPanel actually renders from
+    // it — the plumbing, which a correct helper does not by itself guarantee.
+    const { container, unmount } = await mount(
+      <ChatPanel
+        initial={[
+          { role: 'user', body: 'BEFORE THE CARD', at: 100 },
+          { role: 'user', body: 'AFTER THE CARD', at: 300 },
+        ]}
+        proposal={{ ...PROPOSAL, at: 200, confirmed: false }}
+        first={true}
+      />,
+    )
+
+    const text = container.textContent ?? ''
+    expect(text.indexOf('BEFORE THE CARD')).toBeLessThan(text.indexOf('Added a streak panel.'))
+    expect(text.indexOf('Added a streak panel.')).toBeLessThan(text.indexOf('AFTER THE CARD'))
+
+    await unmount()
+  })
+
+  it('renders a confirmation as an event at the moment it was made', async () => {
+    // D5a. The card stays where it was offered; the decision appears where it
+    // was taken, and the two can be days apart.
+    const { container, unmount } = await mount(
+      <ChatPanel
+        initial={[{ role: 'user', body: 'LATER MESSAGE', at: 400 }]}
+        proposal={{ ...PROPOSAL, at: 100, confirmed: true }}
+        confirmations={[{ version: 1, at: 800 }]}
+        first={true}
+      />,
+    )
+
+    const text = container.textContent ?? ''
+    expect(container.querySelector('[data-confirmation="1"]')).not.toBeNull()
+    expect(text.indexOf('LATER MESSAGE')).toBeLessThan(text.indexOf('Confirmed v1'))
+
+    await unmount()
+  })
+
+  it('adds a confirmation event when one is confirmed in this session', async () => {
+    vi.stubGlobal('fetch', fetchDouble(() => new Response(null, { status: 200 })))
+    const { container, unmount } = await mount(
+      <ChatPanel initial={[]} proposal={{ ...PROPOSAL, confirmed: false }} first={true} />,
+    )
+
+    expect(container.querySelector('[data-confirmation]')).toBeNull()
+    await click(buttonLabelled(container, 'Build this'))
+    await flush()
+    expect(container.querySelector('[data-confirmation="1"]')).not.toBeNull()
 
     await unmount()
   })

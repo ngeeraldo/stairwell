@@ -8,7 +8,7 @@ import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { readDeviceClass } from '@/lib/metrics/deviceClass'
-import { hasConfirmedSpecBelow, newestSpec } from '@/lib/db/specs'
+import { hasConfirmedSpecBelow, newestSpec, readConfirmations } from '@/lib/db/specs'
 import { SpecShapeError } from '@/lib/spec/schema'
 import { readStoredSpec } from '@/lib/spec/stored'
 import type { Proposal } from '@/lib/spec/author'
@@ -277,6 +277,7 @@ export default async function UserSpace({
       proposal = {
         id: newest.id,
         version: newest.version,
+        at: newest.at,
         // Carried on the card itself, not only handed to ChatPanel as a prop:
         // every card must answer for itself, because a card proposed later in
         // this same session arrives through the `proposal` NDJSON line with no
@@ -332,8 +333,15 @@ export default async function UserSpace({
           initial={readTranscript(getDb(), accountId).map((row) => ({
             role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
             body: row.body,
+            // The stored timestamp, so this row can be ordered against the
+            // proposals and confirmations merged alongside it.
+            at: row.at,
           }))}
           proposal={proposal}
+          // Read from `spec_confirmations`, so a decision made last week still
+          // shows where it was made rather than only as a card's state
+          // (onboarding ledger D5a). Nothing is written to render this.
+          confirmations={readConfirmations(getDb(), accountId)}
           first={first}
         />
       }

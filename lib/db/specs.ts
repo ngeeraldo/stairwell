@@ -148,6 +148,32 @@ export function hasConfirmedSpecBelow(
   )
 }
 
+/**
+ * Every confirmation this account has made, oldest first.
+ *
+ * A confirmation is a transcript event (onboarding ledger D5a) and this is the
+ * record of it — already permanent, already timestamped, already append-only.
+ * The panel and the admin pane merge these into conversation order rather than
+ * writing anything new.
+ *
+ * Walks readSpecs rather than joining and deriving a version number in SQL,
+ * for the same reason specByVersion does: `version` comes from POSITION, and a
+ * second derivation could disagree with the first.
+ *
+ * MIN(at) per spec, matching readSpecs' own confirmed_at: the concurrent-
+ * confirm race can produce two rows, and the first one is when the friend
+ * actually decided.
+ */
+export function readConfirmations(
+  db: PlatformDb,
+  accountId: number,
+): { version: number; at: number }[] {
+  return readSpecs(db, accountId)
+    .filter((s) => s.confirmed_at !== null)
+    .map((s) => ({ version: s.version, at: s.confirmed_at! }))
+    .sort((a, b) => a.at - b.at)
+}
+
 export function confirmSpec(
   db: PlatformDb,
   row: { specId: number; accountId: number; at: number },

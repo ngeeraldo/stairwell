@@ -760,6 +760,7 @@ describe('the completion rule with propose_spec', () => {
   const PROPOSAL = {
     id: 7,
     version: 1,
+    at: 1_000_001,
     // The tagged union Proposal now carries, so a card streamed mid-turn and
     // a card rendered on page load have one shape. Legacy arm: that is what
     // lib/spec/author.ts still produces until the authoring switchover.
