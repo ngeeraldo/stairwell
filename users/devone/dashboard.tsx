@@ -9,23 +9,18 @@ function money(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
 }
 
-// Local calendar components, not toISOString() (which is UTC). monthRange
-// (queries.ts) buckets transactions by the LOCAL calendar, so a UTC render
-// here would disagree with it: west of Greenwich, a transaction late enough
-// in the local day rolls over to the NEXT UTC date, so it could render next
-// to a total for a month it wasn't counted in.
-function day(at: number): string {
-  const d = new Date(at)
-  const year = d.getFullYear()
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const date = String(d.getDate()).padStart(2, '0')
-  return `${year}-${month}-${date}`
-}
-
-export default function DevOneDashboard({ db }: DashboardProps) {
-  const now = Date.now()
-  const eatingOut = eatingOutThisMonthCents(db, now)
-  const recent = recentTransactions(db)
+export default function DevOneDashboard({ db, today, timeZone }: DashboardProps) {
+  // The friend's calendar, not the host's and not UTC.
+  //
+  // This file used to format dates from local calendar components with a
+  // comment explaining that toISOString() would be UTC and would disagree with
+  // the month total. That was right about the disagreement and wrong about the
+  // fix: "local" meant the droplet, the droplet is UTC, and the two agreed with
+  // each other while both disagreed with the person reading the screen. The
+  // total and the row labels now come from the same zone, which is the friend's
+  // — see lib/time/dayKey.ts.
+  const eatingOut = eatingOutThisMonthCents(db, today, timeZone)
+  const recent = recentTransactions(db, timeZone)
 
   return (
     <section>
@@ -41,7 +36,7 @@ export default function DevOneDashboard({ db }: DashboardProps) {
           <ul>
             {recent.map((t) => (
               <li key={`${t.at}-${t.merchant}`}>
-                {day(t.at)} — {t.merchant} — {money(t.amount_cents)}
+                {t.day} — {t.merchant} — {money(t.amount_cents)}
               </li>
             ))}
           </ul>
