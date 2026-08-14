@@ -101,8 +101,11 @@ export default async function LoginPage({
           */}
           <div className="space-y-3 border-t pt-6 text-sm text-muted-foreground">
             <p className="font-medium text-foreground">{PROMISE_BLOCK.heading}</p>
-            {PROMISE_BLOCK.paragraphs.map((paragraph) => (
-              <p key={paragraph}>{paragraph}</p>
+            {PROMISE_BLOCK.halves.map((half) => (
+              <div key={half.label}>
+                <p className="font-medium text-foreground">{half.label}</p>
+                <p>{half.body}</p>
+              </div>
             ))}
           </div>
         </CardContent>

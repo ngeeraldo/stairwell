@@ -90,19 +90,24 @@ async function renderLoginPage() {
  * two diverge while this stayed green.
  */
 describe('/login onboarding promise', () => {
-  it.each(PROMISE_BLOCK.paragraphs)('says: %s', async (sentence) => {
+  // Label and body flattened into separate cases, because they render as
+  // separate elements — see ledger D19.
+  it.each(PROMISE_BLOCK.halves.flatMap((half) => [half.label, half.body]))(
+    'says: %s',
+    async (sentence) => {
     const { getDb } = await import('@/lib/db/instance')
     db = getDb()
 
-    const element = await renderLoginPage()
-    // JSX escapes apostrophes as &apos; in source; the rendered tree carries
-    // the real characters, so compare against the tree rather than the file.
-    // (The constants use U+2019 throughout, which is not escaped at all — see
-    // lib/copy/onboarding.ts.)
-    const text = JSON.stringify(element).replace(/&apos;|&#39;/g, "'")
+      const element = await renderLoginPage()
+      // JSX escapes apostrophes as &apos; in source; the rendered tree carries
+      // the real characters, so compare against the tree rather than the file.
+      // (The constants use U+2019 throughout, which is not escaped at all — see
+      // lib/copy/onboarding.ts.)
+      const text = JSON.stringify(element).replace(/&apos;|&#39;/g, "'")
 
-    expect(text).toContain(sentence)
-  })
+      expect(text).toContain(sentence)
+    },
+  )
 
   it('renders the heading too, so the block reads as one thing', async () => {
     const { getDb } = await import('@/lib/db/instance')

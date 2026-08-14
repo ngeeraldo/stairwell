@@ -71,8 +71,8 @@ export const SCREENS: Screen[] = [
     assertions: [
       'One centred card, not bare text floating in an empty viewport (Viewport rules).',
       'At 1440 the card is capped near 420px wide and centred; at 375 it fills the width with page padding.',
-      'The greeting reads in Nico’s first-person voice, above the promise block.',
-      'All three promise paragraphs are present and legible; none is truncated or clipped.',
+      'The greeting sits above the promise block, and reads warmer than it.',
+      'The promise block is headed "Our Privacy Policy:" and both halves are present, legible and unclipped — "What we see" and "What we never see", each reading as its own labelled half rather than one run of text.',
       'Exactly one button, reading "Sounds good →". No checkbox anywhere.',
       'No password field — this screen creates nothing.',
     ],
@@ -155,7 +155,7 @@ export const SCREENS: Screen[] = [
     live: true,
     assertions: [
       'Username, password with a Show control, one primary button.',
-      'The promise block is present below the form — the same three paragraphs as S1, verbatim.',
+      'The promise block is present below the form — the same two halves as S1, verbatim.',
       '"Forgot your password?" is present and unemphatic; it is not styled like a primary action.',
       'One centred card at 1440, capped near 420px; full width with padding at 375.',
     ],

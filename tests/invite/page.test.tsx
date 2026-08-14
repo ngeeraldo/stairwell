@@ -139,7 +139,14 @@ describe('S1 — the deal', () => {
 
     expect(html).toContain(GREETING)
     expect(html).toContain(PROMISE_BLOCK.heading)
-    for (const paragraph of PROMISE_BLOCK.paragraphs) expect(html).toContain(paragraph)
+    // Label and body separately, because they render as separate elements —
+    // asserting the concatenation would pass on markup that ran them together
+    // as one grey paragraph, which is exactly the rendering the screenshot
+    // review rejected (ledger D19).
+    for (const half of PROMISE_BLOCK.halves) {
+      expect(html).toContain(half.label)
+      expect(html).toContain(half.body)
+    }
     expect(html).toContain('/api/invite/accept?token=')
     expect(html.match(/<button/g) ?? []).toHaveLength(1)
   })
