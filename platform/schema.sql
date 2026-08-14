@@ -158,3 +158,32 @@ CREATE TABLE IF NOT EXISTS account_keys (
   wrapped_key BLOB    NOT NULL,
   created_at  INTEGER NOT NULL
 );
+
+-- Invite links. Operational state, like `sessions` — NOT sacred, NOT
+-- append-only: consuming and revoking are UPDATEs, which is the whole point.
+--
+-- THE TOKEN IS STORED HASHED (onboarding ledger D11). platform.db is
+-- unencrypted by design — it holds the records Nico is promised access to —
+-- and invites deliberately never expire, so a live token sitting in it would
+-- be a permanent bearer credential to create an account. The token exists only
+-- in the URL Nico sends.
+--
+-- `slug` is reserved and validated at MINT time (SLUG_PATTERN + RESERVED_SLUGS,
+-- lib/invite/tokens.ts), so a typo is Nico's problem for ten seconds rather
+-- than his friend's problem at the worst possible moment. The ACCOUNT is
+-- created at password-set time, not here: accounts.auth_hash is NOT NULL and
+-- there is no password yet, so a mint-time account would need a sentinel hash
+-- that could be logged in against if it ever escaped (ledger D12).
+--
+-- account_id is SET NULL on delete rather than CASCADE: if an account is ever
+-- deleted, the invite row is the record that the link was spent, and that is
+-- still true afterwards.
+CREATE TABLE IF NOT EXISTS invites (
+  id         INTEGER PRIMARY KEY,
+  token_sha  TEXT    NOT NULL UNIQUE,
+  slug       TEXT    NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  used_at    INTEGER,
+  revoked_at INTEGER,
+  account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL
+);

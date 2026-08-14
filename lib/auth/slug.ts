@@ -17,10 +17,14 @@
 export const SLUG_PATTERN = /^[a-z0-9-]{1,32}$/
 
 /**
- * Route segments a slug must not collide with. admin/login/unlock are real
- * top-level routes (app/admin, app/(auth)/login, app/(auth)/unlock); api and
- * _next are reserved by the app/framework; favicon.ico is a static asset
+ * Route segments a slug must not collide with. admin/login/unlock/invite/
+ * forgot/mockup are real top-level routes (app/admin, app/(auth)/login,
+ * app/(auth)/unlock, app/(auth)/invite, app/(auth)/forgot, app/mockup); api
+ * and _next are reserved by the app/framework; favicon.ico is a static asset
  * route.
+ *
+ * lib/invite/tokens.ts checks this at MINT time as well, so a reserved slug is
+ * rejected when the link is created rather than when it is used.
  */
 export const RESERVED_SLUGS = new Set([
   'admin',
@@ -29,4 +33,10 @@ export const RESERVED_SLUGS = new Set([
   'api',
   '_next',
   'favicon.ico',
+  // Added with the onboarding flow: /invite/<token>, /forgot, and
+  // /mockup/<version> are all real top-level routes now, and a slug that
+  // collided with one would shadow it for that user forever.
+  'invite',
+  'forgot',
+  'mockup',
 ])
