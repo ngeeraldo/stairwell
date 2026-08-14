@@ -63,6 +63,11 @@ export type TurnInput = {
   body: string | null
   signal: AbortSignal
   onText: (text: string) => void
+  /**
+   * Reports the crossing from writing the spec to drawing the preview, so the
+   * panel can say which half of the wait a friend is in. See AuthorInput.
+   */
+  onStage?: (stage: 'mockup') => void
 }
 
 export type TurnOutcome = {
@@ -342,6 +347,7 @@ export async function runTurn(
         accountId: input.accountId,
         conversationId,
         signal: input.signal,
+        onStage: input.onStage,
       })
     } catch {
       // Defense in depth. authorSpec's own contract (lib/spec/author.ts) is

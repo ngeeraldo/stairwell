@@ -159,6 +159,19 @@ export type PanelState = {
   /** True from the `authoring` line until a proposal/proposal_error line (or
    * the turn simply ending) resolves the wait. */
   authoring: boolean
+  /**
+   * WHICH HALF of the wait we are in, when there is one.
+   *
+   * Two stages, both real: 'spec' from the moment the agent decides to propose,
+   * 'mockup' from the moment the spec has validated and the drawing call
+   * starts. The second is where most of the minute goes, which is exactly why
+   * saying so is worth the wiring — a friend who knows they are on the slow
+   * part is waiting, and a friend who does not is wondering whether it broke.
+   *
+   * Deliberately NOT a percentage. There is no honest token-level progress for
+   * either call, and a bar that crawls to 80% and stops is worse than no bar.
+   */
+  authoringStage: 'spec' | 'mockup' | null
   proposalError: boolean
   /**
    * Confirmations, as timeline events (onboarding ledger D5a). Seeded from
@@ -187,6 +200,7 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
   const message = raw as {
     t?: string
     authoring?: boolean
+    stage?: 'mockup'
     proposal?: CardProposal
     proposal_error?: boolean
   }
@@ -197,8 +211,13 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
       turns: updateLastTurn(state.turns, (last) => ({ ...last, body: last.body + chunk })),
     }
   }
+  if (message.stage === 'mockup') {
+    // Only meaningful while a wait is on screen: a stray stage line with no
+    // authoring in flight must not conjure one.
+    return state.authoring ? { ...state, authoringStage: 'mockup' } : state
+  }
   if (message.authoring) {
-    return { ...state, authoring: true }
+    return { ...state, authoring: true, authoringStage: 'spec' }
   }
   if (message.proposal) {
     // Appended, not assigned: the card already on screen (from an earlier
@@ -212,6 +231,7 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
     return {
       ...state,
       authoring: false,
+      authoringStage: null,
       proposalError: false,
       // Fix round 2: a confirmError from an OLDER card must not bleed onto
       // this brand-new one — nobody has touched it yet, so "That didn't go
@@ -222,7 +242,7 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
     }
   }
   if (message.proposal_error) {
-    return { ...state, authoring: false, proposalError: true }
+    return { ...state, authoring: false, authoringStage: null, proposalError: true }
   }
   return state
 }
@@ -240,6 +260,7 @@ export function startTurn(state: PanelState, text: string, at: number): PanelSta
     ...state,
     turns: [...state.turns, ...pendingTurns(text, at)],
     authoring: false,
+    authoringStage: null,
     proposalError: false,
     confirmError: false,
   }
@@ -256,6 +277,7 @@ export function startAgentTurn(state: PanelState, at: number): PanelState {
     ...state,
     turns: [...state.turns, { role: 'assistant', body: '', at }],
     authoring: false,
+    authoringStage: null,
     proposalError: false,
   }
 }
@@ -267,7 +289,7 @@ export function startAgentTurn(state: PanelState, at: number): PanelState {
  * for how a test recreates a full turn from these two building blocks.
  */
 export function finishTurn(state: PanelState, done: boolean): PanelState {
-  if (done) return { ...state, authoring: false }
+  if (done) return { ...state, authoring: false, authoringStage: null }
   // Design spec section 6.1. The partial stays visible and is labelled, so
   // the screen agrees with the transcript instead of quietly showing text
   // that was never saved. Any proposal card added by applyLine during this
@@ -665,16 +687,48 @@ export function SpecCard({
  * card appears — the property the vacuous parseNdjson-only version of that
  * test (fix round 1 finding) could never have caught.
  */
+/**
+ * The wait, with the stage it is actually in.
+ *
+ * Two lines of copy and a pulse, and every part of it is load-bearing:
+ *
+ * - THE STAGE IS REAL. 'spec' means the agent has decided to propose; 'mockup'
+ *   means the spec came back, validated, and a second model call has started.
+ *   Nothing here is a timer or an estimate — the panel says what the server
+ *   last told it happened.
+ * - THE SECOND STAGE IS MOST OF THE MINUTE. Saying so is the whole point: a
+ *   friend who knows they are on the slow part is waiting, and a friend who
+ *   does not is deciding whether the thing is broken and starting to click.
+ * - IT MOVES. A static sentence for sixty seconds reads as a frozen screen no
+ *   matter what it says. The stock Skeleton pulse is the movement; there is no
+ *   bespoke animation to maintain and no percentage pretending to know.
+ *
+ * aria-live="polite" so the stage change is announced rather than only seen.
+ */
+export function AuthoringWait({ stage }: { stage: 'spec' | 'mockup' | null }) {
+  const drawing = stage === 'mockup'
+  return (
+    <div data-authoring-stage={stage ?? 'spec'} aria-live="polite" className="space-y-2">
+      <p className="text-sm text-muted-foreground">
+        {drawing ? 'Drawing the preview…' : 'Writing the spec…'}
+      </p>
+      <Skeleton className="h-3 w-40 bg-foreground/15" />
+    </div>
+  )
+}
+
 export function ProposalRegion({
   authoring,
+  authoringStage = null,
   proposalError,
 }: {
   authoring: boolean
+  authoringStage?: 'spec' | 'mockup' | null
   proposalError: boolean
 }) {
   return (
     <>
-      {authoring && <p className="text-muted-foreground">Putting together a preview…</p>}
+      {authoring && <AuthoringWait stage={authoringStage} />}
       {proposalError && (
         <p className="text-muted-foreground">
           <em>Couldn&apos;t put together a preview this time — say more and I&apos;ll try again.</em>
@@ -951,6 +1005,7 @@ export default function ChatPanel({
     proposals: proposal ? [proposal] : [],
     confirmations,
     authoring: false,
+    authoringStage: null,
     proposalError: false,
     confirmError: false,
   })
@@ -1112,7 +1167,11 @@ export default function ChatPanel({
 
       {/* Below the list, not in it: these describe what is happening NOW,
           rather than something that happened at a point in the conversation. */}
-      <ProposalRegion authoring={panel.authoring} proposalError={panel.proposalError} />
+      <ProposalRegion
+        authoring={panel.authoring}
+        authoringStage={panel.authoringStage}
+        proposalError={panel.proposalError}
+      />
 
       <form
         className="space-y-2"

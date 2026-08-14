@@ -12,8 +12,13 @@ const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
  * section — which was dead text against this codebase until
  * lib/chat/confirmations.ts started putting confirmations in front of the
  * model at all.
+ *
+ * v5 adds one thing: the agent tells someone roughly how long the preview takes
+ * before it calls the tool. The wait is about a minute and mostly spent drawing;
+ * a person who was told to expect that waits, and a person who was not decides
+ * the product is broken and starts clicking.
  */
-export const AGENT_PROMPT = 'agent-v4.md'
+export const AGENT_PROMPT = 'agent-v5.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output

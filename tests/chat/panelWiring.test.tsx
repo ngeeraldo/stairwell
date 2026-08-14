@@ -337,6 +337,45 @@ describe('ChatPanel wiring', () => {
     await unmount()
   })
 
+  it('advances the wait from writing to drawing as the stages arrive', async () => {
+    // Held open on purpose. A stream that finishes resolves the wait, so the
+    // only way to see the two stages is to observe them WHILE they are on
+    // screen — which is the only state a friend ever sees them in.
+    let push: (chunk: string) => void = () => {}
+    let close: () => void = () => {}
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder()
+        push = (chunk) => controller.enqueue(encoder.encode(chunk))
+        close = () => controller.close()
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200 })))
+
+    const { container, unmount } = await mount(<ChatPanel initial={[]} first={true} />)
+    await type(container.querySelector('textarea'), 'yes, that sounds right')
+    await click(container.querySelector('button[type="submit"]'))
+
+    push('{"authoring":true}\n')
+    await flush()
+    expect(container.textContent).toContain('Writing the spec')
+    expect(container.textContent).not.toContain('Drawing the preview')
+
+    // The real transition: the spec validated and the slow call started.
+    push('{"stage":"mockup"}\n')
+    await flush()
+    expect(container.textContent).toContain('Drawing the preview')
+    expect(container.textContent).not.toContain('Writing the spec')
+
+    push('{"done":true}\n')
+    close()
+    await flush()
+    // And it clears — a wait that outlived its turn would be worse than none.
+    expect(container.textContent).not.toContain('Drawing the preview')
+
+    await unmount()
+  })
+
   it('the retry button re-sends ITS OWN message, not the newest one', async () => {
     // Two interrupted turns on screen. Step 4 moved `source` onto the Turn for
     // exactly this: with one component-level ref, the OLDER button re-sent the

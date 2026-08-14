@@ -153,6 +153,9 @@ export async function POST(request: Request) {
           accountId: session.account_id,
           sessionId: sessionId!,
           body,
+          // A real transition, forwarded as it happens: the spec came back and
+          // validated, and the slow half — drawing the preview — is starting.
+          onStage: (stage) => controller.enqueue(line({ stage })),
           signal: request.signal,
           onText: (text) => {
             // A client that has gone away makes enqueue throw. The turn's own

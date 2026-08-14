@@ -232,6 +232,7 @@ const EMPTY_PANEL: PanelState = {
   turns: [],
   proposals: [],
   authoring: false,
+  authoringStage: null,
   proposalError: false,
   confirmError: false,
   confirmations: [],
@@ -612,9 +613,36 @@ function cards(props: {
 }
 
 describe('ProposalRegion — the authoring wait, an honest failure, and the cards', () => {
-  it('renders the authoring wait from an authoring line', () => {
-    const region = ProposalRegion({ authoring: true, proposalError: false })
-    expect(JSON.stringify(region)).toContain('Putting together a preview')
+  it('names the stage the wait is actually in', () => {
+    // One static sentence for a minute reads as a frozen screen. The two
+    // stages are real server events — the agent deciding to propose, then the
+    // spec validating and the drawing call starting — and the second is where
+    // most of the minute goes, which is the thing worth telling someone.
+    // renderToStaticMarkup, not JSON.stringify: the copy lives in a child
+    // component, which a plain element tree never invokes.
+    const writing = htmlText(
+      renderToStaticMarkup(
+        ProposalRegion({ authoring: true, authoringStage: 'spec', proposalError: false }),
+      ),
+    )
+    expect(writing).toContain('Writing the spec')
+    expect(writing).not.toContain('Drawing the preview')
+
+    const drawing = htmlText(
+      renderToStaticMarkup(
+        ProposalRegion({ authoring: true, authoringStage: 'mockup', proposalError: false }),
+      ),
+    )
+    expect(drawing).toContain('Drawing the preview')
+  })
+
+  it('shows a wait even when no stage line has arrived yet', () => {
+    // The stage line can lose the race with the authoring line, and a wait
+    // with no words at all would be worse than the old static sentence.
+    const region = htmlText(
+      renderToStaticMarkup(ProposalRegion({ authoring: true, proposalError: false })),
+    )
+    expect(region).toContain('Writing the spec')
   })
 
   it('renders a proposal_error line as an honest failure — and adds no card', () => {

@@ -87,6 +87,20 @@ export type AuthorInput = {
   accountId: number
   conversationId: string
   signal: AbortSignal
+  /**
+   * Fired when authoring crosses from writing the spec to drawing the preview.
+   *
+   * A REAL boundary, not a timer: the spec call has returned and validated, and
+   * a separate model call is about to start. It matters because the two halves
+   * are nothing like the same length — the spec is quick, the preview is most
+   * of the minute a friend spends watching — so reporting the crossing is the
+   * difference between "something is happening" and "it is on the slow part
+   * now, which is normal".
+   *
+   * Optional, because the two callers that do not stream anywhere (scripts,
+   * tests) have nobody to tell.
+   */
+  onStage?: (stage: 'mockup') => void
 }
 
 /**
@@ -463,6 +477,10 @@ export async function authorSpec(
       // Both halves of the loaded prompt are kept: the text goes to the model
       // and the sha onto every row below, so the preview this call produces
       // stays tied to the exact prompt text that produced it.
+      // Announced before the call, not after: the point is to say what is
+      // happening NOW, and this call is the long one.
+      input.onStage?.('mockup')
+
       const mockupPrompt = loadPrompt(MOCKUP_PROMPT)
       mockupPromptSha = mockupPrompt.sha
       mockupResult = await client.propose({
