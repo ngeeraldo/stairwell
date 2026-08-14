@@ -171,7 +171,7 @@ export const SCREENS: Screen[] = [
     path: '/forgot',
     routeFile: 'app/(auth)/forgot/page.tsx',
     state: 'anonymous',
-    live: false,
+    live: true,
     assertions: [
       'The heading reads "There’s no reset. That’s on purpose."',
       'No form, no input, no email field anywhere on the page.',

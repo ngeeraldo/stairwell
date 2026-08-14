@@ -1,4 +1,6 @@
 import { getDb } from '@/lib/db/instance'
+import { appendMetric } from '@/lib/db/appendOnly'
+import { readDeviceClass } from '@/lib/metrics/deviceClass'
 import { databaseKeyFor, login } from '@/lib/auth/flow'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 import { putKey } from '@/lib/session/keymap'
@@ -51,6 +53,17 @@ export async function POST(request: Request) {
   // stored slug is the one SLUG_PATTERN validated at creation, which is what
   // keeps this interpolation off the open-redirect path (see
   // lib/auth/accounts.ts).
+  // Written only after the key is in the map, so a row here means a login
+  // that actually worked end to end — not one that authenticated and then
+  // failed to open anything. The device class is what answers "where do people
+  // actually glance from"; nothing else about them rides along.
+  appendMetric(getDb(), {
+    accountId: account.id,
+    event: 'login',
+    data: { device_class: await readDeviceClass() },
+    at: Date.now(),
+  })
+
   const target = account.role === 'admin' ? '/admin' : `/${account.slug}`
   const response = relativeRedirect(target)
   response.cookies.set(SESSION_COOKIE, sessionId, COOKIE_OPTIONS)

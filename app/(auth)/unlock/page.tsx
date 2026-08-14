@@ -59,7 +59,11 @@ export default async function UnlockPage({
           */}
           <div className="space-y-3 border-t pt-6">
             <p className="text-sm text-muted-foreground">
-              Cannot remember it? Sign out and start over.
+              Cannot remember it?{' '}
+              <a href="/forgot" className="underline underline-offset-4 hover:text-foreground">
+                Here is what that means.
+              </a>{' '}
+              Or sign out and start over.
             </p>
             <form method="post" action="/api/logout">
               <Button type="submit" variant="outline" size="lg" className="w-full">

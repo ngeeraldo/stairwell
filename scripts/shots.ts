@@ -250,10 +250,20 @@ async function main(): Promise<void> {
 
     const shots: { file: string; screen: Screen }[] = []
 
+    // ONE fixture per state per run, not per screen. Several screens share a
+    // state — S1 and S2 are both 'invite-valid' — and re-seeding would try to
+    // mint a second invite for the same slug, which the UNIQUE constraint
+    // rightly refuses. Sharing is also more faithful: a state is a state, and
+    // the two screens really are the same friend at two moments.
+    const fixtures = new Map<string, Fixture>()
+
     for (const screen of live) {
       const seed = SEEDERS[screen.state]
       if (!seed) throw new Error(`no seeder for state '${screen.state}' (${screen.id})`)
-      const fixture = await seed(dbPath, usersDir)
+      if (!fixtures.has(screen.state)) {
+        fixtures.set(screen.state, await seed(dbPath, usersDir))
+      }
+      const fixture = fixtures.get(screen.state)!
 
       for (const width of WIDTHS) {
         const context: BrowserContext = await browser.newContext({

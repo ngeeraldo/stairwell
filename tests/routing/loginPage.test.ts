@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import type { PlatformDb } from '@/lib/db/platform'
-import { PROMISE_BLOCK } from '@/lib/copy/onboarding'
+import { PROMISE_BLOCK, WRONG_PASSWORD } from '@/lib/copy/onboarding'
 
 // Fix wave item 5: routeFor's '/login' branch (authenticated -> /unlock,
 // unlocked -> '/') was dead code — nothing ever called requireState with
@@ -107,6 +108,46 @@ describe('/login onboarding promise', () => {
     const { getDb } = await import('@/lib/db/instance')
     db = getDb()
     expect(JSON.stringify(await renderLoginPage())).toContain(PROMISE_BLOCK.heading)
+  })
+})
+
+describe('/login, the returning surface', () => {
+  it('renders the exact wrong-password line, and nothing that implies a reset', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    db = getDb()
+
+    const { default: LoginPage } = await import('@/app/(auth)/login/page')
+    const text = JSON.stringify(
+      await LoginPage({ searchParams: Promise.resolve({ error: '1' }) }),
+    )
+
+    expect(text).toContain(WRONG_PASSWORD)
+    // The words the spec forbids, checked against the whole rendered tree
+    // rather than against the constant — a page can add copy the constant
+    // never sees, which is how the S0 gap was found.
+    expect(text.toLowerCase()).not.toMatch(/reset your password|click here to reset|send.{0,12}link/)
+  })
+
+  it('offers the forgot page, and a password field with a Show control', async () => {
+    // Rendered to MARKUP, not inspected as an element tree. PasswordField is a
+    // component, so `JSON.stringify(element)` shows a function reference and
+    // nothing about what a person would see — an assertion against that would
+    // have been satisfied by a component that rendered nothing at all.
+    const { getDb } = await import('@/lib/db/instance')
+    db = getDb()
+    const html = renderToStaticMarkup(
+      (await renderLoginPage()) as React.ReactElement,
+    )
+
+    expect(html).toContain('href="/forgot"')
+    expect(html).toContain('type="password"')
+    expect(html).toContain('>Show<')
+  })
+
+  it('shows no error line at all when there is no error', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    db = getDb()
+    expect(JSON.stringify(await renderLoginPage())).not.toContain(WRONG_PASSWORD)
   })
 })
 

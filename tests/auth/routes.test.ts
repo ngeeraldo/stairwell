@@ -26,8 +26,17 @@ const cookieGet = vi.fn((name: string) =>
   name === SESSION_COOKIE ? cookieSlot.value : undefined,
 )
 
+/**
+ * `headers` is stubbed alongside `cookies` because the login route now emits a
+ * `login` metric carrying a device class, and lib/metrics/deviceClass.ts reads
+ * the User-Agent as its fallback (onboarding ledger D4). An empty header map
+ * is the honest fixture — a request with neither cookie nor UA — and resolves
+ * to 'desktop'.
+ */
+const emptyHeaders = { get: () => null }
 vi.mock('next/headers', () => ({
   cookies: async () => ({ get: cookieGet }),
+  headers: async () => emptyHeaders,
 }))
 
 let dir: string
@@ -272,6 +281,42 @@ describe('POST /api/login', () => {
  * not through databaseKeyFor directly, because the route is where the key
  * actually reaches the keymap.
  */
+describe('the login metric', () => {
+  it('records a successful login with a device class and nothing else', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    handle = getDb()
+    const id = await createAccount(handle, { slug: 'nico', role: 'user', password: 'pw' })
+
+    const { POST } = await import('@/app/api/login/route')
+    await POST(loginRequest('nico', 'pw'))
+
+    const row = handle
+      .prepare("SELECT account_id, data FROM metrics WHERE event = 'login'")
+      .get() as { account_id: number; data: string }
+    expect(row.account_id).toBe(id)
+    expect(JSON.parse(row.data)).toEqual({ device_class: 'desktop' })
+  })
+
+  it('records NOTHING for a failed login', async () => {
+    // A row here would make the retention curve count attempts rather than
+    // sessions, and metrics cannot be corrected after the fact.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    handle = getDb()
+    await createAccount(handle, { slug: 'nico', role: 'user', password: 'pw' })
+
+    const { POST } = await import('@/app/api/login/route')
+    await POST(loginRequest('nico', 'wrong'))
+
+    expect(
+      (handle.prepare("SELECT COUNT(*) AS n FROM metrics WHERE event = 'login'").get() as {
+        n: number
+      }).n,
+    ).toBe(0)
+  })
+})
+
 describe('which key a session gets', () => {
   it('a legacy account with no wrapped key still gets the DERIVED key', async () => {
     const { getDb } = await import('@/lib/db/instance')
