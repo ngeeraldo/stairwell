@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as React from 'react'
 import type { PlatformDb } from '@/lib/db/platform'
+import { PROMISE_BLOCK } from '@/lib/copy/onboarding'
 
 // Fix wave item 5: routeFor's '/login' branch (authenticated -> /unlock,
 // unlocked -> '/') was dead code — nothing ever called requireState with
@@ -76,31 +77,36 @@ async function renderLoginPage() {
  * deciding to change it. If one of these stops being true, the right outcome
  * is a red test and a conversation, not a silent diff.
  *
- * The last two arrived with step 6a, when real per-user data became something
- * that could exist: the first bounds what recording engagement reveals
- * (dashboard_write carries a slug and a panel, never a value), the second
- * states the cost of deriving the key from the password and storing it
- * nowhere.
+ * THE WORDING WAS SUPERSEDED by onboarding-ux-spec.md, which says so in as
+ * many words. Two changes, both deliberate: the step-6a engagement sentence is
+ * folded into the first paragraph rather than standing alone, and the
+ * no-recovery sentence moves into the encryption paragraph, where it reads as
+ * the consequence it is rather than as a caveat bolted on the end.
+ *
+ * The sentences are asserted against lib/copy/onboarding.ts's own constant,
+ * NOT retyped here — because the point of this test is now partly that the
+ * login page and the invite page render the SAME block. Retyping would let the
+ * two diverge while this stayed green.
  */
 describe('/login onboarding promise', () => {
-  const PROMISED = [
-    'My tools run on fake data.',
-    "I won't open your transactions.",
-    "Everything's deleted when the pilot ends.",
-    'I can see when you use it — which days you open it and log things — but not what you log.',
-    "If you forget your password, your logged data is gone forever — I can't recover it, on purpose, because I can't read it either.",
-  ]
-
-  it.each(PROMISED)('says: %s', async (sentence) => {
+  it.each(PROMISE_BLOCK.paragraphs)('says: %s', async (sentence) => {
     const { getDb } = await import('@/lib/db/instance')
     db = getDb()
 
     const element = await renderLoginPage()
     // JSX escapes apostrophes as &apos; in source; the rendered tree carries
     // the real characters, so compare against the tree rather than the file.
+    // (The constants use U+2019 throughout, which is not escaped at all — see
+    // lib/copy/onboarding.ts.)
     const text = JSON.stringify(element).replace(/&apos;|&#39;/g, "'")
 
     expect(text).toContain(sentence)
+  })
+
+  it('renders the heading too, so the block reads as one thing', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    db = getDb()
+    expect(JSON.stringify(await renderLoginPage())).toContain(PROMISE_BLOCK.heading)
   })
 })
 
