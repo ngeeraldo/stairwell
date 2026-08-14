@@ -93,9 +93,11 @@ architectural changes; do not relitigate decided items).
   policy for every panel type, and it is what makes the login page's promise
   ("I can see when you use it … but not what you log") true. Spec-version
   diffs are held to the same bound: a diff metric row carries counts
-  (`screens_added`, `panels_changed`, …) and stable ids, never a panel's
-  title, description, or display text — the content of what changed stays in
-  `specs`, never in `metrics`.
+  (`screens_added`, `panels_changed`, …) and nothing else — not a panel's
+  title, description or display text, and not its stable id either. An id
+  like `divorce_lawyer_fund` is derived from what the friend asked for, which
+  is why `lib/spec/author.ts` strips quoted ids out of `spec_error` messages
+  too. The content of what changed stays in `specs`, never in `metrics`.
 - A dashboard renders only if it is registered in `lib/dashboard/registry.ts`.
   One line: `<slug>: () => import('@/users/<slug>/dashboard'),`. A folder with
   no registry line fails `tests/dashboard/registry.test.ts`.

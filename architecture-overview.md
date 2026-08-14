@@ -30,8 +30,8 @@ Server (single VPS)
   │     ├── synthetic.db          (regenerated per session)
   │     ├── tests/                (scoped to this dashboard, run on synthetic.db)
   │     └── <name>.db             (real data, SQLCipher-encrypted)
-  ├── Admin portal (Nico only, read-only): transcripts, spec versions with
-  │     diffs, metrics (the `requests` table is dead schema, unused since
+  ├── Admin portal (Nico only, read-only): spec versions with their diffs,
+  │     and transcripts (the `requests` table is dead schema, unused since
   │     step 1 — superseded by the spec-version list, unified-loop ledger D12)
   ├── Alerts → ntfy.sh push (session start; spec confirmed, now on every
   │     confirmed version however small — the "run to the computer" signal)
@@ -149,7 +149,7 @@ Server (single VPS)
 - **The confirmed version *is* the approval gate, and it is never optional.** No version deploys unconfirmed, regardless of how trivial the change looks. This replaces an earlier, deferred idea of a separate message-mirror → headless-build → diff-summary-and-screenshot approval step: the preview card already leads with what changed, and the confirm button already is that gate, so there is nothing further to build.
 
 ### 7. Admin portal (Nico only) + real-time alerts
-- **Read-only portal behind your admin login:** user list; per-user three panes — full chat transcript, spec versions with their diffs against the version each was based on, and metrics. The original third pane, a "request queue (open asks with timestamps — doubles as a metrics view)," is superseded: the `requests` table it would have read from has been dead schema since step 1 — nothing ever wrote to it — and every request now lives as a spec-version diff instead (unified-loop ledger D12).
+- **Read-only portal behind your admin login:** user list; per-user two panes — spec versions with their diffs against the version each was based on, and the full chat transcript. There is no metrics pane: `app/admin/[user]/page.tsx` reads no metrics, and the metrics log is queried directly (§9). The original third pane, a "request queue (open asks with timestamps — doubles as a metrics view)," is superseded: the `requests` table it would have read from has been dead schema since step 1 — nothing ever wrote to it — and every request now lives as a spec-version diff instead (unified-loop ledger D12).
 - Transcript visibility is already covered by the onboarding promise ("I'll see what you tell the agent") — no new privacy surface.
 - **Alerts via ntfy.sh** (free push; phone app subscribes to a topic, server curls it): (1) session start — first message after 30+ min silence, debounced; (2) spec confirmed — now fires on every confirmed version, however small, not just the first — the "run to the computer" signal.
 
