@@ -62,11 +62,14 @@ export const PROMISE_BLOCK = {
   halves: [
     {
       label: 'What we see:',
-      body: 'everything you tell the AI (your chat history), and when you open the app — whether you actually keep using it is the whole experiment.',
+      // The body starts with a CAPITAL and stands as its own sentence, because
+      // it renders on its own line under the label rather than continuing it.
+      // Lower-case here reads as a dangling fragment once the line breaks.
+      body: 'Everything you tell the AI (your chat history), and when you open the app.',
     },
     {
       label: 'What we never see:',
-      body: 'your actual data (whether created here or pulled in from somewhere else). It’s encrypted with your password, so there’s no way for anyone to access it.',
+      body: 'Your actual data (whether created here or pulled in from somewhere else). It’s encrypted with your password, so there’s no way for anyone to access it.',
     },
   ],
 } as const

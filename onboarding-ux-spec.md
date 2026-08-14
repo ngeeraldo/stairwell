@@ -92,13 +92,15 @@ No distinction shown between "used" and "unknown" — same message for both (lea
 
 > **Our Privacy Policy:**
 >
-> **What we see:** everything you tell the AI (your chat history), and when you open the app — whether you actually keep using it is the whole experiment.
+> **What we see:**
+> Everything you tell the AI (your chat history), and when you open the app.
 >
-> **What we never see:** your actual data (whether created here or pulled in from somewhere else). It's encrypted with your password, so there's no way for anyone to access it.
+> **What we never see:**
+> Your actual data (whether created here or pulled in from somewhere else). It's encrypted with your password, so there's no way for anyone to access it.
 
 3. Single button: `Sounds good →`
 
-**The label and the body are separate strings**, not one sentence beginning with a label. Rendered as plain paragraphs the two labels sat at body weight mid-text, and the distinction this screen exists to make — what we see versus what we never see — was the hardest thing on it to find. Each label gets its own line.
+**The label and the body are separate strings**, not one sentence beginning with a label. Rendered as plain paragraphs the two labels sat at body weight mid-text, and the distinction this screen exists to make — what we see versus what we never see — was the hardest thing on it to find. Each label gets its own line, and **each body starts with a capital and stands as its own sentence**, because it sits under the label rather than continuing it.
 
 **On accept:** log `promise_accepted` metrics row (timestamp, username). No checkbox — the button is the acceptance.
 

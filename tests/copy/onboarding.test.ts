@@ -33,18 +33,33 @@ describe('the promise block', () => {
     // become undisclosed collection. If this line has to go, the metric rows
     // go with it; that is the trade, and it is why the assertion is here and
     // not in a style guide.
+    //
+    // THE DISCLOSURE IS THE FACT, NOT ITS JUSTIFICATION. "whether you actually
+    // keep using it is the whole experiment" was cut on 2026-08-14 and this
+    // test deliberately did not go with it: what has to be said is THAT opens
+    // are seen. Why we look is ours to explain or not.
     expect(PROMISE_BLOCK.halves[0].body).toContain('when you open the app')
-    expect(PROMISE_BLOCK.halves[0].body).toContain(
-      'whether you actually keep using it is the whole experiment',
-    )
   })
 
   it('says the chat is seen, and the data never is', () => {
     // Both halves, because either one alone is a different promise.
     expect(PROMISE_BLOCK.halves[0].body).toContain(
-      'everything you tell the AI (your chat history)',
+      'Everything you tell the AI (your chat history)',
     )
-    expect(PROMISE_BLOCK.halves[1].body).toContain('your actual data')
+    expect(PROMISE_BLOCK.halves[1].body).toContain('Your actual data')
+  })
+
+  it('starts each body with a capital, as its own sentence', () => {
+    // The bodies render on their own line under the label, not as a
+    // continuation of it, so a lower-case opener reads as a dangling fragment.
+    for (const half of PROMISE_BLOCK.halves) {
+      // charAt, not [0]: noUncheckedIndexedAccess types the index access as
+      // possibly undefined, and `undefined === undefined` would make this pass
+      // on an empty string.
+      const opener = half.body.charAt(0)
+      expect(opener, `lower-case opener: ${half.body}`).toBe(opener.toUpperCase())
+      expect(opener).not.toBe('')
+    }
   })
 
   it('covers data pulled in from elsewhere, not just data typed here', () => {

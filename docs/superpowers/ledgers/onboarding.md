@@ -523,6 +523,15 @@ reasoning written into it: if the sentence ever has to go, the metric rows go
 with it. It is a data-safety gate wearing a copy test's clothes, and it is the
 reason a copy tidy-up was worth stopping over.
 
+**Trimmed once more the same day, and the trim shows where the line sits.**
+"— whether you actually keep using it is the whole experiment" came out, and
+both bodies were capitalised to stand as sentences under their labels rather
+than as fragments continuing them. The disclosure survived and its test did not
+change by a character, which is the distinction to keep hold of: what has to be
+said is THAT opens are seen. Why we look is ours to explain or not, and
+explaining it was costing a line of screen on the most-read paragraph in the
+product.
+
 ---
 
 ## Built
