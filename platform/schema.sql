@@ -132,3 +132,29 @@ BEFORE DELETE ON spec_confirmations
 BEGIN
   SELECT RAISE(ABORT, 'spec_confirmations is append-only');
 END;
+
+-- Envelope encryption (onboarding ledger D2). The user's password derives a
+-- key-encrypting key; the key that actually opens their SQLCipher database is
+-- 32 random bytes, wrapped under it and stored here.
+--
+-- A TABLE rather than a column on `accounts`, and the difference is the whole
+-- design: `accounts` already has rows in production, this repo has no additive
+-- migration mechanism, and lib/db/reshape.ts is not one and must not be
+-- widened (CLAUDE.md). A CREATE TABLE IF NOT EXISTS needs no mechanism at all.
+--
+-- ABSENCE OF A ROW IS THE LEGACY ARM, and it is permanent. devone, devtwo and
+-- nico predate this and have no row, so their database key stays
+-- argon2(password, salt_key) — which is what keeps devtwo's existing real
+-- database openable. NEVER BACKFILL: a legacy account's wrapped key cannot be
+-- computed without their password, and fabricating one would lock a real
+-- person out of real data.
+--
+-- NOT append-only, deliberately, and this is the one table in the platform
+-- database where that is a feature: a password change (not built here)
+-- rewrites this row and nothing else, which is the entire point of the
+-- indirection.
+CREATE TABLE IF NOT EXISTS account_keys (
+  account_id  INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  wrapped_key BLOB    NOT NULL,
+  created_at  INTEGER NOT NULL
+);

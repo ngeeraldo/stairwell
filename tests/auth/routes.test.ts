@@ -262,6 +262,88 @@ describe('POST /api/login', () => {
   })
 })
 
+/**
+ * The two arms of onboarding ledger D2, at the route layer.
+ *
+ * The legacy test is the one that matters most in this whole file: devtwo's
+ * real database on the droplet was written under argon2(password, salt_key),
+ * and if the legacy fallback is ever refactored away, a real friend is locked
+ * out of real data with no recovery path. It is asserted through the ROUTE,
+ * not through databaseKeyFor directly, because the route is where the key
+ * actually reaches the keymap.
+ */
+describe('which key a session gets', () => {
+  it('a legacy account with no wrapped key still gets the DERIVED key', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount, findAccountById } = await import('@/lib/auth/accounts')
+    const { createSession } = await import('@/lib/session/store')
+    const { getKey } = await import('@/lib/session/keymap')
+    const { deriveDbKey } = await import('@/lib/auth/password')
+    handle = getDb()
+
+    const id = await createAccount(handle, { slug: 'legacyone', role: 'user', password: 'pw' })
+    const sid = createSession(handle, id)
+    cookieSlot.value = { value: sid }
+
+    const { POST } = await import('@/app/api/unlock/route')
+    const response = await POST(unlockRequest('pw'))
+
+    expect(response.status).toBe(303)
+    const account = findAccountById(handle, id)!
+    expect(getKey(sid)).toEqual(await deriveDbKey('pw', account.salt_key))
+  })
+
+  it('an enveloped account gets the DATA key, which is not the derived key', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount, findAccountById } = await import('@/lib/auth/accounts')
+    const { createSession } = await import('@/lib/session/store')
+    const { getKey } = await import('@/lib/session/keymap')
+    const { deriveDbKey } = await import('@/lib/auth/password')
+    const { newDataKey, wrapDataKey } = await import('@/lib/auth/envelope')
+    const { putWrappedKey } = await import('@/lib/db/accountKeys')
+    handle = getDb()
+
+    const id = await createAccount(handle, { slug: 'modernone', role: 'user', password: 'pw' })
+    const account = findAccountById(handle, id)!
+    const dataKey = newDataKey()
+    putWrappedKey(handle, id, wrapDataKey(await deriveDbKey('pw', account.salt_key), dataKey), 1)
+    const sid = createSession(handle, id)
+    cookieSlot.value = { value: sid }
+
+    const { POST } = await import('@/app/api/unlock/route')
+    await POST(unlockRequest('pw'))
+
+    // Both halves. The first proves the unwrap ran; the second proves the
+    // derived key is genuinely no longer what opens the file, which is the
+    // whole point of the indirection.
+    expect(getKey(sid)).toEqual(dataKey)
+    expect(getKey(sid)).not.toEqual(await deriveDbKey('pw', account.salt_key))
+  })
+
+  it('fails the unlock rather than issuing a key when the wrapped row is corrupt', async () => {
+    // The password verifies against auth_hash but the wrapped key does not
+    // open. That should be impossible; if it happens, a session whose data
+    // region can never be opened is worse than no session.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    const { createSession } = await import('@/lib/session/store')
+    const { getKey } = await import('@/lib/session/keymap')
+    const { putWrappedKey } = await import('@/lib/db/accountKeys')
+    handle = getDb()
+
+    const id = await createAccount(handle, { slug: 'corruptone', role: 'user', password: 'pw' })
+    putWrappedKey(handle, id, Buffer.from('not a valid envelope at all'), 1)
+    const sid = createSession(handle, id)
+    cookieSlot.value = { value: sid }
+
+    const { POST } = await import('@/app/api/unlock/route')
+    const response = await POST(unlockRequest('pw'))
+
+    expectRelativeRedirect(response, '/unlock?error=1')
+    expect(getKey(sid)).toBeUndefined()
+  })
+})
+
 describe('POST /api/unlock', () => {
   it('redirects to /<slug> and getKey(sessionId) becomes defined for the correct password', async () => {
     const { getDb } = await import('@/lib/db/instance')

@@ -1,7 +1,6 @@
 import { getDb } from '@/lib/db/instance'
-import { login } from '@/lib/auth/flow'
+import { databaseKeyFor, login } from '@/lib/auth/flow'
 import { findAccountBySlug } from '@/lib/auth/accounts'
-import { deriveDbKey } from '@/lib/auth/password'
 import { putKey } from '@/lib/session/keymap'
 import { relativeRedirect } from '@/lib/http/redirect'
 import { COOKIE_OPTIONS, SESSION_COOKIE } from '@/lib/session/store'
@@ -32,7 +31,17 @@ export async function POST(request: Request) {
     // rejects the login instead of throwing on `.salt_key`.
     return relativeRedirect('/login?error=1')
   }
-  putKey(sessionId, await deriveDbKey(password, account.salt_key))
+  try {
+    putKey(sessionId, await databaseKeyFor(getDb(), account, password))
+  } catch {
+    // login() already verified the password against auth_hash, so a
+    // WrappedKeyError here means a corrupt account_keys row rather than a
+    // wrong password (onboarding ledger D2). Fail the login rather than issue
+    // a session whose data region can never open. No metrics row: the failure
+    // is already visible as a failed login, and a new event kind for a state
+    // that cannot occur is noise in a log that can never be cleaned up.
+    return relativeRedirect('/login?error=1')
+  }
 
   // An admin account has no user space — it lands on the read-only admin
   // portal instead of /<slug>, which would now 404 (canSeeUserSpace excludes

@@ -1,6 +1,8 @@
 import type { PlatformDb } from '@/lib/db/platform'
 import { checkPassword, findAccountBySlug } from './accounts'
 import { deriveDbKey, verifyPassword } from './password'
+import { unwrapDataKey } from './envelope'
+import { readWrappedKey } from '@/lib/db/accountKeys'
 import { putKey } from '@/lib/session/keymap'
 import { createSession, readSession } from '@/lib/session/store'
 
@@ -52,7 +54,35 @@ export async function login(
   return createSession(db, account.id)
 }
 
-/** Derive the SQLCipher key and put it in the in-memory map. */
+/**
+ * The 32 bytes that open this account's SQLCipher database.
+ *
+ * TWO ARMS, PERMANENTLY (onboarding ledger D2). An account with a row in
+ * `account_keys` gets the unwrapped random data key; one without gets the
+ * derived key itself, which is what devone's, devtwo's and nico's databases
+ * were actually written under.
+ *
+ * There is no third arm and no backfill. A legacy account's wrapped key cannot
+ * be computed without their password, and fabricating one would lock a real
+ * person out of real data with no recovery path — which is the same
+ * irreversibility the whole product is built around, pointed at the wrong
+ * target.
+ *
+ * ONE function, called from both places that reach putKey (unlock() below and
+ * app/api/login/route.ts). Two copies of this branch would be two things that
+ * can drift, and the drift would be a lockout.
+ */
+export async function databaseKeyFor(
+  db: PlatformDb,
+  account: { id: number; salt_key: Buffer },
+  password: string,
+): Promise<Buffer> {
+  const derived = await deriveDbKey(password, account.salt_key)
+  const wrapped = readWrappedKey(db, account.id)
+  return wrapped ? unwrapDataKey(derived, wrapped) : derived
+}
+
+/** Resolve the database key and put it in the in-memory map. */
 export async function unlock(
   db: PlatformDb,
   sessionId: string,
@@ -67,6 +97,21 @@ export async function unlock(
     | undefined
   if (!account) return false
   if (!(await verifyPassword(account.auth_hash, password))) return false
-  putKey(sessionId, await deriveDbKey(password, account.salt_key))
+
+  try {
+    putKey(
+      sessionId,
+      await databaseKeyFor(db, { id: session.account_id, salt_key: account.salt_key }, password),
+    )
+  } catch {
+    // The password was already verified against auth_hash above, so a
+    // WrappedKeyError here does NOT mean a wrong password — it means a corrupt
+    // account_keys row, which should be impossible.
+    //
+    // No metrics row, deliberately. The failure is already visible as a failed
+    // unlock, and a new event kind for a state that cannot occur is noise in
+    // an append-only log that can never be cleaned up.
+    return false
+  }
   return true
 }
