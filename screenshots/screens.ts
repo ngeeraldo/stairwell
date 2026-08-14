@@ -115,10 +115,10 @@ export const SCREENS: Screen[] = [
       'At 375: the chat covers the screen as a sheet (open by default here — no dashboard is deployed) with a way back to the content.',
       'The placeholder card reads "This is where your app will live." and mentions no time of day.',
       'The chat composer is reachable without scrolling at both widths.',
-      'User turns and agent turns are distinguishable AT A GLANCE, without reading them: the friend’s messages sit in a tinted bubble on the right, the agent’s are plain full-width text.',
+      'User turns and agent turns are distinguishable AT A GLANCE, without reading them: the friend’s messages sit in a LIGHT BLUE bubble on the right, the agent’s are plain full-width text. The blue is unmistakable, not a shade of grey on a grey background.',
       'The agent’s paragraph break is a paragraph break, not a collapsed single space.',
       'At 1440 the chat panel is ~600px, not ~400px — wide enough that the text is not a phone column pasted onto a desktop.',
-      'Log out sits at the BOTTOM of the chat column, not under the dashboard.',
+      'There is NO log out control anywhere on this screen — the chat is open, and log out lives only in the collapsed rail.',
     ],
   },
   {
@@ -131,7 +131,7 @@ export const SCREENS: Screen[] = [
       'Chat is COLLAPSED by default here, because a dashboard is deployed — a toggle is visible and the dashboard is the landing view.',
       'The dashboard renders inside the shell, unstyled-by-us and unbroken by it: the shell is platform chrome, not part of the user’s code.',
       'The SYNTHETIC DATA banner is present (this fixture has no real rows) and is not mistakable for chrome.',
-      'With the chat collapsed, the left rail holds "Show chat" at the top and "Log out" at the bottom at 1440; at 375 both sit in the bottom-right corner with the toggle nearest the thumb.',
+      'With the chat collapsed, the left rail holds "Show chat" at the top and "Log out" at the far bottom at 1440; at 375 both sit in the bottom-right corner with the toggle nearest the thumb.',
     ],
   },
   {

@@ -837,11 +837,13 @@ describe('TurnRow', () => {
 
     expect(userRow).toContain('data-role')
     expect(agentRow).toContain('data-role')
-    // The bubble, on one side only.
+    // The bubble, on one side only. bg-chat-user rather than bg-muted: muted
+    // is 0.97 neutral on a 0.98 neutral background, a difference you can
+    // measure and cannot see, which is what the first version shipped.
     expect(userRow).toContain('rounded-2xl')
-    expect(userRow).toContain('bg-muted')
+    expect(userRow).toContain('bg-chat-user')
     expect(agentRow).not.toContain('rounded-2xl')
-    expect(agentRow).not.toContain('bg-muted')
+    expect(agentRow).not.toContain('bg-chat-user')
   })
 
   it('keeps the blank lines the agent wrote', () => {

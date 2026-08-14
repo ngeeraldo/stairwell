@@ -36,12 +36,21 @@ import { Button } from '@/components/ui/button'
  * dashboard would be the one starved, and the dashboard is the point of the
  * morning glance.
  *
- * THE CHAT COLUMN IS CHROME, AND LOG OUT LIVES AT THE BOTTOM OF IT. `footer`
- * is rendered last in that column in BOTH states, so there is one answer to
- * "where is log out" rather than one per arrangement. It used to sit in the
- * content column under the dashboard, where it read as the last row of the
- * friend's own app — a control belonging to the platform, rendered as though
- * it belonged to their data.
+ * LOG OUT LIVES AT THE BOTTOM OF THE COLLAPSED RAIL, AND ONLY THERE. `footer`
+ * renders in the closed state; the open panel does not carry a copy.
+ *
+ * Two earlier positions, and why neither survived. It began in the content
+ * column under the dashboard, where it read as the last row of the friend's
+ * own app rather than as platform chrome. It then rendered in both states —
+ * bottom of the rail when closed, below the composer when open — which put a
+ * sign-out control directly under the Send button, at the end of the surface
+ * a friend spends their whole interview in. One copy, in the state where the
+ * chat is out of the way, is the version Nico kept.
+ *
+ * The cost, stated plainly: with the chat open there is no log out on screen,
+ * so signing out is hide-then-log-out. That is two taps on a control used once
+ * a session, and it is the trade that keeps the composer's neighbourhood free
+ * of it.
  *
  * The only state is `open`, which means the same thing in both arrangements.
  * It is NOT persisted: onboarding-ux-spec.md lists "persistence of panel state
@@ -62,10 +71,10 @@ export function Shell({
   chat: React.ReactNode
   content: React.ReactNode
   /**
-   * Platform chrome that belongs at the bottom of the chat column — today,
-   * the log-out form. A ReactNode rather than something this component
-   * renders itself, so the form stays server-rendered in page.tsx and this
-   * client component keeps owning only the arrangement.
+   * Platform chrome for the bottom of the collapsed rail — today, the log-out
+   * form. A ReactNode rather than something this component renders itself, so
+   * the form stays server-rendered in page.tsx and this client component keeps
+   * owning only the arrangement.
    */
   footer: React.ReactNode
   /**
@@ -92,7 +101,6 @@ export function Shell({
             </Button>
           </div>
           <div className="min-h-0 flex-1">{chat}</div>
-          <div className="mt-3 shrink-0 border-t pt-3">{footer}</div>
         </aside>
       ) : (
         // Persistent, and positioned so it is reachable in both arrangements.
@@ -105,7 +113,7 @@ export function Shell({
         //   the toggle sits in the thumb corner with log out stacked above it.
         //   md and up — `md:h-dvh md:flex-col md:justify-between`, a full-height
         //   rail: toggle at the top where the panel's header was, log out at
-        //   the bottom, which is the same place it is when the chat is open.
+        //   the far bottom, as far from the toggle as the column allows.
         <div
           data-chat="closed"
           className="fixed right-4 bottom-4 z-20 flex flex-col-reverse items-end gap-2 md:static md:h-dvh md:flex-col md:items-start md:justify-between md:p-4"

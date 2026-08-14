@@ -134,22 +134,27 @@ describe('the one boolean', () => {
     await unmount()
   })
 
-  it('keeps the footer chrome in the chat column in BOTH states', async () => {
-    // There is one answer to "where is log out", not one per arrangement.
-    // It lived in the content column, under the dashboard, where it read as
-    // the last row of the friend's own app rather than as platform chrome.
+  it('puts the footer chrome in the collapsed rail, and NOWHERE ELSE', async () => {
+    // Log out is chrome, and it belongs where the chat is out of the way.
     //
-    // Asserted as "inside the chat column", not "somewhere on the page":
-    // rendering it anywhere at all would satisfy a textContent check while
-    // leaving it exactly where it was.
-    for (const openByDefault of [true, false]) {
-      const { container, unmount } = await mount(shell(openByDefault))
-      const column = container.querySelector('[data-chat="open"], [data-chat="closed"]')
-      expect(column).not.toBeNull()
-      expect(column!.textContent).toContain('FOOTER CHROME TEST')
-      expect(container.querySelector('main')!.textContent).not.toContain('FOOTER CHROME TEST')
-      await unmount()
-    }
+    // It lived in the content column, under the dashboard, where it read as
+    // the last row of the friend's own app. It then briefly rendered in both
+    // states, which put a sign-out control directly under the Send button —
+    // at the end of the surface a friend spends their whole interview in.
+    //
+    // Both halves are asserted, because only the second one is easy to lose:
+    // that it IS in the rail, and that it is NOT on the page at all with the
+    // chat open. A test for the first alone would stay green if a copy crept
+    // back into the panel.
+    const closed = await mount(shell(false))
+    const rail = closed.container.querySelector('[data-chat="closed"]')!
+    expect(rail.textContent).toContain('FOOTER CHROME TEST')
+    expect(closed.container.querySelector('main')!.textContent).not.toContain('FOOTER CHROME TEST')
+    await closed.unmount()
+
+    const open = await mount(shell(true))
+    expect(open.container.textContent).not.toContain('FOOTER CHROME TEST')
+    await open.unmount()
   })
 
   it('puts the footer LAST in the chat column, in one DOM order for both widths', async () => {

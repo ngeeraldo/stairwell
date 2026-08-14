@@ -297,7 +297,12 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     // one a friend uses to report that something is broken — is one of them.
     const html = markup(element)
     expect(html).toContain('aria-label="Chat"')
-    expect(html).toContain('/api/logout')
+    // The chat is OPEN on this fixture, and log out now renders only in the
+    // collapsed rail — it is chrome, and it was crowding the composer. So the
+    // way out of the surface asserted here is the toggle that leads to it.
+    // Where log out actually renders, in each state, is pinned in
+    // tests/routing/shell.test.tsx.
+    expect(html).toContain('Hide chat')
   })
 
   it('404s for another user\'s space (wrong owner)', async () => {

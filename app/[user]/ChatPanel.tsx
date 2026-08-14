@@ -789,8 +789,12 @@ export function Timeline({
  * convergence is the argument — this is the surface a friend has already used
  * elsewhere, so it should not need learning:
  *
- *   user      — a bubble, tinted and rounded, right-aligned, capped at 85% so
- *                it reads as an aside rather than a column.
+ *   user      — a bubble, rounded and LIGHT BLUE, right-aligned, capped at 85%
+ *                so it reads as an aside rather than a column. The first
+ *                version used --muted, which is 0.97 neutral on a 0.98 neutral
+ *                background: a difference you can measure and cannot see.
+ *                --chat-user is a tint of the accent hue — see app/globals.css,
+ *                edit 5.
  *   assistant — no bubble, no tint, full width. The reply is the substance of
  *                the page; boxing it would make the page a list of boxes.
  *
@@ -817,7 +821,7 @@ export function TurnRow({
         // put it alongside the bubble instead of under it.
         className={
           user
-            ? 'ml-auto w-fit max-w-[85%] rounded-2xl bg-muted px-4 py-2.5 whitespace-pre-wrap'
+            ? 'ml-auto w-fit max-w-[85%] rounded-2xl bg-chat-user px-4 py-2.5 whitespace-pre-wrap text-chat-user-foreground'
             : 'whitespace-pre-wrap'
         }
         style={turn.interrupted ? { opacity: 0.5 } : undefined}
