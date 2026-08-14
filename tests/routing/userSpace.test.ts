@@ -4,9 +4,11 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import type { PlatformDb } from '@/lib/db/platform'
 import { openPlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
+import { PLACEHOLDER_CARD } from '@/lib/copy/onboarding'
 import { login } from '@/lib/auth/flow'
 import { canSeeUserSpace, isAdmin } from '@/lib/auth/authorize'
 
@@ -80,9 +82,20 @@ vi.mock('next/headers', () => ({
 // tests/routing/dashboardRegion.test.ts owns the data region. Stub the
 // registry empty here so these assertions do not move every time a dashboard
 // is added to or removed from the repo.
+/**
+ * `hasDashboard` decides the shell's one boolean (chat open until a dashboard
+ * is deployed, collapsed after — onboarding-ux-spec.md S3), so it is a SLOT
+ * rather than a constant: two tests below need opposite answers from it.
+ *
+ * It is deliberately independent of `dashboardLoaderFor` in this mock even
+ * though the real one derives from it, so a test can set up "a dashboard is
+ * deployed" without also having to supply a loader that renders one.
+ */
+const registrySlot = { hasDashboard: false }
 vi.mock('@/lib/dashboard/registry', () => ({
   dashboardLoaderFor: () => undefined,
   registeredSlugs: () => [],
+  hasDashboard: () => registrySlot.hasDashboard,
 }))
 
 // ChatPanel is a 'use client' component. Calling UserSpace() directly (as
@@ -96,6 +109,15 @@ vi.mock('@/lib/dashboard/registry', () => ({
 // is computing and passing `proposal`, not rendering it — so they inspect
 // the ChatPanel element's props directly instead of grepping for text that
 // only a real render would produce.
+/**
+ * Walk the returned element tree for whatever was handed to ChatPanel.
+ *
+ * It searches `chat` and `content` as well as `children`, because the page
+ * composes through Shell's NAMED SLOTS now (app/[user]/Shell.tsx) rather than
+ * by nesting. Without those two names this returns undefined for every page,
+ * and every assertion built on it passes vacuously — which is exactly the
+ * failure mode this suite keeps finding in itself.
+ */
 function findChatPanelProps(
   node: unknown,
 ): { initial: unknown; proposal?: unknown; first?: unknown } | undefined {
@@ -104,15 +126,36 @@ function findChatPanelProps(
   if (props && typeof props === 'object' && 'initial' in props) {
     return props as { initial: unknown; proposal?: unknown; first?: unknown }
   }
-  const children = (props as { children?: unknown } | undefined)?.children
-  if (Array.isArray(children)) {
-    for (const child of children) {
-      const found = findChatPanelProps(child)
-      if (found) return found
+  const slots = props as
+    | { children?: unknown; chat?: unknown; content?: unknown }
+    | undefined
+  for (const slot of [slots?.chat, slots?.content, slots?.children]) {
+    if (slot === undefined) continue
+    if (Array.isArray(slot)) {
+      for (const child of slot) {
+        const found = findChatPanelProps(child)
+        if (found) return found
+      }
+      continue
     }
-    return undefined
+    const found = findChatPanelProps(slot)
+    if (found) return found
   }
-  return children === undefined ? undefined : findChatPanelProps(children)
+  return undefined
+}
+
+/**
+ * The whole page as markup.
+ *
+ * The page returns a <Shell>, so `element.type` is a component and
+ * `JSON.stringify` shows props rather than text. Rendering is the only way to
+ * assert on what a person actually sees — and asserting on the serialised
+ * props instead is the mistake the unified-loop ledger records finding in the
+ * admin tests ("assertions matching serialized props rather than rendered
+ * output").
+ */
+function markup(element: unknown): string {
+  return renderToStaticMarkup(element as React.ReactElement)
 }
 
 let dir: string
@@ -219,6 +262,7 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     redirectMock.mockClear()
     cookieGet.mockClear()
     cookieSlot.value = undefined
+    registrySlot.hasDashboard = false
     handle = undefined
   })
 
@@ -248,9 +292,12 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     expect(notFoundMock).not.toHaveBeenCalled()
     expect(redirectMock).not.toHaveBeenCalled()
     // Real content came back, not undefined and not a notFound()/redirect()
-    // short-circuit: the rendered <main> actually contains the owner's slug.
-    expect(element.type).toBe('main')
-    expect(JSON.stringify(element)).toContain('devone')
+    // short-circuit. The page is a <Shell> now, so this asserts on the
+    // RENDERED output: both regions are present, and the chat surface — the
+    // one a friend uses to report that something is broken — is one of them.
+    const html = markup(element)
+    expect(html).toContain('aria-label="Chat"')
+    expect(html).toContain('/api/logout')
   })
 
   it('404s for another user\'s space (wrong owner)', async () => {
@@ -348,10 +395,13 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
 
     expect(redirectMock).not.toHaveBeenCalled()
     expect(notFoundMock).not.toHaveBeenCalled()
-    const json = JSON.stringify(element)
-    expect(json).toContain('devone')
-    expect(json).toContain('Locked')
-    expect(json).not.toContain('Nothing here yet')
+    const html = markup(element)
+    expect(html).toContain('Locked')
+    expect(html).toContain('/unlock')
+    // The chat surface survives the lock, which is the half of this that is
+    // easy to lose: architecture-overview.md line 59 says it keeps working
+    // while data panels ask for the password again.
+    expect(html).toContain('aria-label="Chat"')
   })
 
   it('does not render the data region locked for an unlocked owner', async () => {
@@ -373,9 +423,11 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
 
     const { default: UserSpace } = await import('@/app/[user]/page')
     const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
-    const json = JSON.stringify(element)
-    expect(json).not.toContain('Locked')
-    expect(json).toContain('Nothing here yet')
+    const html = markup(element)
+    expect(html).not.toContain('Locked')
+    // An unlocked owner with no dashboard sees the placeholder card, which is
+    // the content area's whole job during the interview period.
+    expect(html).toContain(PLACEHOLDER_CARD.heading)
   })
 
   it('404s an unlocked admin session browsing a user space — admin is not an override, at the page layer', async () => {
@@ -634,6 +686,103 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     // prop at all, not an empty-ish stand-in that could still leak the
     // corrupt mockup_html into the page.
     expect(findChatPanelProps(element)?.proposal).toBeUndefined()
+  })
+})
+
+describe('the shell, from the page', () => {
+  // Its own fixture, because `handle` and `pageDir` are scoped to the describe
+  // above rather than to the file.
+  let pageDir: string
+  let handle: PlatformDb | undefined
+
+  beforeEach(() => {
+    pageDir = mkdtempSync(join(tmpdir(), 'stairwell-shellpage-'))
+    process.env.PLATFORM_DB = join(pageDir, 'synthetic.db')
+    vi.resetModules()
+    notFoundMock.mockClear()
+    redirectMock.mockClear()
+    cookieGet.mockClear()
+    cookieSlot.value = undefined
+    registrySlot.hasDashboard = false
+    handle = undefined
+  })
+
+  afterEach(() => {
+    handle?.close()
+    delete process.env.PLATFORM_DB
+    rmSync(pageDir, { recursive: true, force: true })
+  })
+
+  async function arrangeOwner() {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    putK(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    return { id, render: () => UserSpace({ params: Promise.resolve({ user: 'devone' }) }) }
+  }
+
+  function shellProps(element: unknown): { chatOpenByDefault?: boolean } {
+    return (element as { props: { chatOpenByDefault?: boolean } }).props
+  }
+
+  it('opens the chat by default while no dashboard is deployed', async () => {
+    registrySlot.hasDashboard = false
+    const { render } = await arrangeOwner()
+    expect(shellProps(await render()).chatOpenByDefault).toBe(true)
+  })
+
+  it('collapses the chat by default once one is', async () => {
+    // The inverse case, and the one that would be silently wrong if the
+    // boolean were hardcoded: "chat open by default" passes both ways.
+    registrySlot.hasDashboard = true
+    const { render } = await arrangeOwner()
+    expect(shellProps(await render()).chatOpenByDefault).toBe(false)
+  })
+
+  it('writes first_session_start ONCE, ever', async () => {
+    // The guard reads an append-only table to decide whether to write to it,
+    // which makes this the second metrics row in the codebase that is system
+    // state rather than telemetry (onboarding ledger D8). Pruning it would
+    // make a months-old account report a first session again.
+    const { render } = await arrangeOwner()
+    await render()
+    await render()
+
+    const rows = handle!
+      .prepare("SELECT data FROM metrics WHERE event = 'first_session_start'")
+      .all() as { data: string }[]
+    expect(rows).toHaveLength(1)
+    expect(JSON.parse(rows[0]!.data)).toEqual({ device_class: 'desktop' })
+  })
+
+  it('writes it for a LOCKED session too — the shell is where they land either way', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    cookieSlot.value = { value: createSess(handle, id) } // no putKey: locked
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+
+    expect(
+      (handle.prepare(
+        "SELECT COUNT(*) AS n FROM metrics WHERE event = 'first_session_start'",
+      ).get() as { n: number }).n,
+    ).toBe(1)
   })
 })
 

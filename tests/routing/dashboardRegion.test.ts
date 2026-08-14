@@ -15,6 +15,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { PLACEHOLDER_CARD } from '@/lib/copy/onboarding'
 import type { PlatformDb } from '@/lib/db/platform'
 
 // Same reason as tests/routing/userSpace.test.ts: vitest's esbuild transform
@@ -64,6 +66,10 @@ const loaderFor = vi.fn((_slug: string): Loader => loaderSlot.value)
 vi.mock('@/lib/dashboard/registry', () => ({
   dashboardLoaderFor: (slug: string) => loaderFor(slug),
   registeredSlugs: () => [],
+  // This file is about the DATA region, not the shell; a dashboard exists in
+  // every test here that matters, and the boolean only decides whether the
+  // chat starts open.
+  hasDashboard: () => true,
 }))
 
 type Data = { source: 'synthetic' | 'none'; db: unknown }
@@ -272,9 +278,12 @@ describe('app/[user]/page.tsx data region', () => {
     const UserSpace = await arrange()
     const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
 
-    const json = JSON.stringify(element)
-    expect(json).toContain('Nothing here yet')
-    expect(json).not.toContain('SYNTHETIC DATA')
+    // The placeholder CARD, not a sentence (onboarding-ux-spec.md S3). Its
+    // exact copy is pinned in tests/copy/onboarding.test.ts; what matters here
+    // is that this branch renders it and opens no database.
+    const html = renderToStaticMarkup(element as React.ReactElement)
+    expect(html).toContain(PLACEHOLDER_CARD.heading)
+    expect(html).not.toContain('SYNTHETIC DATA')
     expect(openUserDbMock).not.toHaveBeenCalled()
     expect(metricEvents()).not.toContain('dashboard_open')
   })

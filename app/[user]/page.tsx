@@ -22,8 +22,12 @@ import {
 } from '@/lib/db/encryptedUserDb'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getKey } from '@/lib/session/keymap'
-import { dashboardLoaderFor } from '@/lib/dashboard/registry'
+import { dashboardLoaderFor, hasDashboard } from '@/lib/dashboard/registry'
+import { hasMetric } from '@/lib/db/appendOnly'
 import ChatPanel from './ChatPanel'
+import { Button } from '@/components/ui/button'
+import { PlaceholderCard } from './PlaceholderCard'
+import { Shell } from './Shell'
 
 /**
  * The data region, for an owner whose session is already UNLOCKED.
@@ -63,9 +67,10 @@ async function dashboardRegion(
   device_class: DeviceClass,
 ) {
   const loader = dashboardLoaderFor(slug)
-  if (!loader) {
-    return <p>Nothing here yet. Your dashboard gets built from your interview.</p>
-  }
+  // The placeholder card, not a sentence. onboarding-ux-spec.md S3: it is what
+  // occupies the content area for the whole interview period, so it has to be
+  // a real piece of chrome rather than an apology.
+  if (!loader) return <PlaceholderCard />
 
   // Real data wins when this friend HAS any. A user who has logged nothing
   // reads the loudly-fake database under a banner — which is what keeps
@@ -169,26 +174,37 @@ async function renderDashboard(
     return (
       <>
         {source === 'synthetic' && (
-          <>
-            <p role="status">SYNTHETIC DATA — every number below is fake.</p>
-            {/*
-              Said to the PERSON, not to a demonstrator. The sample below looks
-              like a real record — a streak, a percentage, a fortnight of ticks
-              — and their first tap replaces all of it with one day, because
-              the real database is created by that tap and starts empty. Anyone
-              who mistook the sample for their own would read that as having
-              lost something. The ledger and docs/local-dev.md explain this to
-              whoever is running the demo; this is the only place the person
-              holding the phone is told. Copy, not styling, so the no-CSS
-              ruling does not cover it. Pinned in
-              tests/routing/dashboardRegion.test.ts the way the login page's
-              promises are pinned in tests/routing/loginPage.test.ts.
-            */}
-            <p>
+          /*
+            PLATFORM CHROME, and it has to look like it.
+            
+            CLAUDE.md: "The banner is the only thing distinguishing the two
+            screens." Unstyled it rendered as one more line of the dashboard,
+            in the same type as the numbers it is warning about — which the
+            first screenshot review caught. It is bordered and tinted now so it
+            reads as a notice at a glance, before a word of it is read.
+            
+            Amber rather than destructive: nothing is wrong here. It is telling
+            someone what they are looking at.
+            
+            The COPY is unchanged and pinned in
+            tests/routing/dashboardRegion.test.ts, the way the login page's
+            promises are pinned. The second sentence is said to the PERSON, not
+            to a demonstrator: the sample looks like a real record, and their
+            first tap replaces all of it with one day, because the real
+            database is created by that tap and starts empty. Anyone who
+            mistook the sample for their own would read that as having lost
+            something.
+          */
+          <div
+            role="status"
+            className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+          >
+            <p className="font-medium">SYNTHETIC DATA — every number below is fake.</p>
+            <p className="mt-1">
               This sample history isn&apos;t yours. Your own record starts empty, with
               your first tap.
             </p>
-          </>
+          </div>
         )}
         {rendered}
       </>
@@ -227,6 +243,9 @@ export default async function UserSpace({
   if (accountId === undefined) notFound()
 
   const unlocked = resolveState(getDb(), sessionId) === 'unlocked'
+  // Resolved once for the whole render: first_session_start and the dashboard
+  // region's own rows should agree about what kind of screen this is.
+  const device_class = await readDeviceClass()
 
   const newest = newestSpec(getDb(), accountId)
   // Which delivery promise the card rendered from the record makes. Computed
@@ -283,27 +302,67 @@ export default async function UserSpace({
     }
   }
 
+  // The shell's one boolean (onboarding-ux-spec.md S3). "Deployed" is exactly
+  // "is this slug in lib/dashboard/registry.ts" — a line there is what makes a
+  // dashboard render at all, so nothing else in the system can disagree.
+  //
+  // Open during the interview, because the chat is where the action is;
+  // collapsed once a dashboard exists, because the morning glance is
+  // dashboard-first and the chat is one tap away.
+  const chatOpenByDefault = !hasDashboard(user)
+
+  // The first time this account ever reaches the shell. Written once, ever,
+  // and the guard reads an append-only table to decide — which makes this the
+  // SECOND metrics row in the codebase that is system state rather than
+  // telemetry (onboarding ledger D8, and CLAUDE.md's sacred-data section).
+  if (!hasMetric(getDb(), accountId, 'first_session_start')) {
+    appendMetric(getDb(), {
+      accountId,
+      event: 'first_session_start',
+      data: { device_class },
+      at: Date.now(),
+    })
+  }
+
   return (
-    <main>
-      <h1>{user}</h1>
-      <ChatPanel
-        initial={readTranscript(getDb(), accountId).map((row) => ({
-          role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
-          body: row.body,
-        }))}
-        proposal={proposal}
-        first={first}
-      />
-      {unlocked ? (
-        await dashboardRegion(user, accountId, sessionId!, await readDeviceClass())
-      ) : (
-        <p>
-          Locked. <a href="/unlock">Unlock</a> to see your data.
-        </p>
-      )}
-      <form method="post" action="/api/logout">
-        <button type="submit">Log out</button>
-      </form>
-    </main>
+    <Shell
+      chatOpenByDefault={chatOpenByDefault}
+      chat={
+        <ChatPanel
+          initial={readTranscript(getDb(), accountId).map((row) => ({
+            role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+            body: row.body,
+          }))}
+          proposal={proposal}
+          first={first}
+        />
+      }
+      content={
+        <div className="space-y-8">
+          {unlocked ? (
+            await dashboardRegion(user, accountId, sessionId!, device_class)
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Locked.{' '}
+              <a href="/unlock" className="underline underline-offset-4">
+                Unlock
+              </a>{' '}
+              to see your data.
+            </p>
+          )}
+
+          {/*
+            Inside the content column's footer rather than floating: the shell
+            is the whole page now, and a logout control pinned outside it would
+            have to pick one of the two arrangements to belong to.
+          */}
+          <form method="post" action="/api/logout" className="pt-4">
+            <Button type="submit" variant="ghost" size="sm">
+              Log out
+            </Button>
+          </form>
+        </div>
+      }
+    />
   )
 }

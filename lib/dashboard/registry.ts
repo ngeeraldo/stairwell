@@ -33,3 +33,17 @@ export function dashboardLoaderFor(
 export function registeredSlugs(): string[] {
   return Object.keys(DASHBOARDS)
 }
+
+/**
+ * Whether a dashboard has actually been DEPLOYED for this account.
+ *
+ * The shell's one boolean depends on this (onboarding-ux-spec.md S3: chat open
+ * by default until a real dashboard is deployed, collapsed after), and the
+ * registry is the honest place to ask — a line here is what makes a dashboard
+ * render at all, so nothing else in the system can disagree with it. A folder
+ * on disk can exist without one; a spec can be confirmed days before the code
+ * lands.
+ */
+export function hasDashboard(slug: string): boolean {
+  return dashboardLoaderFor(slug) !== undefined
+}

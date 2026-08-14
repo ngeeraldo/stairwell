@@ -93,6 +93,33 @@ export function readConversations(
     })
 }
 
+/**
+ * Whether this account already has a row for `event`.
+ *
+ * THE SECOND METRICS ROW IN THIS CODEBASE THAT IS SYSTEM STATE RATHER THAN
+ * TELEMETRY (onboarding ledger D8). `deploy_announced` was the first
+ * (unified-loop D16); `first_session_start` is this one — the shell asks
+ * whether it has already fired before firing it.
+ *
+ * Accepted for the same reasons: `metrics` rejects UPDATE and DELETE at the
+ * database, so the row cannot be edited or removed through the application.
+ * THE HAZARD IS A HUMAN ONE. Someone pruning metrics as disposable telemetry
+ * would make a months-old account report a first session again, and there is
+ * no way to tell afterwards which rows were real. CLAUDE.md's sacred-data
+ * section names both events for exactly that reason.
+ */
+export function hasMetric(
+  db: PlatformDb,
+  accountId: number,
+  event: string,
+): boolean {
+  return (
+    db
+      .prepare('SELECT 1 FROM metrics WHERE account_id = ? AND event = ? LIMIT 1')
+      .get(accountId, event) !== undefined
+  )
+}
+
 export function appendMetric(
   db: PlatformDb,
   row: {

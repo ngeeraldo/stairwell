@@ -109,7 +109,7 @@ export const SCREENS: Screen[] = [
     path: '/SLUG',
     routeFile: 'app/[user]/page.tsx',
     state: 'friend-new',
-    live: false,
+    live: true,
     assertions: [
       'At 1440: chat is a fixed ~400px LEFT panel with a visible divider; the content area fills the remainder and holds the placeholder card.',
       'At 375: the chat covers the screen as a sheet (open by default here — no dashboard is deployed) with a way back to the content.',
@@ -122,7 +122,7 @@ export const SCREENS: Screen[] = [
     path: '/SLUG',
     routeFile: 'app/[user]/page.tsx',
     state: 'friend-built',
-    live: false,
+    live: true,
     assertions: [
       'Chat is COLLAPSED by default here, because a dashboard is deployed — a toggle is visible and the dashboard is the landing view.',
       'The dashboard renders inside the shell, unstyled-by-us and unbroken by it: the shell is platform chrome, not part of the user’s code.',
@@ -135,7 +135,7 @@ export const SCREENS: Screen[] = [
     routeFile: 'app/[user]/page.tsx',
     state: 'friend-new',
     act: 'collapse-chat',
-    live: false,
+    live: true,
     assertions: [
       'At 1440 the content area REFLOWS to fill the width the panel had; it does not leave a 400px hole.',
       'At 375 the sheet is gone entirely and a persistent toggle remains visible.',

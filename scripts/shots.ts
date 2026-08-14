@@ -74,8 +74,24 @@ function guardPlatformDb(env: NodeJS.ProcessEnv, repoRoot: string): void {
   )
 }
 
-/** What a seeder hands back: the cookie (if any) and the path substitutions. */
-type Fixture = { sessionId?: string; slug?: string; token?: string }
+/**
+ * What a seeder hands back.
+ *
+ * `sessionId` mints a cookie directly, which produces an AUTHENTICATED but
+ * LOCKED session — the derived key lives in the SERVER's in-process keymap and
+ * a cookie made out here can never be in it. That is exactly right for /unlock
+ * and wrong for everything else.
+ *
+ * `password` instead makes the harness log in through the real form, which is
+ * the only way to get an UNLOCKED session: the key has to be put in the map by
+ * the process that will later read it.
+ */
+type Fixture = {
+  sessionId?: string
+  password?: string
+  slug?: string
+  token?: string
+}
 
 type Seeder = (dbPath: string, usersDir: string) => Promise<Fixture>
 
@@ -123,6 +139,51 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
       })
       consumeInvite(db, { token, accountId: id, at: Date.now() })
       return { token, slug: 'spenttest' }
+    } finally {
+      db.close()
+    }
+  },
+
+  /** A friend who has registered but has no dashboard built yet. */
+  'friend-new': async (dbPath) => {
+    const { openPlatformDb } = await import('../lib/db/platform')
+    const { mintInvite } = await import('../lib/invite/tokens')
+    const { registerFromInvite } = await import('../lib/invite/register')
+    const db = openPlatformDb(dbPath)
+    try {
+      // Through the REAL registration path, not a hand-built account: it is
+      // the only way to be sure the screenshot shows the state a friend is
+      // actually in after S2, down to the empty encrypted database.
+      const password = 'TEST-SHOTS-NOT-A-REAL-PASSWORD'
+      // A DIFFERENT slug from the invite-valid fixture: every state in a run
+      // shares one database, and two invites for one slug is a UNIQUE
+      // violation — which is the constraint doing its job, not a nuisance.
+      const token = mintInvite(db, { slug: 'newfriendtest', at: Date.now() })
+      const result = await registerFromInvite(db, { token, password, at: Date.now() })
+      if (!result.ok) throw new Error(`friend-new seed failed: ${result.reason}`)
+      return { slug: 'newfriendtest', password }
+    } finally {
+      db.close()
+    }
+  },
+
+  /** A friend whose dashboard has been deployed — devone's, in the registry. */
+  'friend-built': async (dbPath, usersDir) => {
+    const { openPlatformDb } = await import('../lib/db/platform')
+    const { createAccount } = await import('../lib/auth/accounts')
+    const { cpSync, mkdirSync } = await import('node:fs')
+    const db = openPlatformDb(dbPath)
+    try {
+      const password = 'TEST-SHOTS-NOT-A-REAL-PASSWORD'
+      await createAccount(db, { slug: 'devone', role: 'user', password })
+      // The dashboard CODE is imported from the repo by the registry; only its
+      // data comes from USERS_DIR. Copying the loudly-fake synthetic.db in is
+      // what lets the real component render — and it is synthetic by
+      // construction, which is the only kind of database this harness may ever
+      // touch.
+      mkdirSync(join(usersDir, 'devone'), { recursive: true })
+      cpSync(join(REPO, 'users', 'devone', 'synthetic.db'), join(usersDir, 'devone', 'synthetic.db'))
+      return { slug: 'devone', password }
     } finally {
       db.close()
     }
@@ -279,6 +340,17 @@ async function main(): Promise<void> {
           ])
         }
         const page = await context.newPage()
+
+        if (fixture.password) {
+          // The real form, because an unlocked session needs the key put into
+          // the SERVER's keymap by the server itself.
+          await page.goto(`${ORIGIN}/login`, { waitUntil: 'networkidle' })
+          await page.fill('input[name="slug"]', fixture.slug ?? '')
+          await page.fill('input[name="password"]', fixture.password)
+          await page.click('button[type="submit"]')
+          await page.waitForLoadState('networkidle')
+        }
+
         await page.goto(`${ORIGIN}${pathFor(screen, fixture)}`, {
           waitUntil: 'networkidle',
         })

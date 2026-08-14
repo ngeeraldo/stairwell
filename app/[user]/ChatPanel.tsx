@@ -1,15 +1,14 @@
 // app/[user]/ChatPanel.tsx
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 // Type-only: lib/spec/author.ts pulls in server-only modules (better-sqlite3
 // et al), and lib/spec/stored.ts pulls in the validators. `import type` is
 // erased at compile time regardless of bundler, so none of that reaches the
 // client bundle — a value import here would.
 import type { Proposal } from '@/lib/spec/author'
 import type { StoredSpec } from '@/lib/spec/stored'
-
-const TOGGLE_KEY = 'stairwell:chat-open'
+import { Button } from '@/components/ui/button'
 
 type Turn = {
   role: 'user' | 'assistant'
@@ -606,7 +605,6 @@ export default function ChatPanel({
    * its own — see SpecCard's `first`. */
   first: boolean
 }) {
-  const [open, setOpen] = useState(true)
   // Seeded from the DB record so a friend who closes the tab mid-decision
   // comes back to the same card, still confirmable.
   const [panel, setPanel] = useState<PanelState>({
@@ -642,17 +640,6 @@ export default function ChatPanel({
       setPanel((p) => ({ ...p, confirmError: true }))
     }
     setConfirming(false)
-  }
-
-  useEffect(() => {
-    setOpen(window.localStorage.getItem(TOGGLE_KEY) !== 'closed')
-  }, [])
-
-  function toggle() {
-    setOpen((wasOpen) => {
-      window.localStorage.setItem(TOGGLE_KEY, wasOpen ? 'closed' : 'open')
-      return !wasOpen
-    })
   }
 
   async function send(text: string) {
@@ -696,17 +683,21 @@ export default function ChatPanel({
     setBusy(false)
   }
 
-  if (!open) {
-    return (
-      <button type="button" onClick={toggle}>
-        Show chat
-      </button>
-    )
-  }
-
+  // OPEN/CLOSED IS NOT THIS COMPONENT'S BUSINESS ANY MORE.
+  //
+  // It used to own the toggle and persist it in localStorage under
+  // 'stairwell:chat-open'. Both are gone: the spec lists persistence of panel
+  // state across sessions as a non-goal, and the default now comes from the
+  // server — open until a dashboard is deployed, collapsed after (onboarding
+  // ledger D7). app/[user]/Shell.tsx owns the boolean and the button, because
+  // it is the layer that knows which arrangement they mean.
+  //
+  // Keeping the old behaviour would have meant a friend who collapsed the chat
+  // once during their interview never seeing it open on the morning their
+  // dashboard landed.
   return (
-    <section aria-label="Chat">
-      <ol>
+    <section aria-label="Chat" className="flex h-full min-h-0 flex-col gap-4">
+      <ol className="min-h-0 flex-1 space-y-3 overflow-y-auto text-sm">
         {panel.turns.map((turn, i) => (
           <TurnRow key={i} turn={turn} busy={busy} onRetry={(source) => void send(source)} />
         ))}
@@ -723,6 +714,7 @@ export default function ChatPanel({
       />
 
       <form
+        className="space-y-2"
         onSubmit={(event) => {
           event.preventDefault()
           void send(draft)
@@ -732,15 +724,13 @@ export default function ChatPanel({
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           placeholder="Say anything — every request is data I need."
+          rows={3}
+          className="w-full resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         />
-        <button type="submit" disabled={busy}>
+        <Button type="submit" size="lg" className="w-full" disabled={busy}>
           Send
-        </button>
+        </Button>
       </form>
-
-      <button type="button" onClick={toggle}>
-        Hide chat
-      </button>
     </section>
   )
 }
