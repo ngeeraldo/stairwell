@@ -14,89 +14,30 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 /**
- * What jsdom does not implement and Radix expects.
+ * Make this environment one React 19 will treat `act` as authoritative in.
  *
- * shadcn's Dialog, Tabs, Checkbox and Collapsible are Radix underneath
- * (onboarding ledger D1), and Radix reaches for browser APIs jsdom has never
- * had. Each stub below exists because its absence THROWS rather than degrades
- * — so they are installed once, here, rather than rediscovered one component
- * at a time.
+ * One line, and it is load-bearing. Unflagged, React logs "The current testing
+ * environment is not configured to support act(...)" and does not guarantee
+ * that `act`'s promise has drained its work queue — so an assertion after an
+ * awaited click can read pre-update DOM and pass for the wrong reason. That is
+ * exactly the failure the tests using this file exist to prevent, so the
+ * warning is treated as a defect rather than as noise.
  *
- * They are STUBS, not implementations. Nothing in this suite asserts on
- * layout, and nothing here should ever grow into a fake layout engine: a
- * ResizeObserver that reported plausible sizes would let a test claim
- * something about arrangement that only a browser can actually settle. That
- * is what the Playwright review (onboarding ledger D16) is for.
+ * THIS FUNCTION USED TO CARRY A PILE OF RADIX SHIMS, and the plan for this
+ * task said they were required: ResizeObserver, DOMRect, matchMedia, the
+ * pointer-capture trio, scrollIntoView, HTMLDialogElement's methods. The
+ * red-test drill disproved it. jsdom 29 really is missing all of them (probed
+ * directly), but shadcn 4's Dialog, Tabs, Checkbox and Collapsible were each
+ * rendered and clicked with none installed and none threw. Carrying stubs that
+ * nothing needs, under a comment claiming they were load-bearing, would have
+ * been worse than not having them: the next person to touch this file would
+ * have believed the comment.
+ *
+ * If a future component genuinely needs one, add it back WITH the test that
+ * goes red without it.
  */
 export function installDomShims(): void {
-  // React 19 refuses to treat `act` as authoritative without this flag, and
-  // says so on stderr: "The current testing environment is not configured to
-  // support act(...)". It is not cosmetic — unflagged, React does not
-  // guarantee that `act`'s promise has drained its work queue, so an assertion
-  // after an awaited click can read pre-update DOM and pass for the wrong
-  // reason. That is precisely the failure this whole file exists to prevent,
-  // so the warning is treated as a defect rather than as noise.
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-
-  if (!globalThis.ResizeObserver) {
-    globalThis.ResizeObserver = class {
-      observe(): void {}
-      unobserve(): void {}
-      disconnect(): void {}
-    } as unknown as typeof ResizeObserver
-  }
-
-  if (!globalThis.DOMRect) {
-    globalThis.DOMRect = class {
-      top = 0
-      right = 0
-      bottom = 0
-      left = 0
-      constructor(
-        public x = 0,
-        public y = 0,
-        public width = 0,
-        public height = 0,
-      ) {}
-      toJSON(): object {
-        return {}
-      }
-    } as unknown as typeof DOMRect
-  }
-
-  if (typeof window !== 'undefined' && !window.matchMedia) {
-    window.matchMedia = ((query: string) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addEventListener() {},
-      removeEventListener() {},
-      dispatchEvent: () => false,
-      addListener() {},
-      removeListener() {},
-    })) as unknown as typeof window.matchMedia
-  }
-
-  const element = Element.prototype as unknown as Record<string, unknown>
-  element.hasPointerCapture ??= () => false
-  element.setPointerCapture ??= () => {}
-  element.releasePointerCapture ??= () => {}
-  element.scrollIntoView ??= () => {}
-
-  // jsdom parses <dialog> but implements neither method. Radix's Dialog does
-  // not use the native element, so this is only for anything that does.
-  const dialog =
-    typeof HTMLDialogElement === 'undefined'
-      ? undefined
-      : (HTMLDialogElement.prototype as unknown as Record<string, unknown>)
-  if (dialog) {
-    dialog.showModal ??= function (this: HTMLDialogElement) {
-      this.open = true
-    }
-    dialog.close ??= function (this: HTMLDialogElement) {
-      this.open = false
-    }
-  }
 }
 
 export type Mounted = { container: HTMLElement; unmount: () => Promise<void> }

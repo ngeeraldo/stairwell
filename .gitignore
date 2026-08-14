@@ -42,3 +42,9 @@ yarn-error.log*
 
 # macOS
 .DS_Store
+
+# Screenshot review artifacts (onboarding ledger D16). Kept on disk so a
+# review has evidence rather than a claim, never committed — they are large,
+# they change on every styling edit, and they are worthless as history.
+.screenshots/
+test-results/

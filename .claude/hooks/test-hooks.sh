@@ -377,6 +377,16 @@ else
   class_check "guard:platform" "a non-prose file under platform/prompts/ stays guarded" \
     platform/prompts/loader.ts
 
+  # Vendored shadcn/ui source is exempt for the same reason platform/prompts
+  # prose is: it is written by a generator and never hand-edited. The second
+  # assertion is the one that matters — a rule of `components/*` instead of
+  # `components/ui/*` would exempt every component we write ourselves, which
+  # is where the behaviour actually lives.
+  class_check exempt "components/ui/* classifies exempt (vendored shadcn)" \
+    components/ui/button.tsx
+  class_check "guard:platform" "our own components/ stay guarded (glob not over-broad)" \
+    components/SpecCard.tsx
+
   class_check "guard:platform" "users/registry.ts is guarded, not unguarded" \
     users/registry.ts
   class_check "guard:user:alice" "users/alice/queries.ts still scopes to its own user" \

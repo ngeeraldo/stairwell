@@ -81,16 +81,36 @@ touched. **The complete list of new dependencies, and nothing outside it:**
 **Two costs this ruling accepts, named so they are not rediscovered as
 surprises:**
 
-1. **Radix needs jsdom shims.** `ResizeObserver`, `DOMRect`,
-   `Element.prototype.hasPointerCapture` / `setPointerCapture` /
-   `releasePointerCapture`, `scrollIntoView`, and `matchMedia` do not exist in
-   jsdom, and Radix's primitives touch them. They are stubbed once in
-   `tests/support/dom.tsx` rather than per test file.
+1. ~~**Radix needs jsdom shims.**~~ **Wrong — disproved during Task 2, and
+   recorded rather than quietly deleted.** The claim was that
+   `ResizeObserver`, `DOMRect`, `matchMedia`, the pointer-capture trio and
+   `scrollIntoView` would have to be stubbed because Radix touches them.
+   jsdom 29 really is missing all of them (probed directly), but Dialog, Tabs,
+   Checkbox and Collapsible were each rendered *and clicked* with no stubs
+   installed and none threw. `installDomShims()` is now one line — React 19's
+   `IS_REACT_ACT_ENVIRONMENT`, which IS load-bearing and whose absence React
+   warns about on stderr. A stub added later must arrive with the test that
+   goes red without it.
 2. **The components are vendored source, not a versioned dependency.**
    `components/ui/*` is third-party code living in this repo, closest in kind
    to `platform/prompts/*` — which `.githooks/pre-commit` already exempts from
    Gate B by an explicit arm. It gets the same treatment, and anything else
    under `components/` stays guarded.
+
+**What the CLI actually installed, against the table above.** Recorded because
+the plan said to stop and check rather than accept a surprise:
+
+- **`radix-ui@1.6.7`, one package, not six `@radix-ui/react-*`.** Same vendor,
+  newer packaging. Accepted.
+- **`shadcn` itself is a runtime dependency**, and correctly so: the generated
+  `app/globals.css` does `@import "shadcn/tailwind.css"`, which resolves from
+  `node_modules` at build time. Left where the CLI put it — `dependencies` is
+  the position that survives someone adding `--omit=dev` to the deploy.
+- **`tw-animate-css`**, imported by the generated `globals.css`. CSS only.
+- **The CLI's default primitive layer is now Base UI, not Radix.** Pinned to
+  Radix with `--base radix` because Radix is what this ledger enumerated and
+  approved. `--preset nova`, `baseColor: neutral`.
+- **`--defaults` would have wired next/font's Geist.** Removed — see D1a.
 
 ### D1a. The shadcn theme is kept; exactly two tokens are set
 

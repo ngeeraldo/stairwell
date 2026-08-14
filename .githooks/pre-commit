@@ -135,6 +135,19 @@ _gate_b_class() {
     platform/prompts/*.md) echo "exempt"; return ;;
   esac
 
+  # Vendored shadcn/ui source. Third-party code that happens to live in this
+  # repo, for exactly the same reason platform/prompts/*.md above is exempt:
+  # it is written by `npx shadcn@latest add`, never hand-edited, and a test
+  # over it would pin somebody else's implementation rather than our
+  # behaviour. Ours is composed on top, in lib/ui/, which is guarded normally.
+  #
+  # Scoped to components/ui/ specifically. Anything ELSE under components/ is
+  # ours and is claimed by the guarded arm further down — the same distinction
+  # the prompts arm draws by matching *.md rather than the whole directory.
+  case "$p" in
+    components/ui/*) echo "exempt"; return ;;
+  esac
+
   # Docs first: a .md is never a test, even under tests/.
   case "$p" in
     *.md|docs/*|LICENSE) echo "exempt"; return ;;
@@ -181,6 +194,9 @@ _gate_b_class() {
   # Guarded scopes.
   case "$p" in
     app/*|lib/*|platform/*|middleware.ts|scripts/*) echo "guard:platform"; return ;;
+    # components/ui/* was already claimed as exempt above; anything else here
+    # is ours and needs a test under tests/ like any other platform code.
+    components/*) echo "guard:platform"; return ;;
     modules/*) echo "guard:modules"; return ;;
     .githooks/*|.claude/hooks/*) echo "guard:guards"; return ;;
     users/*/*)
