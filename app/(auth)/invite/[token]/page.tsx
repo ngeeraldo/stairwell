@@ -6,7 +6,16 @@ import { appendMetric } from '@/lib/db/appendOnly'
 import { getDb } from '@/lib/db/instance'
 import { readInvite } from '@/lib/invite/tokens'
 import { readDeviceClass } from '@/lib/metrics/deviceClass'
-import { ACCEPT_BUTTON, DEAD_LINK, GREETING, PROMISE_BLOCK } from '@/lib/copy/onboarding'
+import {
+  ACCEPT_BUTTON,
+  DEAD_LINK,
+  GREETING,
+  PASSWORD_ERRORS,
+  PASSWORD_WARNING,
+  PROMISE_BLOCK,
+} from '@/lib/copy/onboarding'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { SetPasswordForm } from './SetPasswordForm'
 
 /**
  * S0 and S1 — the dead link, and the deal.
@@ -30,10 +39,13 @@ import { ACCEPT_BUTTON, DEAD_LINK, GREETING, PROMISE_BLOCK } from '@/lib/copy/on
  */
 export default async function InvitePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ token: string }>
+  searchParams: Promise<{ step?: string; error?: string }>
 }) {
   const { token } = await params
+  const { step, error } = await searchParams
   const invite = readInvite(getDb(), token)
 
   if (invite.kind === 'invalid') {
@@ -49,6 +61,61 @@ export default async function InvitePage({
         <Card className="w-full max-w-[420px]">
           <CardContent className="pt-6">
             <p>{DEAD_LINK}</p>
+          </CardContent>
+        </Card>
+      </main>
+    )
+  }
+
+  if (step === 'password') {
+    // S2 — the single most consequential screen in the product.
+    //
+    // Reached only through a VALID invite: the arm above already returned the
+    // dead-link card otherwise. A friend who accepted and then took a week may
+    // find the link revoked in between, and must see that line rather than a
+    // password form that cannot succeed.
+    //
+    // No metrics row here. invite_opened belongs to S1 and promise_accepted to
+    // the accept POST; this screen's events (password_set, db_created) are
+    // written by the registration route when it succeeds, because until then
+    // nothing has happened worth recording.
+    return (
+      <main className="grid min-h-dvh place-items-center p-4">
+        <Card className="w-full max-w-[420px]">
+          <CardHeader>
+            <CardTitle>Pick your password</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {/*
+              The destruction warning, verbatim, and visually distinct. The
+              spec: "do not soften", and "the destruction warning gets the room
+              to itself" — so it sits above the fields with nothing competing
+              with it.
+
+              `destructive`, not the blue accent. The design direction is
+              explicit that destructive contexts keep the standard red/amber
+              treatment and never take the accent, and this is the most
+              destructive thing the product can do to someone.
+            */}
+            {/*
+              The tint and the red border are added to the stock destructive
+              variant, which in this preset is red text inside a NEUTRAL
+              border on white. The spec asks for "visually distinct
+              (bordered/tinted)", and the first screenshot review found the
+              stock version read as ordinary prose that happened to be red —
+              it did not announce itself as a warning before a word was read.
+              Tinting raises the contrast rather than lowering it, so it is not
+              the softening the spec forbids.
+            */}
+            <Alert variant="destructive" className="border-destructive/40 bg-destructive/5">
+              <AlertTitle>{PASSWORD_WARNING.heading}</AlertTitle>
+              <AlertDescription>{PASSWORD_WARNING.body}</AlertDescription>
+            </Alert>
+
+            <SetPasswordForm
+              action={`/api/invite/register?token=${encodeURIComponent(token)}`}
+              error={error === 'server' ? PASSWORD_ERRORS.server : undefined}
+            />
           </CardContent>
         </Card>
       </main>

@@ -82,7 +82,7 @@ export const SCREENS: Screen[] = [
     path: '/invite/TOKEN?step=password',
     routeFile: 'app/(auth)/invite/[token]/page.tsx',
     state: 'invite-valid',
-    live: false,
+    live: true,
     assertions: [
       'The heading reads "Pick your password".',
       'The warning block is visually distinct — bordered and tinted, destructive/amber, NOT the blue accent. It reads as a warning at a glance, before any word is read.',
