@@ -169,6 +169,44 @@ describe('announceDeploy', () => {
     expect(readTranscript(db, accountId).at(-1)!.body).toContain('Added an export button')
   })
 
+  it('does not claim a FIRST build was a rebuild', async () => {
+    // Nothing was rebuilt on the morning a first dashboard lands — there was
+    // nothing there before. This is the first thing the friend reads about
+    // the thing they were promised, so it has to describe what happened.
+    const accountId = await confirmedAccount('firstbuild')
+    expect(announceDeploy(db, 'firstbuild', () => 2_000).announced).toBe(true)
+
+    const body = readTranscript(db, accountId).at(-1)!.body
+    expect(body).not.toMatch(/rebuil/i)
+    expect(body).toContain('Added a streak')
+  })
+
+  it('does call a later build a rebuild', async () => {
+    // The other half: once something IS being built for this account, "just
+    // rebuilt" is the honest word, and a conditional that always took the
+    // first-build arm would be just as wrong.
+    const accountId = await confirmedAccount('rebuildlater')
+    announceDeploy(db, 'rebuildlater', () => 2_000)
+
+    const secondId = insertSpec(db, {
+      accountId,
+      conversationId: 'conv-rebuildlater',
+      promptSha: 'sha-rebuildlater-0002',
+      payload: currentPayload({
+        change_summary: 'Renamed the eating-out panel TEST.',
+        based_on_version: 1,
+      }),
+      mockupHtml: MOCKUP,
+      at: 4_000,
+    })
+    confirmSpec(db, { specId: secondId, accountId, at: 4_500 })
+
+    expect(announceDeploy(db, 'rebuildlater', () => 5_000).announced).toBe(true)
+    const body = readTranscript(db, accountId).at(-1)!.body
+    expect(body).toMatch(/rebuil/i)
+    expect(body).toContain('Renamed the eating-out panel')
+  })
+
   it('announces a legacy confirmed spec using its title', async () => {
     // A legacy row has no change_summary. Falling back to the title beats
     // saying nothing on the one morning the promise is being kept.

@@ -443,6 +443,15 @@ describe('renderSpecMarkdown', () => {
     expect(renderSpecMarkdown(version, meta)).toContain('`walked_today`')
   })
 
+  it('carries each SCREEN id too, for the same reason', () => {
+    // lib/spec/diff.ts reports screens by id and the authoring prompt asks for
+    // ids to be reused verbatim, so a screen id that appears everywhere except
+    // the build contract on disk is the one place the two conversations cannot
+    // be joined up. Asserted as the heading, not just the substring, so a
+    // panel heading elsewhere cannot satisfy it.
+    expect(renderSpecMarkdown(version, meta)).toMatch(/^### `today` — Today$/m)
+  })
+
   it('labels each value with its source kind', () => {
     const md = renderSpecMarkdown(version, meta)
     expect(md).toMatch(/entered.*One tap per day/i)

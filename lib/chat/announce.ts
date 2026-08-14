@@ -13,7 +13,7 @@
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, appendTranscript } from '@/lib/db/appendOnly'
 import { conversationIdFor } from '@/lib/chat/conversation'
-import { currentSpec } from '@/lib/db/specs'
+import { currentSpec, hasConfirmedSpecBelow } from '@/lib/db/specs'
 import { readStoredSpec } from '@/lib/spec/stored'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 
@@ -123,7 +123,17 @@ export function announceDeploy(
   const stored = readStoredSpec(spec.payload)
   const headline =
     stored.kind === 'version' ? stored.version.change_summary : stored.payload.title
-  const body = `Your dashboard was just rebuilt: ${headline}`
+  // "Rebuilt" is false on the one morning it matters most: a first build had
+  // nothing to rebuild, and this sentence is the first thing the friend reads
+  // about the dashboard they were promised. Bounded by the confirmed version's
+  // own number rather than "has this account ever confirmed anything", the
+  // same question and the same helper the delivery promise on the card uses
+  // (ledger D9) — so the sentence that promised the build and the sentence
+  // announcing it cannot disagree about which one this was.
+  const first = !hasConfirmedSpecBelow(db, account.id, spec.version)
+  const body = first
+    ? `Your dashboard is live: ${headline}`
+    : `Your dashboard was just rebuilt: ${headline}`
 
   const at = now()
   // Both inserts commit together or not at all. Two independent INSERTs

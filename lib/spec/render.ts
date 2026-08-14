@@ -137,9 +137,10 @@ function valueLine(value: ValueSpec): string {
  * precedes the first line, and that test goes red if the inline
  * `safeMarkdown` call there is removed. What a single-line fixture like
  * `'# pwned'` cannot observe at an inline site is narrower than that: only
- * multi-line input exercises it, which is why the red-test control for
- * THIS renderer's `panel.intent` site (see task-5-report.md) had to use a
- * fixture that puts the attack on its own line to begin with.
+ * multi-line input exercises it. That is why the red-test control proving
+ * THIS renderer's `panel.intent` site is really escaped had to use a fixture
+ * that puts the attack on its own line to begin with — a single-line one goes
+ * green whether the escaping is there or not, and would have pinned nothing.
  */
 function renderPanel(panel: Panel): string {
   const parts: string[] = [
@@ -168,8 +169,17 @@ function entryLine(entry: EntryWidget): string {
   return `${safeMarkdown(entry.description)}${fields}${annotates}`
 }
 
+/** A screen's heading carries its id for the same reason renderPanel's does:
+ * lib/spec/diff.ts reports screens by stable id, and the authoring prompt asks
+ * for ids to be reused verbatim across versions. Without it, the build
+ * contract on disk was the one document in that conversation where screen ids
+ * did not appear — so a diff saying "screen `history` changed" named something
+ * spec.md never mentioned. */
 function renderScreen(screen: Screen): string {
-  return `### ${safeMarkdown(screen.title)}\n\n${screen.panels.map(renderPanel).join('\n\n')}`
+  return (
+    `### \`${screen.id}\` — ${safeMarkdown(screen.title)}\n\n` +
+    screen.panels.map(renderPanel).join('\n\n')
+  )
 }
 
 /** `` `table` — status — purpose `` for one data requirement, mirroring

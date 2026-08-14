@@ -43,6 +43,16 @@ let db: UserDb
  * this same boundary, which is also why dayKey logic is duplicated instead
  * of shared). `at`'s value never matters to any assertion below — only
  * `day`, the primary key idempotency turns on, does.
+ *
+ * The limit of that, stated plainly rather than left to be inferred: because
+ * this is a COPY, nothing below can go red if the route's own statement
+ * changes. These tests pin the table shape this user's schema defines and the
+ * round trip from a write of that shape to what queries.ts reads back — not
+ * that the route still writes it. tests/routing/walkRoute.test.ts is the only
+ * thing pinning the route, and it is platform scope by the same boundary. A
+ * change to the route's SQL therefore has to be checked in both places; the
+ * describe block below is named for what it actually verifies so nobody reads
+ * a green run here as coverage of the route.
  */
 function insertWalk(handle: UserDb, day: string): void {
   handle.prepare('INSERT OR IGNORE INTO walks (day, at) VALUES (?, ?)').run(day, 1)
@@ -63,7 +73,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-describe('a tap through the write path is what the queries read back', () => {
+describe("the walks table's shape, and what queries.ts reads back out of it", () => {
   it('a tap becomes a walked day the queries can see', () => {
     insertWalk(db, '2026-08-13')
     expect(walkedOn(db, '2026-08-13')).toBe(true)
