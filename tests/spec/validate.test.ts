@@ -80,6 +80,21 @@ describe('parseSpecDraft', () => {
     ['a bad requirement status', draft({ data_requirements: [{ table: 't', purpose: 'p', status: 'maybe' }] })],
     ['an absent entry key', draft(screensWith(omit(panel(), 'entry')))],
     ['an absent context_of_use key', draft(screensWith(omit(panel(), 'context_of_use')))],
+    // These two silently coerced to [] while every neighbouring field threw.
+    // data_requirements is what tells the builder which tables a version
+    // needs, so coercing it means "this dashboard needs no tables" in a build
+    // contract that can never be corrected.
+    ['a non-array data_requirements', draft({ data_requirements: 'walks' })],
+    ['an absent data_requirements key', omit(draft(), 'data_requirements')],
+    ['a null data_requirements', draft({ data_requirements: null })],
+    [
+      'a non-array entry fields',
+      draft(screensWith(panel({ entry: { description: 'd', fields: 'walked', annotates: null } }))),
+    ],
+    [
+      'an absent entry fields key',
+      draft(screensWith(panel({ entry: { description: 'd', annotates: null } }))),
+    ],
   ])('rejects %s', (_label, raw) => {
     expect(() => parseSpecDraft(raw)).toThrow(SpecShapeError)
   })
@@ -157,6 +172,16 @@ describe('parseSpecVersion', () => {
 
   it('throws SpecShapeError on malformed JSON', () => {
     expect(() => parseSpecVersion('{"title": "broken')).toThrow(SpecShapeError)
+  })
+
+  it('rejects a stored row whose data_requirements is null rather than reading it as "no tables"', () => {
+    // The read path is the one that matters most here: a stored row is a
+    // build contract, and `specs` rejects UPDATE, so a null laundered into []
+    // would tell whoever builds this version that it needs no tables at all —
+    // silently, forever, in the file whose own header calls itself the last
+    // gate.
+    const sealed = { ...draft(), based_on_version: 1, data_requirements: null }
+    expect(() => parseSpecVersion(JSON.stringify(sealed))).toThrow(/data_requirements/)
   })
 })
 

@@ -73,9 +73,26 @@ function oneOf<T extends string>(value: string, allowed: readonly T[], at: strin
   return value as T
 }
 
-function nonEmptyArray(src: Record<string, unknown>, key: string, at: string): unknown[] {
+/**
+ * A list that may legitimately be empty — but must be PRESENT and must be an
+ * array. Absent, null, and a bare string all throw.
+ *
+ * The alternative, `Array.isArray(x) ? x : []`, reads as tolerance and is
+ * actually a silent claim: it turns "the model did not answer this" into "the
+ * answer is none", in a build contract that `specs` will never let anyone
+ * correct. `data_requirements` is the sharpest case — it is what tells the
+ * builder which tables a version needs, so a laundered [] says "this dashboard
+ * needs no tables". Every neighbouring field in this file throws; a last gate
+ * that is strict about eleven fields and lenient about two is not a gate.
+ */
+function arrayField(src: Record<string, unknown>, key: string, at: string): unknown[] {
   const value = src[key]
   if (!Array.isArray(value)) throw new SpecShapeError(`${at}.${key} is not an array`)
+  return value
+}
+
+function nonEmptyArray(src: Record<string, unknown>, key: string, at: string): unknown[] {
+  const value = arrayField(src, key, at)
   // Enforced HERE, not in SPEC_JSON_SCHEMA: minItems is outside the supported
   // structured-output subset and would be silently ignored there.
   if (value.length === 0) throw new SpecShapeError(`${at}.${key} is empty`)
@@ -111,9 +128,7 @@ function entryWidget(raw: unknown, at: string): EntryWidget {
   }
   return {
     description: text(src, 'description', at),
-    fields: (Array.isArray(src.fields) ? src.fields : []).map((f, i) =>
-      entryField(f, `${at}.fields[${i}]`),
-    ),
+    fields: arrayField(src, 'fields', at).map((f, i) => entryField(f, `${at}.fields[${i}]`)),
     // A present-but-blank annotates is the same class of mistake as a blank
     // required string anywhere else in this file (see text()): it must
     // throw, not launder into null. Laundering it would make checkInvariants
@@ -228,8 +243,8 @@ function draftFrom(src: Record<string, unknown>): SpecDraft {
     background: text(src, 'background', 'spec'),
     change_summary: text(src, 'change_summary', 'spec'),
     screens: nonEmptyArray(src, 'screens', 'spec').map((s, i) => screen(s, `screens[${i}]`)),
-    data_requirements: (Array.isArray(src.data_requirements) ? src.data_requirements : []).map(
-      (r, i) => requirement(r, `data_requirements[${i}]`),
+    data_requirements: arrayField(src, 'data_requirements', 'spec').map((r, i) =>
+      requirement(r, `data_requirements[${i}]`),
     ),
     open_questions: textList(src, 'open_questions', 'spec'),
   }
