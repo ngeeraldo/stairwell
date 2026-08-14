@@ -18,7 +18,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   WrongKeyError,
+  createEmptyEncryptedUserDb,
   encryptedUserDbExists,
+  encryptedUserDbHasTables,
   encryptedUserDbPath,
   openEncryptedUserDb,
 } from '@/lib/db/encryptedUserDb'
@@ -415,9 +417,17 @@ describe('openEncryptedUserDb', () => {
     // would ever reap it.
     //
     // This is the failure path that throws BEFORE the schema exec — the
-    // readFileSync of a missing schema.sql, evaluated as its argument.
-    mkdirSync(join(root, 'devthree'), { recursive: true })
-    // Deliberately no schema.sql: the exec() call has nothing to read.
+    // readFileSync of schema.sql, evaluated as exec's argument.
+    //
+    // The inducer used to be a MISSING schema.sql. It cannot be any more: a
+    // user folder with no schema is now a legitimate, expected state — every
+    // invited friend is in it between setting a password and having a
+    // dashboard built (onboarding ledger D3) — so a missing file no longer
+    // throws at all. An UNREADABLE one still does, by exactly the same route,
+    // which is what this test was always really about. A directory where a
+    // file should be gives EISDIR deterministically, with no dependence on
+    // file permissions or on who is running the suite.
+    mkdirSync(join(root, 'devthree', 'schema.sql'), { recursive: true })
     expect(() => openEncryptedUserDb('devthree', KEY)).toThrow()
     expect(encryptedUserDbExists('devthree')).toBe(false)
     expect(creatingDebris('devthree')).toEqual([])
@@ -444,9 +454,13 @@ describe('openEncryptedUserDb', () => {
     // The consequence of the leak above: once schema.sql is fixed, opening
     // with a key must succeed cleanly — not get relabelled as a wrong key
     // because a stub from the earlier failure was still on disk.
-    mkdirSync(join(root, 'devthree'), { recursive: true })
+    //
+    // Same EISDIR inducer as the test above, and for the same reason: a
+    // missing schema.sql is a legitimate state now and no longer fails.
+    mkdirSync(join(root, 'devthree', 'schema.sql'), { recursive: true })
     expect(() => openEncryptedUserDb('devthree', KEY)).toThrow()
 
+    rmSync(join(root, 'devthree', 'schema.sql'), { recursive: true })
     writeFileSync(join(root, 'devthree', 'schema.sql'), SCHEMA)
     let db: ReturnType<typeof openEncryptedUserDb> | undefined
     expect(() => {
@@ -466,5 +480,101 @@ describe('openEncryptedUserDb', () => {
     } finally {
       plain.close()
     }
+  })
+})
+
+/**
+ * A friend who has just set their password: an account, a key, and no
+ * dashboard folder at all. onboarding ledger D3.
+ *
+ * This is the state every invited friend is in for days — between the moment
+ * they choose a password and the moment Nico builds their dashboard from a
+ * confirmed spec — so it is the state the code has to be right about.
+ */
+describe('a database with nothing in it', () => {
+  const NEWCOMER = 'friendone'
+
+  it('creates users/<slug>/ when nothing has ever created it', () => {
+    expect(existsSync(join(root, NEWCOMER))).toBe(false)
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    expect(existsSync(encryptedUserDbPath(NEWCOMER))).toBe(true)
+  })
+
+  it('writes a real encrypted file, not a zero-byte placeholder', () => {
+    // The distinction the user_version pragma exists for. A zero-byte file
+    // opens under ANY key, so without a real write there is nothing encrypted
+    // to be wrong about — and the first thing to touch it later would succeed
+    // with the wrong key and then fail incomprehensibly.
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    const bytes = readFileSync(encryptedUserDbPath(NEWCOMER))
+    expect(bytes.length).toBeGreaterThan(0)
+    expect(bytes.subarray(0, 16).toString('utf8')).not.toBe('SQLite format 3 ')
+    expect(() => openEncryptedUserDb(NEWCOMER, OTHER_KEY, { readonly: true })).toThrow(
+      WrongKeyError,
+    )
+  })
+
+  it('holds zero tables, so the render path knows there is no data yet', () => {
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
+  })
+
+  it('reports no tables for a user who has no file at all', () => {
+    expect(encryptedUserDbHasTables('nobodyatall', KEY)).toBe(false)
+  })
+
+  it('acquires tables once a schema exists and something writes', () => {
+    // The whole lifecycle in four lines: password set, dashboard built, first
+    // write. Only the writable open applies a schema — the render path never
+    // does, which is what keeps a page from migrating a friend's database.
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
+
+    makeUserFolder(NEWCOMER)
+    openEncryptedUserDb(NEWCOMER, KEY).close()
+
+    expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(true)
+  })
+
+  it('leaves no .creating-* debris behind', () => {
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    expect(creatingDebris(NEWCOMER)).toEqual([])
+  })
+
+  it('does not clobber a database that already holds a row', () => {
+    // A retry after a partial registration must never replace a file that
+    // already has data in it. The link() EEXIST property from step 6a,
+    // restated for this new entry point.
+    makeUserFolder(NEWCOMER)
+    const db = openEncryptedUserDb(NEWCOMER, KEY)
+    db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
+    db.close()
+
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+
+    const reopened = openEncryptedUserDb(NEWCOMER, KEY, { readonly: true })
+    try {
+      expect(
+        (reopened.prepare('SELECT count(*) AS n FROM walks').get() as { n: number }).n,
+      ).toBe(1)
+    } finally {
+      reopened.close()
+    }
+  })
+
+  it('still reports a wrong key as a wrong key when there is no schema to exec', () => {
+    // The writable path's key check IS the schema exec. With no schema, it
+    // falls back to reading sqlite_schema — and this asserts that fallback
+    // still names the failure rather than letting it surface later as an
+    // unnamed driver error.
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    expect(() => openEncryptedUserDb(NEWCOMER, OTHER_KEY)).toThrow(WrongKeyError)
+  })
+
+  it('a writable open with no schema neither creates tables nor fails', () => {
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    const db = openEncryptedUserDb(NEWCOMER, KEY)
+    db.close()
+    expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
   })
 })

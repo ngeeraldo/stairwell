@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3-multiple-ciphers'
 import { randomBytes } from 'node:crypto'
-import { existsSync, linkSync, readFileSync, unlinkSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { SLUG_PATTERN } from '@/lib/auth/slug'
 import { usersRoot } from '@/lib/db/userDb'
@@ -46,6 +46,27 @@ export function encryptedUserDbPath(slug: string): string {
 /** True when this user has real data. Cheap: no key needed, no open. */
 export function encryptedUserDbExists(slug: string): boolean {
   return existsSync(encryptedUserDbPath(slug))
+}
+
+/**
+ * The schema a user folder holds, or `undefined` when the folder has none.
+ *
+ * An invited friend's `users/<slug>/` is created by the registration route and
+ * holds exactly one thing — their encrypted database. `schema.sql` arrives days
+ * later, when Nico builds their dashboard from a confirmed spec. So every
+ * writable open has to work without one (onboarding ledger D3).
+ *
+ * ENOENT only. Any other read failure — a permissions problem, a directory
+ * where a file should be — is a real fault and must not be silently treated as
+ * "this user has no dashboard yet".
+ */
+function schemaTextFor(slug: string): string | undefined {
+  try {
+    return readFileSync(join(usersRoot(), slug, 'schema.sql'), 'utf8')
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ENOENT') return undefined
+    throw error
+  }
 }
 
 export type OpenEncryptedOptions = {
@@ -121,7 +142,22 @@ function createEncryptedUserDb(slug: string, path: string, key: Buffer): void {
       db.key(key)
       db.pragma('journal_mode = WAL')
       db.pragma('foreign_keys = ON')
-      db.exec(readFileSync(join(usersRoot(), slug, 'schema.sql'), 'utf8'))
+      // A friend who has just set their password has no dashboard folder and
+      // so no schema — the file is created at that moment anyway, because
+      // onboarding-ux-spec.md S2 requires it ("a consumed token with no DB is
+      // an invalid state"). There is simply nothing to exec.
+      //
+      // NOTHING IS SUBSTITUTED FOR THE EXEC, and that is a measured decision
+      // rather than an omission. The plan called for a `user_version` pragma
+      // here, on the theory that without a write the driver would leave a
+      // zero-byte file that opens under any key. The drill disproved it: the
+      // `journal_mode = WAL` pragma above has already written the encrypted
+      // header, so the file is a real encrypted database either way, and
+      // removing the extra pragma reddens nothing. The property is held by the
+      // test ("writes a real encrypted file, not a zero-byte placeholder"),
+      // which stays true whichever statement provides the bytes.
+      const schema = schemaTextFor(slug)
+      if (schema !== undefined) db.exec(schema)
     } finally {
       db.close()
     }
@@ -209,9 +245,18 @@ export function openEncryptedUserDb(
       db.pragma('journal_mode = WAL')
       db.pragma('foreign_keys = ON')
 
-      // The first statement that actually touches the file is where a wrong key
-      // surfaces, so the schema exec doubles as the key check.
-      db.exec(readFileSync(join(usersRoot(), slug, 'schema.sql'), 'utf8'))
+      // The schema exec, when there is one. A friend whose dashboard has not
+      // been built yet has none (onboarding ledger D3), and that path needs no
+      // substitute key check — which is worth stating, because this file used
+      // to claim "the schema exec doubles as the key check" and that was never
+      // quite true. The drill showed the `journal_mode = WAL` pragma above
+      // already throws SQLITE_NOTADB on a wrong key, so by the time control
+      // reaches here the key has been proven either way, and the catch below
+      // has already turned it into a WrongKeyError. An explicit
+      // `SELECT count(*) FROM sqlite_schema` here reddened nothing and was
+      // removed rather than kept as decoration.
+      const schema = schemaTextFor(slug)
+      if (schema !== undefined) db.exec(schema)
     }
   } catch (error) {
     db.close()
@@ -236,4 +281,77 @@ export function openEncryptedUserDb(
     throw error
   }
   return db
+}
+
+/**
+ * Create a user's encrypted database with NO tables, for a friend who has just
+ * set their password and has no dashboard yet.
+ *
+ * onboarding-ux-spec.md S2 requires the file to exist the moment the password
+ * does — "Token consumption and DB creation are atomic; a consumed token with
+ * no DB is an invalid state" — and at that moment there is nothing to put in
+ * it. The password IS the key, so the file cannot be created any earlier, and
+ * creating it later would mean the first real byte is written under a key
+ * nothing has ever proved works.
+ *
+ * Reuses `createEncryptedUserDb` unchanged, so the temp-then-link atomicity
+ * step 6a built is ONE implementation rather than two: whatever is at `path`
+ * is always a complete database or absent, never half-made.
+ *
+ * `users/<slug>/` is created here because for an invited friend nothing else
+ * ever has — the folder is otherwise made by ./scripts/new-dashboard.sh, days
+ * later. A folder holding only `<slug>.db` is a legitimate state for the
+ * conventions sweep (tests/users/conventions.test.ts calls it "not started").
+ *
+ * Idempotent: an existing file is left exactly as it is, so a retry after a
+ * partial registration never replaces a database that already holds a row.
+ *
+ * The `existsSync` short-circuit is an OPTIMISATION, not the guarantee — it
+ * only avoids building a temp database nobody will link. The guarantee is
+ * `createEncryptedUserDb`'s `link()`, which fails EEXIST and keeps whatever is
+ * already there; deleting this check reddens nothing, which is how that was
+ * confirmed rather than assumed.
+ */
+export function createEmptyEncryptedUserDb(slug: string, key: Buffer): void {
+  const path = encryptedUserDbPath(slug)
+  mkdirSync(dirname(path), { recursive: true })
+  if (existsSync(path)) return
+  createEncryptedUserDb(slug, path, key)
+}
+
+/**
+ * Whether this database holds anything yet.
+ *
+ * THE PREDICATE THE RENDER PATH USES TO DECIDE REAL-VS-SYNTHETIC, replacing
+ * `encryptedUserDbExists`. Since S2 creates the file at password-set time,
+ * existence no longer means "this friend has data" — it means "this friend has
+ * an account".
+ *
+ * Getting this wrong is not a cosmetic bug. A read-only handle can never
+ * create the tables a dashboard's first SELECT needs, so an empty file read as
+ * real produces a permanent "This dashboard failed to load" that the friend
+ * has no control to escape — the exact ssh-only dead end
+ * `createEncryptedUserDb`'s docstring was written to remove.
+ *
+ * An empty real database is honestly described by the synthetic screen and its
+ * banner: nothing has been logged, so there is nothing real to render. The
+ * rule that matters — the banner is never shown OVER real data — still holds.
+ *
+ * Opens and closes its own handle rather than returning one. A handle is
+ * scoped to one key and a key is scoped to one session; handing one out of a
+ * predicate is how a handle outlives its key (step-5 ledger, residual 4).
+ */
+export function encryptedUserDbHasTables(slug: string, key: Buffer): boolean {
+  if (!encryptedUserDbExists(slug)) return false
+  const db = openEncryptedUserDb(slug, key, { readonly: true })
+  try {
+    const { n } = db
+      .prepare(
+        "SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+      )
+      .get() as { n: number }
+    return n > 0
+  } finally {
+    db.close()
+  }
 }

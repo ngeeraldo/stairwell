@@ -16,7 +16,7 @@ import { openUserDb } from '@/lib/db/userDb'
 import type { UserDb } from '@/lib/db/userDb'
 import type { DeviceClass } from '@/lib/metrics/deviceClass'
 import {
-  encryptedUserDbExists,
+  encryptedUserDbHasTables,
   openEncryptedUserDb,
   WrongKeyError,
 } from '@/lib/db/encryptedUserDb'
@@ -67,13 +67,43 @@ async function dashboardRegion(
     return <p>Nothing here yet. Your dashboard gets built from your interview.</p>
   }
 
-  // Real data wins when it exists. The encrypted file is created lazily on the
-  // first write (design spec section 3), so a user who has logged nothing has
-  // no real database and reads the loudly-fake one under a banner — which is
-  // what keeps devone's reference dashboard working, since it is never written
-  // to and so never acquires a real file.
+  // Real data wins when this friend HAS any. A user who has logged nothing
+  // reads the loudly-fake database under a banner — which is what keeps
+  // devone's reference dashboard working, since it is never written to.
+  //
+  // NOT `encryptedUserDbExists`, and the difference is a whole class of dead
+  // end. Since S2 creates the file at password-set time (onboarding ledger
+  // D3), existence means "this friend has an account", not "this friend has
+  // data" — and an empty file read as real would send the dashboard's first
+  // SELECT into the catch below and render "This dashboard failed to load",
+  // permanently: the read-only handle can never create the tables, and the
+  // friend has no control that would. That is the exact ssh-only state
+  // createEncryptedUserDb's docstring was written to remove.
+  //
+  // An empty real database is described honestly by the synthetic screen and
+  // its banner: nothing has been logged, so there is nothing real to render.
+  // The rule that matters — the banner is never shown OVER real data — holds.
+  //
+  // INSIDE a try, because the predicate OPENS THE FILE and so can throw
+  // WrongKeyError exactly like the open below it. Left outside, a wrong key
+  // would propagate past this function into the route's default error
+  // boundary, taking the chat panel and the logout button with it — the
+  // surface this file's docstring says must stay reachable so a friend can
+  // report that their dashboard broke.
   const key = getKey(sessionId)
-  const useReal = key !== undefined && encryptedUserDbExists(slug)
+  let useReal: boolean
+  try {
+    useReal = key !== undefined && encryptedUserDbHasTables(slug, key)
+  } catch (error) {
+    logDbFailure('dashboard_error', slug, error)
+    appendMetric(getDb(), {
+      accountId,
+      event: 'dashboard_error',
+      data: { slug, kind: dashboardErrorKind(error), device_class },
+      at: Date.now(),
+    })
+    return <p>This dashboard failed to load.</p>
+  }
 
   if (!useReal) {
     const data = openUserDb(slug)

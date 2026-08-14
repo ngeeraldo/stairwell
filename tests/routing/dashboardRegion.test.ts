@@ -87,13 +87,26 @@ class WrongKeyError extends Error {
 }
 
 const encryptedSlot: {
-  exists: boolean
+  /**
+   * Whether the friend's encrypted database holds any TABLES.
+   *
+   * It used to be `exists`, and the rename is the whole of onboarding ledger
+   * D3 in one word. Since S2 creates the file when the password is set, every
+   * invited friend HAS a file from day one — so existence stopped meaning
+   * "has data", and the render path asks about tables instead. A fixture that
+   * still said `exists` would let the empty-database case go untested while
+   * looking covered.
+   */
+  hasTables: boolean
   rows: unknown[]
   throwOnOpen: 'wrong_key' | 'other' | undefined
+  /** Throw from the hasTables PREDICATE rather than from the open. */
+  throwOnHasTables: boolean
 } = {
-  exists: false,
+  hasTables: false,
   rows: [],
   throwOnOpen: undefined,
+  throwOnHasTables: false,
 }
 // A real vi.fn(), not a no-op stub: drill 3 (task-3 fix round) showed the
 // no-op let a missing db.close() pass silently. Asserting this was called
@@ -124,7 +137,10 @@ const openEncryptedMock = vi.fn((_slug?: unknown, _key?: unknown, _options?: unk
   }
 })
 vi.mock('@/lib/db/encryptedUserDb', () => ({
-  encryptedUserDbExists: () => encryptedSlot.exists,
+  encryptedUserDbHasTables: () => {
+    if (encryptedSlot.throwOnHasTables) throw new WrongKeyError(SLUG)
+    return encryptedSlot.hasTables
+  },
   openEncryptedUserDb: (...args: unknown[]) => openEncryptedMock(...args),
   WrongKeyError,
 }))
@@ -223,9 +239,10 @@ beforeEach(() => {
   loaderSlot.value = undefined
   dataSlot.value = { source: 'none', db: undefined }
   handle = undefined
-  encryptedSlot.exists = false
+  encryptedSlot.hasTables = false
   encryptedSlot.rows = []
   encryptedSlot.throwOnOpen = undefined
+  encryptedSlot.throwOnHasTables = false
   openEncryptedMock.mockClear()
   closeMock.mockClear()
 })
@@ -362,7 +379,7 @@ describe('app/[user]/page.tsx data region', () => {
   })
 
   it('reads the encrypted database and drops the banner once real data exists', async () => {
-    encryptedSlot.exists = true
+    encryptedSlot.hasTables = true
     dataSlot.value = { source: 'synthetic', db: realDb() }
     loaderSlot.value = async () => ({
       default: () => React.createElement('section', null, 'REAL PANEL TEST'),
@@ -403,7 +420,7 @@ describe('app/[user]/page.tsx data region', () => {
     // anywhere in app/ — taking the chat panel and logout button down with
     // it, which is exactly the surface a friend uses to report the
     // dashboard broke.
-    encryptedSlot.exists = true
+    encryptedSlot.hasTables = true
     encryptedSlot.throwOnOpen = 'wrong_key'
     loaderSlot.value = async () => ({
       default: () => React.createElement('section', null, 'UNREACHED PANEL TEST'),
@@ -448,7 +465,7 @@ describe('app/[user]/page.tsx data region', () => {
     // ...) and the untyped `error.message` capture this replaced would have
     // committed that raw text permanently to an append-only, unencrypted
     // table — see step 5's ledger residual 6.
-    encryptedSlot.exists = true
+    encryptedSlot.hasTables = true
     encryptedSlot.throwOnOpen = 'other'
     loaderSlot.value = async () => ({
       default: () => React.createElement('section', null, 'UNREACHED PANEL TEST'),
@@ -471,7 +488,7 @@ describe('app/[user]/page.tsx data region', () => {
   })
 
   it('keeps the synthetic banner while no real database exists', async () => {
-    encryptedSlot.exists = false
+    encryptedSlot.hasTables = false
     dataSlot.value = { source: 'synthetic', db: realDb() }
     loaderSlot.value = async () => ({
       default: () => React.createElement('section', null, 'SAMPLE PANEL TEST'),
@@ -484,8 +501,56 @@ describe('app/[user]/page.tsx data region', () => {
     expect(openEncryptedMock).not.toHaveBeenCalled()
   })
 
+  it('shows the SYNTHETIC dashboard when the real database exists but is EMPTY', async () => {
+    // The case this whole task exists for (onboarding ledger D3). Every
+    // invited friend is in this state for days: the file was created when they
+    // set their password, and nothing has written to it yet.
+    //
+    // Read as real, it would send the dashboard's first SELECT into the catch
+    // and render "This dashboard failed to load" — PERMANENTLY, because the
+    // read-only handle can never create the tables and the friend has no
+    // control that would. So the assertion is not just "banner present": it is
+    // also that the failure text is absent, because that is the actual defect.
+    encryptedSlot.hasTables = false
+    dataSlot.value = { source: 'synthetic', db: realDb() }
+    loaderSlot.value = async () => ({
+      default: () => React.createElement('section', null, 'SAMPLE PANEL TEST'),
+    })
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    const json = JSON.stringify(element)
+    expect(json).toContain('SYNTHETIC DATA')
+    expect(json).toContain('SAMPLE PANEL TEST')
+    expect(json).not.toContain('This dashboard failed to load')
+    expect(metricData('dashboard_open')).toMatchObject({ source: 'synthetic' })
+  })
+
+  it('degrades rather than 500ing when the TABLE CHECK itself hits a wrong key', async () => {
+    // The predicate opens the file, so it can throw exactly like the open can.
+    // Uncaught, it would escape dashboardRegion into the route's default error
+    // boundary and take the chat panel and logout button with it — the surface
+    // a friend needs in order to report that their dashboard broke.
+    encryptedSlot.throwOnHasTables = true
+    loaderSlot.value = async () => ({
+      default: () => React.createElement('section', null, 'REAL PANEL TEST'),
+    })
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    expect(JSON.stringify(element)).toContain('This dashboard failed to load')
+    expect(metricData('dashboard_error')).toMatchObject({ kind: 'wrong_key' })
+    // The catch returns an ELEMENT rather than throwing, which is the point:
+    // the page keeps rendering, so the chat panel and the logout form around
+    // this region survive. (Asserted structurally rather than by looking for
+    // the panel's text — ChatPanel is a client component and serialises as a
+    // module reference here, not as its rendered output.)
+    expect(element).toBeTruthy()
+    expect(JSON.stringify(element)).toContain('/api/logout')
+  })
+
   it('opens NEITHER database for a locked session', async () => {
-    encryptedSlot.exists = true
+    encryptedSlot.hasTables = true
     const UserSpace = await arrange({ lock: true })
     const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
 
