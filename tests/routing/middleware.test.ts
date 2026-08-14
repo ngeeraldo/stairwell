@@ -297,6 +297,51 @@ describe('paths a person with no session can reach', () => {
     const response = middleware(new NextRequest('http://localhost/invite'))
     expect(new URL(response.headers.get('location')!).pathname).toBe('/login')
   })
+
+  /**
+   * THE ROUTES THE PAGE POSTS TO, not just the page.
+   *
+   * Found in production on the first real walk: pressing "Sounds good →" gave
+   * HTTP 401 from a blank browser page. The invite PAGE was public and the two
+   * invite API routes were not, so the flow rendered perfectly and died on its
+   * first button.
+   *
+   * The comment on the 401 branch above used to reason that "the matcher
+   * already excludes api/login, so every /api/* path reaching this branch is
+   * genuinely unauthenticated." That was true when it was written and stopped
+   * being true when the onboarding flow added two API routes that a person
+   * with no account must reach — which is the entire point of an invite.
+   *
+   * These are asserted as POST, the method the forms actually use, because a
+   * GET of the same path proves nothing about the flow.
+   */
+  it.each([
+    '/api/invite/accept?token=sometoken',
+    '/api/invite/register?token=sometoken',
+  ])('lets a cold browser POST %s', (path) => {
+    const response = middleware(
+      new NextRequest(`http://localhost${path}`, { method: 'POST' }),
+    )
+    expect(response.status).not.toBe(401)
+    expect(response.headers.get('location')).toBeNull()
+  })
+
+  it('still 401s an API route that genuinely needs a session', () => {
+    // The other half, or the fix above would read as "open /api/* to anyone".
+    const response = middleware(
+      new NextRequest('http://localhost/api/chat', { method: 'POST' }),
+    )
+    expect(response.status).toBe(401)
+  })
+
+  it('still bounces an API path that merely starts with the invite prefix', () => {
+    // Same segment-boundary care the page prefix gets: '/api/invitewhatever'
+    // is not an invite route and must not be opened by the fix.
+    const response = middleware(
+      new NextRequest('http://localhost/api/invitewhatever', { method: 'POST' }),
+    )
+    expect(response.status).toBe(401)
+  })
 })
 
 describe('routeFor and the invite path', () => {

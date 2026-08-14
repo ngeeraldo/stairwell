@@ -22,12 +22,25 @@ import { middlewareRedirect } from '@/lib/http/redirect'
  * bounced. Same segment-boundary care as isAdminPath in lib/session/resolve.ts,
  * and for the same reason: `startsWith('/invite')` would open a door nobody
  * meant to open.
+ *
+ * THE API ROUTES THE INVITE PAGE POSTS TO ARE ON THIS LIST TOO, and leaving
+ * them off is what broke the flow in production on its first real walk:
+ * pressing "Sounds good →" returned a bare HTTP 401 on a blank page. A page
+ * being public is not worth anything if the route its form submits to is not,
+ * and BOTH steps were affected — accept and register — so the friend could not
+ * have got past that screen by any route.
+ *
+ * They belong here rather than in the matcher below for a reason that outlives
+ * this bug: the matcher is applied by Next, not by this file, so a path
+ * excluded there cannot be tested by the suite that tests this function. That
+ * is precisely why /api/login has no test and these two now do.
  */
 function isPublicPath(pathname: string): boolean {
   return (
     pathname === '/login' ||
     pathname === '/forgot' ||
-    pathname.startsWith('/invite/')
+    pathname.startsWith('/invite/') ||
+    pathname.startsWith('/api/invite/')
   )
 }
 
@@ -39,9 +52,15 @@ export function middleware(request: NextRequest) {
     // An API caller with no session cookie gets a 401, not a redirect. A
     // redirect() here defaults to 307 (method-preserving) to /login, which
     // has no POST handler — the caller would see a 405 instead of the 401
-    // that actually describes the problem. The matcher below already
-    // excludes api/login, so every /api/* path reaching this branch is
-    // genuinely unauthenticated.
+    // that actually describes the problem.
+    //
+    // This branch is reached only by an /api/ path that is neither excluded by
+    // the matcher nor listed in isPublicPath. It used to say that the matcher's
+    // api/login exclusion was enough to guarantee that, which was true when it
+    // was written and became false the moment the onboarding flow added two API
+    // routes a person with no account must reach. Anything unauthenticated by
+    // DESIGN goes on the isPublicPath list; reaching here still means genuinely
+    // unauthenticated, but it is that list that makes it so.
     if (pathname.startsWith('/api/')) {
       return new NextResponse(null, { status: 401 })
     }
