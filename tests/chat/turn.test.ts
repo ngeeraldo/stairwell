@@ -716,6 +716,53 @@ describe('conversation-start alerting', () => {
     expect(order).toEqual(['alert', 'stream'])
   })
 
+  it('alerts on a friend\'s first words even though the opener spoke first', async () => {
+    // THE REGRESSION, and the test that was missing.
+    //
+    // Every alert test in this file started from an EMPTY transcript, so
+    // `started` and "a friend showed up" were indistinguishable — which is
+    // precisely what stopped being true when the product learned to speak
+    // first. The opener is a transcript row written at page render, so it
+    // mints the conversation id; the friend then types inside the 30-minute
+    // gap and conversationIdFor correctly reports no new conversation. The
+    // phone stayed silent for the one event it exists for.
+    //
+    // Seeding the opener is the whole difference between this test and the
+    // one above it.
+    appendTranscript(db, {
+      accountId: 1,
+      sessionId: 's',
+      conversationId: 'c-opener',
+      promptSha: 'abc123',
+      role: 'assistant',
+      body: 'Hey — I am here to build apps specifically tailored to you.',
+      at: 900,
+    })
+
+    const { deps, calls } = alerted({ now: () => 1_000 })
+    await runTurn(deps, input())
+    expect(calls).toEqual([1])
+  })
+
+  it('does not alert twice when the friend keeps talking', async () => {
+    // The other half: "first words" must mean first, not every turn. Without
+    // this, the fix above would buzz a phone on every message.
+    appendTranscript(db, {
+      accountId: 1,
+      sessionId: 's',
+      conversationId: 'c-opener',
+      promptSha: 'abc123',
+      role: 'assistant',
+      body: 'opener',
+      at: 900,
+    })
+
+    const { deps, calls } = alerted({ now: () => 1_000 })
+    await runTurn(deps, input())
+    await runTurn(deps, input({ body: 'and another thing' }))
+    expect(calls).toEqual([1])
+  })
+
   it('still alerts when the turn errors', async () => {
     // A friend who showed up and hit an outage is when the signal matters
     // most. Gating the alert on success would make an outage a silent phone

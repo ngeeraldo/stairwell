@@ -97,6 +97,11 @@ export async function runTurn(
   const at = now()
   const { text: system, sha: promptSha } = loadPrompt()
 
+  // Read BEFORE the user row is appended, because one of the questions below
+  // is "has this person ever said anything", and the answer changes one line
+  // later.
+  const priorRows = readTranscript(db, input.accountId)
+
   // Computed once, here. The assistant row reuses it rather than recomputing
   // the gap against a clock that has moved.
   const { id: conversationId, started } = conversationIdFor(
@@ -104,6 +109,21 @@ export async function runTurn(
     input.accountId,
     at,
   )
+
+  // THE OPENER SWALLOWED THE FIRST ALERT, and this is the repair.
+  //
+  // `started` means "a conversation_id was minted", which was the same event as
+  // "a friend showed up" right up until the product learned to speak first. The
+  // opener is a transcript row written at page render, so it mints the id — and
+  // then the friend types two minutes later, inside the 30-minute gap, and
+  // conversationIdFor correctly reports that no new conversation began. Correct,
+  // and useless: the phone never buzzed for the one event it exists for.
+  //
+  // An alert means A PERSON SHOWED UP. So a turn also counts as a start when
+  // this account has never had a user row at all — their first words, whatever
+  // the product said before them. Every other case is unchanged: come back
+  // three days later and the gap rule fires as it always did.
+  const firstHumanWords = !priorRows.some((r) => r.role === 'user')
 
   const stamp = {
     accountId: input.accountId,
@@ -131,7 +151,9 @@ export async function runTurn(
   // alert that fired.
   // Not for an agent-initiated turn: the alert means "a friend showed up",
   // and a confirmation already has its own alert on the confirm route.
-  if (started && input.body !== null) alert(input.accountId)
+  if ((started || firstHumanWords) && input.body !== null) {
+    alert(input.accountId)
+  }
 
   // THE CONFIRMATION MERGE. Everything above builds the model's context from
   // `transcripts` alone, which is why the agent could not see that anyone had
