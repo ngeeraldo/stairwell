@@ -52,6 +52,12 @@ describe('toMessages', () => {
     // permanently, because transcripts is append-only and the row cannot be
     // deleted. runTurn no longer writes one; this makes a row that was
     // already written survivable rather than fatal.
+    //
+    // The three user questions the dropped assistant rows used to separate
+    // arrive as ONE folded message, which is the second valve doing its job:
+    // dropping a blank row is what put them next to each other in the first
+    // place. Every word survives, in order, which is the property this test
+    // has always been about.
     expect(
       toMessages([
         row({ id: 1, role: 'user', body: 'first question' }),
@@ -65,9 +71,7 @@ describe('toMessages', () => {
     ).toEqual([
       { role: 'user', content: 'first question' },
       { role: 'assistant', content: 'first answer' },
-      { role: 'user', content: 'second question' },
-      { role: 'user', content: 'third question' },
-      { role: 'user', content: 'fourth question' },
+      { role: 'user', content: 'second question\n\nthird question\n\nfourth question' },
     ])
   })
 
@@ -83,15 +87,78 @@ describe('toMessages', () => {
     ).toEqual([{ role: 'user', content: 'real start' }])
   })
 
-  it('keeps consecutive same-role turns rather than merging them', () => {
+  it('folds consecutive user rows into one message', () => {
     // A retry appends a second user row with the same text (design spec
-    // section 6.1). The API accepts consecutive same-role messages, and the
-    // transcript is a record of what happened — merging would edit history.
+    // section 6.1), so this pair is producible today. The transcript keeps
+    // both rows — nothing here edits history; only the API request is folded.
     expect(
       toMessages([
         row({ id: 1, role: 'user', body: 'again' }),
         row({ id: 2, role: 'user', body: 'again' }),
       ]),
-    ).toHaveLength(2)
+    ).toEqual([{ role: 'user', content: 'again\n\nagain' }])
+  })
+
+  it('folds consecutive assistant rows into one message', () => {
+    // The announcement case. An operator announcement (lib/chat/announce.ts)
+    // appends an assistant row straight after a turn that already ended on
+    // one, so the very next turn rebuilds history as
+    // [..., assistant(reply), assistant(announcement), user(new)].
+    expect(
+      toMessages([
+        row({ id: 1, role: 'user', body: 'what should I track?' }),
+        row({ id: 2, role: 'assistant', body: 'here is a thought' }),
+        row({ id: 3, role: 'assistant', body: 'Your dashboard is live: a streak.' }),
+        row({ id: 4, role: 'user', body: 'nice' }),
+      ]),
+    ).toEqual([
+      { role: 'user', content: 'what should I track?' },
+      { role: 'assistant', content: 'here is a thought\n\nYour dashboard is live: a streak.' },
+      { role: 'user', content: 'nice' },
+    ])
+  })
+
+  it('leaves alternating rows alone', () => {
+    expect(
+      toMessages([
+        row({ id: 1, role: 'user', body: 'one' }),
+        row({ id: 2, role: 'assistant', body: 'two' }),
+        row({ id: 3, role: 'user', body: 'three' }),
+        row({ id: 4, role: 'assistant', body: 'four' }),
+      ]),
+    ).toEqual([
+      { role: 'user', content: 'one' },
+      { role: 'assistant', content: 'two' },
+      { role: 'user', content: 'three' },
+      { role: 'assistant', content: 'four' },
+    ])
+  })
+
+  it('folds across a blank row — the filter runs first, so a blank cannot split a fold', () => {
+    // Order matters and is the whole point: if the fold ran on the RAW rows,
+    // a blank row sitting between two assistant rows would keep them apart,
+    // then the blank filter would drop it and hand the API the consecutive
+    // pair anyway — the exact shape both of these valves exist to prevent.
+    expect(
+      toMessages([
+        row({ id: 1, role: 'user', body: 'start' }),
+        row({ id: 2, role: 'assistant', body: 'first' }),
+        row({ id: 3, role: 'user', body: '   ' }),
+        row({ id: 4, role: 'assistant', body: 'second' }),
+      ]),
+    ).toEqual([
+      { role: 'user', content: 'start' },
+      { role: 'assistant', content: 'first\n\nsecond' },
+    ])
+  })
+
+  it('folds a run of three', () => {
+    expect(
+      toMessages([
+        row({ id: 1, role: 'user', body: 'a' }),
+        row({ id: 2, role: 'user', body: 'b' }),
+        row({ id: 3, role: 'user', body: 'c' }),
+      ]),
+    ).toEqual([{ role: 'user', content: 'a\n\nb\n\nc' }])
   })
 })

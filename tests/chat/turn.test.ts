@@ -560,9 +560,13 @@ describe('runTurn — empty or incomplete reply', () => {
 
     expect(outcome.kind).toBe('completed')
     expect(sent.every((m) => m.content.trim() !== '')).toBe(true)
+    // One message, not two: dropping the poisoning row left two user rows
+    // adjacent, and toMessages folds a same-role run into a single message
+    // (see its docstring — the two valves are the same bet). Both questions
+    // still reach the model, in order, which is what the recovery valve is
+    // for.
     expect(sent).toEqual([
-      { role: 'user', content: 'an earlier question' },
-      { role: 'user', content: 'what should I watch?' },
+      { role: 'user', content: 'an earlier question\n\nwhat should I watch?' },
     ])
   })
 })
