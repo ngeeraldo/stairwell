@@ -36,12 +36,21 @@ export default function RootLayout({
           The breakpoints are Tailwind's md and lg, and are named in
           lib/metrics/deviceClass.ts — so the class a row reports and the
           arrangement the shell actually chose agree with each other.
+
+          IT ALSO WRITES THE TIMEZONE, for a reason that is not analytics at
+          all: the day a tap is stored under has to be the day the FRIEND is
+          living, and the browser is the only party that knows which that is.
+          The droplet is UTC, so without this a tap at 21:03 in New York is
+          filed as tomorrow — see lib/time/dayKey.ts, which has the receipts.
+          Same mechanism, same script, one line.
         */}
         <script
           dangerouslySetInnerHTML={{
             __html:
               "var w=window.innerWidth,c=w<768?'phone':w<1024?'tablet':'desktop';" +
-              "document.cookie='stairwell_dc='+c+';path=/;max-age=31536000;samesite=lax';",
+              "document.cookie='stairwell_dc='+c+';path=/;max-age=31536000;samesite=lax';" +
+              "var z=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';" +
+              "document.cookie='stairwell_tz='+encodeURIComponent(z)+';path=/;max-age=31536000;samesite=lax';",
           }}
         />
       </head>

@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3-multiple-ciphers'
 import { afterEach, describe, expect, it } from 'vitest'
-import { dayKeyOf, walkedOn } from '@/users/devtwo/queries'
+import { walkedOn } from '@/users/devtwo/queries'
+import { dayKey } from '@/lib/time/dayKey'
 
 const SEED = resolve(__dirname, '..', 'seed.py')
 
@@ -41,7 +42,7 @@ describe('seed.py', () => {
 
       const db = new Database(target, { readonly: true, fileMustExist: true })
       try {
-        expect(walkedOn(db, dayKeyOf(Date.now()))).toBe(false)
+        expect(walkedOn(db, dayKey(Date.now(), 'UTC'))).toBe(false)
       } finally {
         db.close()
       }

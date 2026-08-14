@@ -123,7 +123,23 @@ architectural changes; do not relitigate decided items).
   ```
 - `users/devone/` is the worked reference implementation. It is hand-written,
   not agent output — see its README.
-- A dashboard is handed `{ slug, db }` and never resolves either itself. It
+- A dashboard is handed `{ slug, db, today, timeZone }` and never resolves any
+  of them itself. **It never derives a day from a clock.** `today` is
+  `YYYY-MM-DD` in the friend's zone, resolved once per request by
+  `app/[user]/page.tsx` from the `stairwell_tz` cookie the root layout writes;
+  `timeZone` is the IANA name, or `undefined` on the first render of a session,
+  which `dayKey` degrades to UTC. This is a data-safety-shaped rule rather than
+  a style preference: the day is a primary key in a database with no migration
+  story, so a read and a write that disagree about the calendar write a row
+  that is wrong forever. It has happened once already — see the
+  friend-timezone ledger.
+  `tests/users/noLocalDay.test.ts` sweeps every `users/*/dashboard.tsx` and
+  `users/*/queries.ts`, plus the scaffold templates, and forbids `Date.now()`,
+  zero-argument `new Date()`, and importing `lib/time/dayKey` in a
+  `dashboard.tsx`. A `queries.ts` MAY import `dayKey` and run it over a STORED
+  instant — converting a stored timestamp to the friend's day is legitimate and
+  every finance dashboard does it (`users/devone/queries.ts`); asking a clock
+  what day it is never is. It
   gets a read-only handle, so it cannot write — on BOTH paths: `openUserDb`
   opens the synthetic file `readonly`, and the render path opens the encrypted
   one with `openEncryptedUserDb(slug, key, { readonly: true })`. Pinned at BOTH

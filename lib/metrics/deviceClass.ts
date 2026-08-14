@@ -24,6 +24,17 @@ const CLASSES = new Set<string>(['phone', 'tablet', 'desktop'])
 export const DEVICE_CLASS_COOKIE = 'stairwell_dc'
 
 /**
+ * The friend's IANA timezone, written by the same inline script.
+ *
+ * It lives in this module rather than in one of its own because it is the same
+ * mechanism — a fact only the client knows, told to the server in a cookie —
+ * and splitting them would hide that they are one thing with two payloads.
+ * What it is FOR is different, and much less negotiable than a metrics label:
+ * the day a tap is filed under (lib/time/dayKey.ts).
+ */
+export const TIME_ZONE_COOKIE = 'stairwell_tz'
+
+/**
  * The breakpoints, shared by name with the inline script in app/layout.tsx.
  * They are Tailwind's `md` and `lg`, so the class a row reports and the
  * arrangement the shell chose agree with each other.
@@ -64,4 +75,27 @@ export async function readDeviceClass(): Promise<DeviceClass> {
   const cookie = (await cookies()).get(DEVICE_CLASS_COOKIE)?.value
   const userAgent = (await headers()).get('user-agent') ?? undefined
   return deviceClassFrom({ cookie, userAgent })
+}
+
+/**
+ * The friend's timezone for this request, or `undefined`.
+ *
+ * `undefined` rather than a defaulted 'UTC', deliberately: `dayKey` already
+ * owns the fallback and validates the value, and a default applied twice in
+ * two places is a default that can disagree with itself. Callers pass whatever
+ * comes back straight through.
+ *
+ * It CAN be undefined on the very first response of a new session, because the
+ * cookie does not exist until the layout's script has run once — the server
+ * cannot know a zone before the client has said one. That render falls back to
+ * UTC, which is the render where a friend has no logged data at all.
+ *
+ * THERE IS NO OVERRIDE. The cookie always wins and is re-detected on every
+ * page load, so a friend who travels moves to the new zone. That is the right
+ * default for a morning-ritual tracker and it is not obviously right for
+ * everyone; if a "pin my zone" need ever appears, this function is where it
+ * goes — the override first, this cookie as the fallback.
+ */
+export async function readTimeZone(): Promise<string | undefined> {
+  return (await cookies()).get(TIME_ZONE_COOKIE)?.value
 }

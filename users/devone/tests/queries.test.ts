@@ -12,7 +12,7 @@ import { join, resolve } from 'node:path'
 import type { UserDb } from '@/lib/db/userDb'
 import {
   eatingOutThisMonthCents,
-  monthRange,
+  monthWindow,
   recentTransactions,
 } from '@/users/devone/queries'
 
@@ -43,67 +43,120 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-// 15 March 2026, 12:00 local. Local, not UTC: monthRange builds its bounds
-// from the local calendar, so a UTC literal here would put the test and the
-// code in different months for anyone west of Greenwich.
-const MID_MARCH = new Date(2026, 2, 15, 12, 0, 0).getTime()
+// The day the friend is having, as the page would hand it in, plus a fixture
+// instant safely inside it. Both are UTC literals now and that is deliberate:
+// nothing in these tests reads the host's calendar any more, so they assert
+// the same thing on a laptop in Berlin and on the UTC droplet — where the old
+// version of this file, built from `new Date(y, m, d)` local components, was
+// agreeing with a bug rather than catching it.
+const MARCH = '2026-03-15'
+const MID_MARCH = Date.parse('2026-03-15T12:00:00Z')
+const UTC = 'UTC'
+const NY = 'America/New_York'
 
-describe('monthRange', () => {
-  it('spans the calendar month containing now', () => {
-    const { start, end } = monthRange(MID_MARCH)
-    expect(new Date(start).getTime()).toBe(new Date(2026, 2, 1).getTime())
-    expect(new Date(end).getTime()).toBe(new Date(2026, 3, 1).getTime())
+describe('monthWindow', () => {
+  it('over-selects by two days at each end, on purpose', () => {
+    // It is a prefilter, not the answer — the JS filter decides. Two days
+    // covers every real UTC offset (-12 to +14) with room to spare, and this
+    // is the assertion that would notice someone "tidying" it into an exact
+    // month range and silently dropping the friend's boundary transactions.
+    const DAY = 86_400_000
+    const { start, end } = monthWindow(MARCH)
+    expect(start).toBe(Date.parse('2026-03-01T00:00:00Z') - 2 * DAY)
+    expect(end).toBe(Date.parse('2026-04-01T00:00:00Z') + 2 * DAY)
   })
 
   it('rolls the year over in December', () => {
-    const { end } = monthRange(new Date(2026, 11, 15).getTime())
-    expect(new Date(end).getTime()).toBe(new Date(2027, 0, 1).getTime())
+    const DAY = 86_400_000
+    expect(monthWindow('2026-12-15').end).toBe(Date.parse('2027-01-01T00:00:00Z') + 2 * DAY)
   })
 })
 
 describe('eatingOutThisMonthCents', () => {
   it('returns 0 on an empty table rather than null', () => {
     // COALESCE, not a null that renders as "$NaN" on the friend's page.
-    expect(eatingOutThisMonthCents(db, MID_MARCH)).toBe(0)
+    expect(eatingOutThisMonthCents(db, MARCH, UTC)).toBe(0)
   })
 
   it('sums only the eating-out rows inside the month', () => {
     add({ merchant: 'COFFEE PALACE TEST', category: 'eating out', amount_cents: 500, at: MID_MARCH })
     add({ merchant: 'BURRITO BARN TEST', category: 'eating out', amount_cents: 1200, at: MID_MARCH })
     add({ merchant: 'GROCERY WORLD TEST', category: 'groceries', amount_cents: 9000, at: MID_MARCH })
-    expect(eatingOutThisMonthCents(db, MID_MARCH)).toBe(1700)
+    expect(eatingOutThisMonthCents(db, MARCH, UTC)).toBe(1700)
   })
 
-  it('excludes the last millisecond of the previous month', () => {
+  it('excludes the last millisecond of the previous month, in the given zone', () => {
     add({
       merchant: 'COFFEE PALACE TEST',
       category: 'eating out',
       amount_cents: 500,
-      at: new Date(2026, 2, 1).getTime() - 1,
+      at: Date.parse('2026-03-01T00:00:00Z') - 1,
     })
-    expect(eatingOutThisMonthCents(db, MID_MARCH)).toBe(0)
+    expect(eatingOutThisMonthCents(db, MARCH, UTC)).toBe(0)
   })
 
-  it('includes the first millisecond of this month', () => {
+  it('includes the first millisecond of this month, in the given zone', () => {
     add({
       merchant: 'COFFEE PALACE TEST',
       category: 'eating out',
       amount_cents: 500,
-      at: new Date(2026, 2, 1).getTime(),
+      at: Date.parse('2026-03-01T00:00:00Z'),
     })
-    expect(eatingOutThisMonthCents(db, MID_MARCH)).toBe(500)
+    expect(eatingOutThisMonthCents(db, MARCH, UTC)).toBe(500)
   })
 
-  it('excludes the first millisecond of next month', () => {
+  it('excludes the first millisecond of next month, in the given zone', () => {
     // Without an upper bound this passes anyway for a clock-relative "now",
     // and then silently counts future-dated rows the day one appears.
     add({
       merchant: 'COFFEE PALACE TEST',
       category: 'eating out',
       amount_cents: 500,
-      at: new Date(2026, 3, 1).getTime(),
+      at: Date.parse('2026-04-01T00:00:00Z'),
     })
-    expect(eatingOutThisMonthCents(db, MID_MARCH)).toBe(0)
+    expect(eatingOutThisMonthCents(db, MARCH, UTC)).toBe(0)
+  })
+
+  it('puts a transaction in the month the FRIEND was in, not the one the server was in', () => {
+    // THE TASK-4 TEST. 02:00Z on 1 September is 22:00 on 31 August in New
+    // York. A friend there spent that money in August and expects to see it
+    // in August's total; a UTC server would file it under September, which is
+    // exactly the mistake the walk route was making one day at a time.
+    //
+    // Both arms matter. The UTC arm is what makes the New York arm mean
+    // something: without it, an implementation that ignored its zone and
+    // always answered "August" would still pass.
+    add({
+      merchant: 'BURRITO BARN TEST',
+      category: 'eating out',
+      amount_cents: 2200,
+      at: Date.parse('2026-09-01T02:00:00Z'),
+    })
+    expect(eatingOutThisMonthCents(db, '2026-08-31', NY)).toBe(2200)
+    expect(eatingOutThisMonthCents(db, '2026-09-01', NY)).toBe(0)
+    expect(eatingOutThisMonthCents(db, '2026-08-31', UTC)).toBe(0)
+    expect(eatingOutThisMonthCents(db, '2026-09-01', UTC)).toBe(2200)
+  })
+
+  it('reaches rows the exact-month window would have missed, east and west', () => {
+    // The other end of the same property, at the far offsets the two-day
+    // widening exists for: +14 (Kiritimati) and -11 (Niue). Each of these
+    // instants falls OUTSIDE a naive [1st, 1st) UTC range and inside the
+    // friend's March.
+    add({
+      merchant: 'EAST EDGE TEST',
+      category: 'eating out',
+      amount_cents: 300,
+      at: Date.parse('2026-02-28T11:00:00Z'), // 2026-03-01 in Pacific/Kiritimati
+    })
+    add({
+      merchant: 'WEST EDGE TEST',
+      category: 'eating out',
+      amount_cents: 700,
+      at: Date.parse('2026-04-01T10:00:00Z'), // 2026-03-31 in Pacific/Niue
+    })
+    expect(eatingOutThisMonthCents(db, MARCH, 'Pacific/Kiritimati')).toBe(300)
+    expect(eatingOutThisMonthCents(db, MARCH, 'Pacific/Niue')).toBe(700)
   })
 })
 
@@ -117,7 +170,7 @@ describe('recentTransactions', () => {
         at: MID_MARCH + i,
       })
     }
-    const rows = recentTransactions(db)
+    const rows = recentTransactions(db, UTC)
     expect(rows).toHaveLength(10)
     expect(rows[0]!.merchant).toBe('MERCHANT 14 TEST')
     expect(rows[9]!.merchant).toBe('MERCHANT 5 TEST')
@@ -127,11 +180,11 @@ describe('recentTransactions', () => {
     for (let i = 0; i < 5; i++) {
       add({ merchant: `M${i} TEST`, category: 'eating out', amount_cents: 1, at: MID_MARCH + i })
     }
-    expect(recentTransactions(db, 2)).toHaveLength(2)
+    expect(recentTransactions(db, UTC, 2)).toHaveLength(2)
   })
 
   it('returns an empty array on an empty table', () => {
-    expect(recentTransactions(db)).toEqual([])
+    expect(recentTransactions(db, UTC)).toEqual([])
   })
 
   it('breaks a same-timestamp tie by insertion order, newest row last inserted first', () => {
@@ -157,7 +210,19 @@ describe('recentTransactions', () => {
     add({ merchant: 'FIRST TEST', category: 'eating out', amount_cents: 100, at: MID_MARCH })
     add({ merchant: 'SECOND TEST', category: 'eating out', amount_cents: 200, at: MID_MARCH })
     add({ merchant: 'THIRD TEST', category: 'eating out', amount_cents: 300, at: MID_MARCH })
-    const rows = recentTransactions(db)
+    const rows = recentTransactions(db, UTC)
     expect(rows.map((r) => r.merchant)).toEqual(['THIRD TEST', 'SECOND TEST', 'FIRST TEST'])
+  })
+
+  it('labels each row with the day in the FRIEND\'s zone, not the host\'s', () => {
+    // The label is attached here rather than in the component because
+    // dashboard.tsx is forbidden from importing dayKey at all — see
+    // tests/users/noLocalDay.test.ts. So this is the only place the rendered
+    // date can be tested, and it is the same instant/zone pair that the month
+    // total is tested against above: one transaction, two zones, two days.
+    const at = Date.parse('2026-09-01T02:00:00Z')
+    add({ merchant: 'LATE NIGHT TEST', category: 'eating out', amount_cents: 100, at })
+    expect(recentTransactions(db, NY)[0]!.day).toBe('2026-08-31')
+    expect(recentTransactions(db, UTC)[0]!.day).toBe('2026-09-01')
   })
 })

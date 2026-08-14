@@ -9,8 +9,24 @@ import type { UserDb } from '@/lib/db/userDb'
 
 export type Walk = { day: string; at: number }
 
-/** The LOCAL calendar day as 'YYYY-MM-DD'. Mirrors the write path's dayKey. */
-export function dayKeyOf(at: number): string {
+/**
+ * A day key from local calendar components — PRIVATE, and only for `shift`.
+ *
+ * It is deliberately NOT exported any more. It used to be, and
+ * `dashboard.tsx` used it as `dayKeyOf(Date.now())` to derive its own "today"
+ * — which is precisely the bug: the write path filed taps under the server's
+ * day and the read path computed the server's day, so the two agreed with each
+ * other and disagreed with the friend. `today` arrives as a prop now
+ * (lib/dashboard/contract.ts), and un-exporting this is what makes the old
+ * shape unavailable rather than merely discouraged.
+ *
+ * WHY IT IS NOT A ZONE BUG in the one place it survives: `shift` below
+ * CONSTRUCTS and FORMATS in the same zone, so the zone cancels out entirely.
+ * It is pure calendar arithmetic over a day string — "what is 13 days before
+ * 2026-03-01" — and never reads a clock, which is the only thing that made
+ * the original wrong.
+ */
+function dayKeyOf(at: number): string {
   const d = new Date(at)
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')

@@ -8,10 +8,12 @@
 // run later, during Next's render pass, outside that catch — turning a broken
 // panel into a 500 for the whole page instead of a degraded region.
 import type { DashboardProps } from '@/lib/dashboard/contract'
-import { currentStreak, dayKeyOf, last14, last30, walkedOn } from './queries'
+import { currentStreak, last14, last30, walkedOn } from './queries'
 
-export default function DevTwoDashboard({ slug, db }: DashboardProps) {
-  const today = dayKeyOf(Date.now())
+export default function DevTwoDashboard({ slug, db, today }: DashboardProps) {
+  // Handed down, never derived: the walk route files a tap under a day, and
+  // a dashboard computing its own would let the two disagree about the
+  // calendar. See lib/dashboard/contract.ts.
   const done = walkedOn(db, today)
   const streak = currentStreak(db, today)
   const month = last30(db, today)

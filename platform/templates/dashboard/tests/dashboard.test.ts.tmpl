@@ -25,7 +25,11 @@ beforeEach(() => {
   db.exec(readFileSync(SCHEMA, 'utf8'))
   db.prepare(
     'INSERT INTO transactions (merchant, category, amount_cents, at) VALUES (?, ?, ?, ?)',
-  ).run('COFFEE PALACE TEST', 'eating out', 450, Date.now())
+    // A fixed instant, not Date.now(): a test that pins a boundary cannot be
+    // written against a fixture that floats with the wall clock. (Tests are
+    // excluded from the users/ clock sweep — a test CHOOSING an instant is not
+    // a dashboard asking what day it is — but a fixed one is still better.)
+  ).run('COFFEE PALACE TEST', 'eating out', 450, Date.parse('2026-03-15T12:00:00Z'))
 })
 
 afterEach(() => {
@@ -36,16 +40,33 @@ afterEach(() => {
 
 describe('users/__SLUG__', () => {
   it('reads the transaction back', () => {
-    expect(recentTransactions(db)[0]!.merchant).toBe('COFFEE PALACE TEST')
+    expect(recentTransactions(db, 'UTC')[0]!.merchant).toBe('COFFEE PALACE TEST')
   })
 
   // Wiring, not queries: this fails if the component stops calling a query or
   // stops putting its result in the output. See the step-4 ledger's residual 1
   // for why that is worth its own test.
   it('puts the query result in the rendered output', async () => {
-    const json = JSON.stringify(await Dashboard({ slug: '__SLUG__', db }))
+    const json = JSON.stringify(
+      await Dashboard({ slug: '__SLUG__', db, today: '2026-03-15', timeZone: 'UTC' }),
+    )
     expect(json).toContain('COFFEE PALACE TEST')
     expect(json).toContain('$4.50')
+  })
+
+  it('renders the day the FRIEND is having, not the host', () => {
+    // One instant, two zones, two days. An implementation that read any clock
+    // — the process's, the droplet's — would return the same string twice, so
+    // this is the assertion that stays honest on every machine. Keep a version
+    // of it for whatever __SLUG__'s dashboard shows dates on.
+    expect(recentTransactions(db, 'Asia/Tokyo')[0]!.day).toBe('2026-03-15')
+    expect(recentTransactions(db, 'Pacific/Niue')[0]!.day).toBe('2026-03-15')
+    const late = Date.parse('2026-09-01T02:00:00Z')
+    db.prepare(
+      'INSERT INTO transactions (merchant, category, amount_cents, at) VALUES (?, ?, ?, ?)',
+    ).run('LATE NIGHT TEST', 'eating out', 100, late)
+    expect(recentTransactions(db, 'America/New_York')[0]!.day).toBe('2026-08-31')
+    expect(recentTransactions(db, 'UTC')[0]!.day).toBe('2026-09-01')
   })
 })
 

@@ -73,6 +73,22 @@ Server (single VPS)
   locked — the chat surface keeps working across the proposal loop (§6), and
   data panels ask for the password again. The key cannot survive overnight, which is
   what keeps login-triggered sync from serving stale data.
+- **The day is the friend's, not the server's.** Everything in this product is
+  bucketed by day — a walk streak, a month's spending — and `walks.day` is a
+  `YYYY-MM-DD` primary key in a per-user database nothing migrates. So the
+  question "what day is it" has exactly one answer, and it is the friend's.
+  The zone rides in a `stairwell_tz` cookie the root layout's inline script
+  writes beside `stairwell_dc` (§4 device_class) — the client is the only party
+  that knows its own zone, and this is the mechanism already proven for telling
+  the server something only the client knows. `lib/time/dayKey.ts` turns an
+  instant plus that zone into a day and degrades to UTC rather than throwing,
+  because a cookie is untrusted input and it is read on the path that records a
+  tap. Dashboards are HANDED `today`; nothing under `users/` may ask a clock,
+  and a sweep enforces it at sites that do not exist yet.
+  This is written from a bug, not from foresight: the first real tap on the
+  deployed product, made at 21:03 on 2026-08-13 in New York, is stored as
+  `2026-08-14` and its dashboard shows the 13th as missed. "Local time" meant
+  local to the UTC droplet.
 - **Platform database.** Accounts, sessions, transcripts, metrics, and the
   request queue live in a single unencrypted `platform.db`, separate from the
   per-user encrypted files. Transcript visibility here is already covered by

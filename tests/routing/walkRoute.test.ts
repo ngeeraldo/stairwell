@@ -22,10 +22,21 @@ import type { PlatformDb } from '@/lib/db/platform'
 import { dayKey } from '@/lib/time/dayKey'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
+/**
+ * The friend's timezone, as the browser reports it in `stairwell_tz`.
+ *
+ * Undefined by default, so every test that does not care about zones gets the
+ * UTC fallback and stays deterministic on any machine. The one test that DOES
+ * care sets it, which is the whole point: the day a tap is filed under has to
+ * follow the friend, not the host running the suite.
+ */
+const tzSlot: { value: string | undefined } = { value: undefined }
 let sessionCookieName = 'sid'
-const cookieGet = vi.fn((name: string) =>
-  name === sessionCookieName ? cookieSlot.value : undefined,
-)
+const cookieGet = vi.fn((name: string) => {
+  if (name === sessionCookieName) return cookieSlot.value
+  if (name === 'stairwell_tz' && tzSlot.value !== undefined) return { value: tzSlot.value }
+  return undefined
+})
 /**
  * `headers` is stubbed alongside `cookies` because lib/metrics/deviceClass.ts
  * reads the User-Agent as its fallback when no stairwell_dc cookie exists
@@ -89,6 +100,7 @@ beforeEach(() => {
   canSeeUserSpaceSpy.mockClear()
   accountIdForSpy.mockClear()
   cookieSlot.value = undefined
+  tzSlot.value = undefined
   loaderSlot.value = async () => ({ default: () => null })
   handle = undefined
 })
@@ -186,7 +198,7 @@ describe('POST /api/users/[user]/walk', () => {
       expect(first.status).toBe(303)
       expect(second.status).toBe(303)
       expect(afterSecond).toHaveLength(1)
-      expect(afterSecond[0]?.day).toBe(dayKey(secondInstant))
+      expect(afterSecond[0]?.day).toBe(dayKey(secondInstant, 'UTC'))
       // The row the FIRST tap wrote is the row that is still there, untouched.
       expect(afterSecond[0]?.at).toBe(afterFirst[0]?.at)
       expect(afterSecond[0]?.at).toBe(firstInstant)
@@ -280,6 +292,67 @@ describe('POST /api/users/[user]/walk', () => {
 
     expect(response.status).toBe(404)
     expect(existsSync(join(dir, 'users', 'devtwo', 'devtwo.db'))).toBe(false)
+  })
+
+  it('files the tap under the FRIEND\'s day, not the server\'s', async () => {
+    // The bug this branch exists for, at the site where it did the damage.
+    //
+    // 2026-08-14T01:03:39.093Z is the exact instant devtwo's only real tap was
+    // recorded at. In New York that is 21:03 on the 13th — the evening the tap
+    // actually happened. The droplet is UTC, so it was filed as the 14th, and
+    // devtwo's dashboard has shown the 13th as "missed" ever since.
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-14T01:03:39.093Z'))
+      tzSlot.value = 'America/New_York'
+      const POST = await arrange()
+
+      const response = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+
+      expect(response.status).toBe(303)
+      const rows = walkRows(join(dir, 'users', 'devtwo', 'devtwo.db'), Buffer.alloc(32, 7))
+      expect(rows[0]?.day).toBe('2026-08-13')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('falls back to the UTC day when the browser has not said a zone yet', async () => {
+    // The first response of a new session, before the layout's script has run
+    // once. The server cannot know a zone it has never been told, and a tap
+    // must not fail for the lack of one.
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-14T01:03:39.093Z'))
+      tzSlot.value = undefined
+      const POST = await arrange()
+
+      await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+
+      const rows = walkRows(join(dir, 'users', 'devtwo', 'devtwo.db'), Buffer.alloc(32, 7))
+      expect(rows[0]?.day).toBe('2026-08-14')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a nonsense zone instead of failing the tap', async () => {
+    // stairwell_tz is a cookie, and a cookie is untrusted input on the path
+    // that records a tap.
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-14T01:03:39.093Z'))
+      tzSlot.value = 'Not/AZone'
+      const POST = await arrange()
+
+      const response = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+
+      expect(response.status).toBe(303)
+      const rows = walkRows(join(dir, 'users', 'devtwo', 'devtwo.db'), Buffer.alloc(32, 7))
+      expect(rows[0]?.day).toBe('2026-08-14')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('records dashboard_write with a slug and a panel and NO value', async () => {
