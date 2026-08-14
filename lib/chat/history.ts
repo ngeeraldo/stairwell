@@ -32,6 +32,16 @@ export type ChatMessage = { role: 'user' | 'assistant'; content: string }
  * speaker said; not folding risks an unrecoverable account. It is the same
  * bet, on the same table, as the blank-body filter above.
  *
+ * THE FOLD IS PERMANENT — unified-loop ledger, D17. It is NOT a workaround
+ * waiting on that documentation question to be settled. If someone later
+ * confirms the API merges same-role runs on its own, that makes this agree
+ * with the API; it does not make it redundant, because deleting it would hand
+ * a permanent, unrecoverable failure mode to a third party's implementation
+ * detail that nobody versioned. Record the answer next to D17 and leave this
+ * alone. More producers of same-role runs are already arriving —
+ * scripts/ask-user.ts writes operator rows too — and this is the one place
+ * that shape gets normalised.
+ *
  * Nothing here edits history: the rows stay exactly as written and the panel
  * still renders every one of them separately (app/[user]/page.tsx). This
  * shapes only the REQUEST.

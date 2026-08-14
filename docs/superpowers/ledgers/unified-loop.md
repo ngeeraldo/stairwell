@@ -399,6 +399,46 @@ announcement fire again, into an append-only transcript, on a build that
 shipped weeks ago. Recorded here and in CLAUDE.md's sacred-data section so the
 "never migrate, rewrite, or clean up" rule has a named consequence attached.
 
+### D17. The same-role fold in `toMessages` is PERMANENT, whatever the API does
+
+Ruled after the whole-branch review, and stated as a ruling rather than left as a
+residual specifically so nobody deletes it later as dead weight.
+
+`lib/chat/announce.ts` appends an assistant transcript row, and a normal turn
+already ends on one, so the first operator announcement to an account makes the
+next turn's history read `[…, assistant(reply), assistant(announcement),
+user(new)]`. `toMessages` folds that run into one message. Anthropic's own
+documentation contradicts itself on whether the unfolded shape is a 400 or a
+silent merge, and this build did not settle it.
+
+**Ruling: the fold stays even if the permissive reading is later confirmed.** It
+is defensive behaviour this system wants on its own terms, not a workaround
+waiting to be retired:
+
+- **The failure it prevents is unrecoverable and total.** On the 400 reading, the
+  first announcement breaks that account's chat forever — `transcripts` rejects
+  DELETE, `toMessages` replays the pair on every subsequent turn, and the only
+  surface a friend has for reporting that anything is wrong is the surface that
+  broke. There is no fix short of editing the database by hand.
+- **The cost is one blank line** between two things the same speaker said, in the
+  request only. Nothing edits history; the rows stay exactly as written and the
+  panel still renders each separately.
+- **A confirmed "the API merges them" would not make the fold unnecessary** — it
+  would make it agree with the API. Deleting it would then hand the same
+  responsibility to a third party's implementation detail, on a promise nobody
+  versioned, guarding a permanent failure.
+- **More producers of same-role runs are coming.** `scripts/ask-user.ts` already
+  writes operator rows too, and the design's post-build era adds more. The fold is
+  the one place that shape is normalised.
+
+Precedent: this is the identical bet the blank-body filter above it in the same
+function already takes, for the identical reason. That filter has outlived the bug
+that motivated it and is kept as "the permanent recovery valve"; this is the
+second valve on the same pipe.
+
+A future reader who settles the API question should record the answer beside this
+ruling and leave the code alone.
+
 ---
 
 ## Deferred, accepted
@@ -478,12 +518,13 @@ intended test goes red — now run on every task.
 
 ## Residual risks
 
-1. **`toMessages` now folds consecutive same-role rows, and nobody has confirmed
-   which API behaviour that was working around.** The fold is safe under both
-   readings, so this is closed as a hazard — but the underlying question ("does the
-   Messages API 400 on consecutive same-role messages, or merge them?") is still
-   unanswered, and the next person to reason about transcript shape should know it
-   was never settled, only routed around.
+1. **Nobody has confirmed what the Messages API actually does with consecutive
+   same-role messages.** The fold in `toMessages` does not depend on the answer and
+   is permanent either way — see **D17**, which is a ruling, not a mitigation. What
+   remains genuinely residual is only the not-knowing: anyone reasoning about
+   transcript shape for some *other* purpose should know this question was routed
+   around rather than settled, and should not read the fold's existence as evidence
+   that the 400 behaviour is real.
 
 2. **The metrics redactor is coupled to a convention in a different file.**
    `metricMessage()` strips double-quoted segments, which assumes
