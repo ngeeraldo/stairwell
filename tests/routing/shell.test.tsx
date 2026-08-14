@@ -24,9 +24,15 @@ afterEach(() => {
 
 const CHAT = React.createElement('div', null, 'CHAT SURFACE TEST')
 const CONTENT = React.createElement('div', null, 'CONTENT AREA TEST')
+const FOOTER = React.createElement('div', null, 'FOOTER CHROME TEST')
 
 function shell(chatOpenByDefault: boolean) {
-  return React.createElement(Shell, { chat: CHAT, content: CONTENT, chatOpenByDefault })
+  return React.createElement(Shell, {
+    chat: CHAT,
+    content: CONTENT,
+    footer: FOOTER,
+    chatOpenByDefault,
+  })
 }
 
 describe('composition', () => {
@@ -56,6 +62,12 @@ describe('composition', () => {
     expect(classes).toContain('inset-0')
     expect(classes).toContain('md:static')
     expect(classes).toContain('md:w-[400px]')
+    // The second tier. 400px is a phone column pasted onto a desktop — about
+    // forty characters of measure — and 600px is about sixty-six, the middle
+    // of the range prose is comfortable at. It arrives at xl rather than md
+    // because 1280 is the first width where giving the chat 600 still leaves
+    // the content area a full measure of its own.
+    expect(classes).toContain('xl:w-[600px]')
 
     await unmount()
   })
@@ -118,6 +130,43 @@ describe('the one boolean', () => {
     await click(container.querySelector('button'))
 
     expect(window.localStorage.length).toBe(0)
+
+    await unmount()
+  })
+
+  it('keeps the footer chrome in the chat column in BOTH states', async () => {
+    // There is one answer to "where is log out", not one per arrangement.
+    // It lived in the content column, under the dashboard, where it read as
+    // the last row of the friend's own app rather than as platform chrome.
+    //
+    // Asserted as "inside the chat column", not "somewhere on the page":
+    // rendering it anywhere at all would satisfy a textContent check while
+    // leaving it exactly where it was.
+    for (const openByDefault of [true, false]) {
+      const { container, unmount } = await mount(shell(openByDefault))
+      const column = container.querySelector('[data-chat="open"], [data-chat="closed"]')
+      expect(column).not.toBeNull()
+      expect(column!.textContent).toContain('FOOTER CHROME TEST')
+      expect(container.querySelector('main')!.textContent).not.toContain('FOOTER CHROME TEST')
+      await unmount()
+    }
+  })
+
+  it('puts the footer LAST in the chat column, in one DOM order for both widths', async () => {
+    // "At the bottom" is a CSS outcome, and CSS is what a jsdom test cannot
+    // see. What it can see is the thing the CSS depends on: one DOM order,
+    // toggle before footer, with `flex-col-reverse` flipping it below md so
+    // the toggle sits in the thumb corner on a phone. Two DOM orders chosen
+    // in JavaScript would be the arrangement bug D6 exists to forbid.
+    const { container, unmount } = await mount(shell(false))
+    const closed = container.querySelector('[data-chat="closed"]')!
+
+    expect(closed.className).toContain('flex-col-reverse')
+    expect(closed.className).toContain('md:flex-col')
+    expect(closed.className).toContain('md:justify-between')
+
+    const text = closed.textContent ?? ''
+    expect(text.indexOf('Show chat')).toBeLessThan(text.indexOf('FOOTER CHROME TEST'))
 
     await unmount()
   })

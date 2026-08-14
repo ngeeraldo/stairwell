@@ -1,7 +1,7 @@
 // app/[user]/ChatPanel.tsx
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 // Type-only: lib/spec/author.ts pulls in server-only modules (better-sqlite3
 // et al), and lib/spec/stored.ts pulls in the validators. `import type` is
 // erased at compile time regardless of bundler, so none of that reaches the
@@ -655,6 +655,28 @@ export function ConfirmationRow({ version, at }: { version: number; at: number }
 }
 
 /**
+ * Put the newest item in view.
+ *
+ * A plain function taking anything with the two properties, not a hook and not
+ * a method, for the reason everything interesting in this file is pulled out:
+ * a scroll that only happens inside a `useEffect` is a scroll no test in this
+ * suite can drive. This is the operation; whether the effect fires is the
+ * screenshot review's half of the job (`card-proposal`, which is precisely
+ * where it was caught).
+ *
+ * Found by the screenshot gate, not by a test, and it had been true since the
+ * chat surface was built: the transcript rendered top-down inside an
+ * `overflow-y-auto` list that nothing ever scrolled, so a friend returning to
+ * their interview landed on their FIRST message. It went unseen because the
+ * shot fixture had an empty transcript until now — the proposal card was the
+ * only thing in the column, so nothing had to scroll for it to be visible.
+ */
+export function scrollToNewest(el: { scrollTop: number; scrollHeight: number } | null): void {
+  if (!el) return
+  el.scrollTop = el.scrollHeight
+}
+
+/**
  * The conversation as one ordered list: turns, proposal cards, and
  * confirmations, each where it happened.
  *
@@ -677,6 +699,7 @@ export function Timeline({
   first,
   onConfirm,
   onRetry,
+  listRef,
 }: {
   turns: Turn[]
   proposals: CardProposal[]
@@ -692,6 +715,13 @@ export function Timeline({
   first: boolean
   onConfirm: (specId: number) => void
   onRetry: (source: string) => void
+  /**
+   * The scroll container, held by ChatPanel so this component can stay
+   * hookless and directly callable in a test — the same reason SpecCard and
+   * TurnRow are separate exports. Optional, so those direct calls need not
+   * supply one.
+   */
+  listRef?: React.RefObject<HTMLOListElement | null>
 }) {
   const live = withLiveness(proposals)
   const liveById = new Map(live.map(({ proposal, live: isLive }) => [proposal.id, isLive]))
@@ -703,7 +733,7 @@ export function Timeline({
   })
 
   return (
-    <ol className="min-h-0 flex-1 space-y-3 overflow-y-auto text-sm">
+    <ol ref={listRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto text-sm">
       {items.map((item, index) => {
         if (item.kind === 'turn') {
           return (
@@ -747,6 +777,27 @@ export function Timeline({
  * {done:true} — the "interrupted, not saved" marker and its retry button.
  * No hooks of its own, pulled out for the same testability reason as
  * SpecCard/ProposalRegion.
+ *
+ * WHO SAID IT IS VISIBLE, not just readable by a machine. Both roles rendered
+ * as identical paragraphs, distinguished only by a `data-role` attribute — so
+ * a friend scrolling their own interview saw one undifferentiated column of
+ * text and had to infer the speaker from the words. The attribute stays (the
+ * admin transcript and the tests both key on it); what is new is that it now
+ * has a visual counterpart.
+ *
+ * The shape is the one every LLM chat surface has converged on, and the
+ * convergence is the argument — this is the surface a friend has already used
+ * elsewhere, so it should not need learning:
+ *
+ *   user      — a bubble, tinted and rounded, right-aligned, capped at 85% so
+ *                it reads as an aside rather than a column.
+ *   assistant — no bubble, no tint, full width. The reply is the substance of
+ *                the page; boxing it would make the page a list of boxes.
+ *
+ * `whitespace-pre-wrap` on both, which is a correctness fix wearing a styling
+ * change's clothes: the agent's replies contain blank lines between
+ * paragraphs, and until now HTML collapsed every one of them into a single
+ * space.
  */
 export function TurnRow({
   turn,
@@ -757,9 +808,22 @@ export function TurnRow({
   busy: boolean
   onRetry: (source: string) => void
 }) {
+  const user = turn.role === 'user'
   return (
     <li data-role={turn.role} data-interrupted={turn.interrupted}>
-      <p style={turn.interrupted ? { opacity: 0.5 } : undefined}>{turn.body}</p>
+      <p
+        // `ml-auto w-fit` rather than a flex row on the <li>: the interrupted
+        // marker below is a sibling, and making the row a flex container would
+        // put it alongside the bubble instead of under it.
+        className={
+          user
+            ? 'ml-auto w-fit max-w-[85%] rounded-2xl bg-muted px-4 py-2.5 whitespace-pre-wrap'
+            : 'whitespace-pre-wrap'
+        }
+        style={turn.interrupted ? { opacity: 0.5 } : undefined}
+      >
+        {turn.body}
+      </p>
       {turn.interrupted && (
         <p>
           <em>interrupted — not saved</em>{' '}
@@ -805,6 +869,20 @@ export default function ChatPanel({
     proposalError: false,
     confirmError: false,
   })
+  const listRef = useRef<HTMLOListElement>(null)
+  // Anchor to the newest item whenever the number of things in the timeline
+  // changes: on first paint, when a send appends a turn, and when a proposal
+  // card or a confirmation arrives.
+  //
+  // Deliberately NOT on every streamed chunk. Following the text token by
+  // token would yank a friend back down the moment they scrolled up to re-read
+  // something mid-reply, and the turn they are watching was already anchored
+  // when it started. The cost is that a long reply grows past the fold; the
+  // alternative takes the scrollbar away from them, which is worse.
+  const itemCount = panel.turns.length + panel.proposals.length + panel.confirmations.length
+  useEffect(() => {
+    scrollToNewest(listRef.current)
+  }, [itemCount])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   // Guards the confirm buttons across ALL cards, not just the live one — a
@@ -897,6 +975,7 @@ export default function ChatPanel({
   return (
     <section aria-label="Chat" className="flex h-full min-h-0 flex-col gap-4">
       <Timeline
+        listRef={listRef}
         turns={panel.turns}
         proposals={panel.proposals}
         confirmations={panel.confirmations}

@@ -26,6 +26,23 @@ import { Button } from '@/components/ui/button'
  *   md and up — `static md:w-[400px] md:border-r`: a fixed-width left panel,
  *   with the content area filling the remainder and reflowing when it closes.
  *
+ * PANEL WIDTH IS TIERED, and the numbers are not arbitrary. 400px leaves a
+ * ~368px measure inside the padding — about forty characters, which is below
+ * the 45–75 range prose is comfortable at and reads as a phone column pasted
+ * onto a desktop. 600px leaves ~568px, roughly sixty-six characters, the
+ * middle of that range. The tier changes at `xl` (1280px) rather than `md`
+ * because 1280 is the first width where handing the chat 600px still leaves
+ * the content area 680px — a full reading measure of its own. Below that the
+ * dashboard would be the one starved, and the dashboard is the point of the
+ * morning glance.
+ *
+ * THE CHAT COLUMN IS CHROME, AND LOG OUT LIVES AT THE BOTTOM OF IT. `footer`
+ * is rendered last in that column in BOTH states, so there is one answer to
+ * "where is log out" rather than one per arrangement. It used to sit in the
+ * content column under the dashboard, where it read as the last row of the
+ * friend's own app — a control belonging to the platform, rendered as though
+ * it belonged to their data.
+ *
  * The only state is `open`, which means the same thing in both arrangements.
  * It is NOT persisted: onboarding-ux-spec.md lists "persistence of panel state
  * across sessions" as a non-goal, and the default comes from the server
@@ -39,10 +56,18 @@ import { Button } from '@/components/ui/button'
 export function Shell({
   chat,
   content,
+  footer,
   chatOpenByDefault,
 }: {
   chat: React.ReactNode
   content: React.ReactNode
+  /**
+   * Platform chrome that belongs at the bottom of the chat column — today,
+   * the log-out form. A ReactNode rather than something this component
+   * renders itself, so the form stays server-rendered in page.tsx and this
+   * client component keeps owning only the arrangement.
+   */
+  footer: React.ReactNode
   /**
    * Open until a real dashboard is deployed, collapsed after — the spec's "one
    * boolean". Computed server-side from the dashboard registry, because the
@@ -59,7 +84,7 @@ export function Shell({
         <aside
           aria-label="Chat"
           data-chat="open"
-          className="fixed inset-0 z-20 flex flex-col overflow-y-auto border-border bg-background p-4 md:static md:z-auto md:h-dvh md:w-[400px] md:shrink-0 md:border-r"
+          className="fixed inset-0 z-20 flex flex-col overflow-y-auto border-border bg-background p-4 md:static md:z-auto md:h-dvh md:w-[400px] md:shrink-0 md:border-r xl:w-[600px]"
         >
           <div className="mb-3 flex justify-end">
             <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
@@ -67,18 +92,28 @@ export function Shell({
             </Button>
           </div>
           <div className="min-h-0 flex-1">{chat}</div>
+          <div className="mt-3 shrink-0 border-t pt-3">{footer}</div>
         </aside>
       ) : (
-        // Persistent, and positioned so it is reachable in both arrangements:
-        // pinned bottom-right on a phone where the content fills the screen,
-        // and in the normal flow at the top of the page on a desktop.
+        // Persistent, and positioned so it is reachable in both arrangements.
+        //
+        // ONE DOM ORDER, TWO ARRANGEMENTS, decided in CSS — the same rule the
+        // chat surface itself follows (ledger D6). The children are written
+        // [toggle, footer]:
+        //
+        //   below md — `flex-col-reverse items-end`, pinned bottom-right, so
+        //   the toggle sits in the thumb corner with log out stacked above it.
+        //   md and up — `md:h-dvh md:flex-col md:justify-between`, a full-height
+        //   rail: toggle at the top where the panel's header was, log out at
+        //   the bottom, which is the same place it is when the chat is open.
         <div
           data-chat="closed"
-          className="fixed right-4 bottom-4 z-20 md:static md:m-4 md:self-start"
+          className="fixed right-4 bottom-4 z-20 flex flex-col-reverse items-end gap-2 md:static md:h-dvh md:flex-col md:items-start md:justify-between md:p-4"
         >
           <Button type="button" variant="outline" size="lg" onClick={() => setOpen(true)}>
             Show chat
           </Button>
+          {footer}
         </div>
       )}
 

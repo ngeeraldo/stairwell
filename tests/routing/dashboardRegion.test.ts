@@ -528,9 +528,22 @@ describe('app/[user]/page.tsx data region', () => {
 
     const json = JSON.stringify(element)
     expect(json).toContain('This dashboard failed to load')
-    // The chat panel and logout button survive — the page degraded, it did
-    // not 500 the whole route.
-    expect(json).toContain('Log out')
+    // The rest of the shell survives — the page degraded, it did not 500 the
+    // whole route.
+    //
+    // This used to assert the string 'Log out', which worked only because the
+    // form was a child of the `content` prop. The form now lives in the
+    // shell's `footer` (it is platform chrome, not the last row of the
+    // friend's dashboard), and this element tree is unrendered — Shell's body
+    // never runs — so that string is legitimately gone from it. The property
+    // worth pinning here was never the button's words; it was that the page
+    // still hands the shell a complete set of regions on the failure path.
+    // Where the footer ACTUALLY renders is asserted in
+    // tests/routing/shell.test.tsx, which mounts the component.
+    const shell = element as { props?: Record<string, unknown> }
+    expect(shell.props?.chat).toBeDefined()
+    expect(shell.props?.content).toBeDefined()
+    expect(shell.props?.footer).toBeDefined()
     expect(metricEvents()).toContain('dashboard_error')
     // `kind` is a closed two-value set on purpose, so the stderr line is the
     // only thing that tells an operator WHICH failure this was. Pinned at the

@@ -115,6 +115,10 @@ export const SCREENS: Screen[] = [
       'At 375: the chat covers the screen as a sheet (open by default here — no dashboard is deployed) with a way back to the content.',
       'The placeholder card reads "This is where your app will live." and mentions no time of day.',
       'The chat composer is reachable without scrolling at both widths.',
+      'User turns and agent turns are distinguishable AT A GLANCE, without reading them: the friend’s messages sit in a tinted bubble on the right, the agent’s are plain full-width text.',
+      'The agent’s paragraph break is a paragraph break, not a collapsed single space.',
+      'At 1440 the chat panel is ~600px, not ~400px — wide enough that the text is not a phone column pasted onto a desktop.',
+      'Log out sits at the BOTTOM of the chat column, not under the dashboard.',
     ],
   },
   {
@@ -127,6 +131,7 @@ export const SCREENS: Screen[] = [
       'Chat is COLLAPSED by default here, because a dashboard is deployed — a toggle is visible and the dashboard is the landing view.',
       'The dashboard renders inside the shell, unstyled-by-us and unbroken by it: the shell is platform chrome, not part of the user’s code.',
       'The SYNTHETIC DATA banner is present (this fixture has no real rows) and is not mistakable for chrome.',
+      'With the chat collapsed, the left rail holds "Show chat" at the top and "Log out" at the bottom at 1440; at 375 both sit in the bottom-right corner with the toggle nearest the thumb.',
     ],
   },
   {
@@ -137,8 +142,9 @@ export const SCREENS: Screen[] = [
     act: 'collapse-chat',
     live: true,
     assertions: [
-      'At 1440 the content area REFLOWS to fill the width the panel had; it does not leave a 400px hole.',
+      'At 1440 the content area REFLOWS to fill the width the panel had; it does not leave a 600px hole.',
       'At 375 the sheet is gone entirely and a persistent toggle remains visible.',
+      'Log out is still reachable with the chat closed, at the bottom of the same rail the toggle is in.',
     ],
   },
   {

@@ -183,6 +183,42 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
       const { findAccountBySlug } = await import('../lib/auth/accounts')
       const { parseSpecDraft, sealVersion } = await import('../lib/spec/validate')
       const account = findAccountBySlug(db, 'newfriendtest')!
+
+      // A few turns, so the chat surface can be REVIEWED as a conversation
+      // rather than as an empty column with a card in it.
+      //
+      // Added when user and agent turns stopped being visually identical: the
+      // difference is a picture, and until this fixture existed there was no
+      // picture of a friend's chat with anything in it — every shot showed the
+      // proposal card above an empty transcript. A shot that cannot show the
+      // change is not a review.
+      //
+      // The agent turn carries a deliberate blank line, because collapsing
+      // those was the second half of the same defect.
+      const { appendTranscript } = await import('../lib/db/appendOnly')
+      const conversation = [
+        ['user', 'I walk the dog every morning and I keep losing track of whether I actually went.'],
+        [
+          'assistant',
+          'That is a good thing to track — one tap, one number, nothing to think about.\n\n' +
+            'Before I put a preview together: is the streak the thing you want to see, ' +
+            'or would you rather see the last couple of weeks at a glance?',
+        ],
+        ['user', 'The streak. I want to not want to break it.'],
+      ] as const
+      conversation.forEach(([role, body], index) => {
+        appendTranscript(db, {
+          accountId: account.id,
+          sessionId: 'shots-session',
+          conversationId: 'shots-conversation',
+          promptSha: 'shots-fixture',
+          role,
+          body,
+          // Strictly before the proposal below, so the card lands at the end
+          // of the conversation the way a real one does.
+          at: Date.now() - (10 - index) * 60_000,
+        })
+      })
       const draft = parseSpecDraft({
         title: 'COFFEE PALACE TEST tracker',
         summary: 'A one-tap tracker for the walk and the coffee.',
