@@ -14,14 +14,17 @@
  *     ... everything else stays gray-scale". Destructive contexts (S2's
  *     warning block, S5) keep shadcn's own --destructive and never take the
  *     accent.
- *  3. --font-sans IS THE SYSTEM STACK. The preset wires next/font's Geist;
+ *  3. --background IS SLIGHTLY TINTED where the CLI wrote pure white, so a
+ *     card reads as a card. The spec names this one too — see the comment on
+ *     the token itself; it was found by the first screenshot review.
+ *  4. --font-sans IS THE SYSTEM STACK. The preset wires next/font's Geist;
  *     the spec says "Inter or the system-ui stack. One family." Inter if the
  *     reader has it, system-ui otherwise, and no font is fetched at all — a
  *     font request is a third-party request on a page that makes a privacy
  *     promise, and a self-hosted one is still bytes for a typeface the spec
  *     did not ask for.
  *
- * A FOURTH edit is a design decision and belongs to the taste memo, not here.
+ * A FIFTH edit is a design decision and belongs to the taste memo, not here.
  * In particular --ring stays neutral: a blue focus ring would be defensible
  * and is exactly the kind of call this build is not making on its own.
  */
@@ -73,7 +76,14 @@
 }
 
 :root {
-    --background: oklch(1 0 0);
+    /* Slightly tinted, where the CLI wrote pure white. onboarding-ux-spec.md
+       > Design direction: "Cards with subtle border + shadow on a
+       slightly-tinted background — this satisfies the treated-background rule
+       from Viewport rules with zero custom work." White-on-white left the
+       login card as "bare content floating in an empty viewport", which is
+       the thing that rule exists to forbid. --card stays white so the card
+       still lifts off it. Found by the first screenshot review (ledger D16). */
+    --background: oklch(0.98 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
     --card-foreground: oklch(0.145 0 0);

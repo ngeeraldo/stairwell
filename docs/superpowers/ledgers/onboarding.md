@@ -460,6 +460,23 @@ Three things this deliberately is and is not:
 
 ---
 
+## What the screenshot review caught
+
+Kept as a running list, per D16, because whether that gate was worth building
+is answered by this section and nothing else.
+
+- **Task 3, first run ever.** Installing Tailwind's preflight in Task 2 stripped
+  the browser's default form styling from `/login` and `/unlock`, leaving
+  invisible inputs and a "Log in" button that rendered as plain text. Every
+  test stayed green — nothing in this repo asserts that an input is visible.
+  The plan would not have restyled login until Task 11, so seven commits would
+  have carried a login page that looked broken. Fixed in Task 3, where it was
+  found.
+- **Task 3, second run.** The card was white on a white page — "bare content
+  floating in an empty viewport", which is the exact thing the spec's Viewport
+  rules forbid. `--background` is now slightly tinted while `--card` stays
+  white, which is what the design direction describes in so many words.
+
 ## Built
 
 *(written after the branch lands)*
