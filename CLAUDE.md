@@ -174,6 +174,9 @@ architectural changes; do not relitigate decided items).
   data arrived in step 6a; Plaid-sourced data is step 6b.
 
 ## Onboarding
+- The end-to-end operator process — invite, spec import, build, deploy,
+  announce — is docs/runbook.md. It is Nico's, run by hand; nothing in it is
+  automated, and several steps are deliberately not.
 - A friend arrives through an invite: `npx tsx scripts/create-invite.ts <slug>`
   prints ONE line, the link to text them. **The token is never stored — only
   its SHA-256** — so a lost link is re-minted, not recovered. Revoke an unused

@@ -473,6 +473,58 @@ Three things this deliberately is and is not:
 
 ---
 
+### D19. The promise block is two labelled halves, in "we" — Nico's ruling, 2026-08-14
+
+Rewritten after the build, against `onboarding-ux-spec.md` S1's verbatim text.
+
+**The spec was updated in the same pass, not left behind.** The first instinct
+was to leave it — the precedent being that nothing back-edits
+`architecture-overview.md` section 4 — but the two cases are not alike. Section
+4 is a historical design document; `onboarding-ux-spec.md` is the live build
+contract these screens are still reviewed against, and its S1 said "verbatim
+copy, do not paraphrase" over text the product no longer said. A build contract
+that disagrees with the build is worse than one written in an old voice. S1, S0,
+S2's server error and S5 now carry the shipped strings, and S1 additionally
+carries the three notes below, because a spec that records only the words loses
+the reasons the moment someone tidies it again.
+
+**Shape.** Three flowing paragraphs became two labelled halves — "What we see:"
+and "What we never see:". A promise a friend can check us against later has to
+be a shape they can hold.
+
+**Voice.** First-person singular throughout ("what I will see", "I never have
+a copy") became "we", on every screen at once. Half a sweep was the actual
+hazard: the promise block already said "we start over from nothing" while the
+dead link said "he'll sort it out", so a friend met two narrators on adjacent
+screens. `tests/copy/onboarding.test.ts > the voice` now sweeps every string we
+speak for both `I/my/me` and `he/his`. The first version of that guard only
+checked the first person and waved "Text Nico and he'll sort it out" straight
+through — naming Nico as the person to contact is fine and stays; narrating
+what he will then do is what got caught on the second pass.
+
+`NO_RESET_ACK` is the one deliberate exception and stays first-person
+singular: it is the friend telling us what they understand, and "we understand
+there's no reset" is not a consent control. Pinned so a later sweep cannot
+tidy it.
+
+**Two sentences dropped, one added.** "My build tools only ever run on fake
+data" and "When the pilot ends, everything is deleted" are gone from the
+surface. Both remain true — CLAUDE.md > Data safety still binds the first, and
+the pilot still ends — they are simply no longer promised here. Added:
+"whether created here or pulled in from somewhere else", forward cover for step
+6b, since Plaid rows land in the same encrypted database under the same key.
+
+**The opens disclosure survived the cut, and that was the point of asking.**
+The first draft of the rewrite dropped it. This app records
+`first_session_start`, `dashboard_write` and a device class, and CLAUDE.md >
+Metrics names *this promise* as what makes recording them honest rather than
+undisclosed collection. So the clause is pinned by its own test with that
+reasoning written into it: if the sentence ever has to go, the metric rows go
+with it. It is a data-safety gate wearing a copy test's clothes, and it is the
+reason a copy tidy-up was worth stopping over.
+
+---
+
 ## Built
 
 Eighteen tasks, executed inline with a test cycle, a mutation drill and a

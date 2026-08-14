@@ -76,7 +76,7 @@ Returning:  /  ───► S4 Login ───► S3 shell (placeholder or deplo
 
 One line, no branding effort:
 
-> This link isn't valid anymore. Text Nico and he'll sort it out.
+> This link isn't valid anymore. Text Nico and we'll sort it out.
 
 No distinction shown between "used" and "unknown" — same message for both (leaks nothing, and the fix is identical: text Nico).
 
@@ -87,24 +87,30 @@ No distinction shown between "used" and "unknown" — same message for both (lea
 **Job:** the recruit reads and accepts the privacy terms before any account exists. This is the consent surface; the recruit message deliberately did zero framing, so this page carries all of it.
 
 **Content, in order:**
-1. Greeting line: `Hey — you're in.` (or similar; keep it in the recruit-message register, first-person Nico voice)
+1. Greeting line: `Hey — you're in.` (or similar; keep it in the recruit-message register)
 2. The promise block — **verbatim copy, do not paraphrase:**
 
-> **The deal, honestly:**
+> **Our Privacy Policy:**
 >
-> My build tools only ever run on fake data. What I *will* see: everything you tell the AI, everything you ask it for — that's how your app gets built — and when you open the app, because whether you actually keep using it is the whole experiment.
+> **What we see:** everything you tell the AI (your chat history), and when you open the app — whether you actually keep using it is the whole experiment.
 >
-> What I won't see: your actual data. It's encrypted with a password only you know — there's no way for me or anyone else to ever access it.
->
-> When the pilot ends, everything is deleted.
+> **What we never see:** your actual data (whether created here or pulled in from somewhere else). It's encrypted with your password, so there's no way for anyone to access it.
 
 3. Single button: `Sounds good →`
+
+**The label and the body are separate strings**, not one sentence beginning with a label. Rendered as plain paragraphs the two labels sat at body weight mid-text, and the distinction this screen exists to make — what we see versus what we never see — was the hardest thing on it to find. Each label gets its own line.
 
 **On accept:** log `promise_accepted` metrics row (timestamp, username). No checkbox — the button is the acceptance.
 
 **Notes:**
 - This same promise block (minus greeting) is the paragraph that lives on the returning-login page (S4), so it should be one shared copy constant, not duplicated strings.
-- This wording supersedes the version in `architecture-overview.md` — it folds in the engagement-visibility disclosure from the horizon list. It is the source of truth pending Nico's edit pass.
+- This wording supersedes the version in `architecture-overview.md` — it folds in the engagement-visibility disclosure from the horizon list.
+- **Nico's edit pass landed 2026-08-14, and this section now carries its result** rather than the pre-build draft. What changed, and why, is `docs/superpowers/ledgers/onboarding.md > D19`. Three things are worth repeating here, because they are the parts a future rewrite is most likely to undo by accident:
+  - **The opens disclosure is not negotiable.** "and when you open the app" is what makes `first_session_start`, `dashboard_write` and the device class honest telemetry rather than undisclosed collection — CLAUDE.md > Metrics names this promise as the reason they may be recorded at all. `tests/copy/onboarding.test.ts` pins it as a data-safety gate, not a style preference. If the sentence goes, the metric rows go with it.
+  - **"Whether created here or pulled in from somewhere else"** is forward cover for step 6b: Plaid rows land in the same encrypted database under the same key, and a friend reading this before that ships should already have been told so.
+  - **The fake-data line and "when the pilot ends, everything is deleted" were dropped from this surface.** Both remain true — CLAUDE.md > Data safety still binds the first — they are simply no longer promised here.
+
+**Voice, standing rule as of the same pass:** every string the product speaks is **"we"**. The one exception is the S2 acknowledgement checkbox below, which is the friend speaking back and stays first-person singular. Naming Nico as the person to text is fine anywhere; narrating what he will then do is not (`he'll sort it out` → `we'll sort it out`). Both directions are swept by `tests/copy/onboarding.test.ts > the voice`.
 
 ---
 
@@ -123,7 +129,7 @@ No distinction shown between "used" and "unknown" — same message for both (lea
 3. Field: password (min length 10, no complexity rules, no strength meter). Inline hint: `10+ characters. A short sentence works great.`
 4. Field: confirm password.
 5. Show-password toggle applying to both fields.
-6. Checkbox (unchecked by default): `I understand there's no reset — forgotten password means my data is gone.`
+6. Checkbox (unchecked by default): `I understand there's no reset — forgotten password means my data is gone.` **Stays first-person singular** — the standing "we" voice is us talking to the friend, and this is the friend talking back. "We understand there's no reset" is not a consent control.
 7. Button: `Create my account` — disabled until fields match, length ok, box checked.
 
 **On submit (server):** derive KDF key → generate random data key → wrap → create `<name>.db` (SQLCipher, empty schema per current conventions) → create session → mark token used → metrics rows `password_set`, `db_created`. All-or-nothing: if DB creation fails, token is NOT consumed; show retry.
@@ -131,7 +137,7 @@ No distinction shown between "used" and "unknown" — same message for both (lea
 **Error states:**
 - Mismatch: `Passwords don't match.` (inline, on confirm field)
 - Too short: `Needs at least 10 characters.`
-- Server failure: `Something broke on my end — try once more, then text Nico.`
+- Server failure: `Something broke on our end — try once more, then text Nico.`
 
 ---
 
@@ -176,7 +182,7 @@ No distinction shown between "used" and "unknown" — same message for both (lea
 
 > **There's no reset. That's on purpose.**
 >
-> Your data is encrypted with your password and I never have a copy — that's what keeps me (and everyone else) out of it. The flip side is that nobody can recover it, including me.
+> Your data is encrypted with your password and we never have a copy — that's what keeps us (and everyone else) out of it. The flip side is that nobody can recover it, including us.
 >
 > Before giving up: typos, caps lock, and phone autocorrect cause most of these. Try again slowly with the show-password toggle on.
 >

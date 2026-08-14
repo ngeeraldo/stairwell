@@ -158,10 +158,11 @@ export default async function InvitePage({
           */}
           <div className="space-y-3 rounded-lg border bg-muted/40 p-4 text-sm">
             <p className="font-medium">{PROMISE_BLOCK.heading}</p>
-            {PROMISE_BLOCK.paragraphs.map((paragraph) => (
-              <p key={paragraph} className="text-muted-foreground">
-                {paragraph}
-              </p>
+            {PROMISE_BLOCK.halves.map((half) => (
+              <div key={half.label}>
+                <p className="font-medium">{half.label}</p>
+                <p className="text-muted-foreground">{half.body}</p>
+              </div>
             ))}
           </div>
 

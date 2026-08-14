@@ -20,17 +20,54 @@
 /**
  * The privacy promise, rendered on S1 (before an account exists) and S4.
  *
- * This wording SUPERSEDES the paragraph architecture-overview.md section 4
- * carried and app/(auth)/login/page.tsx used to hard-code: the spec says so in
- * as many words, and it folds the engagement-visibility disclosure into the
- * first paragraph rather than leaving it as a separate sentence.
+ * This wording supersedes the paragraph architecture-overview.md section 4
+ * carried — Nico's ruling, 2026-08-14, recorded in
+ * docs/superpowers/ledgers/onboarding.md > D19. onboarding-ux-spec.md's S1 was
+ * REWRITTEN in the same pass rather than left behind as a superseded draft, so
+ * the spec and this constant say the same thing and there is still exactly one
+ * copy to check a change against. Three changes, and the reasoning matters more
+ * than the words:
+ *
+ *  - TWO LABELLED HALVES, not three flowing paragraphs. "What we see" /
+ *    "What we never see" is the shape a reader can hold, and the shape they
+ *    can check us against later.
+ *  - THE OPENS DISCLOSURE STAYS, and is the one sentence here that is not
+ *    negotiable. This app records opens: `first_session_start`,
+ *    `dashboard_write`, device class. CLAUDE.md > Metrics names this promise
+ *    as the reason that recording is allowed at all. Delete the clause and the
+ *    metrics become undisclosed collection, not telemetry — so the pinned test
+ *    for it in tests/copy/onboarding.test.ts is a data-safety gate wearing a
+ *    copy test's clothes.
+ *  - "WHETHER CREATED HERE OR PULLED IN FROM SOMEWHERE ELSE" is deliberate
+ *    forward cover for step 6b: Plaid-sourced rows land in the same encrypted
+ *    database under the same key, and a friend reading this before that ships
+ *    should already have been told so.
+ *
+ * The fake-data line and "when the pilot ends, everything is deleted" were
+ * dropped in the same ruling. Both remain TRUE — build tools still only ever
+ * run on synthetic data (CLAUDE.md > Data safety), and the pilot still ends —
+ * they are simply no longer promised on this surface.
  */
 export const PROMISE_BLOCK = {
-  heading: 'The deal, honestly:',
-  paragraphs: [
-    'My build tools only ever run on fake data. What I will see: everything you tell the AI, everything you ask it for — that’s how your app gets built — and when you open the app, because whether you actually keep using it is the whole experiment.',
-    'What I won’t see: your actual data. It’s encrypted with a password only you know — there’s no way for me or anyone else to ever access it.',
-    'When the pilot ends, everything is deleted.',
+  heading: 'Our Privacy Policy:',
+  /**
+   * LABEL AND BODY ARE SEPARATE FIELDS, not one sentence starting with a
+   * label, because the screenshot review caught the difference: rendered as
+   * plain paragraphs, "What we see:" and "What we never see:" sat at body
+   * weight in the middle of a run of text, and the two halves read as one
+   * grey block. The distinction that matters most on this screen — what we
+   * see versus what we never see — was the thing hardest to find on it. The
+   * split is what lets each surface put the label on its own line.
+   */
+  halves: [
+    {
+      label: 'What we see:',
+      body: 'everything you tell the AI (your chat history), and when you open the app — whether you actually keep using it is the whole experiment.',
+    },
+    {
+      label: 'What we never see:',
+      body: 'your actual data (whether created here or pulled in from somewhere else). It’s encrypted with your password, so there’s no way for anyone to access it.',
+    },
   ],
 } as const
 
@@ -66,17 +103,27 @@ export const ACCEPT_BUTTON = 'Sounds good →'
  * both (leaks nothing, and the fix is identical: text Nico)."
  */
 export const DEAD_LINK =
-  'This link isn’t valid anymore. Text Nico and he’ll sort it out.'
+  'This link isn’t valid anymore. Text Nico and we’ll sort it out.'
 
 export const PASSWORD_MIN_LENGTH = 10
 export const PASSWORD_HINT = '10+ characters. A short sentence works great.'
+/**
+ * STAYS IN THE FIRST PERSON SINGULAR, and is the one string here that does.
+ *
+ * Everything else on these screens is us talking to the friend, and the
+ * 2026-08-14 voice ruling moved all of it to "we". This is the friend talking
+ * back — a checkbox they tick to say what THEY understand. "We understand
+ * there's no reset" would be us acknowledging our own warning to ourselves,
+ * which is not a consent control. Pinned by tests/copy/onboarding.test.ts so a
+ * future voice sweep cannot quietly take it.
+ */
 export const NO_RESET_ACK =
   'I understand there’s no reset — forgotten password means my data is gone.'
 
 export const PASSWORD_ERRORS = {
   mismatch: 'Passwords don’t match.',
   tooShort: 'Needs at least 10 characters.',
-  server: 'Something broke on my end — try once more, then text Nico.',
+  server: 'Something broke on our end — try once more, then text Nico.',
 } as const
 
 /**
@@ -94,7 +141,7 @@ export const WRONG_PASSWORD =
 export const FORGOT = {
   heading: 'There’s no reset. That’s on purpose.',
   paragraphs: [
-    'Your data is encrypted with your password and I never have a copy — that’s what keeps me (and everyone else) out of it. The flip side is that nobody can recover it, including me.',
+    'Your data is encrypted with your password and we never have a copy — that’s what keeps us (and everyone else) out of it. The flip side is that nobody can recover it, including us.',
     'Before giving up: typos, caps lock, and phone autocorrect cause most of these. Try again slowly with the show-password toggle on.',
     'If it’s really gone: text Nico. Your old data gets deleted and you start fresh — same app idea, empty history.',
   ],
