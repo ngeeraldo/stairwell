@@ -59,5 +59,29 @@ export async function register(): Promise<void> {
       // Reading the list is best-effort too. A missing or unreadable list
       // must not prevent the server from starting.
     }
+
+    // THE OPENER, CHECKED AT BOOT. lib/chat/opening.ts throws rather than
+    // writing an empty first impression into an append-only table, which is
+    // right — but the call site is a page render, so an unparseable prompt
+    // would surface as a 500 on the friend's whole page, chat and logout
+    // included. That is the exact failure `dashboardRegion`'s try/catch exists
+    // to prevent, arriving through a different door.
+    //
+    // So it is verified HERE, once, before any request: the same loud-witness
+    // shape as the env check above, and never a gate. The suite already fails
+    // on an unparseable shipped prompt (tests/chat/opening.test.ts parses
+    // whatever AGENT_PROMPT points at), so reaching this line in production
+    // means a red suite was pushed past — the console line is what makes that
+    // findable in `journalctl -u stairwell` instead of in a friend's browser.
+    try {
+      const { openingMessage } = await import('@/lib/chat/opening')
+      openingMessage()
+    } catch (error) {
+      console.error(
+        `[opening] the agent prompt's opening message is unreadable — new friends will land in an empty chat: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+    }
   }
 }

@@ -352,8 +352,24 @@ export default async function UserSpace({
   // existed has the metric and an empty chat, and should still be greeted.
   // ensureOpeningMessage asks the honest question — is the transcript empty —
   // and is a no-op every time after the first.
+  //
+  // WRAPPED, and the wrap is not belt-and-braces. ensureOpeningMessage throws
+  // on an unparseable prompt — correct, because the alternative is writing an
+  // empty first impression into a table that rejects DELETE. But this is a
+  // page render: an uncaught throw here takes the friend's ENTIRE page with
+  // it, chat panel and logout included, which is precisely the outcome
+  // dashboardRegion's try/catch exists to prevent. A friend with no opener has
+  // a slightly worse first screen; a friend with no page has nothing.
+  //
+  // Not silent: instrumentation.ts checks the same parse at boot and logs
+  // loudly, and the suite fails outright on a prompt whose opener cannot be
+  // read. This is the last line of defence, not the only one.
   if (sessionId) {
-    ensureOpeningMessage(getDb(), { accountId, sessionId, at: Date.now() })
+    try {
+      ensureOpeningMessage(getDb(), { accountId, sessionId, at: Date.now() })
+    } catch (error) {
+      logDbFailure('opening_message_failed', user, error)
+    }
   }
 
   return (

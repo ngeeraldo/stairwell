@@ -4,7 +4,8 @@
 // act on — the model is only called in response to a user message, and there
 // is none on the first render. These tests pin the parse (anchored to the
 // heading, loud on failure) and the write-once guard.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as promptModule from '@/lib/chat/prompt'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -119,6 +120,23 @@ describe('writing the opener', () => {
     // Such an account already has first_session_start and an empty chat. Had
     // the guard been that metric, it would never be greeted at all.
     expect(ensureOpeningMessage(db, input)).toBe(true)
+  })
+
+  it('throws rather than swallowing — the caller decides what that costs', () => {
+    // ensureOpeningMessage is deliberately not defensive: writing an empty
+    // opener into an append-only table is worse than failing. Its ONE render
+    // call site (app/[user]/page.tsx) wraps it for that reason — an uncaught
+    // throw there would take the friend's whole page, chat and logout
+    // included — and instrumentation.ts checks the same parse at boot so the
+    // failure is loud somewhere nobody has to be looking at a browser.
+    const broken = { ...input, accountId: 2 }
+    const spy = vi.spyOn(promptModule, 'loadPrompt').mockReturnValue({
+      text: '# A prompt with no opening section\n',
+      sha: 'deadbeefcafe',
+    })
+    expect(() => ensureOpeningMessage(db, broken)).toThrow(OpeningMessageError)
+    expect(readTranscript(db, 2)).toHaveLength(0)
+    spy.mockRestore()
   })
 
   it('stamps the prompt sha that produced the words', () => {
