@@ -1061,6 +1061,64 @@ describe('the completion rule with propose_spec', () => {
       expect(seen.messages!.some((m) => m.role === 'system')).toBe(false)
     })
 
+    it('tells the model it has already greeted this person', async () => {
+      // THE OPENER-REPEATS BUG. The opener is the first transcript row and the
+      // friend can see it — but toMessages drops a LEADING assistant row,
+      // because the API rejects a conversation that starts with one. So the
+      // model saw a history with no assistant turn, read "open with this,
+      // verbatim", and greeted them a second time on their first reply.
+      //
+      // Keeping the row in the message list is the fix that looks obvious and
+      // 400s every turn. The fact travels as system context instead.
+      appendTranscript(db, {
+        accountId: 1,
+        sessionId: 's',
+        conversationId: 'c1',
+        promptSha: 'abc123',
+        role: 'assistant',
+        body: 'Hey — I am here to build apps specifically tailored to you.',
+        at: 500,
+      })
+
+      const seen: { system?: string; messages?: { role: string; content: string }[] } = {}
+      await turn(seen)
+
+      expect(seen.system).toContain('already been sent')
+      // And the message list still starts with a user turn, which is the
+      // constraint that made this necessary in the first place.
+      expect(seen.messages![0]!.role).toBe('user')
+    })
+
+    it('says nothing about an opener to a friend who has not been greeted', async () => {
+      const seen: { system?: string; messages?: { role: string; content: string }[] } = {}
+      await turn(seen)
+      expect(seen.system).not.toContain('already been sent')
+    })
+
+    it('runs a confirmation turn with no user row and no user message invented', async () => {
+      // Pressing "Build this" used to record the decision and produce silence.
+      // A confirmation turn has nobody typing, so no user row is written — and
+      // the note becomes the trailing USER message, because a request ending on
+      // an assistant turn is a prefill and the model rejects it.
+      confirmOne(2_000)
+      const seen: { system?: string; messages?: { role: string; content: string }[] } = {}
+      await runTurn(
+        { db, client: capturingClient(seen), now: () => 5_000, context: 'interview', alert: noAlert, authorSpec: fakeAuthorSpec },
+        { accountId: 1, sessionId: 's', body: null, signal: new AbortController().signal, onText: () => {} },
+      )
+
+      const last = seen.messages![seen.messages!.length - 1]!
+      expect(last.role).toBe('user')
+      expect(last.content).toContain('v1')
+
+      // Exactly one row written, and it is the reply — never a fabricated
+      // "user" turn in a table that cannot be corrected.
+      const rows = db
+        .prepare('SELECT role FROM transcripts WHERE account_id = 1')
+        .all() as { role: string }[]
+      expect(rows.map((r) => r.role)).toEqual(['assistant'])
+    })
+
     it('stops flagging it as new once the agent has spoken since', async () => {
       // THE FLIP, at the seam rather than in the unit. agent-v4 says "Respond
       // to it once" — if the note kept reading as fresh, the agent would be

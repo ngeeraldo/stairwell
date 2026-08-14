@@ -36,8 +36,14 @@ export const SPEC_PROMPT = 'spec-v2.md'
  * never rendered as visible caption. Nothing in v1 asked for those captions;
  * the model inferred them from "every panel appears in the mockup", which is
  * why the fix is an instruction rather than a deletion.
+ *
+ * v3 replaces "every number is loudly fake" with plausible values, adds a
+ * restraint section (the verdict is the screen; `shows` is a ceiling, not a
+ * floor), and tells the model NOT to add a banner. The honesty signal moved
+ * from the numbers to a banner injected at serve time by lib/spec/banner.ts —
+ * a guard the model cannot forget, which "£000.00" was not.
  */
-export const MOCKUP_PROMPT = 'mockup-v2.md'
+export const MOCKUP_PROMPT = 'mockup-v3.md'
 
 export type LoadedPrompt = { text: string; sha: string }
 

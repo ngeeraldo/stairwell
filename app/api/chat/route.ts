@@ -59,14 +59,24 @@ export async function POST(request: Request) {
     return new Response(null, { status: 403 })
   }
 
-  let payload: { body?: unknown }
+  let payload: { body?: unknown; trigger?: unknown }
   try {
-    payload = (await request.json()) as { body?: unknown }
+    payload = (await request.json()) as { body?: unknown; trigger?: unknown }
   } catch {
     return new Response(null, { status: 400 })
   }
-  const body = typeof payload.body === 'string' ? payload.body.trim() : ''
-  if (!body) return new Response(null, { status: 400 })
+  const typed = typeof payload.body === 'string' ? payload.body.trim() : ''
+
+  // A turn the PRODUCT starts rather than the person. Today there is exactly
+  // one: pressing "Build this" used to record the decision and say nothing, so
+  // agent-v4's promised acknowledgment waited for the friend's next message —
+  // silence at the moment they had just committed to something.
+  //
+  // `body: null` is what tells runTurn no user row belongs in the transcript.
+  // Nobody typed anything, and that table cannot be corrected afterwards.
+  const confirmationTurn = payload.trigger === 'confirmation'
+  const body = confirmationTurn ? null : typed
+  if (body !== null && !body) return new Response(null, { status: 400 })
 
   // Resolved BEFORE the ReadableStream. Inside start() a construction failure
   // would land after the 200 and its headers had already gone out, and before

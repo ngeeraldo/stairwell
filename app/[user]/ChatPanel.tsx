@@ -246,6 +246,21 @@ export function startTurn(state: PanelState, text: string, at: number): PanelSta
 }
 
 /**
+ * A turn the product started: an empty assistant turn and nothing else.
+ *
+ * No user turn, because nobody typed. Pure and exported for the same reason
+ * startTurn is — the interesting state transitions are testable without a DOM.
+ */
+export function startAgentTurn(state: PanelState, at: number): PanelState {
+  return {
+    ...state,
+    turns: [...state.turns, { role: 'assistant', body: '', at }],
+    authoring: false,
+    proposalError: false,
+  }
+}
+
+/**
  * What happens once a turn's stream ends, whether that's a real
  * {done:true}, an error, or the connection just closing (e.g. abort). Pure,
  * and the second (and last) primitive send() composes — see applyTurn below
@@ -825,8 +840,15 @@ export function ThinkingRow() {
   return (
     <li data-role="thinking" aria-live="polite" className="space-y-2">
       <span className="sr-only">Thinking…</span>
-      <Skeleton className="h-4 w-[85%]" />
-      <Skeleton className="h-4 w-[60%]" />
+      {/*
+        bg-foreground/15, not the stock `bg-muted`. Muted is a hair off the
+        page background — the first version was invisible on a real screen, so
+        the one element whose entire job is answering "did that send?" answered
+        nothing. Overridden at the CALL SITE: components/ui/* stays as the CLI
+        wrote it (CLAUDE.md), and the pulse itself is still stock.
+      */}
+      <Skeleton className="h-4 w-[85%] bg-foreground/15" />
+      <Skeleton className="h-4 w-[60%] bg-foreground/15" />
     </li>
   )
 }
@@ -981,6 +1003,10 @@ export default function ChatPanel({
           { version: p.proposals.find((x) => x.id === specId)?.version ?? 0, at: Date.now() },
         ],
       }))
+      // The acknowledgment, now rather than on their next message. After the
+      // card state updates, so the confirmed card is already on screen when
+      // the reply starts arriving under it.
+      void acknowledgeConfirmation()
     } else {
       // A non-ok response (404/409) means the card is stale or gone; a
       // network failure means nothing was learned either way. Either way
@@ -998,13 +1024,35 @@ export default function ChatPanel({
     setBusy(true)
     setPanel((p) => startTurn(p, text, Date.now()))
     setDraft('')
+    await streamTurn({ body: text })
+  }
 
+  /**
+   * Ask the agent to respond to a confirmation, immediately.
+   *
+   * Pressing "Build this" used to record the decision and produce silence —
+   * agent-v4 promises an acknowledgment, but nothing ran a turn, so it waited
+   * for the friend's next message. That is the wrong moment to say nothing:
+   * they have just committed to something.
+   *
+   * No user bubble, because they did not type anything — only the empty
+   * assistant turn the reply streams into.
+   */
+  async function acknowledgeConfirmation() {
+    if (busy) return
+    setBusy(true)
+    setPanel((p) => startAgentTurn(p, Date.now()))
+    await streamTurn({ trigger: 'confirmation' })
+  }
+
+  /** The read loop, shared by both kinds of turn. */
+  async function streamTurn(payload: Record<string, unknown>) {
     let done = false
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ body: text }),
+        body: JSON.stringify(payload),
       })
       const reader = response.body?.getReader()
       if (!reader) throw new Error('no body')

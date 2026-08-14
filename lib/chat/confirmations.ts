@@ -36,7 +36,11 @@ export type Confirmation = { version: number; at: number }
  * change did it. Carries a channel name and nothing else: no version, no
  * timestamp, no content (CLAUDE.md > Metrics).
  */
-export type NoteChannel = 'none' | 'messages' | 'system_prompt'
+export type NoteChannel =
+  | 'none'
+  | 'messages'
+  | 'system_prompt'
+  | 'user_event'
 
 /**
  * Models that accept a `system` role INSIDE the messages array.
@@ -117,8 +121,29 @@ export function applyConfirmationNote(
   system: string,
   note: string | null,
   model: string,
+  /**
+   * True when the product started this turn rather than the person — today,
+   * only a confirmation.
+   *
+   * It changes the note's ROLE, and it has to. Such a turn has no user message
+   * of its own, so the history ends on the assistant's proposal — and a request
+   * ending on an assistant turn is an assistant prefill, which the current
+   * models reject outright. The note becomes the trailing USER message
+   * instead, which is also the truer description of what happened: pressing
+   * "Build this" is something the person did, not something we told the model
+   * about themselves.
+   */
+  agentInitiated = false,
 ): { messages: ChatMessage[]; system: string; channel: NoteChannel } {
   if (note === null) return { messages, system, channel: 'none' }
+
+  if (agentInitiated) {
+    return {
+      messages: [...messages, { role: 'user', content: note }],
+      system,
+      channel: 'user_event',
+    }
+  }
 
   // Cannot be messages[0], and must follow a user message. An empty history
   // has neither, and a history whose last row is not a user row would put the

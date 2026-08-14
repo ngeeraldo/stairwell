@@ -2,6 +2,7 @@ import { cookies } from 'next/headers'
 import { getDb } from '@/lib/db/instance'
 import { isAdmin } from '@/lib/auth/authorize'
 import { specByVersion } from '@/lib/db/specs'
+import { withBanner } from '@/lib/spec/banner'
 import { SESSION_COOKIE } from '@/lib/session/store'
 
 /**
@@ -47,7 +48,10 @@ export async function GET(
   const spec = specByVersion(db, account.id, version)
   if (!spec) return new Response(null, { status: 404 })
 
-  return new Response(spec.mockup_html, {
+  // Same guard as the friend's route. Nico reading a mockup should see the
+  // same label the friend sees — a preview that looks like a dashboard is
+  // exactly as misleading in the admin portal.
+  return new Response(withBanner(spec.mockup_html), {
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',

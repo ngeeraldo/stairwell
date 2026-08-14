@@ -760,3 +760,48 @@ from the bug it replaced. Its write guard is an EMPTY TRANSCRIPT, deliberately
 not `first_session_start` — that metric is load-bearing system state with one
 job (onboarding ledger D8), and an account that reached the shell before this
 existed has the metric and an empty chat, and should still be greeted.
+
+---
+
+## D19. A guard is not present because something nearby resembles it — 2026-08-14
+
+**The finding, in one sentence:** the "MOCKUP" banner visible in earlier
+screenshots was **fixture HTML written by `scripts/shots.ts`**, not output the
+generator had ever produced — so a screenshot was read as evidence about
+generation when it was only evidence about a fixture.
+
+This is the third instance of the same genus in this repo, and the pattern is
+worth naming because each one looked different and read identically:
+
+| What looked guarded | What was actually there |
+|---|---|
+| `logins.txt` ignored by `.gitignore` | the pattern said `logins.txts` — a trailing `s`, matching nothing |
+| Nine surviving `ChatPanel` mutations, tallied in a ledger | a number never itemised anywhere; six exist, and six is what could be drilled |
+| A "MOCKUP" banner in generated previews | a banner in the seed fixture; nothing generated one, and nothing required it |
+
+In all three the artifact next to the guard resembled the guard closely enough
+that nobody looked past it. The screenshot did show a banner. The gitignore did
+mention logins. The ledger did state a number. **Resemblance is what makes this
+class hard: the check "is it there?" returns yes.**
+
+**The rule this produces.** A screenshot of a fixture is evidence about the
+fixture, and nothing else. It says the route serves, the iframe renders, the
+layout holds — it says nothing whatever about what a model emits, because the
+harness never calls the API (CLAUDE.md > Testing). Any property that depends on
+GENERATED output is verified by generating something and looking at it, or it
+is not verified. `screenshots/screens.ts` now carries that caveat inline on
+`mockup-document`, where someone reaching for the picture will read it.
+
+**And the structural fix, which matters more than the note.** The banner is no
+longer requested from the model at all: `lib/spec/banner.ts` injects it at
+serve time on both mockup routes, so it cannot be forgotten by a model, missing
+from a document stored before the rule existed, or dropped by a future prompt
+version. mockup-v3 tells the model NOT to add one, precisely so the route stays
+the single source. Injected rather than refused — a refusal would turn a model
+slip into a blank preview at the moment a friend is deciding whether to
+confirm, and a labelled preview beats a broken one.
+
+This became load-bearing in the same change that made mockups carry plausible
+numbers instead of "£000.00". The old honesty signal WAS the ugliness; removing
+it without replacing the guarantee would have left previews that look exactly
+like a real dashboard, which is the one thing this system must never do.

@@ -84,6 +84,43 @@ export function openingMessage(): string {
 }
 
 /**
+ * What the model is told once it has already greeted someone.
+ *
+ * THE BUG THIS FIXES: the opener is written as the first transcript row, shown
+ * to the friend — and then dropped from the model's context, because
+ * `toMessages` slices everything before the first USER row. The model saw a
+ * conversation with no assistant turn in it, read "open with this, verbatim",
+ * and obeyed a second time. The friend's first reply was answered with the
+ * greeting they had already read.
+ *
+ * THE OBVIOUS FIX IS THE BROKEN ONE. Keeping the leading assistant row would
+ * put it in front of the model, but the Messages API rejects a conversation
+ * whose FIRST message is an assistant turn — that is what the slice is there
+ * for. Taking it out trades a repeated greeting for a 400 on every turn, which
+ * is the whole chat rather than one awkward line.
+ *
+ * So the fact travels as system context instead: the transcript keeps the row,
+ * the friend keeps seeing it, and the model is told plainly that it has
+ * already spoken. Nothing extra is persisted, and nothing about the message
+ * list changes.
+ */
+export const OPENER_ALREADY_SENT =
+  'Your opening message has already been sent to this person and is the first thing in their chat. Do not send it again, and do not begin your reply by restating it.'
+
+/**
+ * Whether this account has already been greeted.
+ *
+ * Asks the cheap structural question — is the first row an assistant row —
+ * rather than comparing bodies against the current opener. Comparing text
+ * would silently stop matching the day a new prompt version changes the
+ * wording, and every account greeted under the old one would start being
+ * greeted again.
+ */
+export function openerAlreadySent(rows: { role: string }[]): boolean {
+  return rows[0]?.role === 'assistant'
+}
+
+/**
  * Write the opener once, before the friend has said anything.
  *
  * THE GUARD IS AN EMPTY TRANSCRIPT, not `first_session_start`. That metric is

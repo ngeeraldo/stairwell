@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PlatformDb } from '@/lib/db/platform'
+import { BANNER_MARKER } from '@/lib/spec/banner'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
 vi.mock('next/headers', () => ({
@@ -322,7 +323,12 @@ describe('the admin mockup route', () => {
 
     const response = await get('devone', '1')
     expect(response.status).toBe(200)
-    expect(await response.text()).toBe(MOCKUP)
+    const html = await response.text()
+    // Banner included here too: Nico reading a friend's mockup should see the
+    // same label the friend sees. A preview that looks like a dashboard is
+    // exactly as misleading in the admin portal.
+    expect(html).toContain(BANNER_MARKER)
+    expect(html).toContain('COFFEE PALACE TEST')
     expect(response.headers.get('content-security-policy')).toBe('sandbox')
   })
 

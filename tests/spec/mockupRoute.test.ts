@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PlatformDb } from '@/lib/db/platform'
+import { BANNER_MARKER } from '@/lib/spec/banner'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
 vi.mock('next/headers', () => ({
@@ -37,7 +38,7 @@ afterEach(() => {
 })
 
 /** An account with one spec, and a session for it. */
-async function seed(options: { unlocked?: boolean; role?: 'user' | 'admin' } = {}) {
+async function seed(options: { unlocked?: boolean; role?: 'user' | 'admin'; mockupHtml?: string } = {}) {
   const { getDb } = await import('@/lib/db/instance')
   const { createAccount } = await import('@/lib/auth/accounts')
   const { createSession } = await import('@/lib/session/store')
@@ -55,7 +56,7 @@ async function seed(options: { unlocked?: boolean; role?: 'user' | 'admin' } = {
     conversationId: 'conv-1',
     promptSha: 'deadbeef',
     payload: { title: 'x' },
-    mockupHtml: MOCKUP,
+    mockupHtml: options.mockupHtml ?? MOCKUP,
     at: 1000,
   })
   const sid = createSession(db, id)
@@ -72,13 +73,39 @@ async function get(version: string): Promise<Response> {
 }
 
 describe('GET /mockup/<version>', () => {
-  it('serves the stored bytes, exactly, as a document', async () => {
+  it('serves the stored bytes as a document, plus the banner', async () => {
+    // CHANGED 2026-08-14. This used to assert byte-for-byte equality, which
+    // was right while every value in a mockup was "£000.00" and could not be
+    // mistaken for real data. Mockups carry plausible numbers now, so the
+    // banner is the only thing distinguishing a preview from a dashboard —
+    // and it is applied HERE rather than asked of the model, because "the
+    // model always complies" is not a guarantee and a route is.
+    //
+    // The stored document still arrives intact; it just arrives labelled.
     await seed()
     const response = await get('1')
 
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toContain('text/html')
-    expect(await response.text()).toBe(MOCKUP)
+
+    const html = await response.text()
+    expect(html).toContain(MOCKUP.replace(/^<!doctype html><html><body>/i, '').replace(/<\/body><\/html>$/i, ''))
+    expect(html).toContain(BANNER_MARKER)
+  })
+
+  it('injects a banner into a stored document that has none', async () => {
+    // THE FIXTURE-STRIPPING TEST Nico asked for, and the reason it lives at the
+    // route rather than beside the pure function: the question that matters is
+    // whether the bytes a FRIEND receives carry the banner when the stored
+    // document does not. That is the exact shape of the original mistake — the
+    // banner in earlier screenshots came from fixture HTML, so a guard looked
+    // present that had never been applied to generated output.
+    await seed({ mockupHtml: '<!doctype html><html><body><p>Feels like 91°</p></body></html>' })
+    const html = await (await get('1')).text()
+
+    expect(html).toContain(BANNER_MARKER)
+    // Ahead of the plausible number — the thing that could be mistaken for real.
+    expect(html.indexOf(BANNER_MARKER)).toBeLessThan(html.indexOf('Feels like'))
   })
 
   it('serves a LOCKED session too — a mockup is chat surface, not data', async () => {

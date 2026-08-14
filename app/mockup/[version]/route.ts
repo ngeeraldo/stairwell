@@ -2,6 +2,7 @@ import { cookies } from 'next/headers'
 import { getDb } from '@/lib/db/instance'
 import { isAdmin } from '@/lib/auth/authorize'
 import { specByVersion } from '@/lib/db/specs'
+import { withBanner } from '@/lib/spec/banner'
 import { resolveState } from '@/lib/session/resolve'
 import { SESSION_COOKIE, readSession } from '@/lib/session/store'
 
@@ -56,7 +57,12 @@ export async function GET(
   // 404-never-403 rule canSeeUserSpace follows.
   if (!spec) return new Response(null, { status: 404 })
 
-  return new Response(spec.mockup_html, {
+  // The banner is applied HERE, not trusted to the generator. Since mockups
+  // carry plausible numbers now, it is the only thing distinguishing a preview
+  // from a real dashboard — so it gets the same treatment as every other
+  // honesty guard in this codebase: enforced at the boundary, on every
+  // document, including ones stored before the rule existed.
+  return new Response(withBanner(spec.mockup_html), {
     headers: {
       'content-type': 'text/html; charset=utf-8',
       // no-store because a mockup is per-account content behind a session, and

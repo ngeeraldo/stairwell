@@ -5,6 +5,7 @@ import type { ChatContext } from './context'
 import { conversationIdFor } from './conversation'
 import { toMessages } from './history'
 import { applyConfirmationNote, confirmationNote } from './confirmations'
+import { OPENER_ALREADY_SENT, openerAlreadySent } from './opening'
 import { readConfirmations } from '@/lib/db/specs'
 import { loadPrompt } from './prompt'
 import {
@@ -48,7 +49,18 @@ export type TurnDeps = {
 export type TurnInput = {
   accountId: number
   sessionId: string
-  body: string
+  /**
+   * What the friend typed — or `null` for a turn the PRODUCT started rather
+   * than the person.
+   *
+   * The only such turn today is a confirmation: pressing "Build this" used to
+   * record the decision and say nothing, so the acknowledgment agent-v4
+   * promises sat waiting for the friend's next message. It arrives immediately
+   * now, which means a turn with no user message behind it. No user row is
+   * written on that path — nobody typed anything, and `transcripts` cannot be
+   * corrected later.
+   */
+  body: string | null
   signal: AbortSignal
   onText: (text: string) => void
 }
@@ -100,7 +112,12 @@ export async function runTurn(
     promptSha,
   }
 
-  appendTranscript(db, { ...stamp, role: 'user', body: input.body, at })
+  // Only when a person actually said something. An agent-initiated turn has
+  // no user message to record, and inventing one would put words in their
+  // mouth in a table that rejects UPDATE and DELETE.
+  if (input.body !== null) {
+    appendTranscript(db, { ...stamp, role: 'user', body: input.body, at })
+  }
 
   // AFTER the write, because the alert asserts a conversation started and an
   // insert that threw means none did. BEFORE the stream, because the model's
@@ -112,7 +129,9 @@ export async function runTurn(
   // provably neither throws nor rejects. A try here would instead swallow a
   // wiring mistake — an alert that never fires would look exactly like an
   // alert that fired.
-  if (started) alert(input.accountId)
+  // Not for an agent-initiated turn: the alert means "a friend showed up",
+  // and a confirmation already has its own alert on the confirm route.
+  if (started && input.body !== null) alert(input.accountId)
 
   // THE CONFIRMATION MERGE. Everything above builds the model's context from
   // `transcripts` alone, which is why the agent could not see that anyone had
@@ -122,11 +141,21 @@ export async function runTurn(
   const rows = readTranscript(db, input.accountId)
   const lastAssistantAt =
     rows.filter((r) => r.role === 'assistant').pop()?.at ?? null
+
+  // The opener is in the transcript and on the friend's screen, but never in
+  // the message list — toMessages drops a leading assistant row because the
+  // API will not accept one first. Told here instead, or the model greets the
+  // same person twice. See lib/chat/opening.ts.
+  const systemWithOpener = openerAlreadySent(rows)
+    ? `${system}\n\n${OPENER_ALREADY_SENT}`
+    : system
+
   const merged = applyConfirmationNote(
     toMessages(rows),
-    system,
+    systemWithOpener,
     confirmationNote(readConfirmations(db, input.accountId), lastAssistantAt),
     CHAT_MODEL,
+    input.body === null,
   )
   const messages = merged.messages
 
