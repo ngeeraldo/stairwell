@@ -156,10 +156,16 @@ What that click created, on the droplet:
 - an `accounts` row,
 - an `account_keys` row (their random data key, wrapped under a
   key-encrypting key derived from their password),
-- `users/<slug>/<slug>.db` — SQLCipher-encrypted, **empty**, created atomically
-  at password-set time. It holds no tables yet, which is why their screen still
-  reads synthetic under the **SYNTHETIC DATA** banner. That's correct, not a
-  bug.
+- `users/<slug>/<slug>.db` — SQLCipher-encrypted, **empty**, created at
+  password-set time by the migration runner. It holds no tables, because they
+  have no dashboard yet and therefore no migrations. That's correct, not a bug:
+  the file has to exist the moment the password does, and the shape arrives
+  when you write one.
+
+Their screen shows the **placeholder card** — no dashboard is registered for
+them yet — with the chat open, which is the interview surface. No banner: the
+banner is a dev-only thing now, and in production there is nothing synthetic to
+warn about.
 
 Verify it landed (read-only, on the droplet):
 
@@ -312,8 +318,15 @@ A folder with no registry line fails `tests/dashboard/registry.test.ts` — and
 registry line is what "the dashboard shipped" *means* to the app.
 
 Five entries are required in the folder (`tests/users/conventions.test.ts`
-sweeps for them): `schema.sql`, `seed.py`, `queries.ts`, `dashboard.tsx`,
+sweeps for them): `migrations/`, `seed.py`, `queries.ts`, `dashboard.tsx`,
 `tests/`.
+
+The scaffold ships **no shape**: `migrations/` holds a README and nothing else,
+and the dashboard says "Under construction". Writing
+`migrations/001_initial.sql` from their confirmed spec — and regenerating the
+manifest beside it, the README has the command — is the first real step of the
+build. Their database stays empty until you do, which is correct: an empty
+database is what they have.
 
 ```bash
 npm run synthetic                        # regenerates every users/*/synthetic.db
@@ -342,26 +355,28 @@ remember. It is a local synthetic account and has nothing to do with theirs.
 Mint it once and only once: a second invite for the same slug collides, so
 getting it wrong means `revoke-invite.ts` first.
 
-The walk also creates `users/<slug>/<slug>.db` locally, empty. Leave it — an
-empty real database is what makes the page fall back to `synthetic.db` and show
-the banner, which is the whole point of previewing here.
+**No real database is created on your laptop, and none can be.** Outside
+production the migration runner returns immediately and `synthetic.db` IS the
+user database — reads and writes, through the same routes. That is what keeps
+the guard hook's rule true by construction rather than by everyone remembering
+it: a real-named file only ever exists on the droplet.
 
 **Every time after** — `npm run dev`, log in at `/login` as the slug. You land
 on `/<slug>`: their dashboard, reading `users/<slug>/synthetic.db`, under the
-**SYNTHETIC DATA** banner. Keep `mockup.html` open beside it and iterate.
+**SYNTHETIC DATA** banner. Anything the dashboard's entry widget writes goes to
+that same file, so the loop is honest — type a value, save, see it. Keep
+`mockup.html` open beside it and iterate.
 
 If a login under `npm run dev` looks like it did not stick, reload — it is the
 cold-route artifact described in `docs/local-dev.md`, not your code.
 
 **If their dashboard has a write path, budget for a platform route.** A
-dashboard gets a read-only handle and can never write. Exactly two writable
-opens exist today — the registration route (creates the file empty) and
-`app/api/users/[user]/walk/route.ts` (creates it *with* a schema, and is still
-the only thing that migrates one). A new friend who logs anything needs their
-own route alongside that one; it is not a refactor of an existing one, and it is
-where the four ordered auth checks live. Their real database also stays empty —
-and their dashboard stays synthetic-under-banner — until that route runs for the
-first time.
+dashboard gets a read-only handle and can never write. Exactly two things write
+to a friend's real database: `lib/db/migrate.ts`, which creates it and changes
+its SHAPE at unlock, and a platform route, which writes ROWS into the shape it
+finds. A friend who logs anything needs their own route alongside
+`app/api/users/[user]/walk/route.ts`; it is not a refactor of that one, and it
+is where the four ordered auth checks live.
 
 ---
 
@@ -456,6 +471,7 @@ quiet about v1.
 | Add a password reset path — including "temporarily, for dev" | The password *is* the key; there is nothing to reset to. `tests/routing/forgotPage.test.tsx` fails if a form appears. |
 | Backfill `account_keys` for `devone`, `devtwo`, `nico` | Their wrapped key cannot be computed without their password. Inventing one locks a real person out of real data. They derive directly, forever. |
 | Hand-edit `users/<slug>/spec.md` or `mockup.html` | Overwritten by the next pull. The source is the confirmed record. |
+| Edit a migration that has already been applied | A friend's database records only which NUMBER it reached, so an edited file silently changes what an applied number means. A change is `002`. The manifest's checksum refuses the session rather than letting it through. |
 | Edit a file in `platform/prompts/` | Prompts are **added**, never edited — `agent-v3.md`, not a change to `agent-v2.md`. `prompt_sha` is stamped on rows that already exist. |
 | Call `announce-deploy.ts` from `deploy.sh` | Announces to every account on every push. |
 | Prune or archive `deploy_announced` or `first_session_start` metric rows | Both are read for correctness, not observed. Pruning makes a weeks-old build re-announce itself, or a months-old account report a first session again. They look like telemetry and are not. |
@@ -501,7 +517,8 @@ harness: `docs/local-dev.md`.
 |---|---|
 | `no confirmed spec for '<slug>'` on pull | They have drafts but pressed confirm on none. Correct refusal — check the Spec tab in `/admin`. |
 | Pull wrote something that looks synthetic | `PLATFORM_DB` wasn't set on the far side. `pull-spec.sh` sources `.env` itself; a hand-typed `export-spec.ts` doesn't. |
-| Their dashboard still shows the **SYNTHETIC DATA** banner | Their real database holds no tables yet. Expected until their first write through a platform route. |
+| Their dashboard says **Under construction** | The folder was scaffolded but `migrations/001_initial.sql` has not been written. Expected between step 7's scaffold and the build. |
+| A friend cannot log in, and ntfy says a migration failed | The session was refused rather than served over a half-migrated shape. The alert carries the slug and migration number; the server log has the error. Their `<slug>.backup.db` holds the pre-migration copy. |
 | "This dashboard failed to load", permanently | Something read *file existence* as *has data*. Existence means **holds at least one table** — every friend has a file from day one. |
 | Deploy aborted, site still fine | Tests failed before the restart. The old process is untouched. |
 | Deploy failed at the smoke gate | The new code **is** live and failing. Fix forward. |
