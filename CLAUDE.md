@@ -50,6 +50,11 @@ architectural changes; do not relitigate decided items).
   trampling an annotation a user made in between.
 
 ## Dashboard folder conventions
+- **Before building any `users/<slug>/` dashboard, read
+  docs/dashboard-build-rules.md.** It indexes every rule governing a dashboard
+  build — this section, the step-5 design, the step-6a and friend-timezone
+  ledgers — with a citation on each line. It is an index, not a second copy:
+  where it disagrees with a source, the source wins.
 - A user dashboard lives entirely in `users/<slug>/`. Five entries are
   required; `tests/users/conventions.test.ts` sweeps every folder and fails
   if one is missing:
