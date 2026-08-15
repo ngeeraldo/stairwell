@@ -99,14 +99,36 @@ either. If it fails partway, delete the database and start over.
 ## Run it
 
 ```bash
-npm run build && npm start      # http://localhost:3000
+npm run dev                     # http://localhost:3000
 ```
 
-**Prefer production mode over `npm run dev` when testing the auth flow.** In dev,
-Next compiles routes on demand, and the first request to a cold route can miss an
-in-memory key set moments earlier by another route — an unlock can look like it
-did not stick. It is a dev-compiler artifact, not a bug in the lock, but it wastes
-time. Warm the routes first if you do use `npm run dev`.
+**Do not log in under `npm start`.** `npm start` sets `NODE_ENV=production`, and
+`NODE_ENV` is the only switch `lib/db/userData.ts` has. Every non-admin login
+calls the migration runner (`app/api/login/route.ts`), which on the production
+branch **creates `users/<slug>/<slug>.db` on your laptop** — a real-named,
+SQLCipher-encrypted database, which CLAUDE.md > Data safety says exists only on
+the server. This is not limited to registering a new account: logging in as
+`devone` is enough. `lib/db/migrate.ts` returns early outside production
+precisely to prevent this, and `npm start` is not outside production.
+
+`npm start` is still the right way to check that **the build serves** — just do
+not sign in while it is up:
+
+```bash
+npm run build && npm start      # verify it boots and redirects; do not log in
+```
+
+If a real database does appear, **Gate F** (`.githooks/pre-commit`) blocks your
+next commit and prints the fix — `rm users/<slug>/<slug>.db*`, with the `*`,
+because `-wal` and `-shm` hold the same rows.
+
+**The cost of `npm run dev`, and the workaround.** Next compiles routes on
+demand, so the first request to a cold route can miss an in-memory key set
+moments earlier by another route — an unlock can look like it did not stick, and
+a dashboard can render `Locked.` right after a successful login. It is a
+dev-compiler artifact, not a bug in the lock. Warm the routes by requesting them
+once (visit `/login`, then `/<slug>`), or simply log in a second time; both work
+from then on.
 
 ## What you should see
 
@@ -129,9 +151,10 @@ time. Warm the routes first if you do use `npm run dev`.
     loudly-fake merchants, `COFFEE PALACE TEST` among them.
 11. `/devtwo` as `devtwo` shows the walk tracker — today's yes/no with a tap
     control, the streak, a 30-day percentage and a 14-day row — under the same
-    **SYNTHETIC DATA** banner, until devtwo's first real tap. See "Trying the
-    encrypted write path" below. Neither account can reach the other's URL at
-    all; both get a 404, not a 403.
+    **SYNTHETIC DATA** banner. The banner never goes away locally: it follows
+    the WORLD, not a row count, and in dev the world is synthetic. See "Trying
+    the write path" below. Neither account can reach the other's URL at all;
+    both get a 404, not a 403.
 
 ## Pulling a confirmed spec into the repo
 
@@ -192,74 +215,66 @@ it at `platform/dev/synthetic.db` locally, never at a real database.
 ./scripts/new-dashboard.sh <slug>   # scaffold; prints the registry line to add
 npm run synthetic                   # regenerate every users/*/synthetic.db
 npx vitest run users/<slug>
+
+# A local account so you can log in as them at /login and look at the screen.
+# Writes account rows only — it creates no user database, and refuses to run
+# under NODE_ENV=production. The password is local and disposable.
+npx tsx scripts/create-local-account.ts <slug> <password>
+npm run dev
 ```
 
 The conventions and what each file is for: `CLAUDE.md > Dashboard folder
-conventions`. `users/devone/` is a worked example.
+conventions`. `users/devone/` is a worked example. The full operator sequence
+around a build is `docs/runbook.md` step 7.
 
-## Trying the encrypted write path
+## Trying the write path
 
 ```bash
 npm run synthetic
-npm run build && npm start
+npm run dev
 ```
 
-Log in as `devtwo` / `TEST-DEV-TWO` and open `/devtwo`.
+Log in as `devtwo` / `TEST-DEV-TWO`, open `/devtwo`, and press **Tap to mark
+walked**.
 
-**Before the first tap** the screen is the SYNTHETIC DATA banner over
-`users/devtwo/synthetic.db`. Run on 2026-08-13 at `America/Chicago`, it read:
+**Reads and writes both land in `users/devtwo/synthetic.db`.** That is the point
+of there being no real-vs-synthetic fallback (`lib/db/userData.ts`): if the
+dashboard read one database while the entry widget wrote to another, typing a
+value would save somewhere the screen never looks, and the loop you are testing
+would prove nothing. The tap POSTs to `app/api/users/[user]/walk/route.ts` like
+any other write — a dashboard component never holds a writable handle.
 
-| Panel | Before the tap | After the tap |
-|---|---|---|
-| Walked today? | `NOT YET`, with a **Tap to mark walked** button | `WALKED` / `Marked for today.`, no button |
-| Current streak | `1` day in a row | `1` day in a row |
-| Last 30 days | `77%` — 23 of 30 days | `3%` — 1 of 30 days |
-| Last 14 days | 9 walked, 5 missed | 1 walked (today), 13 missed |
-| Banner | present | **gone** |
+What to look for: "Walked today?" flips from `NOT YET` to `WALKED` and the tap
+control disappears, and the streak and the 30- and 14-day panels each move by
+one day. They **move**, they do not reset — the tap inserts one row for today
+into the sample history rather than switching the page to a different file.
 
-The banner disappearing is the whole event: `users/devtwo/devtwo.db` now exists,
-so the dashboard reads that instead. Everything above the banner line is the
-same component reading a different file.
+**The SYNTHETIC DATA banner stays up the whole time.** It follows the WORLD, not
+a row count, and in dev the world is synthetic. A banner that vanished mid-session
+would be describing which file was open, which is exactly the fallback that was
+deleted.
 
-**The streak does not change, and that is not a bug in either direction.**
-`seed.py` deliberately leaves today unwalked in the sample (so the tap control
-is visible on handover morning), and it leaves the day before today walked, so
-the sample streak is already exactly one day. The real database then contains
-exactly one day. Two different single days, same number. The panels that
-actually show you the sample history was never yours are the 30-day percentage
-and the 14-day row — 77% to 3%, nine walked days to one. If you are
-demonstrating this to someone, point at those.
+### Where the encrypted path is actually exercised
 
-To confirm the file is really encrypted:
+Not here. Locally there is no encrypted user database and there must not be one
+— see **Run it** above. Two places touch the real path without putting a file in
+this repo:
+
+- `tests/db/encryptedUserDb.test.ts` creates one in a temp tree and asserts it
+  does **not** begin with the ASCII `SQLite format 3`, which an unencrypted
+  SQLite file does.
+- `npm run shots` forces `NODE_ENV=production` around the migration runner but
+  points `USERS_DIR` at a temp tree (`scripts/shots.ts`), so the real encrypted
+  database is built by the real code and thrown away with the directory. That is
+  the sanctioned shape for anything that needs the production branch locally:
+  **production mode is fine, a real file inside the repo is not.**
+
+To start over, reset the synthetic database rather than deleting anything real:
 
 ```bash
-head -c 16 users/devtwo/devtwo.db | xxd
+rm -f users/devtwo/synthetic.db*        # the * takes the -wal and -shm sidecars
+npm run synthetic
 ```
-
-An unencrypted SQLite file begins with the ASCII `SQLite format 3`. This one
-does not. `tests/db/encryptedUserDb.test.ts` asserts exactly that against a
-file it creates in a temp tree — running the command by hand is how you check
-the same thing about a file the app wrote, which is the only form of the check
-that says anything about a real deployment.
-
-Expect `devtwo.db-wal` and `devtwo.db-shm` next to it, and expect them to
-stay. A dashboard render opens the database read-only, and a read-only
-connection cannot checkpoint the write-ahead log away when it closes, so the
-sidecars outlive the request. They are normal, they hold the same rows the
-database does, and they are why every command here globs `devtwo.db*` — a copy
-or a delete that takes only the main file is taking part of the database.
-
-To start over: `rm users/devtwo/devtwo.db*` — the `*` matters here for the same
-reason it does under Reset below; it takes the `-wal` and `-shm` sidecars too.
-There is no other way back, which is the same property a forgotten password has.
-
-**If you use `npm run dev` for this instead of `npm run build && npm start`,**
-expect the cold-route artifact at the top of this file to bite twice, not once.
-The key is set by `/api/login` in one freshly compiled module instance;
-`/devtwo` renders `Locked.` and `POST /api/users/[user]/walk` returns `403`
-until each of those routes has been compiled at least once. Request both, log
-in again, and both work. It is the same dev-compiler artifact described under
-"Run it" — it just has two more places to show up now.
 
 ## Inviting someone
 
@@ -284,8 +299,10 @@ PLATFORM_DB=/home/deploy/stairwell/platform.db \
 npx tsx scripts/revoke-invite.ts friendone
 ```
 
-Walk it: open the printed link, press **Sounds good →**, set a password of 10+
-characters, and you land in the shell. Then check what it actually created:
+Walk it **under `npm run dev`**: open the printed link, press **Sounds good →**,
+set a password of 10+ characters, and you land in the shell. Under `npm start`
+the same click creates a real `users/<slug>/<slug>.db` on your laptop — see
+**Run it** above. Then check what it actually created:
 
 ```bash
 sqlite3 platform/dev/synthetic.db \
@@ -301,8 +318,10 @@ sqlite3 platform/dev/synthetic.db \
   "SELECT a.slug, k.account_id IS NOT NULL AS enveloped
      FROM accounts a LEFT JOIN account_keys k ON k.account_id = a.id;"
 
-# Their database exists and holds NO tables yet — which is why the dashboard
-# still reads synthetic under the banner.
+# NO user database here, and that is the pass condition. On the droplet this
+# folder would hold an encrypted <slug>.db created at password-set time; on a
+# laptop the runner returns early and synthetic.db is the user database.
+# Anything named <slug>.db here means you ran the flow under `npm start`.
 ls -la users/friendone/
 ```
 

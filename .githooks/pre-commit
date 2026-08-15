@@ -425,6 +425,137 @@ check_typecheck() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# Gate F — no real user database in the working tree.
+#
+# CLAUDE.md > Data safety: "Real DBs exist only on the server. If a
+# non-synthetic .db appears locally, stop and flag it."
+#
+# WHY A GIT HOOK AND NOT A TEST. A vitest sweep for stray databases would run
+# on the droplet too — deploy/deploy.sh runs the whole suite before it
+# restarts — and there the files are legitimate and expected. It would fail
+# every deploy. The droplet only ever `git pull`s; it never commits. So a
+# pre-commit check is laptop-only BY CONSTRUCTION, which is the same asymmetry
+# that already makes .claude/hooks/deny-sensitive-files.sh safe to write
+# absolutely.
+#
+# WHY IT CHECKS THE WORKING TREE AND NOT THE STAGED LIST. .gitignore covers
+# *.db, so an offending file can never appear in `git diff --cached`. The
+# thing being prevented is not a bad commit — that is already impossible — it
+# is a real-named encrypted database SITTING on a laptop, unreadable, denied
+# by the guard hook, and silently violating the partition every other rule
+# assumes. Committing is simply the most reliable moment to notice.
+#
+# HOW ONE GETS THERE, since it is not obvious: `npm start` sets
+# NODE_ENV=production, NODE_ENV is the one switch lib/db/userData.ts uses to
+# pick a world, and lib/db/migrate.ts creates the file on the production
+# branch. Logging in locally under `npm start` was enough. Use
+# scripts/create-local-account.ts and `npm run dev` instead — docs/runbook.md
+# step 7.
+#
+# NO SKIP VARIABLE, deliberately, and unlike Gates A/B/C. Those three guard
+# process rules with legitimate exceptions ("this really is a copy change").
+# This one guards a data-safety invariant with none: there is no local task
+# for which a real-named user database is the right answer, and the remedy is
+# one `rm` the message hands you. Same reasoning as deploy/smoke.sh having no
+# skip.
+# ---------------------------------------------------------------------------
+
+# _is_real_user_db <path>
+#   0 (true) if the path names a database that is not synthetic.db.
+#
+# Mirrors the stem logic in .claude/hooks/deny-sensitive-files.sh: sidecars
+# hold the same rows as the database itself, so judge the underlying name.
+_is_real_user_db() {
+  local base=${1##*/} lower stem
+  lower=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
+  stem=$lower
+  case "$stem" in
+    *-wal|*-shm|*-journal) stem=${stem%-*} ;;
+  esac
+  case "$stem" in
+    synthetic.db|synthetic.sqlite|synthetic.sqlite3) return 1 ;;
+    *.db|*.sqlite|*.sqlite3) return 0 ;;
+  esac
+  return 1
+}
+
+# _find_user_db_files [root]
+#   prints every regular file under <root>/users/<slug>/, one per line.
+#   Filtering is _is_real_user_db's job, so the two can be tested apart.
+_find_user_db_files() {
+  local root=${1:-.}
+  [ -d "$root/users" ] || return 0
+  # Leading './' stripped so the `rm` the block message prints is clean enough
+  # to paste. Only affects the default root; an absolute sandbox path in the
+  # test harness passes through untouched.
+  find "$root/users" -maxdepth 2 -type f 2>/dev/null | sed 's|^\./||'
+}
+
+# check_stray_user_dbs <candidate paths...>
+#   exit 0 = allow commit, exit 1 = block (message on stderr)
+check_stray_user_dbs() {
+  [ $# -eq 0 ] && return 0
+
+  local f slug stray=""
+  for f in "$@"; do
+    if _is_real_user_db "$f"; then
+      stray="$stray
+$f"
+    fi
+  done
+
+  [ -z "$stray" ] && return 0
+
+  {
+    echo
+    echo "COMMIT BLOCKED — a real user database is on this machine"
+    echo
+    echo "CLAUDE.md > Data safety (hard rules):"
+    echo "  \"Real DBs exist only on the server. If a non-synthetic .db"
+    echo "   appears locally, stop and flag it.\""
+    echo
+    echo "  Found:"
+    # printf '%s\n', not '%s': $stray has no trailing newline, and `read`
+    # discards a final line that lacks one — which silently dropped the last
+    # offending file (usually the -shm sidecar) from this list.
+    printf '%s\n' "$stray" | while IFS= read -r f; do
+      [ -n "$f" ] && echo "      $f"
+    done
+    echo
+    echo "  This is an encrypted per-user database. You cannot read it, the"
+    echo "  guard hook denies opening it, and it should not be here at all."
+    echo
+    echo "  Almost certainly you ran the app with \`npm start\` and logged in."
+    echo "  That sets NODE_ENV=production, which is the only switch"
+    echo "  lib/db/userData.ts has, so the login took the production branch"
+    echo "  and lib/db/migrate.ts created the file."
+    echo
+    echo "  Remove it — the * matters, the -wal and -shm sidecars hold the"
+    echo "  same rows:"
+    echo
+    for f in "$@"; do
+      if _is_real_user_db "$f"; then
+        slug=${f%.db*}
+        slug=${slug%.sqlite*}
+        slug=${slug%.sqlite3*}
+        echo "      rm ${slug}.db*"
+      fi
+    done | sort -u
+    echo
+    echo "  Then use the local account path that cannot create one:"
+    echo "      npx tsx scripts/create-local-account.ts <slug> <password>"
+    echo "      npm run dev"
+    echo
+    echo "  docs/runbook.md step 7 has the full sequence."
+    echo
+    echo "  There is no skip variable for this gate, by design."
+    echo
+  } >&2
+
+  return 1
+}
+
 # When sourced by the test harness, stop here and expose the function only.
 if [ "${SCHEMA_GATE_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -446,6 +577,16 @@ rc=0
 check_schema_drift ${files[@]+"${files[@]}"} || rc=1
 check_test_coverage ${files[@]+"${files[@]}"} || rc=1
 check_typecheck ${files[@]+"${files[@]}"} || rc=1
+
+# Gate F reads the WORKING TREE, not the staged list: *.db is gitignored, so
+# an offending file can never appear in `git diff --cached`. See the block
+# above for why this is a git hook rather than a test.
+db_candidates=()
+while IFS= read -r line; do
+  [ -n "$line" ] && db_candidates+=("$line")
+done < <(_find_user_db_files .)
+check_stray_user_dbs ${db_candidates[@]+"${db_candidates[@]}"} || rc=1
+
 [ $rc -ne 0 ] && exit 1
 
 exit 0

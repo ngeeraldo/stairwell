@@ -631,6 +631,174 @@ else
 fi
 echo
 
+# ---------------------------------------------------------------------------
+# Gate F — no real user database in the working tree.
+#
+# CLAUDE.md > Data safety: "Real DBs exist only on the server. If a
+# non-synthetic .db appears locally, stop and flag it."
+#
+# This gate is the reason the rule stops being honour-based. It is a git hook
+# rather than a vitest test because the droplet runs the suite on every deploy
+# and real databases are legitimate there — see the block comment in
+# .githooks/pre-commit.
+# ---------------------------------------------------------------------------
+echo "Gate F: a real user database blocks the commit"
+if [ ! -f "$GATE" ]; then
+  printf '  %-6s %-34s %s\n' "FAIL" "gate script present (F)" "missing $GATE"
+  fail=$((fail + 1))
+  failed_cases+=("gate script present (F)")
+else
+  # stray_check <expected BLOCK|PASS> <label> <candidate paths...>
+  stray_check() {
+    local expected=$1 label=$2
+    shift 2
+    local rc
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE"
+      check_stray_user_dbs "$@"
+    ) >/dev/null 2>&1
+    rc=$?
+    local actual="PASS"
+    [ $rc -ne 0 ] && actual="BLOCK"
+    if [ "$actual" = "$expected" ]; then
+      printf '  %-6s %-34s %s\n' "PASS" "$label" "$actual"
+      pass=$((pass + 1))
+    else
+      printf '  %-6s %-34s got %s, want %s\n' "FAIL" "$label" "$actual" "$expected"
+      fail=$((fail + 1))
+      failed_cases+=("$label")
+    fi
+  }
+
+  stray_check PASS  "synthetic.db is the allowed one" \
+    users/run4/synthetic.db
+  stray_check PASS  "ordinary source files" \
+    users/run4/queries.ts users/run4/dashboard.tsx users/run4/spec.md
+  stray_check PASS  "empty candidate list"
+  stray_check BLOCK "a friend's real database" \
+    users/run4/run4.db
+  stray_check BLOCK "the -wal sidecar alone" \
+    users/run4/run4.db-wal
+  stray_check BLOCK "the -shm sidecar alone" \
+    users/run4/run4.db-shm
+  stray_check BLOCK "the -journal sidecar alone" \
+    users/run4/run4.db-journal
+  # lib/db/migrate.ts writes <slug>.backup.db before applying a migration. It
+  # is the same rows under the same key, so it is the same violation.
+  stray_check BLOCK "the migration backup copy" \
+    users/run4/run4.backup.db
+  stray_check BLOCK ".sqlite and .sqlite3 too" \
+    users/run4/run4.sqlite3
+  stray_check BLOCK "case does not launder it" \
+    users/run4/RUN4.DB
+  stray_check BLOCK "one real db among many good files" \
+    users/devone/synthetic.db users/devtwo/synthetic.db users/run4/run4.db
+
+  # No skip variable, unlike Gates A/B/C. A data-safety invariant has no
+  # legitimate local exception, and the remedy is one rm. If someone adds a
+  # bypass later, these turn red and the block comment says why not to.
+  (
+    # shellcheck disable=SC1090
+    SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE"
+    SKIP_TEST_GATE=1 SKIP_TYPECHECK=1 SKIP_TEST_RUN_GATE=1 SKIP_BUILD_GATE=1 \
+      check_stray_user_dbs users/run4/run4.db
+  ) >/dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    printf '  %-6s %-34s %s\n' "PASS" "no existing skip bypasses Gate F" "still BLOCK"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s %s\n' "FAIL" "no existing skip bypasses Gate F" "a skip variable disabled it"
+    fail=$((fail + 1))
+    failed_cases+=("no existing skip bypasses Gate F")
+  fi
+
+  # The message has to carry the glob. Removing users/x/x.db without the *
+  # leaves -wal and -shm holding the same rows, which is the exact mistake
+  # docs/runbook.md > Standing rules already calls out.
+  stray_out=$(
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+      check_stray_user_dbs users/run4/run4.db users/run4/run4.db-wal 2>&1 >/dev/null
+    )
+  )
+  if printf '%s' "$stray_out" | grep -qF "rm users/run4/run4.db*"; then
+    printf '  %-6s %-34s %s\n' "PASS" "message gives the rm WITH the glob" "found"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s %s\n' "FAIL" "message gives the rm WITH the glob" "missing 'rm users/run4/run4.db*'"
+    fail=$((fail + 1))
+    failed_cases+=("message gives the rm WITH the glob")
+  fi
+  # Every offending file must be listed. The first version of this gate built
+  # the list with `printf '%s'` and lost the LAST one to `read`, which is the
+  # sidecar most likely to be forgotten.
+  if printf '%s' "$stray_out" | grep -qF "users/run4/run4.db-wal"; then
+    printf '  %-6s %-34s %s\n' "PASS" "message lists every file, incl. the last" "found"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s %s\n' "FAIL" "message lists every file, incl. the last" "last file dropped from list"
+    fail=$((fail + 1))
+    failed_cases+=("message lists every file, incl. the last")
+  fi
+  if printf '%s' "$stray_out" | grep -qF "create-local-account.ts"; then
+    printf '  %-6s %-34s %s\n' "PASS" "message points at the safe path" "names the script"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s %s\n' "FAIL" "message points at the safe path" "does not name create-local-account.ts"
+    fail=$((fail + 1))
+    failed_cases+=("message points at the safe path")
+  fi
+
+  # The finder half, against a real directory tree.
+  stray_sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t stairwell-strayfind)
+  mkdir -p "$stray_sandbox/users/alice" "$stray_sandbox/users/bob"
+  : > "$stray_sandbox/users/alice/synthetic.db"
+  : > "$stray_sandbox/users/alice/queries.ts"
+  : > "$stray_sandbox/users/bob/bob.db"
+  # fake-real.db lives in the REPO ROOT and is a deliberate decoy (CLAUDE.md).
+  # The finder only looks under users/, so it must never see it.
+  : > "$stray_sandbox/fake-real.db"
+
+  found=$(
+    (
+      # shellcheck disable=SC1090
+      SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+      _find_user_db_files "$stray_sandbox"
+    )
+  )
+  if printf '%s' "$found" | grep -qF "users/bob/bob.db" &&
+    ! printf '%s' "$found" | grep -qF "fake-real.db"; then
+    printf '  %-6s %-34s %s\n' "PASS" "finder sees users/, not the repo root" "bob.db found, decoy ignored"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s %s\n' "FAIL" "finder sees users/, not the repo root" "wrong file set"
+    fail=$((fail + 1))
+    failed_cases+=("finder sees users/, not the repo root")
+  fi
+
+  # A tree with no users/ directory at all must be silent, not an error — a
+  # fresh clone before ./setup.sh, or any repo subdirectory.
+  empty_sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t stairwell-strayempty)
+  (
+    # shellcheck disable=SC1090
+    SCHEMA_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1
+    _find_user_db_files "$empty_sandbox"
+  ) >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    printf '  %-6s %-34s %s\n' "PASS" "no users/ directory is not an error" "exit 0"
+    pass=$((pass + 1))
+  else
+    printf '  %-6s %-34s %s\n' "FAIL" "no users/ directory is not an error" "nonzero exit"
+    fail=$((fail + 1))
+    failed_cases+=("no users/ directory is not an error")
+  fi
+
+  rm -rf "$stray_sandbox" "$empty_sandbox"
+fi
+echo
+
 echo "Gate D: a broken build blocks the push"
 PUSH_GATE="$(cd "$HOOK_DIR/../.." && pwd)/.githooks/pre-push"
 if [ ! -x "$PUSH_GATE" ]; then

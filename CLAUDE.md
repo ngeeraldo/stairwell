@@ -22,6 +22,22 @@ architectural changes; do not relitigate decided items).
   stop and flag it. ONE known exception: fake-real.db in the repo root is a
   deliberate decoy holding no data, used to test the guard hook. Do not flag
   it, and do not open it — it stays denied like any other non-synthetic .db.
+- **A laptop CAN produce one, and this file used to claim it could not.**
+  `npm start` sets `NODE_ENV=production`, and `NODE_ENV` is the only switch
+  `lib/db/userData.ts` has, so a local login under `npm start` takes the
+  production branch and `lib/db/migrate.ts` creates
+  `users/<slug>/<slug>.db` on the laptop. `migrate.ts` returning early
+  outside production was meant to make that impossible; it closes the
+  `npm run dev` path only. Build and review dashboards under **`npm run dev`**,
+  and make a local account with the one command that cannot create a database:
+  ```bash
+  npx tsx scripts/create-local-account.ts <slug> <password>
+  ```
+  **Gate F** (`.githooks/pre-commit`) blocks any commit while a non-synthetic
+  database exists under `users/`. It is a git hook and not a test because
+  `deploy/deploy.sh` runs the suite on the droplet, where those files are
+  legitimate — the droplet only ever pulls, so a commit hook is laptop-only by
+  construction. It has no skip variable.
 - The guard is .claude/hooks/deny-sensitive-files.sh, a PreToolUse hook that
   denies Read/Edit/Write on any database file (*.db, *.sqlite, *.sqlite3 and
   their -wal/-shm/-journal sidecars) that is not synthetic.db, and on .env
@@ -280,6 +296,10 @@ architectural changes; do not relitigate decided items).
   - `.githooks/`, `.claude/hooks/` → `.claude/hooks/test-hooks.sh`
 - Docs, styling, and config are exempt by path. Migrations and the seed
   generators are governed by the anti-drift rule instead.
+- A commit is also blocked while a non-synthetic database sits under `users/`
+  (**Gate F**, see Data safety above). Unlike the gates below it has no skip:
+  a data-safety invariant has no legitimate local exception, and the block
+  message hands you the `rm` that fixes it.
 - `SKIP_TEST_GATE=1 git commit` skips the coverage gate only, and prints the
   untested files. When Claude uses the skip, it states the reason in the
   commit message.

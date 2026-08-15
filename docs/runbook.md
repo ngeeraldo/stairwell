@@ -1,8 +1,8 @@
 # Runbook — taking a friend from invite to live dashboard
 
 The end-to-end operator process, in order. Everything here is run **by Nico, by
-hand**. Nothing in this file is automated, and several steps are deliberately
-not automated (see [Never do these](#never-do-these)).
+hand** — several steps stay manual on purpose, and [Standing
+rules](#standing-rules) says which and why.
 
 `docs/local-dev.md` is the other half: how to run and rehearse all of this
 locally against synthetic data. **Rehearse a step there before doing it live** —
@@ -19,16 +19,18 @@ copy-pasteable dry run of steps 1–4.
 | Platform DB | `platform/dev/synthetic.db` (fake) | `/home/deploy/stairwell/platform.db` (**real**) |
 | What you do here | write code, pull specs, commit, push | mint invites, deploy, announce, read real records |
 
-Two standing rules that shape every command below:
+Two rules that shape every command below:
 
-- **Never edit files on the droplet.** Deploys go out through `deploy/deploy.sh`
-  only, which does `git pull --ff-only`. A hand-edit there is invisible to the
-  laptop and gets clobbered by the next deploy.
-- **A non-interactive `ssh` loads no profile and no `EnvironmentFile`**, so
-  `PLATFORM_DB` is *unset* on the far side unless you set it. Without it,
-  scripts either refuse to run or fall back to a synthetic database — on the
-  production box. `scripts/pull-spec.sh` already handles this for you; the ones
-  you type by hand do not, which is what the `$STAIRWELL` prelude below is.
+- **Change the droplet only by deploying to it** — `git push`, then
+  `deploy/deploy.sh`, which does `git pull --ff-only`. That way the laptop and
+  the droplet always agree, and every change is visible where the dashboard is
+  actually built.
+- **Set `PLATFORM_DB` on every command you send over ssh**, via the
+  `$STAIRWELL` prelude below. A non-interactive `ssh` loads no profile and no
+  `EnvironmentFile`, so the far side has it unset otherwise — and the scripts
+  then either refuse to run or fall back to a synthetic database, on the
+  production box. `scripts/pull-spec.sh` handles this itself; the ones you type
+  by hand need the prelude.
 
 ## Set these first
 
@@ -91,10 +93,11 @@ deleted at step 9. A version is already the atomic unit everywhere else in this
 system (whole-surface, a permanent `specs` row, announced exactly once), so the
 branch is named after the thing that gets announced.
 
-**Never create a branch named for the slug alone.** Git stores `sam` as a *file*
-under `refs/heads/`, which cannot coexist with the *directory* `refs/heads/sam/`.
-One `git branch sam` makes `sam/v2` impossible for as long as it exists, and the
-error git throws (`cannot lock ref`) never mentions the branch that caused it.
+**Always include the version in the branch name — `sam/v1`, never a bare
+`sam`.** Git stores `sam` as a *file* under `refs/heads/`, and a file cannot
+coexist with the *directory* `refs/heads/sam/`. One `git branch sam` makes
+`sam/v2` impossible for as long as it exists, and the error git throws (`cannot
+lock ref`) never names the branch that caused it.
 
 ---
 
@@ -194,9 +197,9 @@ Expect `used=1, revoked=0`, `enveloped=1`, and a `<slug>.db` file of a few KB.
   then per user three tabs — **Transcript / Spec / Mockup**. It is manual
   refresh only; nothing polls. Log in as `nico` (an admin lands on `/admin`, and
   has no user space of their own).
-- Metrics carry **no user values, ever** — a slug and a panel, never a day, a
-  count, or a payload. If you want to know what someone logged, you don't; that
-  is the promise the login page makes.
+- Metrics tell you **that** someone used it, never **what** they logged — a slug
+  and a panel, and nothing else. To learn what a friend is tracking, read their
+  chat or ask them. That bound is the promise the login page makes.
 
 If a build hits a decision only they can make, ask **in their chat**, so the
 transcript stays the log of record:
@@ -263,9 +266,9 @@ This ssh's to the droplet, reads the real confirmed spec, and writes two files:
 - `users/<slug>/spec.md`
 - `users/<slug>/mockup.html`
 
-**It overwrites both on every pull.** Hand edits to either file do not survive
-the next run — they are a projection of a database record, not a source. If the
-spec is wrong, the fix is a new confirmed version in chat, not an edit here.
+**It overwrites both on every pull**, because both are a projection of a
+database record rather than a source. Treat them as read-only: when the spec is
+wrong, have the friend confirm a new version in chat and pull again.
 
 The write is atomic as a pair: either both files land or neither does.
 
@@ -333,8 +336,8 @@ npm run synthetic                        # regenerates every users/*/synthetic.d
 npx vitest run "users/$FRIEND"
 ```
 
-Build toward `mockup.html`. Feasibility doubts go back to the friend via
-`ask-user.ts` (step 4), not into a guess.
+Build toward `mockup.html`. Take feasibility doubts back to the friend via
+`ask-user.ts` (step 4) and build on their answer.
 
 ### See it on a screen
 
@@ -343,29 +346,35 @@ No test tells you whether it matches the mockup. Look at it.
 **Once per friend** — there is no local account for their slug yet:
 
 ```bash
-npm run build && npm start                     # not `npm run dev`: see docs/local-dev.md
-
-# second terminal
-INVITE_ORIGIN=http://localhost:3000 npx tsx scripts/create-invite.ts "$FRIEND"
+npx tsx scripts/create-local-account.ts "$FRIEND" 'a-local-password-10-plus'
 ```
 
-Open the link it prints, press **Sounds good →**, set a password you will
-remember. It is a local synthetic account and has nothing to do with theirs.
+One line, no browser, no invite. The password is local, disposable and yours;
+it has nothing to do with the one they set on the droplet, and you will type it
+at `/login` every time you come back to this build.
 
-Mint it once and only once: a second invite for the same slug collides, so
-getting it wrong means `revoke-invite.ts` first.
+**This script is the whole step** — it replaced an earlier instruction to run
+`npm run build && npm start` and register through the browser. `npm start` sets
+`NODE_ENV=production`, which is the only switch `lib/db/userData.ts` has, so a
+login there took the production branch and `lib/db/migrate.ts` wrote a real
+`users/<slug>/<slug>.db` **onto the laptop** — the one file CLAUDE.md > Data
+safety keeps on the server. `create-local-account.ts` writes account rows and
+nothing on the filesystem, and refuses to run under `NODE_ENV=production` at
+all.
 
-**No real database is created on your laptop, and none can be.** Outside
-production the migration runner returns immediately and `synthetic.db` IS the
-user database — reads and writes, through the same routes. That is what keeps
-the guard hook's rule true by construction rather than by everyone remembering
-it: a real-named file only ever exists on the droplet.
+If one is already sitting there from an older run, **Gate F** blocks your next
+commit and prints the fix: `rm users/<slug>/<slug>.db*` — with the `*`, because
+`-wal` and `-shm` hold the same rows.
 
-**Every time after** — `npm run dev`, log in at `/login` as the slug. You land
+**Then, every time** — `npm run dev`, log in at `/login` as the slug. You land
 on `/<slug>`: their dashboard, reading `users/<slug>/synthetic.db`, under the
 **SYNTHETIC DATA** banner. Anything the dashboard's entry widget writes goes to
 that same file, so the loop is honest — type a value, save, see it. Keep
 `mockup.html` open beside it and iterate.
+
+A freshly scaffolded folder has no migrations, so its `synthetic.db` is
+**empty** and the banner sits above a dashboard with no numbers under it. That
+is expected until you write `001_initial.sql` and re-run `npm run synthetic`.
 
 If a login under `npm run dev` looks like it did not stick, reload — it is the
 cold-route artifact described in `docs/local-dev.md`, not your code.
@@ -423,8 +432,9 @@ applies to its own deploy — *except* on the very first deploy that delivers a
 change to that re-exec block. If a contract change must hold from its first
 deploy, **run `deploy.sh` twice**.
 
-Then look at it as a friend would: log in as them? You can't — you don't have
-their password, by design. Check `/admin` instead, and ask them.
+Then check how it landed for them: read `/admin`, and ask them directly. Their
+password is theirs alone by design, so `/admin` and their own words are the two
+views you have.
 
 ---
 
@@ -438,15 +448,17 @@ Posts the confirmed version's change summary into **that one account's** chat,
 **once per confirmed spec version**. Safe to re-run: an already-announced
 version is reported, not repeated.
 
-This is deliberately not wired into `deploy.sh`. That script deploys the whole
-service; calling this from it would post "your dashboard is live" into *every*
-account's chat on *every* push — a permanent lie in an append-only transcript.
+Run it by hand, per friend, and keep it that way. `deploy.sh` deploys the whole
+service, so calling the announcer from it would post "your dashboard is live"
+into *every* account's chat on *every* push — a permanent line in an
+append-only transcript for every account that was not the reason for that
+deploy.
 
 Once it has announced, the branch has done its job — main carries the merge and
 the version is on record:
 
 ```bash
-git branch -d "$FRIEND/v$V"     # -d, never -D: it refuses if the merge never happened
+git branch -d "$FRIEND/v$V"     # -d: git refuses the delete if the merge never happened
 ```
 
 ---
@@ -464,22 +476,26 @@ quiet about v1.
 
 ---
 
-## Never do these
+## Standing rules
 
-| Never | Because |
+The steps above are the sequence. These hold across all of them, and each one
+is here because getting it wrong is expensive and quiet.
+
+| Always | Because |
 |---|---|
-| Add a password reset path — including "temporarily, for dev" | The password *is* the key; there is nothing to reset to. `tests/routing/forgotPage.test.tsx` fails if a form appears. |
-| Backfill `account_keys` for `devone`, `devtwo`, `nico` | Their wrapped key cannot be computed without their password. Inventing one locks a real person out of real data. They derive directly, forever. |
-| Hand-edit `users/<slug>/spec.md` or `mockup.html` | Overwritten by the next pull. The source is the confirmed record. |
-| Edit a migration that has already been applied | A friend's database records only which NUMBER it reached, so an edited file silently changes what an applied number means. A change is `002`. The manifest's checksum refuses the session rather than letting it through. |
-| Edit a file in `platform/prompts/` | Prompts are **added**, never edited — `agent-v3.md`, not a change to `agent-v2.md`. `prompt_sha` is stamped on rows that already exist. |
-| Call `announce-deploy.ts` from `deploy.sh` | Announces to every account on every push. |
-| Prune or archive `deploy_announced` or `first_session_start` metric rows | Both are read for correctness, not observed. Pruning makes a weeks-old build re-announce itself, or a months-old account report a first session again. They look like telemetry and are not. |
-| Edit files on the droplet | Clobbered by `git pull --ff-only` on the next deploy, and invisible where the dashboard is actually built. |
-| Create a branch named `<slug>` alone | Git stores it as a file under `refs/heads/`, so it can never coexist with `<slug>/v2`. Branches are `<slug>/v<n>`, always. |
-| Build a dashboard directly on `main` | Main is what the droplet pulls. A half-built dashboard sitting there means an unrelated urgent fix cannot ship without it. |
-| Run `export-spec.ts` / `announce-deploy.ts` / `ask-user.ts` locally against a real database | They read non-synthetic data by design *on the server*. Locally, point `PLATFORM_DB` at synthetic. |
-| Copy or delete `<slug>.db` without the `*` | `-wal` and `-shm` sidecars hold the same rows. Always `users/<slug>/<slug>.db*`. |
+| Tell every friend at step 3 that a forgotten password is unrecoverable | The password *is* the key; there is nothing to reset to. `/forgot` says exactly this and offers no form, and `tests/routing/forgotPage.test.tsx` keeps it that way — including against a "temporary, just for dev" one. |
+| Leave `devone`, `devtwo` and `nico` deriving their key directly, forever | Their wrapped `account_keys` row cannot be computed without their password. Inventing one locks a real person out of real data. |
+| Fix a wrong spec by confirming a new version in chat, then re-running `pull-spec.sh` | `spec.md` and `mockup.html` are a projection of the confirmed record, and the next pull overwrites both. The source is the record. |
+| Ship every shape change as a new numbered migration — `002_…`, then `003_…` | A friend's database records only which NUMBER it reached, so editing an applied file silently changes what that number means. The manifest's checksum refuses the session rather than letting it through. |
+| Add a new prompt version — `agent-v3.md` | `prompt_sha` is stamped on transcript and spec rows that already exist, so editing `agent-v2.md` changes what an already-written hash points at. Prompts are added, and that is a data-safety property. |
+| Run `announce-deploy.ts` by hand, once per friend, at step 9 | `deploy.sh` deploys the whole service. Calling the announcer from it would post "your dashboard is live" into every account's chat on every push — a permanent line in an append-only transcript. |
+| Leave every `deploy_announced` and `first_session_start` metric row in place | Both are read for correctness, not observed. Losing one makes a weeks-old build re-announce itself, or a months-old account report a first session again. They look like telemetry and are not. |
+| Build locally with `scripts/create-local-account.ts` + `npm run dev` | `npm start` sets `NODE_ENV=production`, the only switch `lib/db/userData.ts` has, so a login there takes the production branch and `lib/db/migrate.ts` writes a real `users/<slug>/<slug>.db` onto your laptop. Gate F blocks your next commit until it is removed. |
+| Ship every droplet change through `git push` and `deploy/deploy.sh` | `deploy.sh` runs `git pull --ff-only`, so a hand-edit there is clobbered by the next deploy and is invisible on the laptop where the dashboard is actually built. |
+| Name every branch `<slug>/v<n>` | Git stores a bare `sam` as a *file* under `refs/heads/`, which can never coexist with the *directory* `refs/heads/sam/`. One `git branch sam` makes `sam/v2` impossible for as long as it exists. |
+| Write dashboard code on the version branch — check `git branch --show-current` first | `main` is the line the droplet pulls. A half-built dashboard sitting there means an unrelated urgent fix cannot ship without it. |
+| Point `PLATFORM_DB` at `platform/dev/synthetic.db` for anything you run locally | `export-spec.ts`, `announce-deploy.ts` and `ask-user.ts` read non-synthetic data by design — *on the server*. |
+| Glob the sidecars: `users/<slug>/<slug>.db*` | `-wal` and `-shm` hold the same rows as the database. A copy or a delete that takes only the main file is taking part of the database. |
 
 ---
 
