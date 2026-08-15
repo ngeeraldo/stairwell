@@ -2,7 +2,7 @@ import { cookies } from 'next/headers'
 import { accountIdFor, canSeeUserSpace } from '@/lib/auth/authorize'
 import { appendMetric } from '@/lib/db/appendOnly'
 import { readDeviceClass, readTimeZone } from '@/lib/metrics/deviceClass'
-import { openEncryptedUserDb } from '@/lib/db/encryptedUserDb'
+import { openUserDataForWrite } from '@/lib/db/userData'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getDb } from '@/lib/db/instance'
 import { dashboardLoaderFor } from '@/lib/dashboard/registry'
@@ -65,7 +65,7 @@ export async function POST(
 
   let userDb
   try {
-    userDb = openEncryptedUserDb(user, key)
+    userDb = openUserDataForWrite(user, key)
   } catch (error) {
     // WrongKeyError (or a corrupt file) must not become a bare 500 with a
     // stack: a metric is recorded first so the failure is visible at all,

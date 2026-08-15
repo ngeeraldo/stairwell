@@ -3,7 +3,7 @@ import { insertAccount } from '@/lib/auth/accounts'
 import { newDataKey, wrapDataKey } from '@/lib/auth/envelope'
 import { deriveDbKey, hashPassword, newSalts } from '@/lib/auth/password'
 import { putWrappedKey } from '@/lib/db/accountKeys'
-import { createEmptyEncryptedUserDb } from '@/lib/db/encryptedUserDb'
+import { migrateUserDb } from '@/lib/db/migrate'
 import type { PlatformDb } from '@/lib/db/platform'
 import { putKey } from '@/lib/session/keymap'
 import { createSession } from '@/lib/session/store'
@@ -83,10 +83,24 @@ export async function registerFromInvite(
   const wrapped = wrapDataKey(kek, dataKey)
 
   try {
-    createEmptyEncryptedUserDb(slug, dataKey)
+    // The third and last place the runner fires. It creates the database AND
+    // applies whatever migrations exist, which for a brand-new friend is
+    // usually none at all — their folder is scaffolded days later, when Nico
+    // builds a dashboard from their confirmed spec.
+    //
+    // onboarding-ux-spec.md S2 still holds, by a different mechanism than
+    // before: the file exists the moment the password does, because this call
+    // is what creates it. A consumed token with no database remains an invalid
+    // state.
+    migrateUserDb(slug, dataKey)
   } catch {
     // Nothing has been written to the platform database yet, so the invite is
     // still unused and the friend can simply try again.
+    //
+    // No refuseSession here, deliberately: there is no session to refuse yet
+    // and no account to alert about. The friend sees the invite page's own
+    // server error, which is retryable — and unlike a migration failure at
+    // login, this one genuinely is, because nothing was consumed.
     return { ok: false, reason: 'server' }
   }
 

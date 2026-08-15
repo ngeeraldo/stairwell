@@ -13,14 +13,10 @@ import { hasConfirmedSpecBelow, newestSpec, readConfirmations } from '@/lib/db/s
 import { SpecShapeError } from '@/lib/spec/schema'
 import { readStoredSpec } from '@/lib/spec/stored'
 import type { Proposal } from '@/lib/spec/author'
-import { openUserDb } from '@/lib/db/userDb'
 import type { UserDb } from '@/lib/db/userDb'
 import type { DeviceClass } from '@/lib/metrics/deviceClass'
-import {
-  encryptedUserDbHasTables,
-  openEncryptedUserDb,
-  WrongKeyError,
-} from '@/lib/db/encryptedUserDb'
+import { WrongKeyError } from '@/lib/db/encryptedUserDb'
+import { isDevData, openUserDataForRead } from '@/lib/db/userData'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getKey } from '@/lib/session/keymap'
 import { dashboardLoaderFor, hasDashboard } from '@/lib/dashboard/registry'
@@ -75,51 +71,24 @@ async function dashboardRegion(
   // a real piece of chrome rather than an apology.
   if (!loader) return <PlaceholderCard />
 
-  // Real data wins when this friend HAS any. A user who has logged nothing
-  // reads the loudly-fake database under a banner — which is what keeps
-  // devone's reference dashboard working, since it is never written to.
+  // THERE IS NO FALLBACK. A friend gets their own database, empty or not.
   //
-  // NOT `encryptedUserDbExists`, and the difference is a whole class of dead
-  // end. Since S2 creates the file at password-set time (onboarding ledger
-  // D3), existence means "this friend has an account", not "this friend has
-  // data" — and an empty file read as real would send the dashboard's first
-  // SELECT into the catch below and render "This dashboard failed to load",
-  // permanently: the read-only handle can never create the tables, and the
-  // friend has no control that would. That is the exact ssh-only state
-  // createEncryptedUserDb's docstring was written to remove.
+  // This used to branch: real when `encryptedUserDbHasTables` said so, the
+  // loudly-fake one under a banner otherwise. The branch is gone, and with it
+  // the predicate — an empty real database is now an ORDINARY state that every
+  // dashboard is required to render (2026-08-15 migrations design, §9), rather
+  // than something to be papered over with someone else's numbers.
   //
-  // An empty real database is described honestly by the synthetic screen and
-  // its banner: nothing has been logged, so there is nothing real to render.
-  // The rule that matters — the banner is never shown OVER real data — holds.
+  // What replaced the predicate's safety is not a check but a guarantee: the
+  // migration runner fires wherever a key enters the keymap, so by the time a
+  // render happens the database exists and holds whatever shape its migrations
+  // describe. Onboarding ledger D3's dead end — a table-less file read as real,
+  // and a friend stranded on "This dashboard failed to load" with no control
+  // that could fix it — is closed at the source instead of routed around.
   //
-  // INSIDE a try, because the predicate OPENS THE FILE and so can throw
-  // WrongKeyError exactly like the open below it. Left outside, a wrong key
-  // would propagate past this function into the route's default error
-  // boundary, taking the chat panel and the logout button with it — the
-  // surface this file's docstring says must stay reachable so a friend can
-  // report that their dashboard broke.
+  // Which file that is depends only on NODE_ENV, and lib/db/userData.ts is the
+  // one place that decides.
   const key = getKey(sessionId)
-  let useReal: boolean
-  try {
-    useReal = key !== undefined && encryptedUserDbHasTables(slug, key)
-  } catch (error) {
-    logDbFailure('dashboard_error', slug, error)
-    appendMetric(getDb(), {
-      accountId,
-      event: 'dashboard_error',
-      data: { slug, kind: dashboardErrorKind(error), device_class },
-      at: Date.now(),
-    })
-    return <p>This dashboard failed to load.</p>
-  }
-
-  if (!useReal) {
-    const data = openUserDb(slug)
-    if (data.source === 'none') {
-      return <p>Your dashboard is built, but its data has not been generated yet.</p>
-    }
-    return renderDashboard(loader, slug, data.db, accountId, 'synthetic', device_class, day)
-  }
 
   let db: UserDb | undefined
   try {
@@ -131,12 +100,20 @@ async function dashboardRegion(
     // exactly the surface this file's own docstring says stays reachable so
     // a friend can report a broken dashboard.
     // readonly: a dashboard component is the least-reviewed code in the repo
-    // and this handle points at the friend's real data, not at a synthetic
-    // file the next deploy regenerates. The walk route's writable open is the
-    // only thing that may create or migrate it — so this open also does NOT
-    // apply schema.sql, which is a write. See lib/db/encryptedUserDb.ts.
-    db = openEncryptedUserDb(slug, key!, { readonly: true })
-    return await renderDashboard(loader, slug, db, accountId, 'real', device_class, day)
+    // and in production this handle points at the friend's real data. A render
+    // never creates and never migrates — lib/db/migrate.ts is the only thing
+    // that changes a shape, and it does so from a session, having taken a copy
+    // first.
+    db = openUserDataForRead(slug, key!)
+    return await renderDashboard(
+      loader,
+      slug,
+      db,
+      accountId,
+      isDevData() ? 'synthetic' : 'real',
+      device_class,
+      day,
+    )
   } catch (error) {
     logDbFailure('dashboard_error', slug, error)
     appendMetric(getDb(), {

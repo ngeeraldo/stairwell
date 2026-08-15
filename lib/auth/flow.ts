@@ -4,6 +4,8 @@ import { deriveDbKey, verifyPassword } from './password'
 import { unwrapDataKey } from './envelope'
 import { readWrappedKey } from '@/lib/db/accountKeys'
 import { putKey } from '@/lib/session/keymap'
+import { migrateUserDb } from '@/lib/db/migrate'
+import { refuseDeps, refuseSession } from '@/lib/auth/refuseSession'
 import { createSession, readSession } from '@/lib/session/store'
 
 // A real Argon2id hash (same OPTS as lib/auth/password.ts: algorithm 2,
@@ -91,17 +93,21 @@ export async function unlock(
   const session = readSession(db, sessionId)
   if (!session) return false
   const account = db
-    .prepare('SELECT auth_hash, salt_key FROM accounts WHERE id = ?')
+    // slug and role too: unlock runs migrations now, which needs to know
+    // WHOSE database, and must skip an admin who has no user space at all.
+    .prepare('SELECT auth_hash, salt_key, slug, role FROM accounts WHERE id = ?')
     .get(session.account_id) as
-    | { auth_hash: string; salt_key: Buffer }
+    | { auth_hash: string; salt_key: Buffer; slug: string; role: 'user' | 'admin' }
     | undefined
   if (!account) return false
   if (!(await verifyPassword(account.auth_hash, password))) return false
 
+  let key: Buffer
   try {
-    putKey(
-      sessionId,
-      await databaseKeyFor(db, { id: session.account_id, salt_key: account.salt_key }, password),
+    key = await databaseKeyFor(
+      db,
+      { id: session.account_id, salt_key: account.salt_key },
+      password,
     )
   } catch {
     // The password was already verified against auth_hash above, so a
@@ -113,5 +119,23 @@ export async function unlock(
     // an append-only log that can never be cleaned up.
     return false
   }
+
+  // The second of the three places the runner fires, and the one that matters
+  // after a deploy: restarting the service empties the in-process keymap, so
+  // every friend comes back through here. That is why no write path needs a
+  // defensive migrate — a deploy cannot leave an unlocked session pointing at
+  // a database whose shape predates it.
+  try {
+    if (account.role !== 'admin') migrateUserDb(account.slug, key)
+  } catch (error) {
+    await refuseSession(refuseDeps(session.account_id), {
+      sessionId,
+      slug: account.slug,
+      error,
+    })
+    return false
+  }
+
+  putKey(sessionId, key)
   return true
 }

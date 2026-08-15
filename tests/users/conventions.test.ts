@@ -15,6 +15,7 @@ import Database from 'better-sqlite3-multiple-ciphers'
 import { afterAll, describe, expect, it } from 'vitest'
 import { SLUG_PATTERN } from '@/lib/auth/slug'
 import { declaredObjects } from '@/tests/support/declaredObjects'
+import { verifyManifest } from '@/lib/db/migrationFiles'
 
 /**
  * Every test in this file spawns python3 once per user folder. vitest's
@@ -42,7 +43,7 @@ const slugs = existsSync(USERS)
   : []
 
 /** The five entries a BUILT dashboard has. See the state note below. */
-const REQUIRED = ['schema.sql', 'seed.py', 'queries.ts', 'dashboard.tsx', 'tests']
+const REQUIRED = ['migrations', 'seed.py', 'queries.ts', 'dashboard.tsx', 'tests']
 
 const isBuilt = (slug: string) =>
   REQUIRED.every((entry) => existsSync(join(USERS, slug, entry)))
@@ -81,26 +82,66 @@ describe('users/ folder conventions', () => {
      * eight of its checks there — on the documented workflow, at the exact
      * moment it is followed.
      *
-     *   pulled  — spec.md / mockup.html only. Allowed: not started yet.
-     *   built   — all five required entries. Swept in full.
-     *   partial — some of the five. A defect, and the one this now names.
+     *   pulled     — spec.md / mockup.html only. Allowed: not started yet.
+     *   scaffolded — all five entries, but migrations/ holds no .sql. Allowed:
+     *                ./scripts/new-dashboard.sh just ran and nobody has
+     *                designed a shape yet.
+     *   built      — all five entries AND a shape. Swept in full.
+     *   partial    — some of the five. A defect, and the one this now names.
      *
-     * Skipping the built-only checks is what makes the middle state pass, so
+     * Skipping the built-only checks is what makes the middle states pass, so
      * "is either fully built or not started" carries the weight for a pulled
      * folder, and the run-if-built assertion below stops the whole sweep from
      * going quiet if every folder were ever pulled-only.
+     *
+     * WHY "scaffolded" IS ITS OWN STATE. The scaffold used to ship a finance
+     * table — a `transactions` shape copied from devone — purely so a fresh
+     * folder would satisfy the built-only checks below, which demand that
+     * seed.py produce every object the migrations declare. That is the right
+     * demand of a finished dashboard and the wrong demand of one nobody has
+     * designed: it made every new dashboard start life pretending to be about
+     * spending, whatever the friend had actually asked for. The shape is gone
+     * and this state replaces it, so the checks stay strict where they mean
+     * something instead of being satisfied by a placeholder.
      */
     const found = REQUIRED.filter((entry) => existsSync(join(dir, entry)))
-    const built = found.length === REQUIRED.length
+    const complete = found.length === REQUIRED.length
+    const hasShape =
+      complete &&
+      readdirSync(join(dir, 'migrations')).some((f) => /^\d{3}_[a-z0-9_]+\.sql$/.test(f))
+    const built = complete && hasShape
     const whenBuilt = built ? it : it.skip
 
     it('is either fully built or not started — never half a dashboard', () => {
       const missing = REQUIRED.filter((entry) => !found.includes(entry))
       // Named rather than counted, so the failure says which files to write.
-      expect(built || found.length === 0, `missing: ${missing.join(', ')}`).toBe(true)
+      // `complete`, not `built`: a scaffolded folder has every entry and no
+      // shape yet, which is a legitimate state rather than a half-written one.
+      expect(complete || found.length === 0, `missing: ${missing.join(', ')}`).toBe(true)
     })
 
-    whenBuilt('has at least one test of its own', () => {
+    // A scaffolded folder still has to be wired up — its dashboard must render
+    // and its seed must run. What it does NOT have to do is declare a shape.
+    const whenComplete = complete ? it : it.skip
+
+    whenComplete('has a migrations/README.md if it has no migrations yet', () => {
+      // The empty state is deliberate, and a directory that is empty by
+      // accident looks identical to one that is empty on purpose. The README
+      // is what tells them apart, and it is where the rules for writing 001
+      // live.
+      if (hasShape) return
+      expect(existsSync(join(dir, 'migrations', 'README.md'))).toBe(true)
+    })
+
+    whenBuilt('has a manifest covering every migration it declares', () => {
+      // Without one the runner refuses every session for this slug — the
+      // friend cannot log in at all. A folder that declares a shape must
+      // therefore declare its checksums too.
+      expect(existsSync(join(dir, 'migrations', 'manifest.json'))).toBe(true)
+      expect(() => verifyManifest(slug)).not.toThrow()
+    })
+
+    whenComplete('has at least one test of its own', () => {
       const tests = readdirSync(join(dir, 'tests')).filter((f) =>
         f.endsWith('.test.ts'),
       )
@@ -108,7 +149,7 @@ describe('users/ folder conventions', () => {
     })
 
     whenBuilt(
-      'seed.py runs clean and produces every object schema.sql declares',
+      'seed.py runs clean and produces every object the migrations declare',
       () => {
         const out = mkdtempSync(join(tmpdir(), `stairwell-conv-${slug}-`))
         temps.push(out)
@@ -127,9 +168,39 @@ describe('users/ folder conventions', () => {
                 .all() as { name: string }[]
             ).map((r) => r.name),
           )
-          const declared = declaredObjects(readFileSync(join(dir, 'schema.sql'), 'utf8'))
-          expect(declared.length).toBeGreaterThan(0)
-          for (const name of declared) expect(present.has(name)).toBe(true)
+          // Built by applying the chain directly, rather than by scanning the
+          // SQL for CREATE statements.
+          //
+          // Scanning would false-fail on the sanctioned rebuild recipe (D4):
+          // `CREATE TABLE x_new; ...; DROP TABLE x; ALTER TABLE x_new RENAME
+          // TO x` textually declares `x_new`, which correctly does not exist
+          // afterwards. Applying the migrations reproduces the real end state,
+          // renames and drops included.
+          //
+          // It also asserts something stronger than the old check did: that
+          // seed.py builds its database FROM the migrations, rather than
+          // declaring shapes of its own that happen to look similar.
+          const migrationsDir = join(dir, 'migrations')
+          const reference = new Database(':memory:')
+          try {
+            for (const file of readdirSync(migrationsDir)
+              .filter((f) => f.endsWith('.sql'))
+              .sort()) {
+              reference.exec(readFileSync(join(migrationsDir, file), 'utf8'))
+            }
+            const declared = (
+              reference
+                .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+                .all() as { name: string }[]
+            )
+              .map((r) => r.name)
+              .filter((name) => !name.startsWith('sqlite_'))
+
+            expect(declared.length).toBeGreaterThan(0)
+            for (const name of declared) expect(present.has(name)).toBe(true)
+          } finally {
+            reference.close()
+          }
         } finally {
           db.close()
         }

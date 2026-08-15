@@ -32,7 +32,12 @@ architectural changes; do not relitigate decided items).
 - `transcripts` and `metrics` gained columns in step 2 via `lib/db/reshape.ts`,
   which drops a stale-shaped table only after proving it holds zero rows and
   throws otherwise. It is the one place in `lib/db` allowed to drop a sacred
-  table. Never widen that exception.
+  table. Never widen that exception, and **never point `reshape.ts` at a user
+  database** — its zero-rows proof is exactly the assumption that fails on a
+  file holding a real person's history. `lib/db/migrate.ts` is the second
+  schema-surgery site in `lib/db`; its exception is data-preserving surgery
+  proven by a test that seeds the old shape, migrates, and asserts the rows
+  survived.
 - Prompt files are added, never edited — a new version is `agent-v3.md`, not
   an edit to `agent-v2.md`. `prompt_sha` is stamped on every transcript and
   spec row, so an edited file would silently change what an already-written
@@ -40,7 +45,7 @@ architectural changes; do not relitigate decided items).
   (unified-loop ledger D13).
 
 ## Schema & module rules
-- schema.sql + seed.py + tests/ update in the SAME commit. No drift.
+- migrations + seed.py + tests/ update in the SAME commit. No drift.
 - Shared module internals (e.g. plaid.sql) are NEVER forked per user.
   User-specific needs = views/derived tables in the user's own schema.
 - Shared-module changes happen from repo root only, never inside /users/<name>/.
@@ -50,12 +55,26 @@ architectural changes; do not relitigate decided items).
   trampling an annotation a user made in between.
 
 ## Dashboard folder conventions
+- **Before building any `users/<slug>/` dashboard, read
+  docs/dashboard-build-rules.md.** It indexes every rule governing a dashboard
+  build — this section, the step-5 design, the step-6a and friend-timezone
+  ledgers — with a citation on each line. It is an index, not a second copy:
+  where it disagrees with a source, the source wins.
 - A user dashboard lives entirely in `users/<slug>/`. Five entries are
   required; `tests/users/conventions.test.ts` sweeps every folder and fails
   if one is missing:
-  - `schema.sql` — table/view shapes
-  - `seed.py` — `python3 seed.py <target.db>`; **executes `schema.sql`** before
-    inserting, so shapes have exactly one source
+  - `migrations/` — `001_initial.sql`, `002_*.sql`, … plus `manifest.json`.
+    The ONLY description of this dashboard's shape; there is no schema.sql.
+    Added never edited, and the manifest's checksums are what enforce it.
+    **A freshly scaffolded folder has NO migrations** — just a README saying
+    what goes there — because a scaffold cannot know what shape a friend needs
+    and a placeholder gets extended rather than replaced. That is the
+    `scaffolded` state in `tests/users/conventions.test.ts`: the built-only
+    checks skip until a `.sql` exists, and the dashboard says "Under
+    construction" until then
+  - `seed.py` — `python3 seed.py <target.db>`; **runs the migrations** in order
+    and stamps `user_version`, so a synthetic database is built by the same
+    files a real one is
   - `queries.ts` — every SQL statement, as pure functions taking a `UserDb`
   - `dashboard.tsx` — default-export server component, **no SQL**
   - `tests/` — at least one `*.test.ts`
@@ -90,18 +109,28 @@ architectural changes; do not relitigate decided items).
     lazily on first write until the onboarding build; the spec requires the
     file to exist the moment the password does, since a consumed invite with
     no database is an invalid state.) Never regenerated, never committed,
-    never readable without that session's key — including by you. Nothing
-    migrates it: see the step-6a ledger, residual 2, before changing any
-    `schema.sql` a real database was created from.
-- A dashboard reads the real database when it exists and the session is
-  unlocked; otherwise the synthetic one, with the banner. **"Exists" means
-  HOLDS AT LEAST ONE TABLE, not "the file is there"** — since registration
-  creates the file at password-set time, every friend has one from day one,
-  and reading mere existence as data renders a permanent "This dashboard
-  failed to load" that they have no control to escape (onboarding ledger D3).
-  The banner is the only thing distinguishing the two screens, so it is never
-  rendered over real data — and it is bordered, tinted chrome rather than a
-  line of text, because unstyled it read as one more row of the dashboard.
+    never readable without that session's key — including by you.
+    **`lib/db/migrate.ts` migrates it, and nothing else does** — at unlock,
+    which is the only moment the key exists. Read
+    `docs/superpowers/specs/2026-08-15-user-db-migrations-design.md` before
+    changing any migration, and never edit one that has been applied (D2).
+- **There is no real-vs-synthetic fallback.** Production always serves the
+  friend's own encrypted database, empty or not; dev always serves
+  `synthetic.db`, for reads AND writes, so an entry widget is testable end to
+  end. `lib/db/userData.ts` is the one place that decides and its only input is
+  `NODE_ENV` — a variable that could switch production onto synthetic data
+  would rebuild the `PLATFORM_DB` failure `deploy/required-env` blocks a deploy
+  over. The banner follows the world, not the friend's row count, and is
+  bordered, tinted chrome rather than a line of text, because unstyled it read
+  as one more row of the dashboard.
+- **An empty database is an ordinary state and every dashboard must render
+  one.** A friend's first session shows their own database with nothing in it.
+  The scaffold ships an empty-render test and `screenshots/screens.ts` carries
+  an empty-state screen, because a test can only prove it does not throw —
+  whether it reads as "waiting" or as "broken" is a question only a picture
+  answers. **A day before the friend started is not a day they failed:** the
+  first version of this rendered fourteen rows saying "missed" on a friend's
+  first morning, with every test green.
 - **Metrics never carry user values.** `dashboard_write` records a slug and a
   panel and nothing else — no day, no count, no payload. This is permanent
   policy for every panel type, and it is what makes the login page's promise
@@ -140,20 +169,17 @@ architectural changes; do not relitigate decided items).
   instant — converting a stored timestamp to the friend's day is legitimate and
   every finance dashboard does it (`users/devone/queries.ts`); asking a clock
   what day it is never is. It
-  gets a read-only handle, so it cannot write — on BOTH paths: `openUserDb`
-  opens the synthetic file `readonly`, and the render path opens the encrypted
-  one with `openEncryptedUserDb(slug, key, { readonly: true })`. Pinned at BOTH
+  gets a read-only handle, so it cannot write — on BOTH paths, and
+  `openUserDataForRead` is the one call that resolves which. Pinned at BOTH
   ends, because they fail independently: a test that makes the handle refuse a
-  real INSERT, and a test that the page still asks for the flag. Dropping it at
-  the call site once left the whole suite green. A read-only open also skips `schema.sql`, because applying
-  a schema is a write. **Exactly TWO writable opens create a user's real
-  database, and they are enumerated:** the registration route
-  (`lib/invite/register.ts`, which creates it EMPTY at password-set time,
-  because the spec requires the file to exist the moment the password does),
-  and the walk route (which creates it WITH a schema, and is still the only
-  thing that migrates one). A third is a change to onboarding ledger D3, not a
-  refactor. Every write goes through a platform route, which is the only place
-  the four ordered checks live.
+  real INSERT, and a test that the page still goes through that resolver.
+  Dropping it at the call site once left the whole suite green. **A render
+  never changes a shape.** **Exactly TWO things write to a user's real
+  database, and they are enumerated:** `lib/db/migrate.ts`, which creates it
+  and changes its shape — at unlock, having taken a copy first — and a platform
+  route, which writes rows into the shape it finds. A third is a change to the
+  2026-08-15 migrations design, not a refactor. Every write goes through a
+  platform route, which is the only place the four ordered checks live.
 - A dashboard may **render** an entry widget — a form for hand-logging or
   annotating data — but the widget POSTs to a platform route, same as the
   walk route above. The read-only-handle rule above is unchanged and
@@ -169,14 +195,23 @@ architectural changes; do not relitigate decided items).
   whether a given dashboard *has* a write path — that lives in a platform
   route and a spec version, neither of which is a file in the user's folder —
   so demanding a write test of a read-only dashboard would be a false failure.
-- Everything a dashboard shows is synthetic UNTIL that user's first write, and
+- Everything a dashboard shows in DEV is synthetic, and
   the page says so with the banner on every synthetic render. Real per-user
   data arrived in step 6a; Plaid-sourced data is step 6b.
 
 ## Onboarding
 - The end-to-end operator process — invite, spec import, build, deploy,
-  announce — is docs/runbook.md. It is Nico's, run by hand; nothing in it is
-  automated, and several steps are deliberately not.
+  announce — is docs/runbook.md. It runs as one of two flows: **A** for a friend
+  who has never had a dashboard, **B** for a new confirmed version of one that
+  exists. It is Nico's, run by hand; nothing in it is automated, and several
+  steps are deliberately not.
+- **Dashboard work happens on a `<slug>/v<n>` branch, one per confirmed spec
+  version, never on `main`** — main is the line `deploy.sh` pulls, so a
+  half-built dashboard there blocks every unrelated fix. Nico creates the branch
+  and runs anything that scaffolds a folder; check `git branch --show-current`
+  before writing code and stop if it says `main`. Never create a branch named
+  `<slug>` alone: git stores it as a file under `refs/heads/`, which makes
+  `<slug>/v2` permanently impossible.
 - A friend arrives through an invite: `npx tsx scripts/create-invite.ts <slug>`
   prints ONE line, the link to text them. **The token is never stored — only
   its SHA-256** — so a lost link is re-minted, not recovered. Revoke an unused
@@ -243,7 +278,7 @@ architectural changes; do not relitigate decided items).
   - `modules/` → a test under `modules/tests/`
   - `users/<name>/` → a test under `users/<name>/tests/`
   - `.githooks/`, `.claude/hooks/` → `.claude/hooks/test-hooks.sh`
-- Docs, styling, and config are exempt by path. `schema.sql` and the seed
+- Docs, styling, and config are exempt by path. Migrations and the seed
   generators are governed by the anti-drift rule instead.
 - `SKIP_TEST_GATE=1 git commit` skips the coverage gate only, and prints the
   untested files. When Claude uses the skip, it states the reason in the

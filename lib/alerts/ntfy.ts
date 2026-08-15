@@ -45,6 +45,7 @@ export const ALERT_TIMEOUT_MS = 5_000
 export const ALERT_TEXT = {
   conversation_started: 'started a conversation',
   spec_confirmed: 'confirmed a spec',
+  migration_failed: 'could not log in — migration failed',
 } as const
 
 export type AlertKind = keyof typeof ALERT_TEXT
@@ -116,6 +117,52 @@ export function conversationAlerter(
 ): (accountId: number) => Promise<void> {
   const send = alerter(deps)
   return (accountId) => send('conversation_started', accountId)
+}
+
+/**
+ * The refused-session alerter.
+ *
+ * Takes a migration NUMBER and a driver CODE alongside the account, because
+ * the operator's two questions are "when did it break" and "why" — and a
+ * notification that says only "a migration failed" answers the first at the
+ * cost of an ssh to answer the second.
+ *
+ * THE NO-FREE-TEXT INVARIANT IS INTACT. This does not accept a message: it
+ * accepts an integer and a code, and assembles the body here from ALERT_TEXT
+ * exactly as `alerter` does. There is still no exported function on this
+ * module through which arbitrary text can reach ntfy.sh, which is what keeps
+ * a friend's data off a third-party server by construction rather than by
+ * everyone remembering.
+ */
+export function migrationAlerter(
+  deps: AlerterDeps,
+): (input: { accountId: number; migrationNumber: number; code: string }) => Promise<void> {
+  return async ({ accountId, migrationNumber, code }) => {
+    try {
+      const account = findAccountById(deps.db, accountId)
+      if (!account || account.role === 'admin') return
+
+      const topic = deps.topic?.trim()
+      if (!topic) {
+        record(deps, account.id, 'migration_failed', 'alert_failed', {
+          reason: 'no_topic',
+          status: null,
+        })
+        return
+      }
+
+      await send(
+        deps,
+        account.id,
+        'migration_failed',
+        topic,
+        `${account.slug} ${ALERT_TEXT.migration_failed} (migration ${migrationNumber}, ${code})`,
+      )
+    } catch {
+      // Same backstop as `alerter`: a push notification must never become the
+      // caller's problem, and this caller is a session being refused.
+    }
+  }
 }
 
 async function send(

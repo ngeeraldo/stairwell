@@ -10,6 +10,8 @@
 // identical from the outside on status and file-existence alone, and would
 // still be wrong.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
+import { setNodeEnv } from '@/tests/support/nodeEnv'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -89,12 +91,26 @@ let dir: string
 let handle: PlatformDb | undefined
 let accountId: number
 
+let originalEnv: string | undefined
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-walk-'))
   process.env.PLATFORM_DB = join(dir, 'synthetic.db')
   process.env.USERS_DIR = join(dir, 'users')
-  mkdirSync(join(dir, 'users', 'devtwo'), { recursive: true })
-  writeFileSync(join(dir, 'users', 'devtwo', 'schema.sql'), SCHEMA)
+  // The ENCRYPTED write path is what this suite is about — the one that runs
+  // against a friend's real data on the droplet. lib/db/userData.ts sends dev
+  // to synthetic.db instead, so without saying `production` these tests would
+  // quietly exercise a different database than the one they describe.
+  originalEnv = process.env.NODE_ENV
+  setNodeEnv('production')
+  mkdirSync(join(dir, 'users', 'devtwo', 'migrations'), { recursive: true })
+  writeFileSync(join(dir, 'users', 'devtwo', 'migrations', '001_initial.sql'), SCHEMA)
+  writeFileSync(
+    join(dir, 'users', 'devtwo', 'migrations', 'manifest.json'),
+    JSON.stringify({
+      migrations: [{ number: 1, sha256: createHash('sha256').update(SCHEMA).digest('hex') }],
+    }),
+  )
   vi.resetModules()
   cookieGet.mockClear()
   canSeeUserSpaceSpy.mockClear()
@@ -108,12 +124,21 @@ beforeEach(() => {
 afterEach(() => {
   handle?.close()
   delete process.env.PLATFORM_DB
+  setNodeEnv(originalEnv)
   delete process.env.USERS_DIR
   rmSync(dir, { recursive: true, force: true })
 })
 
-/** Sign devtwo in. `lock` withholds the key, as a restart would. */
-async function arrange(opts: { lock?: boolean; slug?: string } = {}) {
+/**
+ * Sign devtwo in. `lock` withholds the key, as a restart would.
+ *
+ * `migrate: false` withholds the migration a real login would have run, for
+ * the three tests below that are ABOUT the database not existing yet, or
+ * existing under someone else's key. Everywhere else the default models
+ * production: by the time a tap arrives, the friend unlocked, so the runner
+ * ran and their tables are there.
+ */
+async function arrange(opts: { lock?: boolean; slug?: string; migrate?: boolean } = {}) {
   const { getDb } = await import('@/lib/db/instance')
   const { createAccount } = await import('@/lib/auth/accounts')
   const { createSession, SESSION_COOKIE } = await import('@/lib/session/store')
@@ -126,7 +151,24 @@ async function arrange(opts: { lock?: boolean; slug?: string } = {}) {
     password: 'pw',
   })
   const sid = createSession(handle, accountId)
-  if (!opts.lock) putKey(sid, Buffer.alloc(32, 7))
+  if (!opts.lock) {
+    const key = Buffer.alloc(32, 7)
+    putKey(sid, key)
+    if (opts.migrate !== false) {
+    // What a real unlocked session has already been through. The runner fires
+    // when the key appears — at login, unlock or registration — so by the time
+    // any tap reaches this route the database exists and holds its tables. The
+    // route itself does not migrate, and must not: shape changes belong to the
+    // one place that takes a backup first.
+    //
+    // A deploy cannot strand an unlocked session on an unmigrated database,
+    // which is why the route needs no defensive call: the keymap is
+    // in-process, so restarting the service drops every key and every friend
+    // comes back through /unlock.
+      const { migrateUserDb } = await import('@/lib/db/migrate')
+      migrateUserDb(opts.slug ?? 'devtwo', key)
+    }
+  }
   cookieSlot.value = { value: sid }
   const { POST } = await import('@/app/api/users/[user]/walk/route')
   return POST
@@ -220,11 +262,17 @@ describe('POST /api/users/[user]/walk', () => {
     // trigger in this user's own schema aborts the insert, so the open
     // succeeds and the write is what fails. That is the shape of every case
     // above.
-    writeFileSync(
-      join(dir, 'users', 'devtwo', 'schema.sql'),
-      `${SCHEMA}
+    const withTrigger = `${SCHEMA}
        CREATE TRIGGER IF NOT EXISTS refuse_writes BEFORE INSERT ON walks
-       BEGIN SELECT RAISE(ABORT, 'SIMULATED WRITE FAILURE TEST'); END;`,
+       BEGIN SELECT RAISE(ABORT, 'SIMULATED WRITE FAILURE TEST'); END;`
+    writeFileSync(join(dir, 'users', 'devtwo', 'migrations', '001_initial.sql'), withTrigger)
+    writeFileSync(
+      join(dir, 'users', 'devtwo', 'migrations', 'manifest.json'),
+      JSON.stringify({
+        migrations: [
+          { number: 1, sha256: createHash('sha256').update(withTrigger).digest('hex') },
+        ],
+      }),
     )
 
     const POST = await arrange()
@@ -287,7 +335,7 @@ describe('POST /api/users/[user]/walk', () => {
 
   it('404s a slug with no registered dashboard, so no file can be conjured', async () => {
     loaderSlot.value = undefined
-    const POST = await arrange()
+    const POST = await arrange({ migrate: false })
     const response = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
 
     expect(response.status).toBe(404)
@@ -395,7 +443,7 @@ describe('POST /api/users/[user]/walk', () => {
     const seed = openEncryptedUserDb('devtwo', Buffer.alloc(32, 9))
     seed.close()
 
-    const POST = await arrange()
+    const POST = await arrange({ migrate: false })
     const [response, stderr] = await withStderr(() =>
       POST(new Request('http://x', { method: 'POST' }), params('devtwo')),
     )

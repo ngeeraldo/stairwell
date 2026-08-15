@@ -45,6 +45,12 @@ let handle: PlatformDb | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-routes-'))
   process.env.PLATFORM_DB = join(dir, 'synthetic.db')
+  // USERS_DIR TOO, and it is not optional. The login route runs migrations
+  // now, which CREATES <slug>.db. Without this the suite wrote real-named
+  // databases into the repo's own users/ tree — breaking the invariant that
+  // real databases exist only on the server, and the filename partition the
+  // guard hook depends on. Caught by doing exactly that once.
+  process.env.USERS_DIR = join(dir, 'users')
   vi.resetModules()
   cookieGet.mockClear()
   cookieSlot.value = undefined
@@ -54,6 +60,7 @@ beforeEach(() => {
 afterEach(() => {
   handle?.close()
   delete process.env.PLATFORM_DB
+  delete process.env.USERS_DIR
   rmSync(dir, { recursive: true, force: true })
   // Undo the per-test keymap spy set up by the wrong-credentials test below.
   // Unconditional because doUnmock on an unmocked path is a no-op, and leaving

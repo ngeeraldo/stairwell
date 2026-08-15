@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   WrongKeyError,
-  createEmptyEncryptedUserDb,
+  createEmptyEncryptedDbAt,
   encryptedUserDbExists,
   encryptedUserDbHasTables,
   encryptedUserDbPath,
@@ -86,10 +86,34 @@ function pragmaOrderDuring(fn: () => void): string[] {
   return order
 }
 
-/** A user folder with a schema.sql, which the opener applies on create. */
+/**
+ * A user folder. Just the folder — no schema.sql, because none exists any
+ * more: migrations own a dashboard's shape (2026-08-15 migrations design, D6)
+ * and no open applies one.
+ */
 function makeUserFolder(slug: string) {
   mkdirSync(join(root, slug), { recursive: true })
-  writeFileSync(join(root, slug, 'schema.sql'), SCHEMA)
+}
+
+/**
+ * Give a database the `walks` table these tests insert into.
+ *
+ * This used to happen for free: the create read schema.sql and exec'd it, so
+ * every opened database arrived with tables. It does not any more, and that is
+ * the point of the change — so the tests below say out loud where their shape
+ * comes from instead of inheriting it from a file the opener happened to read.
+ *
+ * A stand-in for lib/db/migrate.ts, deliberately kept dumb: this file's job is
+ * proving the bytes are encrypted, and it should not acquire a dependency on
+ * the runner to do it.
+ */
+function giveWalksTable(slug: string) {
+  const db = openEncryptedUserDb(slug, KEY)
+  try {
+    db.exec(SCHEMA)
+  } finally {
+    db.close()
+  }
 }
 
 beforeEach(() => {
@@ -120,8 +144,24 @@ describe('encryptedUserDbPath', () => {
 })
 
 describe('openEncryptedUserDb', () => {
-  it('creates the file, applies schema.sql, and round-trips a row', () => {
+  it('creates the file EMPTY, and round-trips a row once something makes a table', () => {
+    // It used to apply schema.sql here. It does not: migrations own the shape
+    // (D6), so a writable open brings the FILE into being and nothing else.
+    // The round-trip still matters — it is what proves the key works — so the
+    // table is made explicitly rather than inherited.
     expect(encryptedUserDbExists('devtwo')).toBe(false)
+
+    const fresh = openEncryptedUserDb('devtwo', KEY)
+    try {
+      const tables = fresh
+        .prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table'")
+        .get() as { n: number }
+      expect(tables.n).toBe(0)
+    } finally {
+      fresh.close()
+    }
+
+    giveWalksTable('devtwo')
     const db = openEncryptedUserDb('devtwo', KEY)
     try {
       db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
@@ -136,6 +176,7 @@ describe('openEncryptedUserDb', () => {
     // A round-trip proves nothing about encryption: it passes identically with
     // no key at all. This reads the raw file. An UNencrypted SQLite file begins
     // with the ASCII header "SQLite format 3\0".
+    giveWalksTable('devtwo')
     const db = openEncryptedUserDb('devtwo', KEY)
     db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
     db.close()
@@ -146,6 +187,7 @@ describe('openEncryptedUserDb', () => {
 
   it('does not leave the day readable in the raw bytes', () => {
     // The point of the whole step, stated as bytes rather than as a promise.
+    giveWalksTable('devtwo')
     const db = openEncryptedUserDb('devtwo', KEY)
     db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
     db.close()
@@ -155,6 +197,7 @@ describe('openEncryptedUserDb', () => {
   })
 
   it('refuses a wrong key with a NAMED error, not a raw driver error', () => {
+    giveWalksTable('devtwo')
     const db = openEncryptedUserDb('devtwo', KEY)
     db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
     db.close()
@@ -165,6 +208,7 @@ describe('openEncryptedUserDb', () => {
   })
 
   it('reopens with the right key after a close', () => {
+    giveWalksTable('devtwo')
     const first = openEncryptedUserDb('devtwo', KEY)
     first.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
     first.close()
@@ -236,28 +280,33 @@ describe('openEncryptedUserDb', () => {
     expect(readOnly.indexOf('cipher-pragma')).toBeLessThan(readOnly.indexOf('key'))
   })
 
-  it('ATOMIC CREATE: <slug>.db is never observable without its schema', () => {
+  it('ATOMIC CREATE: <slug>.db is never observable half-made', () => {
     // The property, not the mechanism. A direct `new Database(path)` creates
-    // the file and writes pragma bytes BEFORE schema.sql is read, so there is
-    // a window in which <slug>.db exists with no tables. This asserts on that
-    // window from the inside: at the instant the schema is being applied, the
-    // real path must not exist yet. Whatever satisfies that — temp file plus
-    // link, or anything else — is fine; a file materialising at the real path
-    // before its tables is not.
+    // the file and writes pragma bytes immediately, so there is a window in
+    // which <slug>.db exists but is not yet a complete, keyed database. This
+    // asserts on that window from the inside: at the instant the build is
+    // running its pragmas, the real path must not exist yet. Whatever
+    // satisfies that — temp file plus link, or anything else — is fine; a file
+    // materialising at the real path before it is finished is not.
+    //
+    // SAMPLED AT `journal_mode`, not at a CREATE TABLE. It used to hook the
+    // schema exec, which is gone: migrations own the shape now (D6) and the
+    // create writes no tables at all. The pragmas are what still runs against
+    // the temp file, and they are equally inside the window.
     //
     // Why the window is worth closing rather than accepting: the render path
-    // is read-only now, so a table-less file no longer heals on the next page
-    // view. The dashboard's first SELECT throws, and the tap control that
-    // would heal it sits inside the region that just failed.
+    // is read-only, so a half-made file no longer heals on the next page view.
+    // The dashboard's first SELECT throws, and the tap control that would heal
+    // it sits inside the region that just failed.
     const realPath = encryptedUserDbPath('devtwo')
-    const originalExec = Database.prototype.exec
-    const realPathExistedDuringSchema: boolean[] = []
+    const originalPragma = Database.prototype.pragma
+    const realPathExistedDuringBuild: boolean[] = []
 
-    const execSpy = vi
-      .spyOn(Database.prototype, 'exec')
-      .mockImplementation(function (this: Database.Database, sql: string) {
-        if (/CREATE TABLE/i.test(sql)) realPathExistedDuringSchema.push(existsSync(realPath))
-        return originalExec.call(this, sql)
+    const pragmaSpy = vi
+      .spyOn(Database.prototype, 'pragma')
+      .mockImplementation(function (this: Database.Database, source: string, options?: unknown) {
+        if (/journal_mode/i.test(source)) realPathExistedDuringBuild.push(existsSync(realPath))
+        return originalPragma.call(this, source, options as never)
       })
 
     try {
@@ -265,16 +314,20 @@ describe('openEncryptedUserDb', () => {
       const db = openEncryptedUserDb('devtwo', KEY)
       db.close()
 
-      expect(realPathExistedDuringSchema.length).toBeGreaterThan(0)
-      expect(realPathExistedDuringSchema[0]).toBe(false)
+      expect(realPathExistedDuringBuild.length).toBeGreaterThan(0)
+      expect(realPathExistedDuringBuild[0]).toBe(false)
     } finally {
-      execSpy.mockRestore()
+      pragmaSpy.mockRestore()
     }
 
-    // And afterwards it is a real database with the schema applied...
+    // And afterwards it is a real database — holding NO tables, because the
+    // create no longer applies anything. Shape arrives from the runner.
     const db = openEncryptedUserDb('devtwo', KEY)
     try {
-      expect(db.prepare('SELECT COUNT(*) AS n FROM walks').get()).toEqual({ n: 0 })
+      const tables = db
+        .prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table'")
+        .get() as { n: number }
+      expect(tables.n).toBe(0)
     } finally {
       db.close()
     }
@@ -302,20 +355,23 @@ describe('openEncryptedUserDb', () => {
     // them apart, and the module comment is where that reasoning lives.
     //
     // The race is forced rather than hoped for: the winner's database is
-    // planted at the real path at the exact instant this call is applying the
-    // schema to its own copy — the window in question.
+    // planted at the real path at the exact instant this call is building its
+    // own copy — the window in question. Hooked on `foreign_keys` rather than
+    // on a CREATE TABLE, because the create no longer execs a schema (D6);
+    // the instant is the same one, named by a statement that still runs.
     const realPath = encryptedUserDbPath('devtwo')
+    const originalPragma = Database.prototype.pragma
     const originalExec = Database.prototype.exec
     let planted = false
 
-    const execSpy = vi
-      .spyOn(Database.prototype, 'exec')
-      .mockImplementation(function (this: Database.Database, sql: string) {
-        const result = originalExec.call(this, sql)
-        if (!planted && /CREATE TABLE/i.test(sql)) {
+    const pragmaSpy = vi
+      .spyOn(Database.prototype, 'pragma')
+      .mockImplementation(function (this: Database.Database, source: string, options?: unknown) {
+        const result = originalPragma.call(this, source, options as never)
+        if (!planted && /foreign_keys/i.test(source)) {
           planted = true
           const winner = new Database(realPath)
-          winner.pragma(`cipher='chacha20'`)
+          originalPragma.call(winner, `cipher='chacha20'`)
           winner.key(KEY)
           originalExec.call(winner, SCHEMA)
           winner.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
@@ -328,7 +384,7 @@ describe('openEncryptedUserDb', () => {
     try {
       db = openEncryptedUserDb('devtwo', KEY)
     } finally {
-      execSpy.mockRestore()
+      pragmaSpy.mockRestore()
     }
 
     try {
@@ -349,6 +405,7 @@ describe('openEncryptedUserDb', () => {
     // asserted a fresh object rather than a closed one, and was green while
     // leaking a descriptor per afterEach). So: attempt the write the walk
     // route makes, and require the driver to refuse it.
+    giveWalksTable('devtwo')
     const seeded = openEncryptedUserDb('devtwo', KEY)
     seeded.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
     seeded.close()
@@ -371,7 +428,6 @@ describe('openEncryptedUserDb', () => {
     // the real database; a page render that created an empty one would put a
     // user permanently onto an empty real file instead of the sample.
     mkdirSync(join(root, 'devthree'), { recursive: true })
-    writeFileSync(join(root, 'devthree', 'schema.sql'), SCHEMA)
     expect(() => openEncryptedUserDb('devthree', KEY, { readonly: true })).toThrow()
     expect(encryptedUserDbExists('devthree')).toBe(false)
   })
@@ -381,6 +437,7 @@ describe('openEncryptedUserDb', () => {
     // schema exec, so it needs its own first touch of the encrypted pages —
     // without one, a wrong key would surface later, unnamed, at whatever
     // SELECT the dashboard happened to run first.
+    giveWalksTable('devtwo')
     const db = openEncryptedUserDb('devtwo', KEY)
     db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
     db.close()
@@ -390,78 +447,84 @@ describe('openEncryptedUserDb', () => {
     )
   })
 
-  it('READ-ONLY: does not apply schema.sql, because a render must not migrate', () => {
-    // Removing schema.sql after creation is a stand-in for a schema that has
-    // gained a table since the file was written: the read path must not be
-    // the thing that applies it. Recorded as a consequence rather than
-    // sold as a feature — see the step-6a ledger's residual on stale schemas.
+  it('READ-ONLY: does not change the shape it finds, because a render must not migrate', () => {
+    // A render sees whatever shape the database is at and never advances it.
+    // That rule outlived its original reason: it used to mean "does not exec
+    // schema.sql", and now means "does not run migrations" — the read path is
+    // not one of the three places lib/db/migrate.ts fires.
+    //
+    // A database left at zero tables is the stand-in for a shape that is
+    // behind: opening it read-only must neither throw nor create anything.
     const seeded = openEncryptedUserDb('devtwo', KEY)
     seeded.close()
-    rmSync(join(root, 'devtwo', 'schema.sql'))
 
-    // No throw: the read path never reads schema.sql at all.
     const db = openEncryptedUserDb('devtwo', KEY, { readonly: true })
     try {
-      expect(db.prepare('SELECT COUNT(*) AS n FROM walks').get()).toEqual({ n: 0 })
+      const tables = db
+        .prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table'")
+        .get() as { n: number }
+      expect(tables.n).toBe(0)
     } finally {
       db.close()
     }
   })
 
-  it('leaves no file behind when the open fails on a brand-new file', () => {
-    // The create writes real bytes — the file, the cipher, the WAL and
-    // foreign_keys pragmas — before schema.sql is even read. Those bytes must
-    // not survive a failed create under ANY name: not at the real path, where
-    // a stub would make existedBefore true forever after and get the correct
-    // key reported as wrong, and not under the temp name either, where nothing
-    // would ever reap it.
+  it('leaves no file behind when the create throws after writing real bytes', () => {
+    // The create writes real bytes — the file, the cipher, the WAL pragma —
+    // before it is finished. Those bytes must not survive a failed create
+    // under ANY name: not at the real path, where a stub would make
+    // existedBefore true forever after and get the correct key reported as
+    // wrong, and not under the temp name either, where nothing would reap it.
     //
-    // This is the failure path that throws BEFORE the schema exec — the
-    // readFileSync of schema.sql, evaluated as exec's argument.
-    //
-    // The inducer used to be a MISSING schema.sql. It cannot be any more: a
-    // user folder with no schema is now a legitimate, expected state — every
-    // invited friend is in it between setting a password and having a
-    // dashboard built (onboarding ledger D3) — so a missing file no longer
-    // throws at all. An UNREADABLE one still does, by exactly the same route,
-    // which is what this test was always really about. A directory where a
-    // file should be gives EISDIR deterministically, with no dependence on
-    // file permissions or on who is running the suite.
-    mkdirSync(join(root, 'devthree', 'schema.sql'), { recursive: true })
-    expect(() => openEncryptedUserDb('devthree', KEY)).toThrow()
-    expect(encryptedUserDbExists('devthree')).toBe(false)
-    expect(creatingDebris('devthree')).toEqual([])
-  })
+    // THE INDUCER CHANGED, AND THE COVERAGE NARROWED. This used to be two
+    // tests, driven by an unreadable schema.sql (EISDIR, throwing before the
+    // exec) and by invalid SQL inside one (throwing during it). Neither exists
+    // any more: no open reads a schema (D6). What is left is a throw from a
+    // pragma, which fires AFTER the temp database has been created, keyed and
+    // WAL-configured — the same "bytes on disk, then a failure" window both
+    // originals were really about, now reachable by one route instead of two.
+    const originalPragma = Database.prototype.pragma
+    const pragmaSpy = vi
+      .spyOn(Database.prototype, 'pragma')
+      .mockImplementation(function (this: Database.Database, source: string, options?: unknown) {
+        if (/foreign_keys/i.test(source)) throw new Error('induced pragma failure')
+        return originalPragma.call(this, source, options as never)
+      })
 
-  it('leaves no half-built temp file behind when the SCHEMA ITSELF throws', () => {
-    // The sibling failure path: a throw from INSIDE db.exec rather than from
-    // evaluating its argument. Different route through the create's two nested
-    // finally blocks — the database has had statements run against it and a
-    // WAL to discard, where the case above had neither — so the cleanup is
-    // worth pinning at both, not just at whichever one happened to be written
-    // first.
-    mkdirSync(join(root, 'devfour'), { recursive: true })
-    writeFileSync(join(root, 'devfour', 'schema.sql'), 'CREATE TABLE ;;; not sql;')
-
-    // Matched on the SQL parse error, so this cannot pass because the create
-    // fell over somewhere earlier and never reached exec at all.
-    expect(() => openEncryptedUserDb('devfour', KEY)).toThrow(/syntax|near/i)
-    expect(encryptedUserDbExists('devfour')).toBe(false)
-    expect(creatingDebris('devfour')).toEqual([])
+    try {
+      mkdirSync(join(root, 'devthree'), { recursive: true })
+      expect(() => openEncryptedUserDb('devthree', KEY)).toThrow(/induced pragma failure/)
+      expect(encryptedUserDbExists('devthree')).toBe(false)
+      expect(creatingDebris('devthree')).toEqual([])
+    } finally {
+      pragmaSpy.mockRestore()
+    }
   })
 
   it('does not misdiagnose a later, legitimate open after an earlier failed create', () => {
-    // The consequence of the leak above: once schema.sql is fixed, opening
-    // with a key must succeed cleanly — not get relabelled as a wrong key
-    // because a stub from the earlier failure was still on disk.
+    // The consequence of a leak: once whatever broke is fixed, opening with
+    // the correct key must succeed cleanly — not get relabelled as a wrong key
+    // because a stub from the earlier failure was still on disk. That
+    // misdiagnosis is the expensive one: it points a friend at their password,
+    // which has no reset, for a fault that was never theirs.
     //
-    // Same EISDIR inducer as the test above, and for the same reason: a
-    // missing schema.sql is a legitimate state now and no longer fails.
-    mkdirSync(join(root, 'devthree', 'schema.sql'), { recursive: true })
-    expect(() => openEncryptedUserDb('devthree', KEY)).toThrow()
+    // Same induced-pragma inducer as the test above, restored between the two
+    // halves rather than left in place.
+    mkdirSync(join(root, 'devthree'), { recursive: true })
 
-    rmSync(join(root, 'devthree', 'schema.sql'), { recursive: true })
-    writeFileSync(join(root, 'devthree', 'schema.sql'), SCHEMA)
+    const originalPragma = Database.prototype.pragma
+    const pragmaSpy = vi
+      .spyOn(Database.prototype, 'pragma')
+      .mockImplementation(function (this: Database.Database, source: string, options?: unknown) {
+        if (/foreign_keys/i.test(source)) throw new Error('induced pragma failure')
+        return originalPragma.call(this, source, options as never)
+      })
+    try {
+      expect(() => openEncryptedUserDb('devthree', KEY)).toThrow(/induced pragma failure/)
+    } finally {
+      pragmaSpy.mockRestore()
+    }
+
     let db: ReturnType<typeof openEncryptedUserDb> | undefined
     expect(() => {
       db = openEncryptedUserDb('devthree', KEY)
@@ -470,6 +533,7 @@ describe('openEncryptedUserDb', () => {
   })
 
   it('is not openable as a plain SQLite database', () => {
+    giveWalksTable('devtwo')
     const db = openEncryptedUserDb('devtwo', KEY)
     db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
     db.close()
@@ -496,7 +560,7 @@ describe('a database with nothing in it', () => {
 
   it('creates users/<slug>/ when nothing has ever created it', () => {
     expect(existsSync(join(root, NEWCOMER))).toBe(false)
-    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
     expect(existsSync(encryptedUserDbPath(NEWCOMER))).toBe(true)
   })
 
@@ -505,7 +569,7 @@ describe('a database with nothing in it', () => {
     // opens under ANY key, so without a real write there is nothing encrypted
     // to be wrong about — and the first thing to touch it later would succeed
     // with the wrong key and then fail incomprehensibly.
-    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
     const bytes = readFileSync(encryptedUserDbPath(NEWCOMER))
     expect(bytes.length).toBeGreaterThan(0)
     expect(bytes.subarray(0, 16).toString('utf8')).not.toBe('SQLite format 3 ')
@@ -515,7 +579,24 @@ describe('a database with nothing in it', () => {
   })
 
   it('holds zero tables, so the render path knows there is no data yet', () => {
-    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
+    expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
+  })
+
+  it('holds zero tables EVEN IF the folder is fully built', () => {
+    // "Empty" is this function's name, and it must not depend on what happens
+    // to be beside it on disk. This began as a schema.sql test: the create
+    // read that file when it existed, so a folder scaffolded BEFORE
+    // registration produced a schema'd-but-empty database that read as real.
+    //
+    // schema.sql is gone and the create reads nothing, so the property is now
+    // structural rather than conditional — which is why the folder here is
+    // built out with migrations and the answer is still zero. Shape arrives
+    // only from lib/db/migrate.ts (D6).
+    makeUserFolder(NEWCOMER)
+    mkdirSync(join(root, NEWCOMER, 'migrations'), { recursive: true })
+    writeFileSync(join(root, NEWCOMER, 'migrations', '001_initial.sql'), SCHEMA)
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
     expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
   })
 
@@ -523,21 +604,23 @@ describe('a database with nothing in it', () => {
     expect(encryptedUserDbHasTables('nobodyatall', KEY)).toBe(false)
   })
 
-  it('acquires tables once a schema exists and something writes', () => {
-    // The whole lifecycle in four lines: password set, dashboard built, first
-    // write. Only the writable open applies a schema — the render path never
-    // does, which is what keeps a page from migrating a friend's database.
-    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+  it('acquires tables only when something actually writes them', () => {
+    // The lifecycle: password set, then nothing until a write happens. An open
+    // — writable or not — is not a write. This used to pass because the
+    // writable open exec'd schema.sql; it passes now because nothing does, and
+    // the table below is made explicitly.
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
     expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
 
-    makeUserFolder(NEWCOMER)
     openEncryptedUserDb(NEWCOMER, KEY).close()
+    expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
 
+    giveWalksTable(NEWCOMER)
     expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(true)
   })
 
   it('leaves no .creating-* debris behind', () => {
-    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
     expect(creatingDebris(NEWCOMER)).toEqual([])
   })
 
@@ -546,11 +629,12 @@ describe('a database with nothing in it', () => {
     // already has data in it. The link() EEXIST property from step 6a,
     // restated for this new entry point.
     makeUserFolder(NEWCOMER)
+    giveWalksTable(NEWCOMER)
     const db = openEncryptedUserDb(NEWCOMER, KEY)
     db.prepare('INSERT INTO walks (day, at) VALUES (?, ?)').run('2026-08-13', 1)
     db.close()
 
-    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
 
     const reopened = openEncryptedUserDb(NEWCOMER, KEY, { readonly: true })
     try {
@@ -562,17 +646,19 @@ describe('a database with nothing in it', () => {
     }
   })
 
-  it('still reports a wrong key as a wrong key when there is no schema to exec', () => {
-    // The writable path's key check IS the schema exec. With no schema, it
-    // falls back to reading sqlite_schema — and this asserts that fallback
-    // still names the failure rather than letting it surface later as an
-    // unnamed driver error.
-    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+  it('still reports a wrong key as a wrong key on a table-less database', () => {
+    // There is no schema exec on any path now, so the writable open's key
+    // check is the `journal_mode = WAL` pragma, which throws SQLITE_NOTADB on
+    // a wrong key. This asserts that still arrives NAMED rather than surfacing
+    // later as an unnamed driver error at whatever statement runs first —
+    // which matters most here, on a database with nothing in it, where the
+    // next statement might be a long way off.
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
     expect(() => openEncryptedUserDb(NEWCOMER, OTHER_KEY)).toThrow(WrongKeyError)
   })
 
   it('a writable open with no schema neither creates tables nor fails', () => {
-    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    createEmptyEncryptedDbAt(NEWCOMER, encryptedUserDbPath(NEWCOMER), KEY)
     const db = openEncryptedUserDb(NEWCOMER, KEY)
     db.close()
     expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)

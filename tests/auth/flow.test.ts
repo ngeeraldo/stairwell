@@ -14,12 +14,18 @@ let db: ReturnType<typeof openPlatformDb>
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-flow-'))
+  // unlock() runs migrations, which CREATES <slug>.db. Without USERS_DIR that
+  // lands in the repo's own users/ tree — a real-named database on a laptop,
+  // which is the one thing the guard hook's filename partition assumes cannot
+  // happen. Learned by doing it.
+  process.env.USERS_DIR = join(dir, 'users')
   db = openPlatformDb(join(dir, 'synthetic.db'))
   await createAccount(db, { slug: 'nico', role: 'user', password: 'pw' })
 })
 
 afterEach(() => {
   db.close()
+  delete process.env.USERS_DIR
   rmSync(dir, { recursive: true, force: true })
 })
 

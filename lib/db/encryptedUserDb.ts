@@ -48,26 +48,10 @@ export function encryptedUserDbExists(slug: string): boolean {
   return existsSync(encryptedUserDbPath(slug))
 }
 
-/**
- * The schema a user folder holds, or `undefined` when the folder has none.
- *
- * An invited friend's `users/<slug>/` is created by the registration route and
- * holds exactly one thing — their encrypted database. `schema.sql` arrives days
- * later, when Nico builds their dashboard from a confirmed spec. So every
- * writable open has to work without one (onboarding ledger D3).
- *
- * ENOENT only. Any other read failure — a permissions problem, a directory
- * where a file should be — is a real fault and must not be silently treated as
- * "this user has no dashboard yet".
- */
-function schemaTextFor(slug: string): string | undefined {
-  try {
-    return readFileSync(join(usersRoot(), slug, 'schema.sql'), 'utf8')
-  } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return undefined
-    throw error
-  }
-}
+// `schemaTextFor` lived here. `users/<slug>/schema.sql` no longer exists:
+// migrations own a dashboard's shape from 001 (2026-08-15 migrations design,
+// D6), so NO open applies a schema any more, writable or otherwise.
+// lib/db/migrate.ts is the only thing that changes a user database's shape.
 
 export type OpenEncryptedOptions = {
   /**
@@ -122,7 +106,20 @@ export type OpenEncryptedOptions = {
  * `probe.db-wal`; after `close()` it holds `probe.db` alone, complete, with
  * the sidecars checkpointed away. So exactly one file is linked.
  */
-function createEncryptedUserDb(slug: string, path: string, key: Buffer): void {
+export function createEmptyEncryptedDbAt(slug: string, path: string, key: Buffer): void {
+  // `users/<slug>/` when nothing else ever has. For an invited friend the
+  // folder is otherwise made by ./scripts/new-dashboard.sh days later, and a
+  // folder holding only `<slug>.db` is a legitimate state for the conventions
+  // sweep — it calls it "not started".
+  mkdirSync(dirname(path), { recursive: true })
+
+  // Idempotent: a file already there is left exactly as it is, so a retry
+  // after a partial registration never replaces a database holding a row.
+  // This short-circuit is an OPTIMISATION, not the guarantee — it only avoids
+  // building a temp database nobody will link. The guarantee is `link()`
+  // below, which fails EEXIST and keeps whatever is already there.
+  if (existsSync(path)) return
+
   // Same directory, so link() stays within one filesystem, and named so it can
   // never collide with any real `<slug>.db`: SLUG_PATTERN forbids dots, so no
   // valid slug can produce this name. It still ENDS in `.db`, deliberately, so
@@ -142,22 +139,23 @@ function createEncryptedUserDb(slug: string, path: string, key: Buffer): void {
       db.key(key)
       db.pragma('journal_mode = WAL')
       db.pragma('foreign_keys = ON')
-      // A friend who has just set their password has no dashboard folder and
-      // so no schema — the file is created at that moment anyway, because
-      // onboarding-ux-spec.md S2 requires it ("a consumed token with no DB is
-      // an invalid state"). There is simply nothing to exec.
+      // NO SCHEMA, EVER, AND NO STATEMENT IN ITS PLACE.
       //
-      // NOTHING IS SUBSTITUTED FOR THE EXEC, and that is a measured decision
-      // rather than an omission. The plan called for a `user_version` pragma
-      // here, on the theory that without a write the driver would leave a
-      // zero-byte file that opens under any key. The drill disproved it: the
+      // This function's whole job is to bring an encrypted FILE into being.
+      // Shape belongs to lib/db/migrate.ts (D6): a database created here holds
+      // zero tables until the runner applies 001, and that is true on every
+      // path — registration, and a writable open of a file that went missing.
+      //
+      // Nothing is substituted for the deleted exec, and that is measured
+      // rather than an omission. An earlier plan called for a `user_version`
+      // pragma here, on the theory that without a write the driver would leave
+      // a zero-byte file that opens under any key. The drill disproved it: the
       // `journal_mode = WAL` pragma above has already written the encrypted
-      // header, so the file is a real encrypted database either way, and
-      // removing the extra pragma reddens nothing. The property is held by the
-      // test ("writes a real encrypted file, not a zero-byte placeholder"),
-      // which stays true whichever statement provides the bytes.
-      const schema = schemaTextFor(slug)
-      if (schema !== undefined) db.exec(schema)
+      // header, so the file is a real encrypted database either way. The
+      // property is held by the test ("writes a real encrypted file, not a
+      // zero-byte placeholder"), which stays true whichever statement provides
+      // the bytes — and it matters more now, because the runner reads
+      // `user_version` off this file before it writes anything to it.
     } finally {
       db.close()
     }
@@ -211,11 +209,17 @@ export function openEncryptedUserDb(
   const existedBefore = existsSync(path)
 
   // Creation is its OWN step, and it happens somewhere else. Once it returns,
-  // `path` holds a complete, schema'd database — either the one it just built
+  // `path` holds a complete encrypted database — either the one it just built
   // or the one a concurrent request won the race to link. Nothing below can
   // observe a half-made file at that path, which is why neither open needs to
   // be able to create one.
-  if (!readOnly && !existedBefore) createEncryptedUserDb(slug, path, key)
+  //
+  // TABLE-LESS, always. Shape comes from lib/db/migrate.ts and nowhere else
+  // (D6), so this no longer distinguishes "the walk route's open" from any
+  // other — a database created here is empty until the runner touches it.
+  if (!readOnly && !existedBefore) {
+    createEmptyEncryptedDbAt(slug, path, key)
+  }
 
   // fileMustExist on BOTH paths now: `new Database` is never the thing that
   // brings a user's real database into being. On the read path that stops a
@@ -255,8 +259,11 @@ export function openEncryptedUserDb(
       // has already turned it into a WrongKeyError. An explicit
       // `SELECT count(*) FROM sqlite_schema` here reddened nothing and was
       // removed rather than kept as decoration.
-      const schema = schemaTextFor(slug)
-      if (schema !== undefined) db.exec(schema)
+      // No schema exec any more (D6). The `journal_mode = WAL` pragma above
+      // already throws SQLITE_NOTADB on a wrong key, so the key has been
+      // proven by the time control reaches here and the catch below has
+      // already turned a bad one into a WrongKeyError — which is what the
+      // comment above established when the exec was still here.
     }
   } catch (error) {
     db.close()
@@ -283,41 +290,16 @@ export function openEncryptedUserDb(
   return db
 }
 
-/**
- * Create a user's encrypted database with NO tables, for a friend who has just
- * set their password and has no dashboard yet.
- *
- * onboarding-ux-spec.md S2 requires the file to exist the moment the password
- * does — "Token consumption and DB creation are atomic; a consumed token with
- * no DB is an invalid state" — and at that moment there is nothing to put in
- * it. The password IS the key, so the file cannot be created any earlier, and
- * creating it later would mean the first real byte is written under a key
- * nothing has ever proved works.
- *
- * Reuses `createEncryptedUserDb` unchanged, so the temp-then-link atomicity
- * step 6a built is ONE implementation rather than two: whatever is at `path`
- * is always a complete database or absent, never half-made.
- *
- * `users/<slug>/` is created here because for an invited friend nothing else
- * ever has — the folder is otherwise made by ./scripts/new-dashboard.sh, days
- * later. A folder holding only `<slug>.db` is a legitimate state for the
- * conventions sweep (tests/users/conventions.test.ts calls it "not started").
- *
- * Idempotent: an existing file is left exactly as it is, so a retry after a
- * partial registration never replaces a database that already holds a row.
- *
- * The `existsSync` short-circuit is an OPTIMISATION, not the guarantee — it
- * only avoids building a temp database nobody will link. The guarantee is
- * `createEncryptedUserDb`'s `link()`, which fails EEXIST and keeps whatever is
- * already there; deleting this check reddens nothing, which is how that was
- * confirmed rather than assumed.
- */
-export function createEmptyEncryptedUserDb(slug: string, key: Buffer): void {
-  const path = encryptedUserDbPath(slug)
-  mkdirSync(dirname(path), { recursive: true })
-  if (existsSync(path)) return
-  createEncryptedUserDb(slug, path, key)
-}
+// `createEmptyEncryptedUserDb` lived here, called by the registration route.
+// It is gone: registration no longer creates a friend's database, the
+// migration runner does, at the same moment and from the same key
+// (2026-08-15 migrations design, §8). onboarding-ux-spec.md S2 still holds —
+// the file exists the moment the password does — because registration is one
+// of the three places the runner fires.
+//
+// `createEmptyEncryptedDbAt` above absorbed its two jobs: creating
+// `users/<slug>/` when nothing else ever has, and returning without touching
+// a file that is already there.
 
 /**
  * Whether this database holds anything yet.

@@ -1,0 +1,37 @@
+# __SLUG__'s migrations
+
+**Empty on purpose.** No shape has been designed for this dashboard yet, and a
+scaffold cannot guess one — so it does not pretend to. Until a `.sql` file
+lands here, `__SLUG__`'s database is created empty and their dashboard says
+"Under construction".
+
+## Writing the first one
+
+Name it `001_initial.sql` and put in it the tables `__SLUG__`'s confirmed spec
+asks for — `users/__SLUG__/spec.md`, pulled by `./scripts/pull-spec.sh`.
+
+Then generate the manifest, which is what proves an applied migration has not
+been edited since:
+
+```bash
+node -e 'const{createHash}=require("node:crypto"),{readFileSync,writeFileSync,readdirSync}=require("node:fs");
+  const d="users/__SLUG__/migrations";
+  const m=readdirSync(d).filter(f=>/^\d{3}_[a-z0-9_]+\.sql$/.test(f)).sort().map(f=>({
+    number:Number(f.slice(0,3)),
+    sha256:createHash("sha256").update(readFileSync(`${d}/${f}`,"utf8")).digest("hex")}));
+  writeFileSync(`${d}/manifest.json`,JSON.stringify({migrations:m},null,2)+"\n")'
+```
+
+## The rules, once one exists
+
+- **While 001 has never been applied, edit it freely.** That is the whole
+  window for getting a shape right cheaply.
+- **After that, migrations are added and never edited.** A change is `002`.
+  A friend's database records only which number it has reached, so an edited
+  file silently changes what an already-applied number means.
+- **Every migration above 001 ships a data-survival test in the same commit** —
+  seed the old shape, migrate, assert the rows survived. That is what earns
+  full DDL rather than add-only.
+- **A migration never inserts rows.** Changing a shape must not invent data.
+
+Full reasoning: `docs/superpowers/specs/2026-08-15-user-db-migrations-design.md`.

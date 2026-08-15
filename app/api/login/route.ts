@@ -4,6 +4,8 @@ import { readDeviceClass } from '@/lib/metrics/deviceClass'
 import { databaseKeyFor, login } from '@/lib/auth/flow'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 import { putKey } from '@/lib/session/keymap'
+import { migrateUserDb } from '@/lib/db/migrate'
+import { refuseDeps, refuseSession } from '@/lib/auth/refuseSession'
 import { relativeRedirect } from '@/lib/http/redirect'
 import { COOKIE_OPTIONS, SESSION_COOKIE } from '@/lib/session/store'
 
@@ -33,8 +35,9 @@ export async function POST(request: Request) {
     // rejects the login instead of throwing on `.salt_key`.
     return relativeRedirect('/login?error=1')
   }
+  let key: Buffer
   try {
-    putKey(sessionId, await databaseKeyFor(getDb(), account, password))
+    key = await databaseKeyFor(getDb(), account, password)
   } catch {
     // login() already verified the password against auth_hash, so a
     // WrappedKeyError here means a corrupt account_keys row rather than a
@@ -44,6 +47,32 @@ export async function POST(request: Request) {
     // that cannot occur is noise in a log that can never be cleaned up.
     return relativeRedirect('/login?error=1')
   }
+
+  // BEFORE putKey, and that ordering is the whole point: a session must never
+  // become usable over a half-migrated shape. On every login after the one
+  // that needed it this costs a single `PRAGMA user_version` read.
+  //
+  // This is one of exactly three places the runner fires, and they are the
+  // three places a key enters the keymap — because a key is the only thing
+  // that can open a friend's database, and their session is the only moment
+  // it exists.
+  //
+  // NOT FOR AN ADMIN. `nico` has no user space — /nico 404s, canSeeUserSpace
+  // excludes admins even for their own slug — so there is no database to
+  // migrate and creating one would put a real-named file in a folder that
+  // should not exist. Caught by the admin login test, which is the only place
+  // this distinction is visible.
+  try {
+    if (account.role !== 'admin') migrateUserDb(account.slug, key)
+  } catch (error) {
+    await refuseSession(refuseDeps(account.id), {
+      sessionId,
+      slug: account.slug,
+      error,
+    })
+    return relativeRedirect('/login?error=refused')
+  }
+  putKey(sessionId, key)
 
   // An admin account has no user space — it lands on the read-only admin
   // portal instead of /<slug>, which would now 404 (canSeeUserSpace excludes

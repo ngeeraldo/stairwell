@@ -12,8 +12,8 @@ import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
 import DevTwoDashboard from '@/users/devtwo/dashboard'
 import { dayKey } from '@/lib/time/dayKey'
+import { applyUserMigrations, emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
-const SCHEMA = resolve(__dirname, '..', 'schema.sql')
 
 let dir: string
 let db: UserDb
@@ -42,7 +42,7 @@ beforeEach(() => {
   vi.stubGlobal('React', React)
   dir = mkdtempSync(join(tmpdir(), 'stairwell-devtwo-dash-'))
   db = new Database(join(dir, 'synthetic.db'))
-  db.exec(readFileSync(SCHEMA, 'utf8'))
+  applyUserMigrations(db, 'devtwo')
 })
 
 afterEach(() => {
@@ -98,13 +98,28 @@ describe('users/devtwo/dashboard.tsx', () => {
     expect(json).toContain('post')
   })
 
-  it('renders 14 day markers whatever the data', async () => {
+  it('renders 14 day markers once anything has been logged', async () => {
+    // WAS "whatever the data", and that was the bug. Rendering the grid
+    // unconditionally meant a friend's first morning showed fourteen rows
+    // reading "missed" — days that passed before their dashboard existed.
+    walked(daysAgo(3))
+
     const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
     // JSON.stringify renders an object key as `"data-day":`, never
     // `data-day=` — that HTML-attribute syntax only exists once Next
     // renders this element tree to a markup string, which this unit test
     // does not do.
     expect(json.match(/"data-day":/g) ?? []).toHaveLength(14)
+  })
+
+  it('does NOT call fourteen untouched days missed before anything is logged', async () => {
+    // The empty database every friend has on the morning their dashboard
+    // ships. "Missed" is a judgement, and there is nothing yet to judge.
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+
+    expect(json).toContain('Nothing logged yet')
+    expect(json).not.toContain('missed')
+    expect(json.match(/"data-day":/g) ?? []).toHaveLength(0)
   })
 
   it('renders the 14 days oldest-first ending today, each correctly marked', async () => {
@@ -130,4 +145,27 @@ describe('users/devtwo/dashboard.tsx', () => {
     expect(json).toContain('NOT YET')
     expect(json).toContain('[0,"%"]')
   })
+})
+
+it('renders on an EMPTY database without throwing', async () => {
+  // There is no synthetic fallback any more: a friend's first session renders
+  // THEIR database, and it has no rows in it. That is an ordinary state, not
+  // an error (2026-08-15 migrations design, §9), so this is a required test
+  // for every dashboard rather than a nicety.
+  //
+  // Awaited, because the page CALLS the component rather than returning an
+  // element — a throw inside a nested component would otherwise be deferred
+  // past this assertion into React's render pass.
+  const empty = emptyDbFromMigrations('devtwo')
+  try {
+    // Promise.resolve so this holds whether the component is async or
+    // not — two of the three dashboards are synchronous, and a test that
+    // assumed otherwise would pass for the wrong reason.
+    const rendered = await Promise.resolve(
+      DevTwoDashboard({ slug: 'devtwo', db: empty, today: '2026-01-01', timeZone: 'UTC' }),
+    )
+    expect(rendered).toBeDefined()
+  } finally {
+    empty.close()
+  }
 })

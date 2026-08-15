@@ -37,6 +37,7 @@ export type ScreenState =
   | 'invite-used'
   | 'friend-new'
   | 'friend-built'
+  | 'friend-built-empty'
   | 'friend-locked'
   | 'admin'
 
@@ -130,8 +131,33 @@ export const SCREENS: Screen[] = [
     assertions: [
       'Chat is COLLAPSED by default here, because a dashboard is deployed — a toggle is visible and the dashboard is the landing view.',
       'The dashboard renders inside the shell, unstyled-by-us and unbroken by it: the shell is platform chrome, not part of the user’s code.',
-      'The SYNTHETIC DATA banner is present (this fixture has no real rows) and is not mistakable for chrome.',
+      'The SYNTHETIC DATA banner is present (this fixture runs in dev, where synthetic.db IS the user database) and is not mistakable for chrome.',
       'With the chat collapsed, the left rail holds "Show chat" at the top and "Log out" at the far bottom at 1440; at 375 both sit in the bottom-right corner with the toggle nearest the thumb.',
+    ],
+  },
+  {
+    /**
+     * THE FIRST SCREEN A FRIEND EVER SEES OF THEIR OWN DASHBOARD.
+     *
+     * There is no synthetic fallback any more, so the day a dashboard is
+     * deployed the friend gets THEIR database — which has nothing in it until
+     * they log something. Every dashboard is required to render that state
+     * (2026-08-15 migrations design, §9), and a test can only prove it does
+     * not throw. Whether it reads as "nothing here yet" or as "something is
+     * broken" is a question only a picture answers, which is the whole reason
+     * this gate exists (onboarding ledger D16).
+     */
+    id: 's3-shell-dashboard-empty',
+    path: '/SLUG',
+    routeFile: 'app/[user]/page.tsx',
+    state: 'friend-built-empty',
+    live: true,
+    assertions: [
+      'The dashboard renders. Panels, headings and labels are present — this is not a blank content area and not an error.',
+      'Every panel that would show a number or a list says plainly that there is nothing yet, in its own words. No zeroes presented as achievements, no empty chart axes floating unexplained.',
+      'Nothing on screen suggests a failure: the words "failed", "error" and "try again" appear nowhere.',
+      'No SYNTHETIC DATA banner. This is the friend’s own database and the banner would be a false statement about their history.',
+      'Read it as the friend would on their first morning: does this look like a dashboard waiting for data, or like something that broke before they arrived?',
     ],
   },
   {

@@ -4,6 +4,7 @@
 // creates the account, the key that opens the friend's data forever, and the
 // file that key opens, and it spends a link that can never be reissued.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { setNodeEnv } from '@/tests/support/nodeEnv'
 import { chmodSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,15 +28,25 @@ let dir: string
 let usersDir: string
 let db: PlatformDb
 
+let originalEnv: string | undefined
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-register-'))
   usersDir = join(dir, 'users')
   process.env.USERS_DIR = usersDir
+  // Registration creates the database through the migration runner now, and
+  // the runner returns immediately outside production — synthetic.db is the
+  // user database there. These tests are about the real file arriving the
+  // moment the password does (onboarding-ux-spec.md S2), so they say which
+  // world they mean rather than inheriting "test".
+  originalEnv = process.env.NODE_ENV
+  setNodeEnv('production')
   db = openPlatformDb(join(dir, 'platform.db'))
 })
 
 afterEach(() => {
   db.close()
+  setNodeEnv(originalEnv)
   delete process.env.USERS_DIR
   // Restore any permission the disk-failure test took away, or rmSync cannot
   // clean up after itself.

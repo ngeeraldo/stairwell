@@ -1,6 +1,6 @@
--- users/__SLUG__/schema.sql
+-- users/run3/schema.sql
 --
--- Table and view shapes for __SLUG__'s dashboard. seed.py executes THIS FILE
+-- Table and view shapes for run3's dashboard. seed.py executes THIS FILE
 -- before inserting anything, so shapes have exactly one source.
 --
 -- CLAUDE.md > Schema & module rules: this file, seed.py and tests/ move in the
