@@ -19,7 +19,7 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 |---|---|
 | `CLAUDE.md` > Dashboard folder conventions | The hard rules. Everything in §2–§6 below comes from here. |
 | `docs/superpowers/specs/2026-08-12-step5-dashboard-hosting-design.md` | §3 folder conventions, §4 the data path, §6 the devone reference, §11 known limits. |
-| `docs/superpowers/ledgers/step6a.md`, residual 2 | No migration story for a real database. See §5 — it constrains the schema before you write it. |
+| `docs/superpowers/specs/2026-08-15-user-db-migrations-design.md` | How a friend's tables change shape without losing rows. Read before writing any migration. Closes step-6a ledger residual 2. |
 | `docs/superpowers/ledgers/friend-timezone.md` | Why the day belongs to the friend, and what the bug cost. |
 | `users/devone/` | The worked reference. Its README: "Copy this folder's shape when building a real dashboard." |
 | `users/<slug>/spec.md` + `mockup.html` | The build contract for this friend. |
@@ -31,10 +31,13 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 
 Five entries, swept by `tests/users/conventions.test.ts:45`:
 
-`schema.sql` · `seed.py` · `queries.ts` · `dashboard.tsx` · `tests/`
+`migrations/` · `seed.py` · `queries.ts` · `dashboard.tsx` · `tests/`
 
-- `seed.py` **executes `schema.sql`** before inserting, so shapes have exactly
-  one source — CLAUDE.md.
+- `migrations/` holds `001_initial.sql`, `002_*.sql`, … and `manifest.json`.
+  It is the only description of a dashboard's shape; `schema.sql` no longer
+  exists — CLAUDE.md, 2026-08-15 migrations design D6.
+- `seed.py` **runs the migrations** in order and stamps `user_version`, so a
+  synthetic database is built by the same files a real one is — CLAUDE.md.
 - `queries.ts` holds **every** SQL statement, as pure functions taking a
   `UserDb`; `dashboard.tsx` holds **no SQL** — CLAUDE.md.
 - A folder has three legitimate states and only one is a defect
@@ -68,14 +71,16 @@ of them itself** — CLAUDE.md.
 - A `queries.ts` **may** import `dayKey` and run it over a **stored** instant.
   Converting a stored timestamp to the friend's day is legitimate; asking a clock
   what day it is never is — CLAUDE.md.
-- Why it is a data-safety rule and not style: the day is a primary key in a
-  database with no migration story, so a read and a write that disagree about the
-  calendar write a row that is wrong forever. It has happened once —
-  `docs/superpowers/ledgers/friend-timezone.md`.
-- **The handle is read-only on both paths** — `openUserDb` opens the synthetic
-  file `readonly`, and the render path opens the encrypted one with
-  `openEncryptedUserDb(slug, key, { readonly: true })`. Pinned at both ends,
-  because they fail independently — CLAUDE.md.
+- Why it is a data-safety rule and not style: the day is a primary key, so a
+  read and a write that disagree about the calendar write a row that is wrong
+  forever. It has happened once — `docs/superpowers/ledgers/friend-timezone.md`.
+  **This did NOT relax when migrations arrived.** A migration changes a
+  database's SHAPE; it cannot repair a row whose MEANING was wrong when it was
+  written. Reading "there are migrations now" as "the day rule is softer" walks
+  straight back into that ledger.
+- **The handle is read-only on both paths** — `openUserDataForRead` resolves
+  which database and opens it read-only in either world. Pinned at both ends,
+  because they fail independently — CLAUDE.md, `tests/db/userData.test.ts`.
 - Compose only host elements. A nested function component's body is deferred to
   Next's render pass, outside the page's try/catch, so a throw there 500s the
   page after `dashboard_open` was already written —
@@ -88,14 +93,13 @@ of them itself** — CLAUDE.md.
 - A dashboard may **render** an entry widget, but the widget POSTs to a platform
   route. No dashboard component ever holds a writable handle, only a route does
   — CLAUDE.md.
-- **Exactly two writable opens create a user's real database, and they are
+- **Exactly two things write to a user's real database, and they are
   enumerated** — CLAUDE.md:
-  1. the registration route (`lib/invite/register.ts`) — creates it **empty** at
-     password-set time (`createEmptyEncryptedUserDb`,
-     `lib/db/encryptedUserDb.ts:315`, which passes `applySchema: false`);
-  2. the walk route — creates it **with** a schema, and is still the only thing
-     that migrates one.
-  A third is a change to onboarding ledger D3, not a refactor.
+  1. `lib/db/migrate.ts` — creates it and changes its SHAPE, at unlock, having
+     copied it aside first. Fires at the three places a key enters the keymap:
+     the login route, `unlock()`, and registration.
+  2. a platform route — writes ROWS into the shape it finds. It never migrates.
+  A third is a change to the 2026-08-15 migrations design, not a refactor.
 - Every write goes through a platform route, which is the only place the four
   ordered auth checks live — CLAUDE.md.
 - A friend who logs anything needs their own route alongside the walk route; it
@@ -106,51 +110,67 @@ of them itself** — CLAUDE.md.
 
 ---
 
-## 5. The schema freezes on first write
+## 5. Shapes change through migrations, and only there
 
-`docs/superpowers/ledgers/step6a.md`, residual 2:
+`docs/superpowers/specs/2026-08-15-user-db-migrations-design.md`. This section
+used to read "the schema freezes on first write", quoting step-6a ledger
+residual 2 — *there is no migration story for encrypted per-user databases*.
+That is closed. The reasoning is worth keeping, because it explains why the
+answer looks the way it does:
 
-> **THERE IS NO MIGRATION STORY FOR ENCRYPTED PER-USER DATABASES.**
+> A friend's database is encrypted under a key that exists only while they have
+> an unlocked session. There is no moment at deploy or startup when the server
+> can open one. **The cost of zero server-side access is zero server-side
+> migration** — so migrations run at unlock, from their own session, or not at
+> all.
 
-A real `<slug>.db` is created once with whatever `schema.sql` said that day and
-**frozen at that shape**. The only thing that re-executes `schema.sql` against it
-is the walk route's writable open, and `CREATE TABLE IF NOT EXISTS` can add a
-table but cannot alter one that already exists. The read path does not apply the
-schema at all, so a render sees the frozen shape.
+What that means when you are building:
 
-Consequences for a build:
-
-- Get the schema right **before their first write**, not before the deploy.
-- A later version needing a new **column** on an existing table has no mechanism
-  to get one.
-- `lib/db/reshape.ts` is **not** reusable here: it proves a table holds zero rows
-  before dropping it, which is exactly the assumption that fails on a database
-  holding a real person's history.
-- Also: **nothing migrates a real database**, so check this residual before
-  changing any `schema.sql` a real database was created from — CLAUDE.md.
+- **Shape lives in `users/<slug>/migrations/`**, numbered, applied in order.
+  `001_initial.sql` is the initial `CREATE TABLE` set.
+- **An applied migration is never edited** (D2). A fix is a new file. The
+  manifest's SHA-256 per migration is what enforces it; a mismatch refuses the
+  session rather than applying something nobody reviewed.
+- **Full DDL, `ALTER` included** (D1) — earned by D3, not by restraint.
+- **Every migration above `001` ships a data-survival test in the same commit**
+  (D3): seed the old shape, migrate, assert the rows survived.
+- **The rebuild recipe is sanctioned** (D4) — create new, copy, drop, rename.
+  It is what `reshape.ts` does minus the zero-rows proof, which is exactly the
+  assumption that fails on a real person's history. **Never point `reshape.ts`
+  at a user database** (D5).
+- **A migration never seeds rows** (D9). Changing a shape must not invent data.
+- **A copy is taken before applying** (D10), at `<slug>.backup.db`, one deep.
+  Not a backup system: same key, so a forgotten password still destroys both.
+  No user-facing copy may imply recovery exists.
+- **A failed migration refuses the session** (D11) — pinned copy, one alert
+  carrying slug, migration number and error code, and nothing rendered over a
+  half-migrated shape.
 
 ---
 
-## 6. Synthetic vs real, and the banner
+## 6. Which database serves, and rendering nothing
 
-- Two databases per user — CLAUDE.md:
-  - `synthetic.db` — loudly fake, regenerated by every deploy, shown under a
-    **SYNTHETIC DATA** banner. Safe to read locally.
-  - `<slug>.db` — real data, SQLCipher-encrypted. Never regenerated, never
-    committed, never readable without that session's key.
-- A dashboard reads the real database when it exists and the session is unlocked;
-  otherwise the synthetic one, with the banner — CLAUDE.md.
-- **"Exists" means HOLDS AT LEAST ONE TABLE, not "the file is there"**
-  (`encryptedUserDbHasTables`, `lib/db/encryptedUserDb.ts:345`). Reading mere
-  existence as data renders a permanent "This dashboard failed to load" that the
-  friend has no control to escape — CLAUDE.md, onboarding ledger D3.
-- The banner is the only thing distinguishing the two screens, so it is never
-  rendered over real data, and it is bordered, tinted chrome rather than a line
-  of text — CLAUDE.md, and `app/[user]/page.tsx:187`.
+- **There is no fallback.** Production always serves the friend's own encrypted
+  database, empty or not. Dev always serves `synthetic.db`, for reads AND
+  writes, so an entry widget is testable end to end — CLAUDE.md,
+  `lib/db/userData.ts`.
+- The gate is `NODE_ENV` and nothing else, inert in production by construction.
+  A variable that could switch production onto synthetic data would rebuild the
+  `PLATFORM_DB` failure `deploy/required-env` blocks a deploy over. Red-tested
+  in `tests/db/userData.test.ts`.
+- The banner follows the WORLD, not the friend's row count, and is bordered,
+  tinted chrome rather than a line of text — CLAUDE.md.
 - All synthetic merchants/values are loudly fake (`COFFEE PALACE TEST`) —
   CLAUDE.md > Data safety.
-- Everything a dashboard shows is synthetic **until that user's first write** —
-  CLAUDE.md.
+- **Every dashboard must render on zero rows.** A friend's first session shows
+  their own empty database; that is ordinary, not an error. The scaffold ships
+  an empty-render test and `screenshots/screens.ts` carries an empty-state
+  screen — CLAUDE.md, 2026-08-15 migrations design §9.
+- **A day before the friend started is not a day they failed.** devtwo's
+  dashboard once rendered fourteen rows saying "missed" on a friend's first
+  morning, and devone showed `$0.00` where the truth was "nothing logged yet".
+  Neither is a throw, so no test failed — both were found by reading the
+  screenshot (onboarding ledger D16).
 
 ---
 
@@ -206,8 +226,11 @@ Sacred data.
 
 - Changes to data logic (queries, panels, derived tables) require test changes in
   the same commit. Pure styling/copy changes do not — CLAUDE.md.
-- `schema.sql` + `seed.py` + `tests/` update in the **same commit**. No drift —
+- Migrations + `seed.py` + `tests/` update in the **same commit**. No drift —
   CLAUDE.md.
+- **A migration above `001` ships a data-survival test in the same commit**:
+  seed the old shape, migrate, assert the rows survived — 2026-08-15 migrations
+  design D3. This is what earns full DDL.
 - Pre-commit Gate B, by scope: `users/<name>/` → a test under
   `users/<name>/tests/` — CLAUDE.md.
 - Gate C typechecks (`npx tsc --noEmit`) when any `.ts`/`.tsx` is staged; vitest
