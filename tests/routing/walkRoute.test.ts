@@ -11,6 +11,7 @@
 // still be wrong.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
+import { setNodeEnv } from '@/tests/support/nodeEnv'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -90,10 +91,18 @@ let dir: string
 let handle: PlatformDb | undefined
 let accountId: number
 
+let originalEnv: string | undefined
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-walk-'))
   process.env.PLATFORM_DB = join(dir, 'synthetic.db')
   process.env.USERS_DIR = join(dir, 'users')
+  // The ENCRYPTED write path is what this suite is about — the one that runs
+  // against a friend's real data on the droplet. lib/db/userData.ts sends dev
+  // to synthetic.db instead, so without saying `production` these tests would
+  // quietly exercise a different database than the one they describe.
+  originalEnv = process.env.NODE_ENV
+  setNodeEnv('production')
   mkdirSync(join(dir, 'users', 'devtwo', 'migrations'), { recursive: true })
   writeFileSync(join(dir, 'users', 'devtwo', 'migrations', '001_initial.sql'), SCHEMA)
   writeFileSync(
@@ -115,6 +124,7 @@ beforeEach(() => {
 afterEach(() => {
   handle?.close()
   delete process.env.PLATFORM_DB
+  setNodeEnv(originalEnv)
   delete process.env.USERS_DIR
   rmSync(dir, { recursive: true, force: true })
 })

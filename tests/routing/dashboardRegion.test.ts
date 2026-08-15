@@ -153,12 +153,28 @@ const openEncryptedMock = vi.fn((_slug?: unknown, _key?: unknown, _options?: unk
   }
 })
 vi.mock('@/lib/db/encryptedUserDb', () => ({
-  encryptedUserDbHasTables: () => {
-    if (encryptedSlot.throwOnHasTables) throw new WrongKeyError(SLUG)
-    return encryptedSlot.hasTables
-  },
   openEncryptedUserDb: (...args: unknown[]) => openEncryptedMock(...args),
   WrongKeyError,
+}))
+
+/**
+ * Which world the page thinks it is in.
+ *
+ * The render path no longer chooses between two databases — there is no
+ * fallback. It asks lib/db/userData.ts for THE user database and renders it,
+ * and that module's only input is NODE_ENV. So the fixture that used to say
+ * "does the real one have tables" now says "is this dev", and the banner
+ * follows from it rather than from what the friend has logged.
+ */
+const worldSlot: { dev: boolean } = { dev: true }
+
+vi.mock('@/lib/db/userData', () => ({
+  isDevData: () => worldSlot.dev,
+  // Argument-aware, for the same reason openEncryptedMock is: a factory that
+  // discarded its arguments made `{ readonly: true }` invisible at the call
+  // site once already, and every render opened a friend's real database
+  // writable while the suite stayed green.
+  openUserDataForRead: (...args: unknown[]) => openEncryptedMock(...args),
 }))
 
 const SLUG = 'devone'
@@ -256,6 +272,7 @@ beforeEach(() => {
   loaderSlot.value = undefined
   dataSlot.value = { source: 'none', db: undefined }
   handle = undefined
+  worldSlot.dev = true
   encryptedSlot.hasTables = false
   encryptedSlot.rows = []
   encryptedSlot.throwOnOpen = undefined
@@ -299,21 +316,28 @@ describe('app/[user]/page.tsx data region', () => {
     expect(metricEvents()).not.toContain('dashboard_open')
   })
 
-  it('says so when the dashboard exists but its data has not been generated', async () => {
+  it('degrades when the database cannot be opened at all', async () => {
+    // This replaces "its data has not been generated yet", which was the
+    // synthetic path's own not-found branch. There is no synthetic path in
+    // production any more, and no branch to report: a database that will not
+    // open is a failure, and the friend gets the honest sentence rather than a
+    // reassuring one about generation that would never become true on its own.
     loaderSlot.value = async () => ({ default: () => null as never })
-    dataSlot.value = { source: 'none', db: undefined }
+    encryptedSlot.throwOnOpen = 'other'
     const UserSpace = await arrange()
     const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
 
     const json = JSON.stringify(element)
-    expect(json).toContain('has not been generated yet')
-    expect(json).not.toContain('SYNTHETIC DATA')
+    expect(json).toContain('This dashboard failed to load')
     expect(metricEvents()).not.toContain('dashboard_open')
   })
 
-  it('renders the dashboard under a synthetic banner and records dashboard_open', async () => {
-    const db = realDb()
-    dataSlot.value = { source: 'synthetic', db }
+  it('renders the dashboard under a synthetic banner in DEV and records dashboard_open', async () => {
+    // The banner now follows the WORLD, not the friend's data. In dev
+    // synthetic.db is the user database, so everything on screen is fake and
+    // says so; in production there is nothing to warn about because what is
+    // rendered is theirs.
+    worldSlot.dev = true
     const seen: unknown[] = []
     loaderSlot.value = async () => ({
       default: (props: unknown) => {
@@ -337,9 +361,12 @@ describe('app/[user]/page.tsx data region', () => {
     // is a native object and toEqual on one compares nothing meaningful.
     expect(seen).toHaveLength(1)
     expect((seen[0] as { slug: string }).slug).toBe(SLUG)
-    expect((seen[0] as { db: unknown }).db).toBe(db)
+    expect((seen[0] as { db: unknown }).db).toBeDefined()
     expect(loaderFor).toHaveBeenCalledWith(SLUG)
-    expect(openUserDbMock).toHaveBeenCalledWith(SLUG)
+    // The page asked the ONE resolver, and asked it read-only. Both halves
+    // matter: dropping the flag at this call site once left the whole suite
+    // green while every render held a writable handle on a friend's data.
+    expect(openEncryptedMock).toHaveBeenCalledWith(SLUG, expect.anything())
     expect(metricEvents()).toContain('dashboard_open')
     // EXACT shape, not a subset match. dashboard_open carries a slug, a
     // source and a device class and nothing else — the permanent policy is
@@ -467,9 +494,11 @@ describe('app/[user]/page.tsx data region', () => {
     expect(metricEvents()).toContain('dashboard_error')
   })
 
-  it('reads the encrypted database and drops the banner once real data exists', async () => {
-    encryptedSlot.hasTables = true
-    dataSlot.value = { source: 'synthetic', db: realDb() }
+  it('reads the encrypted database and drops the banner in PRODUCTION', async () => {
+    // "once real data exists" was the old rule and is gone: production serves
+    // the friend's own database whether or not they have logged anything, so
+    // the banner's condition is the world, not the row count.
+    worldSlot.dev = false
     loaderSlot.value = async () => ({
       default: () => React.createElement('section', null, 'REAL PANEL TEST'),
     })
@@ -494,9 +523,13 @@ describe('app/[user]/page.tsx data region', () => {
     // dashboard render opens the friend's real database writable AND
     // re-executes schema.sql — a render becomes a migrator, which the step-6a
     // ledger's residual 2 says must not happen before 6b designs migration.
-    expect(openEncryptedMock).toHaveBeenCalledWith(SLUG, expect.anything(), {
-      readonly: true,
-    })
+    //
+    // The flag now lives inside lib/db/userData.ts rather than at this call
+    // site, so what is asserted here is that the page went through the ONE
+    // resolver — and tests/db/userData.test.ts asserts that resolver's handle
+    // actually refuses a write, in both worlds. Two halves again, pinned in
+    // two places, because they still fail independently.
+    expect(openEncryptedMock).toHaveBeenCalledWith(SLUG, expect.anything())
     // A handle is scoped to one key and a key to one session — caching it
     // process-wide is the bug step 5's ledger warns against, so the request
     // must close what it opened.
@@ -589,66 +622,45 @@ describe('app/[user]/page.tsx data region', () => {
     expect(raw).not.toContain('4111')
   })
 
-  it('keeps the synthetic banner while no real database exists', async () => {
-    encryptedSlot.hasTables = false
-    dataSlot.value = { source: 'synthetic', db: realDb() }
-    loaderSlot.value = async () => ({
-      default: () => React.createElement('section', null, 'SAMPLE PANEL TEST'),
-    })
-    const UserSpace = await arrange()
-    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
-
-    const json = JSON.stringify(element)
-    expect(json).toContain('SYNTHETIC DATA')
-    expect(openEncryptedMock).not.toHaveBeenCalled()
-  })
-
-  it('shows the SYNTHETIC dashboard when the real database exists but is EMPTY', async () => {
-    // The case this whole task exists for (onboarding ledger D3). Every
-    // invited friend is in this state for days: the file was created when they
-    // set their password, and nothing has written to it yet.
+  it('renders an EMPTY database rather than substituting anyone else’s data', async () => {
+    // What replaced onboarding ledger D3's dead end, and the reason every
+    // dashboard is now required to render on zero rows.
     //
-    // Read as real, it would send the dashboard's first SELECT into the catch
-    // and render "This dashboard failed to load" — PERMANENTLY, because the
-    // read-only handle can never create the tables and the friend has no
-    // control that would. So the assertion is not just "banner present": it is
-    // also that the failure text is absent, because that is the actual defect.
-    encryptedSlot.hasTables = false
-    dataSlot.value = { source: 'synthetic', db: realDb() }
+    // The old shape of this test asserted the opposite: an empty real database
+    // meant "show the synthetic one under a banner", because reading it as
+    // real sent the first SELECT into the catch and stranded the friend on
+    // "This dashboard failed to load" forever. That was a way around the
+    // problem. The way through it is that an empty database is an ordinary
+    // state a dashboard has to handle — so the friend sees their own empty
+    // dashboard, with no banner, and nothing pretends to be their history.
+    worldSlot.dev = false
+    encryptedSlot.rows = []
     loaderSlot.value = async () => ({
-      default: () => React.createElement('section', null, 'SAMPLE PANEL TEST'),
+      default: () => React.createElement('section', null, 'EMPTY PANEL TEST'),
     })
     const UserSpace = await arrange()
     const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
 
     const json = JSON.stringify(element)
-    expect(json).toContain('SYNTHETIC DATA')
-    expect(json).toContain('SAMPLE PANEL TEST')
+    expect(json).toContain('EMPTY PANEL TEST')
     expect(json).not.toContain('This dashboard failed to load')
-    expect(metricData('dashboard_open')).toMatchObject({ source: 'synthetic' })
+    expect(json).not.toContain('SYNTHETIC DATA')
+    expect(metricData('dashboard_open')).toMatchObject({ source: 'real' })
   })
 
-  it('degrades rather than 500ing when the TABLE CHECK itself hits a wrong key', async () => {
-    // The predicate opens the file, so it can throw exactly like the open can.
-    // Uncaught, it would escape dashboardRegion into the route's default error
-    // boundary and take the chat panel and logout button with it — the surface
-    // a friend needs in order to report that their dashboard broke.
-    encryptedSlot.throwOnHasTables = true
+  it('opens ONE database, never two', async () => {
+    // There used to be a predicate that opened the file to ask whether it had
+    // tables, and then an open. Two opens meant two things that could throw,
+    // and the predicate's throw had its own catch. Both are gone: the page
+    // asks the resolver once.
+    worldSlot.dev = false
     loaderSlot.value = async () => ({
       default: () => React.createElement('section', null, 'REAL PANEL TEST'),
     })
     const UserSpace = await arrange()
-    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+    await UserSpace({ params: Promise.resolve({ user: SLUG }) })
 
-    expect(JSON.stringify(element)).toContain('This dashboard failed to load')
-    expect(metricData('dashboard_error')).toMatchObject({ kind: 'wrong_key' })
-    // The catch returns an ELEMENT rather than throwing, which is the point:
-    // the page keeps rendering, so the chat panel and the logout form around
-    // this region survive. (Asserted structurally rather than by looking for
-    // the panel's text — ChatPanel is a client component and serialises as a
-    // module reference here, not as its rendered output.)
-    expect(element).toBeTruthy()
-    expect(JSON.stringify(element)).toContain('/api/logout')
+    expect(openEncryptedMock).toHaveBeenCalledTimes(1)
   })
 
   it('opens NEITHER database for a locked session', async () => {

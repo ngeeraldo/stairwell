@@ -14,6 +14,7 @@
 import { copyFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { ManifestError, listMigrations, verifyManifest } from '@/lib/db/migrationFiles'
+import { isDevData } from '@/lib/db/userData'
 import {
   createEmptyEncryptedDbAt,
   encryptedUserDbPath,
@@ -76,6 +77,21 @@ export function backupPathFor(slug: string): string {
 }
 
 export function migrateUserDb(slug: string, key: Buffer): void {
+  // NOTHING TO DO IN DEV, and nothing it is allowed to do.
+  //
+  // `synthetic.db` is the user database outside production, and seed.py builds
+  // it by running these same migrations and stamping `user_version` to match —
+  // so it arrives current and this would be a no-op anyway. It also cannot run
+  // against it: synthetic.db is a plain SQLite file and everything below opens
+  // SQLCipher.
+  //
+  // The load-bearing half is what this PREVENTS. Without it, logging in
+  // locally creates `users/<slug>/<slug>.db` on a laptop — a real-named
+  // database outside the server, which is the one thing the guard hook's
+  // filename partition assumes cannot happen. That is not hypothetical: two
+  // test suites did exactly that before this existed.
+  if (isDevData()) return
+
   if (running.has(slug)) return
   running.add(slug)
   try {

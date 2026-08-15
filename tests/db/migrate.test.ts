@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3-multiple-ciphers'
 import { MigrationFailure, backupPathFor, migrateUserDb } from '@/lib/db/migrate'
 import { encryptedUserDbPath, openEncryptedUserDb } from '@/lib/db/encryptedUserDb'
+import { setNodeEnv } from '@/tests/support/nodeEnv'
 
 const KEY = Buffer.alloc(32, 7)
 let root: string
@@ -64,12 +65,21 @@ function columnsOf(slug: string, table: string): string[] {
 
 const INITIAL = 'CREATE TABLE weigh_ins (day TEXT PRIMARY KEY, lb REAL);'
 
+let originalEnv: string | undefined
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'stairwell-run-'))
   process.env.USERS_DIR = root
+  // THIS SUITE TESTS THE PRODUCTION PATH, and says so rather than inheriting
+  // it. Outside production the runner returns immediately — synthetic.db is
+  // the user database there and seed.py owns its shape — so without this every
+  // assertion below would pass vacuously against a no-op.
+  originalEnv = process.env.NODE_ENV
+  setNodeEnv('production')
 })
 
 afterEach(() => {
+  setNodeEnv(originalEnv)
   delete process.env.USERS_DIR
   rmSync(root, { recursive: true, force: true })
 })
