@@ -3,7 +3,7 @@ import { insertAccount } from '@/lib/auth/accounts'
 import { newDataKey, wrapDataKey } from '@/lib/auth/envelope'
 import { deriveDbKey, hashPassword, newSalts } from '@/lib/auth/password'
 import { putWrappedKey } from '@/lib/db/accountKeys'
-import { createEmptyEncryptedUserDb } from '@/lib/db/encryptedUserDb'
+import { createEmptyEncryptedDbAt, encryptedUserDbPath } from '@/lib/db/encryptedUserDb'
 import type { PlatformDb } from '@/lib/db/platform'
 import { putKey } from '@/lib/session/keymap'
 import { createSession } from '@/lib/session/store'
@@ -83,7 +83,7 @@ export async function registerFromInvite(
   const wrapped = wrapDataKey(kek, dataKey)
 
   try {
-    createEmptyEncryptedUserDb(slug, dataKey)
+    createEmptyEncryptedDbAt(slug, encryptedUserDbPath(slug), dataKey)
   } catch {
     // Nothing has been written to the platform database yet, so the invite is
     // still unused and the friend can simply try again.
