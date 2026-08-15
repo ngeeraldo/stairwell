@@ -9,6 +9,10 @@
 //
 // Design: docs/superpowers/specs/2026-08-15-user-db-migrations-design.md §5.1
 import { MigrationFailure } from '@/lib/db/migrate'
+import { dropKey } from '@/lib/session/keymap'
+import { logDbFailure } from '@/lib/db/failureLog'
+import { migrationAlerter } from '@/lib/alerts/ntfy'
+import { getDb } from '@/lib/db/instance'
 
 /**
  * What the operator's phone is told.
@@ -70,5 +74,26 @@ export async function refuseSession(
   } catch {
     // Already logged above. An alerter that cannot reach ntfy.sh must not turn
     // a refused session into an unhandled rejection.
+  }
+}
+
+/**
+ * The real wiring, in one place so the three call sites cannot drift.
+ *
+ * `accountId` is needed by the alerter (it looks the slug up and skips
+ * admins), and is a parameter rather than something resolved here because
+ * every caller already has it — the runner only fires once a session exists.
+ */
+export function refuseDeps(accountId: number): RefuseDeps {
+  const alert = migrationAlerter({
+    topic: process.env.NTFY_TOPIC,
+    fetch: globalThis.fetch,
+    db: getDb(),
+    now: () => Date.now(),
+  })
+  return {
+    dropKey,
+    log: logDbFailure,
+    alert: ({ migrationNumber, code }) => alert({ accountId, migrationNumber, code }),
   }
 }
