@@ -318,11 +318,40 @@ sweeps for them): `schema.sql`, `seed.py`, `queries.ts`, `dashboard.tsx`,
 ```bash
 npm run synthetic                        # regenerates every users/*/synthetic.db
 npx vitest run "users/$FRIEND"
-npm run shots -- --task="$FRIEND"        # every screen at 375 and 1440 — review as pictures
 ```
 
 Build toward `mockup.html`. Feasibility doubts go back to the friend via
 `ask-user.ts` (step 4), not into a guess.
+
+### See it on a screen
+
+No test tells you whether it matches the mockup. Look at it.
+
+**Once per friend** — there is no local account for their slug yet:
+
+```bash
+npm run build && npm start                     # not `npm run dev`: see docs/local-dev.md
+
+# second terminal
+INVITE_ORIGIN=http://localhost:3000 npx tsx scripts/create-invite.ts "$FRIEND"
+```
+
+Open the link it prints, press **Sounds good →**, set a password you will
+remember. It is a local synthetic account and has nothing to do with theirs.
+
+Mint it once and only once: a second invite for the same slug collides, so
+getting it wrong means `revoke-invite.ts` first.
+
+The walk also creates `users/<slug>/<slug>.db` locally, empty. Leave it — an
+empty real database is what makes the page fall back to `synthetic.db` and show
+the banner, which is the whole point of previewing here.
+
+**Every time after** — `npm run dev`, log in at `/login` as the slug. You land
+on `/<slug>`: their dashboard, reading `users/<slug>/synthetic.db`, under the
+**SYNTHETIC DATA** banner. Keep `mockup.html` open beside it and iterate.
+
+If a login under `npm run dev` looks like it did not stick, reload — it is the
+cold-route artifact described in `docs/local-dev.md`, not your code.
 
 **If their dashboard has a write path, budget for a platform route.** A
 dashboard gets a read-only handle and can never write. Exactly two writable

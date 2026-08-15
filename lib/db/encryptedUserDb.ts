@@ -122,7 +122,12 @@ export type OpenEncryptedOptions = {
  * `probe.db-wal`; after `close()` it holds `probe.db` alone, complete, with
  * the sidecars checkpointed away. So exactly one file is linked.
  */
-function createEncryptedUserDb(slug: string, path: string, key: Buffer): void {
+function createEncryptedUserDb(
+  slug: string,
+  path: string,
+  key: Buffer,
+  { applySchema }: { applySchema: boolean },
+): void {
   // Same directory, so link() stays within one filesystem, and named so it can
   // never collide with any real `<slug>.db`: SLUG_PATTERN forbids dots, so no
   // valid slug can produce this name. It still ENDS in `.db`, deliberately, so
@@ -142,10 +147,32 @@ function createEncryptedUserDb(slug: string, path: string, key: Buffer): void {
       db.key(key)
       db.pragma('journal_mode = WAL')
       db.pragma('foreign_keys = ON')
+      // `applySchema` is FALSE for registration and TRUE for the walk route,
+      // and the difference is the difference between an empty database and a
+      // real one.
+      //
       // A friend who has just set their password has no dashboard folder and
       // so no schema — the file is created at that moment anyway, because
       // onboarding-ux-spec.md S2 requires it ("a consumed token with no DB is
-      // an invalid state"). There is simply nothing to exec.
+      // an invalid state"). For a long time that meant there was simply
+      // nothing to exec, and the flag did not exist: production registers on
+      // the droplet (runbook step 3) and scaffolds on the laptop (step 6), two
+      // machines that never see each other's tree, so `schemaTextFor` always
+      // came back undefined here.
+      //
+      // It is a flag now because that is a guarantee about ORDERING ON TWO
+      // HOSTS, which is no guarantee at all the moment both happen in one
+      // tree — which is exactly what previewing a dashboard locally does, and
+      // it scaffolds FIRST. The database that produced held the scaffold's
+      // tables and no rows, so `encryptedUserDbHasTables` said real, the
+      // render path believed it, and the friend's screen lost its SYNTHETIC
+      // DATA banner and showed nothing. That is onboarding ledger D3's dead
+      // end reached from the other side: not "empty file read as real" but
+      // "empty TABLES read as real".
+      //
+      // So registration states what it wants rather than inheriting it from
+      // what happens to be on disk. Pinned by tests/db/encryptedUserDb.test.ts
+      // ("holds zero tables EVEN IF the folder already has a schema.sql").
       //
       // NOTHING IS SUBSTITUTED FOR THE EXEC, and that is a measured decision
       // rather than an omission. The plan called for a `user_version` pragma
@@ -156,7 +183,7 @@ function createEncryptedUserDb(slug: string, path: string, key: Buffer): void {
       // removing the extra pragma reddens nothing. The property is held by the
       // test ("writes a real encrypted file, not a zero-byte placeholder"),
       // which stays true whichever statement provides the bytes.
-      const schema = schemaTextFor(slug)
+      const schema = applySchema ? schemaTextFor(slug) : undefined
       if (schema !== undefined) db.exec(schema)
     } finally {
       db.close()
@@ -215,7 +242,11 @@ export function openEncryptedUserDb(
   // or the one a concurrent request won the race to link. Nothing below can
   // observe a half-made file at that path, which is why neither open needs to
   // be able to create one.
-  if (!readOnly && !existedBefore) createEncryptedUserDb(slug, path, key)
+  if (!readOnly && !existedBefore) {
+    // WITH the schema: this is the walk route's open, the one place allowed to
+    // bring a friend's real database into being with tables in it.
+    createEncryptedUserDb(slug, path, key, { applySchema: true })
+  }
 
   // fileMustExist on BOTH paths now: `new Database` is never the thing that
   // brings a user's real database into being. On the read path that stops a
@@ -316,7 +347,8 @@ export function createEmptyEncryptedUserDb(slug: string, key: Buffer): void {
   const path = encryptedUserDbPath(slug)
   mkdirSync(dirname(path), { recursive: true })
   if (existsSync(path)) return
-  createEncryptedUserDb(slug, path, key)
+  // NO schema, whatever is on disk. See createEncryptedUserDb.
+  createEncryptedUserDb(slug, path, key, { applySchema: false })
 }
 
 /**

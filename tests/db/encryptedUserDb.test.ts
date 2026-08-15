@@ -519,6 +519,22 @@ describe('a database with nothing in it', () => {
     expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
   })
 
+  it('holds zero tables EVEN IF the folder already has a schema.sql', () => {
+    // "Empty" is this function's name and CLAUDE.md's word for what
+    // registration creates. It used to hold only by accident: production
+    // registers on the droplet at runbook step 3 and scaffolds on the laptop
+    // at step 6, so there was never a schema.sql present to apply.
+    //
+    // The accident does not survive one machine. Previewing a dashboard
+    // locally scaffolds FIRST and registers second, and the schema'd-but-empty
+    // database that produced reads as REAL — which suppresses the SYNTHETIC
+    // DATA banner and renders an empty dashboard, the exact dead end onboarding
+    // ledger D3 exists to prevent. Only the walk route may put tables in.
+    makeUserFolder(NEWCOMER)
+    createEmptyEncryptedUserDb(NEWCOMER, KEY)
+    expect(encryptedUserDbHasTables(NEWCOMER, KEY)).toBe(false)
+  })
+
   it('reports no tables for a user who has no file at all', () => {
     expect(encryptedUserDbHasTables('nobodyatall', KEY)).toBe(false)
   })
