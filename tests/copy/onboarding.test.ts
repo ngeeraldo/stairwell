@@ -15,6 +15,7 @@ import {
   PLACEHOLDER_CARD,
   PROMISE_BLOCK,
   WRONG_PASSWORD,
+  SESSION_REFUSED,
 } from '@/lib/copy/onboarding'
 
 describe('the promise block', () => {
@@ -177,5 +178,32 @@ describe('the wrong-password line', () => {
     expect(WRONG_PASSWORD).toBe(
       'That password doesn’t unlock your data. Check for typos — caps lock, autocorrect.',
     )
+  })
+})
+
+describe('the refused-session line', () => {
+  it('is exactly the sentence that was agreed', () => {
+    expect(SESSION_REFUSED).toBe('Something broke on our end and we need to fix it.')
+  })
+
+  it('does not tell the friend to retry — this failure is not retryable', () => {
+    // PASSWORD_ERRORS.server says "try once more, then text Nico", and it is
+    // right to, because the failures it covers are transient. A migration that
+    // threw will throw again on the next attempt. Sending a friend who is
+    // locked out at 7am around that loop spends the honesty that refusing the
+    // session was chosen to buy.
+    expect(SESSION_REFUSED).not.toMatch(/again|retry|once more/i)
+  })
+
+  it('does not imply recovery exists', () => {
+    // The same rule WRONG_PASSWORD is held to. There is a backup, it is
+    // encrypted under the friend's own key, and restoring it is an operator
+    // action - none of which is a promise this sentence may make.
+    expect(SESSION_REFUSED).not.toMatch(/reset|recover|restore|backup/i)
+  })
+
+  it('is not the same string as the retryable server error', () => {
+    // Two failures with different advice must not collapse into one constant.
+    expect(SESSION_REFUSED).not.toBe(PASSWORD_ERRORS.server)
   })
 })

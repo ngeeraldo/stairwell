@@ -130,6 +130,30 @@ export const PASSWORD_ERRORS = {
 } as const
 
 /**
+ * Shown when a session is REFUSED because something on our side failed and the
+ * friend can do nothing about it. Today that means a migration threw, so their
+ * database was left at the shape it already had and they were not let in over
+ * a half-changed one.
+ *
+ * DELIBERATELY NOT `PASSWORD_ERRORS.server`, which is one line away and says
+ * "try once more, then text Nico". That sentence was written for a retryable
+ * failure and is right for one. This failure is not retryable: a migration
+ * that threw will throw again, so "try once more" is an instruction that does
+ * nothing, handed to someone locked out of their own dashboard at seven in the
+ * morning — during the exact minutes their trust in this thing is being set.
+ *
+ * Refusing the session instead of rendering something degraded was chosen for
+ * honesty. Exiting through copy that sends them round a loop that cannot work
+ * would spend that honesty to save a constant.
+ *
+ * Says nothing about recovery, under the same rule as WRONG_PASSWORD. A copy
+ * of their database does exist during a migration, and it is encrypted under
+ * their own key and restorable only by Nico by hand — none of which is a
+ * promise this sentence is allowed to make.
+ */
+export const SESSION_REFUSED = 'Something broke on our end and we need to fix it.'
+
+/**
  * The wrong-password line, S4.
  *
  * The spec gives this one exact-copy treatment and says why: "Never
