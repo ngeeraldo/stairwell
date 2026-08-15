@@ -6,12 +6,18 @@
 // matter how the process exits.
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3-multiple-ciphers'
-import { declaredObjects } from '@/tests/support/declaredObjects'
 
 /** See tests/scripts/pullSpec.test.ts — the droplet spawns processes slowly. */
 const SUBPROCESS_TIMEOUT_MS = 60_000
@@ -58,13 +64,13 @@ describe('scripts/new-dashboard.sh', () => {
 
       expect(status).toBe(0)
       const dir = join(sandbox, 'users', 'devthree')
-      for (const entry of ['migrations/001_initial.sql', 'migrations/manifest.json', 'seed.py', 'queries.ts', 'dashboard.tsx']) {
+      for (const entry of ['migrations/README.md', 'seed.py', 'queries.ts', 'dashboard.tsx']) {
         expect(existsSync(join(dir, entry))).toBe(true)
       }
       expect(existsSync(join(dir, 'tests', 'dashboard.test.ts'))).toBe(true)
 
       // No placeholder survives anywhere.
-      for (const entry of ['migrations/001_initial.sql', 'seed.py', 'queries.ts', 'dashboard.tsx']) {
+      for (const entry of ['migrations/README.md', 'seed.py', 'queries.ts', 'dashboard.tsx']) {
         expect(readFileSync(join(dir, entry), 'utf8')).not.toContain('__SLUG__')
       }
       expect(readFileSync(join(dir, 'dashboard.tsx'), 'utf8')).toContain('devthree')
@@ -165,54 +171,37 @@ describe('scripts/new-dashboard.sh', () => {
   )
 
   it(
-    'produces a folder that passes the conventions sweep and generates data',
+    'produces a folder with NO shape, and a seed that runs anyway',
     () => {
-      // The scaffold is only worth having if what comes out of it is valid on
-      // the first run. This is the same check tests/users/conventions.test.ts
-      // makes, applied to the generated folder rather than to a committed one.
+      // WHAT A SCAFFOLD IS FOR, restated after it stopped shipping a shape.
       //
-      // sqlite3.connect creates a 0-byte file before the generator does
-      // anything, so existsSync(target) alone would pass for a seed.py that
-      // connects and inserts nothing. Open the db and check what
-      // conventions.test.ts checks instead: every table schema.sql declares
-      // is actually present, at least one row was written, and at least one
-      // VALUE (never the serialised row — a column literally named e.g.
-      // "test_flag" would satisfy a stringify scan with no fake data in it)
-      // carries the loud TEST marker.
+      // This used to assert the opposite: that the generated folder declared
+      // tables and that seed.py wrote loudly-fake rows into them. It did,
+      // because the template carried a `transactions` table copied from
+      // devone — so every dashboard began life pretending to be about
+      // spending, whatever the friend had asked for, and the placeholder got
+      // extended rather than replaced.
+      //
+      // The demands that remain are the ones that make a folder USABLE on the
+      // first run: seed.py executes, and the file it must create exists —
+      // lib/db/userData.ts opens synthetic.db with fileMustExist in dev, so a
+      // missing file is a dashboard that cannot render at all.
       const sandbox = makeSandbox()
       expect(run(sandbox, ['devthree']).status).toBe(0)
       const dir = join(sandbox, 'users', 'devthree')
+
+      // No shape, and no manifest to describe one.
+      const migrations = readdirSync(join(dir, 'migrations'))
+      expect(migrations.filter((f) => f.endsWith('.sql'))).toEqual([])
+      expect(migrations).toContain('README.md')
+      expect(existsSync(join(dir, 'migrations', 'manifest.json'))).toBe(false)
+
       const target = join(dir, 'synthetic.db')
       execFileSync('python3', [join(dir, 'seed.py'), target], { stdio: 'pipe' })
       expect(existsSync(target)).toBe(true)
 
       const db = new Database(target, { readonly: true, fileMustExist: true })
       try {
-        const present = new Set(
-          (
-            db
-              .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
-              .all() as { name: string }[]
-          ).map((r) => r.name),
-        )
-        const schema = readFileSync(join(dir, 'migrations', '001_initial.sql'), 'utf8')
-        const declared = declaredObjects(schema)
-        expect(declared.length).toBeGreaterThan(0)
-        for (const name of declared) expect(present.has(name)).toBe(true)
-
-        // The scaffolded manifest must match the scaffolded migration, or the
-        // runner refuses every session for this slug and the friend cannot log
-        // in at all. A generated folder that cannot be logged into is the one
-        // failure this scaffold must never produce.
-        const manifest = JSON.parse(
-          readFileSync(join(dir, 'migrations', 'manifest.json'), 'utf8'),
-        ) as { migrations: { number: number; sha256: string }[] }
-        expect(manifest.migrations).toHaveLength(1)
-        expect(manifest.migrations[0]?.number).toBe(1)
-        expect(manifest.migrations[0]?.sha256).toBe(
-          createHash('sha256').update(schema).digest('hex'),
-        )
-
         const tables = (
           db
             .prepare(
@@ -220,18 +209,10 @@ describe('scripts/new-dashboard.sh', () => {
             )
             .all() as { name: string }[]
         ).map((r) => r.name)
-
-        let rows = 0
-        let loud = false
-        for (const table of tables) {
-          const all = db.prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[]
-          rows += all.length
-          for (const row of all) {
-            if (Object.values(row).some((v) => String(v).includes('TEST'))) loud = true
-          }
-        }
-        expect(rows).toBeGreaterThan(0)
-        expect(loud).toBe(true)
+        // Empty, and that is the point: the friend's real database is empty
+        // too until someone designs a shape, so the two agree from day one.
+        expect(tables).toEqual([])
+        expect(db.pragma('user_version', { simple: true })).toBe(0)
       } finally {
         db.close()
       }

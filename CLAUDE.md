@@ -65,7 +65,13 @@ architectural changes; do not relitigate decided items).
   if one is missing:
   - `migrations/` — `001_initial.sql`, `002_*.sql`, … plus `manifest.json`.
     The ONLY description of this dashboard's shape; there is no schema.sql.
-    Added never edited, and the manifest's checksums are what enforce it
+    Added never edited, and the manifest's checksums are what enforce it.
+    **A freshly scaffolded folder has NO migrations** — just a README saying
+    what goes there — because a scaffold cannot know what shape a friend needs
+    and a placeholder gets extended rather than replaced. That is the
+    `scaffolded` state in `tests/users/conventions.test.ts`: the built-only
+    checks skip until a `.sql` exists, and the dashboard says "Under
+    construction" until then
   - `seed.py` — `python3 seed.py <target.db>`; **runs the migrations** in order
     and stamps `user_version`, so a synthetic database is built by the same
     files a real one is

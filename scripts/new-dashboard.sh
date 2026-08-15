@@ -88,30 +88,17 @@ main() {
   for f in seed.py queries.ts dashboard.tsx; do
     sed "s/__SLUG__/$slug/g" "$src/$f.tmpl" > "$dest/$f"
   done
-  sed "s/__SLUG__/$slug/g" "$src/migrations/001_initial.sql.tmpl" \
-    > "$dest/migrations/001_initial.sql"
+  # NO 001 AND NO MANIFEST. A scaffold cannot know what shape this friend's
+  # dashboard needs, and a placeholder table gets copied rather than replaced —
+  # so the folder ships with an empty migrations/ and a README saying what goes
+  # in it. The runner treats "no migrations" as nothing to apply, which is
+  # correct: their database stays empty until a shape is designed, and their
+  # dashboard says so.
+  sed "s/__SLUG__/$slug/g" "$src/migrations/README.md.tmpl" \
+    > "$dest/migrations/README.md"
   sed "s/__SLUG__/$slug/g" "$src/tests/dashboard.test.ts.tmpl" \
     > "$dest/tests/dashboard.test.ts"
   chmod +x "$dest/seed.py"
-
-  # The manifest is generated, never hand-written: it is a checksum of the file
-  # beside it, and a hand-maintained checksum is a checksum nobody updates.
-  # Without one the runner refuses every session for this slug, so a scaffold
-  # that skipped this would produce a folder that cannot be logged into.
-  node -e '
-    const { createHash } = require("node:crypto")
-    const { readFileSync, writeFileSync } = require("node:fs")
-    const dir = process.argv[1] + "/migrations"
-    const sql = readFileSync(dir + "/001_initial.sql", "utf8")
-    writeFileSync(
-      dir + "/manifest.json",
-      JSON.stringify(
-        { migrations: [{ number: 1, sha256: createHash("sha256").update(sql).digest("hex") }] },
-        null,
-        2,
-      ) + "\n",
-    )
-  ' "$dest"
 
   # Deliberately prints only what this script alone knows: the folder it just
   # made, and the registry line for this slug. It does NOT restate the build

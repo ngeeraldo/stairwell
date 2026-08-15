@@ -40,10 +40,13 @@ Five entries, swept by `tests/users/conventions.test.ts:45`:
   synthetic database is built by the same files a real one is — CLAUDE.md.
 - `queries.ts` holds **every** SQL statement, as pure functions taking a
   `UserDb`; `dashboard.tsx` holds **no SQL** — CLAUDE.md.
-- A folder has three legitimate states and only one is a defect
-  (`tests/users/conventions.test.ts:84-86`):
+- A folder has four legitimate-or-not states, and only one is a defect
+  (`tests/users/conventions.test.ts`):
   - **pulled** — `spec.md`/`mockup.html` only. Not started; allowed.
-  - **built** — all five entries. Swept in full.
+  - **scaffolded** — all five entries, but `migrations/` holds no `.sql`.
+    `new-dashboard.sh` just ran and nobody has designed a shape. Allowed; the
+    dashboard says "Under construction" and the friend's database stays empty.
+  - **built** — all five entries AND a shape. Swept in full.
   - **partial** — some of the five. A defect.
 - A dashboard renders only if registered in `lib/dashboard/registry.ts`, one
   line: `<slug>: () => import('@/users/<slug>/dashboard'),`. A folder with no
