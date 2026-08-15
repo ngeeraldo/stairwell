@@ -376,6 +376,57 @@ describe('ChatPanel wiring', () => {
     await unmount()
   })
 
+  it('anchors the reply when the authoring wait begins, not a minute later', async () => {
+    // On a proposing turn `busy` stays true for the whole authoring minute, so
+    // the "anchor when the message has arrived" pass never runs while the
+    // friend is waiting. The first anchor fired while the assistant turn was
+    // still empty, which parks the list on the friend's own message with the
+    // reply below the fold — and that reply is the only thing to read for the
+    // next minute.
+    //
+    // Held open, like the stage test above: the wait is a live state, and this
+    // asserts what the scroll position is DURING it.
+    let push: (chunk: string) => void = () => {}
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder()
+        push = (chunk) => controller.enqueue(encoder.encode(chunk))
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200 })))
+
+    const { container, unmount } = await mount(<ChatPanel initial={[]} first={true} />)
+    const list = container.querySelector('ol')!
+    // jsdom reports 0 for every layout measurement, so the height is stubbed —
+    // and it GROWS, which is the thing that puts the reply out of view.
+    Object.defineProperty(list, 'scrollHeight', { value: 100, configurable: true })
+
+    await type(container.querySelector('textarea'), 'yes, build it')
+    await click(container.querySelector('button[type="submit"]'))
+    await flush()
+    expect(list.scrollTop).toBe(100) // anchored on the empty assistant turn
+
+    push('{"t":"Here is what I am going to build."}\n')
+    await flush()
+    Object.defineProperty(list, 'scrollHeight', { value: 900, configurable: true })
+    // Deliberately no anchor per chunk — the reply is now below the fold.
+    expect(list.scrollTop).toBe(100)
+
+    push('{"authoring":true}\n')
+    await flush()
+    expect(list.scrollTop).toBe(900)
+
+    // And the stage advancing does NOT re-anchor: a friend who scrolled up to
+    // re-read during the slow half must not be yanked back down.
+    list.scrollTop = 0
+    push('{"stage":"mockup"}\n')
+    await flush()
+    expect(container.textContent).toContain('Drawing the preview')
+    expect(list.scrollTop).toBe(0)
+
+    await unmount()
+  })
+
   it('the retry button re-sends ITS OWN message, not the newest one', async () => {
     // Two interrupted turns on screen. Step 4 moved `source` onto the Turn for
     // exactly this: with one component-level ref, the OLDER button re-sent the

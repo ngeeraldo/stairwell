@@ -19,7 +19,13 @@ vi.mock('next/headers', () => ({
 
 // The route builds a real Anthropic client. Replace the module so no test can
 // construct one, and so each test can choose what that construction does.
-type Behaviour = 'ok' | 'refusal' | 'no-credential' | 'propose-ok' | 'propose-fail'
+type Behaviour =
+  | 'ok'
+  | 'refusal'
+  | 'no-credential'
+  | 'propose-ok'
+  | 'propose-fail'
+  | 'propose-staged'
 const behaviour: { value: Behaviour } = { value: 'ok' }
 
 vi.mock('@/lib/chat/client', async (importOriginal) => {
@@ -43,7 +49,7 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
             // HTTP 200, nothing delivered — see runTurn's empty-reply path.
             return { usage, stop_reason: 'refusal', served, tools_called: [] }
           }
-          if (behaviour.value === 'propose-ok' || behaviour.value === 'propose-fail') {
+          if (behaviour.value.startsWith('propose-')) {
             // The agent raised its hand: one text chunk, then a tool_use stop
             // with propose_spec in tools_called, which is what makes runTurn
             // call authorSpec at all.
@@ -86,7 +92,20 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/spec/author')>()
   return {
     ...actual,
-    authorSpec: async () => {
+    // Takes its input, because one of the things the route is on the hook for
+    // is the callback it puts IN that input. A double declaring no parameters
+    // cannot notice a missing `onStage`, which is why the route's half of the
+    // stage wiring went unpinned.
+    authorSpec: async (
+      _deps: unknown,
+      input: import('@/lib/spec/author').AuthorInput,
+    ) => {
+      if (behaviour.value === 'propose-staged') {
+        // What the real authorSpec does at the same point: the spec came back
+        // and validated, and the slow call is starting.
+        input.onStage?.('mockup')
+        return PROPOSAL_FIXTURE
+      }
       if (behaviour.value === 'propose-ok') return PROPOSAL_FIXTURE
       if (behaviour.value === 'propose-fail') return undefined
       throw new Error('authorSpec called on a turn that never proposed')
@@ -341,6 +360,35 @@ describe('POST /api/chat — the proposal lines', () => {
       proposal: { version: number }
     }
     expect(proposalLine.proposal.version).toBe(1)
+  })
+
+  it('forwards the mockup stage as its own line, between authoring and proposal', async () => {
+    // THE SERVER HALF OF "WHICH HALF OF THE WAIT ARE WE IN".
+    //
+    // tests/chat/panelWiring.test.tsx proves the panel advances when a stage
+    // line arrives — by pushing one in by hand, through a fake fetch that no
+    // route code runs. Nothing asked the ROUTE to produce one. Deleting
+    // `onStage:` from app/api/chat/route.ts left the entire suite green while
+    // the friend watched one unchanging sentence for the whole minute.
+    //
+    // The ORDER is asserted, not just the presence: a stage line ahead of the
+    // authoring line is dropped by applyLine (a stray stage with no wait in
+    // flight must not conjure one), so arriving in the wrong place is the same
+    // as not arriving.
+    await signIn(false)
+    behaviour.value = 'propose-staged'
+
+    const res = await post({ body: 'help me build a dashboard' })
+    const seen = await lines(res)
+
+    expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual([
+      't',
+      'authoring',
+      'stage',
+      'proposal',
+      'done',
+    ])
+    expect(seen).toContainEqual({ stage: 'mockup' })
   })
 
   it('emits proposal_error when authoring fails, and STILL emits done', async () => {

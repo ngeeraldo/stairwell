@@ -2,7 +2,7 @@
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, appendTranscript, readTranscript } from '@/lib/db/appendOnly'
 import type { ChatContext } from './context'
-import { conversationIdFor } from './conversation'
+import { conversationIdFor, personArrived } from './conversation'
 import { toMessages } from './history'
 import { applyConfirmationNote, confirmationNote } from './confirmations'
 import { OPENER_ALREADY_SENT, openerAlreadySent } from './opening'
@@ -109,26 +109,18 @@ export async function runTurn(
 
   // Computed once, here. The assistant row reuses it rather than recomputing
   // the gap against a clock that has moved.
-  const { id: conversationId, started } = conversationIdFor(
-    db,
-    input.accountId,
-    at,
-  )
+  const { id: conversationId } = conversationIdFor(db, input.accountId, at)
 
-  // THE OPENER SWALLOWED THE FIRST ALERT, and this is the repair.
+  // WHETHER A PERSON SHOWED UP is asked of the person's own rows — see
+  // personArrived, which carries the full account of why this is no longer
+  // the same question as "was a conversation_id minted".
   //
-  // `started` means "a conversation_id was minted", which was the same event as
-  // "a friend showed up" right up until the product learned to speak first. The
-  // opener is a transcript row written at page render, so it mints the id — and
-  // then the friend types two minutes later, inside the 30-minute gap, and
-  // conversationIdFor correctly reports that no new conversation began. Correct,
-  // and useless: the phone never buzzed for the one event it exists for.
-  //
-  // An alert means A PERSON SHOWED UP. So a turn also counts as a start when
-  // this account has never had a user row at all — their first words, whatever
-  // the product said before them. Every other case is unchanged: come back
-  // three days later and the gap rule fires as it always did.
-  const firstHumanWords = !priorRows.some((r) => r.role === 'user')
+  // Twice now, a row the PRODUCT wrote has stood between a friend arriving and
+  // the phone buzzing: the opener at page render, and the acknowledgment
+  // written when they press "Build this". Both refreshed the gap that the mint
+  // is measured against. Asking when the FRIEND last spoke is immune to both,
+  // and to whatever the product learns to say next.
+  const arrived = personArrived(priorRows, at)
 
   const stamp = {
     accountId: input.accountId,
@@ -156,7 +148,7 @@ export async function runTurn(
   // alert that fired.
   // Not for an agent-initiated turn: the alert means "a friend showed up",
   // and a confirmation already has its own alert on the confirm route.
-  if ((started || firstHumanWords) && input.body !== null) {
+  if (arrived && input.body !== null) {
     alert(input.accountId)
   }
 

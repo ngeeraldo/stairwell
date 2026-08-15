@@ -47,6 +47,10 @@ export type ScreenAct =
   | 'collapse-chat'
   | 'tab-spec'
   | 'tab-mockup'
+  // The two halves of the authoring wait. Both send a message and hold the
+  // reply open, because the wait exists only mid-turn — see performAct.
+  | 'wait-writing-spec'
+  | 'wait-drawing-preview'
 
 export type Screen = {
   id: string
@@ -233,6 +237,45 @@ export const SCREENS: Screen[] = [
       'The mockup preview renders actual content — not a blank white box, which is what a broken /mockup route looks like.',
       'The delivery line is present under the buttons.',
       'At 375 the preview scales to the column instead of overflowing it.',
+    ],
+  },
+  {
+    // THE SCREEN THAT WAS NEVER PHOTOGRAPHED, and the omission is why a
+    // defect survived a gate built for exactly this class of thing.
+    //
+    // The wait is the longest-lived screen in the product — about a minute,
+    // more than any other single view a friend sits in front of — and it had
+    // no shot. Every part of it was unit-tested and correct: the server
+    // reports both stages, the panel reads them, the sentence changes. What
+    // no test in this repo could see was that the bar under the sentence was
+    // the same fixed width in both stages, so the thing a person actually
+    // watches never moved. Nico read it as a progress bar stuck at a third
+    // and never getting to two thirds, which is precisely what it was.
+    id: 'wait-writing-spec',
+    path: '/SLUG',
+    routeFile: 'app/[user]/ChatPanel.tsx',
+    state: 'friend-new',
+    act: 'wait-writing-spec',
+    live: true,
+    assertions: [
+      'It says "Writing the spec…" — the first half.',
+      'THE AGENT\'S REPLY IS READABLE ABOVE THE WAIT, all of it. It is the only thing there is to read for the next minute, and the list anchors while the assistant turn is still empty — so a reply that grew out of view would leave a friend staring at a bar with nothing to do.',
+      'The bar is roughly a THIRD of the column and clearly unfinished. Read it as a stranger would: does it look like something in progress, or like something stopped?',
+      'The bar sits in a visible track, so its width reads as a position rather than as a floating block of some arbitrary size.',
+      'At 375 the bar spans the column without overflowing it.',
+    ],
+  },
+  {
+    id: 'wait-drawing-preview',
+    path: '/SLUG',
+    routeFile: 'app/[user]/ChatPanel.tsx',
+    state: 'friend-new',
+    act: 'wait-drawing-preview',
+    live: true,
+    assertions: [
+      'It says "Drawing the preview…" — the second and much longer half.',
+      'THE BAR IS VISIBLY FURTHER ALONG THAN IN wait-writing-spec. Open the two shots side by side: if the bar is in the same place, the screen is lying about progress for most of a minute, which is the whole reason this pair exists.',
+      'It has NOT reached the end. A full bar is a claim that the work is finished.',
     ],
   },
   {

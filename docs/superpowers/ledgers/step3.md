@@ -45,6 +45,25 @@ silently does not work — here, a phone that simply never buzzes.
 
 ## Free inheritance from step 2
 
+> **SUPERSEDED 2026-08-15, after this cost two silent phones.** The inheritance
+> below was sound only while every row in `transcripts` came from the person.
+> The product now writes rows too — the opener at page render, and the
+> acknowledgment written when a friend presses "Build this" — and each one
+> refreshes the gap the mint is measured against, so the friend's own next
+> words read as a continuation of something they were not part of.
+>
+> It was patched once, for the opener, by special-casing "this account has
+> never had a user row". That fixed one instance and left the other live:
+> Nico's report was that he got a `spec_confirmed` alert and never a
+> `conversation_started` one, which is exactly the acknowledgment swallowing
+> everything said after it.
+>
+> The alert now has its OWN rule — `personArrived` in `lib/chat/conversation.ts`
+> — which asks when this person last spoke and ignores every row the product
+> wrote. Both rules still key off the one `CONVERSATION_GAP_MS` constant, so
+> the boundary cannot drift; what is no longer shared is the question. Read the
+> paragraph below as the reasoning that was true in step 2, not as the rule.
+
 The alert condition needs no new rule. `architecture-overview.md` line 126
 defines it as "first message after 30+ min silence, debounced", and step 2's
 `conversation_id` (see `lib/chat/conversation.ts`) is minted on exactly that

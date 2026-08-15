@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPlatformDb } from '@/lib/db/platform'
 import { appendTranscript } from '@/lib/db/appendOnly'
-import { CONVERSATION_GAP_MS, conversationIdFor } from '@/lib/chat/conversation'
+import { CONVERSATION_GAP_MS, conversationIdFor, personArrived } from '@/lib/chat/conversation'
 
 let dir: string
 let db: ReturnType<typeof openPlatformDb>
@@ -77,5 +77,44 @@ describe('conversationIdFor', () => {
 
   it('is 30 minutes, matching the step-3 alert boundary', () => {
     expect(CONVERSATION_GAP_MS).toBe(30 * 60 * 1000)
+  })
+})
+
+describe('personArrived — the alert condition, asked of the person', () => {
+  const user = (at: number) => ({ role: 'user', at })
+  const product = (at: number) => ({ role: 'assistant', at })
+
+  it('is true when this account has never spoken', () => {
+    expect(personArrived([], 1_000)).toBe(true)
+  })
+
+  it('IGNORES ROWS THE PRODUCT WROTE, however recent', () => {
+    // The whole reason this function exists. Both of these are the product
+    // talking — the opener at page render, and the acknowledgment written
+    // when a friend presses "Build this" — and both used to refresh the gap
+    // that decided whether a phone buzzed. A friend who has been away for
+    // days and comes back to say something has arrived, whatever the product
+    // said into the empty room one second ago.
+    const rows = [user(0), product(1), product(2)]
+    expect(personArrived(rows, 3)).toBe(false) // they spoke a moment ago
+    expect(personArrived([user(0), product(9_000_000)], 9_000_001)).toBe(true)
+  })
+
+  it('is false while a friend is mid-conversation', () => {
+    expect(personArrived([user(1_000)], 1_000 + CONVERSATION_GAP_MS)).toBe(false)
+  })
+
+  it('uses the same boundary as the conversation gap, exclusive at the edge', () => {
+    // Exactly 30:00.000 is still the same visit, matching conversationIdFor
+    // above. Two rules keyed to one constant, and neither may drift.
+    expect(personArrived([user(0)], CONVERSATION_GAP_MS)).toBe(false)
+    expect(personArrived([user(0)], CONVERSATION_GAP_MS + 1)).toBe(true)
+  })
+
+  it('reads the NEWEST user row, not the first', () => {
+    // readTranscript orders oldest-first, so a naive find() would measure the
+    // gap from a friend's very first message and alert on every turn forever.
+    const rows = [user(0), product(1), user(9_000_000)]
+    expect(personArrived(rows, 9_000_060)).toBe(false)
   })
 })

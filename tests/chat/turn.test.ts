@@ -763,6 +763,49 @@ describe('conversation-start alerting', () => {
     expect(calls).toEqual([1])
   })
 
+  it('alerts when a friend comes back and speaks after the confirmation turn', async () => {
+    // THE SAME BUG AS THE OPENER, ONE PRODUCT-INITIATED TURN LATER.
+    //
+    // `firstHumanWords` repaired exactly one instance of a general fault: a row
+    // the PRODUCT wrote refreshes the 30-minute gap, so the friend's next words
+    // are read as a continuation of a conversation they were not part of. The
+    // opener was the instance that existed when that fix was written. The
+    // confirmation acknowledgment is another, and it is not covered — this
+    // account HAS spoken before, so firstHumanWords is false, and the
+    // acknowledgment row is seconds old, so `started` is false too.
+    //
+    // The sequence is the real one, driven through runTurn rather than
+    // hand-seeded, so it is the product's own behaviour being asserted:
+    // a conversation days ago, then "Build this" pressed today (which posts a
+    // turn with body: null), then the friend replying to what the agent said.
+    const DAY = 24 * 60 * 60 * 1000
+    const monday = 1_000
+
+    // Monday: a real exchange. This alerts, and that is not what is under test.
+    await runTurn({ ...alerted().deps, now: () => monday }, input({ body: 'here is what I want' }))
+
+    // Thursday: they press "Build this" without typing. app/api/chat/route.ts
+    // sends body: null, and runTurn appends the agent's acknowledgment.
+    const thursday = monday + 3 * DAY
+    await runTurn({ ...alerted().deps, now: () => thursday }, input({ body: null }))
+
+    // A minute later, they answer it. A person showed up, said something, and
+    // has not been heard from in three days.
+    const { deps, calls } = alerted({ now: () => thursday + 60_000 })
+    await runTurn(deps, input({ body: 'looks great, one change' }))
+
+    expect(calls).toEqual([1])
+  })
+
+  it('does not alert on the confirmation turn itself', async () => {
+    // The other half, so the test above cannot be satisfied by alerting on
+    // every product-initiated turn: nobody typed, so nobody showed up. The
+    // confirm route has already sent its own spec_confirmed alert.
+    const { deps, calls } = alerted({ now: () => 1_000 })
+    await runTurn(deps, input({ body: null }))
+    expect(calls).toEqual([])
+  })
+
   it('still alerts when the turn errors', async () => {
     // A friend who showed up and hit an outage is when the signal matters
     // most. Gating the alert on success would make an outage a silent phone
@@ -932,6 +975,43 @@ describe('the completion rule with propose_spec', () => {
     const [event] = metrics().map((r) => r.event)
     expect(event).not.toBe('chat_turn')
     expect(event).not.toBe('chat_empty_reply')
+  })
+
+  it('hands the stage reporter down to authorSpec', async () => {
+    // The middle link in the chain that tells a friend which half of the
+    // minute they are in: the route makes the callback, authorSpec fires it,
+    // and runTurn is the only thing joining them. Dropping `onStage` from the
+    // object built here left the whole suite green — the panel's tests push a
+    // stage line in by hand and never ask the server for one.
+    const seen: 'mockup'[] = []
+    let received: ((stage: 'mockup') => void) | undefined
+    await runTurn(
+      {
+        db,
+        client: toolClient('sure', ['propose_spec']),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async (authorInput) => {
+          received = authorInput.onStage
+          return PROPOSAL
+        },
+      },
+      {
+        accountId: 1,
+        sessionId: 's',
+        body: 'hi',
+        signal: new AbortController().signal,
+        onText: () => {},
+        onStage: (stage) => seen.push(stage),
+      },
+    )
+
+    // The callback the route supplied, not merely some function: a stage
+    // reporter wired to the wrong closure reports into nothing.
+    expect(received).toBeTypeOf('function')
+    received!('mockup')
+    expect(seen).toEqual(['mockup'])
   })
 
   it('still records the missing arm even when the reply text was truncated, not merely absent', async () => {

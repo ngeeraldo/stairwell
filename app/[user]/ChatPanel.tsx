@@ -170,6 +170,9 @@ export type PanelState = {
    *
    * Deliberately NOT a percentage. There is no honest token-level progress for
    * either call, and a bar that crawls to 80% and stops is worse than no bar.
+   * The wait DOES advance a bar between these two values (see AuthoringWait),
+   * which is not the same thing: it has one position per real milestone and
+   * moves only when the server reports one.
    */
   authoringStage: 'spec' | 'mockup' | null
   proposalError: boolean
@@ -699,11 +702,29 @@ export function SpecCard({
  * - THE SECOND STAGE IS MOST OF THE MINUTE. Saying so is the whole point: a
  *   friend who knows they are on the slow part is waiting, and a friend who
  *   does not is deciding whether the thing is broken and starting to click.
- * - IT MOVES. A static sentence for sixty seconds reads as a frozen screen no
- *   matter what it says. The stock Skeleton pulse is the movement; there is no
- *   bespoke animation to maintain and no percentage pretending to know.
+ * - IT MOVES, AND THE BAR IS PART OF WHAT MOVES. The first version pulsed a
+ *   fixed-width block through both stages and changed only the sentence above
+ *   it. Nico watched it and reported a progress bar that "starts and ends at
+ *   around 1/3 of the width, never moving to 2/3" — which is what a bar-shaped
+ *   thing that never advances says to the person looking at it, whatever the
+ *   words beside it say. A frozen indicator is the exact reading this element
+ *   exists to prevent, so it now advances when the stage does.
+ *
+ * TWO REAL EVENTS, TWO POSITIONS — and that is still not a percentage. The
+ * objection was never to a bar; it was to inventing progress nobody can
+ * measure, a crawl to 80% that sits there. Nothing here is interpolated, timed,
+ * or estimated: the bar has exactly as many positions as the server has
+ * milestones to report, and it moves only when one arrives. It deliberately
+ * does not reach the end, because a full bar would be a claim that the work is
+ * done.
+ *
+ * The fill is the stock Skeleton pulse, overridden at the CALL SITE the same
+ * way ThinkingRow overrides it — components/ui/* stays as the CLI wrote it
+ * (CLAUDE.md).
  *
  * aria-live="polite" so the stage change is announced rather than only seen.
+ * The bar carries no separate announcement: it says the same thing as the
+ * sentence, and a screen reader should hear it once.
  */
 export function AuthoringWait({ stage }: { stage: 'spec' | 'mockup' | null }) {
   const drawing = stage === 'mockup'
@@ -712,7 +733,19 @@ export function AuthoringWait({ stage }: { stage: 'spec' | 'mockup' | null }) {
       <p className="text-sm text-muted-foreground">
         {drawing ? 'Drawing the preview…' : 'Writing the spec…'}
       </p>
-      <Skeleton className="h-3 w-40 bg-foreground/15" />
+      {/* A track the full width of the column, so "how far along" is legible
+          against something. Without it the fill is a floating block and its
+          width means nothing — which is how the fixed one read. */}
+      <div
+        aria-hidden="true"
+        className="h-3 w-full overflow-hidden rounded-full bg-foreground/10"
+      >
+        <Skeleton
+          className={`h-full rounded-full bg-foreground/30 transition-[width] duration-700 ease-out ${
+            drawing ? 'w-[66%]' : 'w-[33%]'
+          }`}
+        />
+      </div>
     </div>
   )
 }
@@ -1029,12 +1062,27 @@ export default function ChatPanel({
   // reply is complete, so this scrolls once more when the message has actually
   // arrived, which is the thing the friend wanted to see.
   //
+  // AND `panel.authoring`, because on a proposing turn `busy` never gets the
+  // chance to do its job. It stays true through the whole authoring minute, so
+  // the second anchor lands after the wait is over — and for that entire
+  // minute the ONLY thing on screen worth reading is a reply the friend cannot
+  // see. The first anchor fired while the assistant turn was still empty, so
+  // the list is parked on their own message with the answer entirely below the
+  // fold. Found by the wait screenshots; no test in this suite can see it.
+  //
+  // `authoring` flips true exactly when the reply is complete — the route
+  // emits that line after the stream has finished and the tool call starts —
+  // which is the same moment `busy` was added to catch on an ordinary turn.
+  // Same intent, the one path where the existing dep cannot express it.
+  //
   // Still NOT per streamed chunk, and that restraint is unchanged: following
   // token by token yanks a friend back down the instant they scroll up to
-  // re-read something mid-reply. Two anchors per turn, not two hundred.
+  // re-read something mid-reply. Three anchors per proposing turn, not two
+  // hundred — and the stage changing partway through is deliberately not one
+  // of them, or a friend re-reading during the slow half gets yanked.
   useEffect(() => {
     scrollToNewest(listRef.current)
-  }, [itemCount, busy])
+  }, [itemCount, busy, panel.authoring])
 
   // Guards the confirm buttons across ALL cards, not just the live one — a
   // second click while the first POST is in flight must not fire twice.

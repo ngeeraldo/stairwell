@@ -497,6 +497,70 @@ async function waitForServer(page: Page, attempts = 40): Promise<void> {
  * Kept as a closed set rather than arbitrary callbacks in screens.ts: a screen
  * list that can run code is a screen list nobody reads.
  */
+/**
+ * Put the panel into the authoring wait and LEAVE IT THERE.
+ *
+ * The wait exists only mid-turn: the moment a stream ends, finishTurn clears
+ * it. So a shot of it needs a reply that starts and never finishes, which is
+ * also exactly what the friend is looking at while it is on screen.
+ *
+ * `window.fetch` is replaced rather than the route being intercepted, because
+ * Playwright's fulfil sends a COMPLETE body — the stream would close, the wait
+ * would clear, and the shutter would catch an empty column. ChatPanel resolves
+ * the global at call time, so installing this after the page has loaded is
+ * enough. The stub also keeps the harness's promise that no screenshot run
+ * ever calls the live API (CLAUDE.md > Testing): the model is never reached.
+ *
+ * The lines are the ones app/api/chat/route.ts actually writes, in the order
+ * it writes them, so what gets photographed is the panel's own response to the
+ * real protocol and not a state poked into it from outside.
+ */
+async function holdTheAuthoringWait(page: Page, stage: 'spec' | 'mockup'): Promise<void> {
+  // PASSED AS SOURCE TEXT, NOT AS A FUNCTION, and that is not a style choice.
+  // tsx compiles this file with esbuild, which wraps functions in a `__name`
+  // helper to preserve their names. Handing page.evaluate a closure ships that
+  // compiled body into the browser, where `__name` does not exist: the stub
+  // installs, then throws ReferenceError on the first call. The panel treats a
+  // throwing fetch exactly as it treats a dropped connection, so the shot came
+  // out showing "interrupted — not saved" instead of the wait — a convincing
+  // picture of a screen that does not exist. A string is compiled by nothing.
+  const emit =
+    stage === 'mockup' ? "send({authoring:true}); send({stage:'mockup'});" : 'send({authoring:true});'
+  await page.evaluate(`(function () {
+    var real = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      var url = String(input && input.url ? input.url : input);
+      if (url.indexOf('/api/chat') === -1) return real(input, init);
+      var encoder = new TextEncoder();
+      var body = new ReadableStream({
+        start: function (controller) {
+          function send(value) {
+            controller.enqueue(encoder.encode(JSON.stringify(value) + '\\n'));
+          }
+          // A PARAGRAPH, NOT A LINE, and that is load-bearing. The agent
+          // really does answer at this length before it calls the tool, and
+          // the reply is the only thing there is to read for the next minute.
+          // A one-line fixture fits above the fold whatever the scroller does,
+          // so it hides the defect this shot exists to show: the list anchors
+          // while the assistant turn is still empty, and a real reply grows
+          // straight out of view underneath it. Do not shorten this.
+          send({t: 'Got it — that gives me enough to draft something. I am going to build you a single screen with the streak front and centre, a coffee count under it, and nothing else competing for attention. The idea is that one glance in the morning tells you whether yesterday counted.'});
+          ${emit}
+          // Never closed, and never a {done:true}: the wait is a live state,
+          // and holding the stream open is the only way to still one for a
+          // camera. It is also exactly what the friend's browser is doing.
+        }
+      });
+      return Promise.resolve(new Response(body, {status: 200}));
+    };
+  })()`)
+
+  await page.fill('textarea', 'yes, that sounds right — go ahead')
+  await page.click('button[type="submit"]')
+  // Long enough for the lines to be read and the width transition to land.
+  await page.waitForTimeout(1_000)
+}
+
 async function performAct(page: Page, act: string): Promise<void> {
   switch (act) {
     case 'collapse-chat':
@@ -510,6 +574,10 @@ async function performAct(page: Page, act: string): Promise<void> {
       break
     case 'tab-mockup':
       await page.getByRole('tab', { name: /^mockup$/i }).click()
+      break
+    case 'wait-writing-spec':
+    case 'wait-drawing-preview':
+      await holdTheAuthoringWait(page, act === 'wait-drawing-preview' ? 'mockup' : 'spec')
       break
     default:
       throw new Error(`unknown act: ${act}`)

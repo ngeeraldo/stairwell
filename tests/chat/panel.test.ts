@@ -636,6 +636,47 @@ describe('ProposalRegion — the authoring wait, an honest failure, and the card
     expect(drawing).toContain('Drawing the preview')
   })
 
+  it('MOVES THE BAR between the two stages, not only the words', () => {
+    // WHAT NICO ACTUALLY SEES. The stage pipeline works end to end — author.ts
+    // fires it, runTurn forwards it, the route emits it, the panel reads it —
+    // and the friend still watches one bar sit at the same width from the
+    // first second to the last. Reported as "the progress bar starts and ends
+    // at around 1/3 of the width, never moving to 2/3", which is exactly what
+    // a fixed `w-40` does in a chat column.
+    //
+    // A shape that looks like a progress bar and never advances reads as a
+    // frozen screen, which is the thing this element was added to prevent. It
+    // does not become a dishonest percentage by moving: each step is a REAL
+    // server event, and there are exactly two of them, so there are exactly
+    // two widths. Nothing crawls, and nothing is interpolated against a timer.
+    const markup = (stage: 'spec' | 'mockup') =>
+      renderToStaticMarkup(
+        ProposalRegion({ authoring: true, authoringStage: stage, proposalError: false }),
+      )
+
+    const writing = markup('spec')
+    const drawing = markup('mockup')
+
+    // The bar is a different width in the second stage than in the first.
+    // Asserted as a difference rather than against literal class names, so
+    // restyling the wait does not fail this — only flattening it does.
+    const barClass = (html: string) =>
+      /class="([^"]*)"[^>]*data-slot="skeleton"|data-slot="skeleton"[^>]*class="([^"]*)"/.exec(
+        html,
+      )
+    expect(barClass(writing)).not.toBeNull()
+    expect(barClass(drawing)).not.toBeNull()
+    expect(barClass(writing)![0]).not.toBe(barClass(drawing)![0])
+
+    // And it advances rather than retreating: the drawing stage is the later
+    // and longer half, so its bar is the wider one.
+    const width = (html: string) => {
+      const found = /w-\[(\d+)%\]/.exec(barClass(html)![0])
+      return found ? Number(found[1]) : NaN
+    }
+    expect(width(drawing)).toBeGreaterThan(width(writing))
+  })
+
   it('shows a wait even when no stage line has arrived yet', () => {
     // The stage line can lose the race with the authoring line, and a wait
     // with no words at all would be worse than the old static sentence.

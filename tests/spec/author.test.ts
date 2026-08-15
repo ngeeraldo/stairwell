@@ -901,4 +901,51 @@ describe('authorSpec', () => {
       expect(sent.at(-1)!.role).toBe('user')
     })
   })
+
+  /**
+   * THE STAGE, FROM THE SIDE THAT PRODUCES IT.
+   *
+   * Nothing in the suite asked authorSpec to report the crossing before this
+   * block existed: the panel's tests push a stage line in by hand, and the
+   * route's authorSpec double takes no argument at all. Both halves of the
+   * server's contribution — this call, and the route line it feeds — could be
+   * deleted with the whole suite staying green, which is what "the wiring test
+   * holds the stream open" was taken to cover and does not.
+   */
+  describe('reporting which half of the wait we are in', () => {
+    it('reports the mockup stage BEFORE the mockup call, not after it', async () => {
+      // The ordering is the entire point. Announced after the call returns,
+      // the friend is told about the slow half once it is already over — the
+      // panel would jump to "Drawing the preview…" and immediately resolve.
+      const order: string[] = []
+      const client = fake({
+        onCall: () => order.push('propose'),
+      })
+
+      await authorSpec(deps(client.client), {
+        ...INPUT,
+        onStage: (stage) => order.push(`stage:${stage}`),
+      })
+
+      // spec call, then the announcement, then the mockup call.
+      expect(order).toEqual(['propose', 'stage:mockup', 'propose'])
+      expect(client.specCalls()).toHaveLength(1)
+    })
+
+    it('says nothing when the spec never validated and no preview is drawn', async () => {
+      // A stage that is announced for a call that never happens is a lie the
+      // friend watches for the rest of the turn.
+      const seen: string[] = []
+      const client = fake({ drafts: [BAD_DRAFT, BAD_DRAFT] })
+
+      expect(
+        await authorSpec(deps(client.client), {
+          ...INPUT,
+          onStage: (stage) => seen.push(stage),
+        }),
+      ).toBeUndefined()
+
+      expect(seen).toEqual([])
+    })
+  })
 })

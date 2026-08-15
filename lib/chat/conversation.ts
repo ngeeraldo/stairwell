@@ -32,6 +32,44 @@ export type ConversationRef = {
  * reuses the returned value verbatim rather than recomputing — see the design
  * spec section 2.3.
  */
+/**
+ * Whether a PERSON has just arrived — the alert condition, in its own right.
+ *
+ * IT USED TO BE FREE, AND IT IS NOT ANY MORE. The step-3 ledger records the
+ * alert condition as inherited: "a conversation started" and "a
+ * conversation_id was minted" were declared the same event, one primitive,
+ * "no second rule that can drift from the first". That identity held only
+ * while every row in `transcripts` came from the person. It does not any
+ * more — the product writes rows too, and each one refreshes the gap the
+ * mint is measured against, so the friend's next words read as a
+ * continuation of something they were not part of and the phone stays
+ * silent.
+ *
+ * It has now happened TWICE, which is what makes this a rule rather than a
+ * third patch:
+ *   - the OPENER, written at page render, swallowed a friend's first words;
+ *   - the CONFIRMATION ACKNOWLEDGMENT, written when they press "Build this",
+ *     swallowed everything they said afterwards — the case where Nico got a
+ *     spec_confirmed alert and nothing else.
+ * The first was fixed by special-casing "this account has never had a user
+ * row". That is one instance of the general fault, and it left the second
+ * live.
+ *
+ * So this asks the question the alert actually means: WHEN DID THIS PERSON
+ * LAST SPEAK? Only `role === 'user'` rows count, so no row the product
+ * writes — today's two, or any added later — can suppress the signal again.
+ * Everything else is unchanged: a friend still has to be quiet for the gap
+ * before their next message counts as showing up.
+ */
+export function personArrived(
+  rows: { role: string; at: number }[],
+  now: number,
+): boolean {
+  // readTranscript orders by (at, id), so the last user row is the newest.
+  const lastSpoke = rows.filter((r) => r.role === 'user').pop()?.at
+  return lastSpoke === undefined || now - lastSpoke > CONVERSATION_GAP_MS
+}
+
 export function conversationIdFor(
   db: PlatformDb,
   accountId: number,
