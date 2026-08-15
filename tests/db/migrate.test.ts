@@ -17,7 +17,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MigrationFailure, migrateUserDb } from '@/lib/db/migrate'
+import Database from 'better-sqlite3-multiple-ciphers'
+import { MigrationFailure, backupPathFor, migrateUserDb } from '@/lib/db/migrate'
 import { encryptedUserDbPath, openEncryptedUserDb } from '@/lib/db/encryptedUserDb'
 
 const KEY = Buffer.alloc(32, 7)
@@ -231,5 +232,100 @@ describe('migrateUserDb', () => {
       expect((e as MigrationFailure).code).toBe('MANIFEST_MISMATCH')
       expect((e as MigrationFailure).migrationNumber).toBe(1)
     }
+  })
+})
+
+describe('the copy taken before applying', () => {
+  it('names the file so the guard hook denies it — .backup.db, never .bak', () => {
+    // The hook denies any *.db that is not synthetic.db. A .bak suffix would
+    // have made the backup the ONE readable copy of the thing the hook exists
+    // to protect, and .gitignore's *.db would have stopped covering it too.
+    expect(backupPathFor('sam').endsWith('.backup.db')).toBe(true)
+  })
+
+  it('is NOT written when the database was created in this same run', () => {
+    // A file with no tables and no rows has nothing to lose, and copying it
+    // would spend the single backup slot on an empty database.
+    migration('sam', 1, 'initial', INITIAL)
+    migrateUserDb('sam', KEY)
+    expect(existsSync(backupPathFor('sam'))).toBe(false)
+  })
+
+  it('is written before a migration is applied to an existing database', () => {
+    migration('sam', 1, 'initial', INITIAL)
+    migrateUserDb('sam', KEY)
+    migration('sam', 2, 'add_note', 'ALTER TABLE weigh_ins ADD COLUMN note TEXT;')
+    migrateUserDb('sam', KEY)
+
+    expect(existsSync(backupPathFor('sam'))).toBe(true)
+  })
+
+  it('holds the PRE-migration shape, which is what makes it a restore', () => {
+    // A copy taken after the change would be a copy of the problem.
+    migration('sam', 1, 'initial', INITIAL)
+    migrateUserDb('sam', KEY)
+    migration('sam', 2, 'add_note', 'ALTER TABLE weigh_ins ADD COLUMN note TEXT;')
+    migrateUserDb('sam', KEY)
+
+    const backup = new Database(backupPathFor('sam'), { readonly: true, fileMustExist: true })
+    try {
+      backup.pragma(`cipher='chacha20'`)
+      backup.key(KEY)
+      const cols = (backup.pragma('table_info(weigh_ins)') as { name: string }[]).map(
+        (c) => c.name,
+      )
+      expect(cols).not.toContain('note')
+    } finally {
+      backup.close()
+    }
+  })
+
+  it('holds the rows that existed before the change', () => {
+    migration('sam', 1, 'initial', INITIAL)
+    migrateUserDb('sam', KEY)
+
+    const write = openEncryptedUserDb('sam', KEY)
+    try {
+      write.prepare('INSERT INTO weigh_ins (day, lb) VALUES (?, ?)').run('2026-08-15', 200.4)
+    } finally {
+      write.close()
+    }
+
+    migration('sam', 2, 'add_note', 'ALTER TABLE weigh_ins ADD COLUMN note TEXT;')
+    migrateUserDb('sam', KEY)
+
+    const backup = new Database(backupPathFor('sam'), { readonly: true, fileMustExist: true })
+    try {
+      backup.pragma(`cipher='chacha20'`)
+      backup.key(KEY)
+      expect(backup.prepare('SELECT day, lb FROM weigh_ins').get()).toEqual({
+        day: '2026-08-15',
+        lb: 200.4,
+      })
+    } finally {
+      backup.close()
+    }
+  })
+
+  it('is encrypted under the same key — a migration-window copy, not a backup', () => {
+    // step-6a design section 8.1 is untouched by this: a forgotten password
+    // still destroys everything, because this copy needs the same key. No
+    // user-facing copy may imply recovery exists.
+    migration('sam', 1, 'initial', INITIAL)
+    migrateUserDb('sam', KEY)
+    migration('sam', 2, 'add_note', 'ALTER TABLE weigh_ins ADD COLUMN note TEXT;')
+    migrateUserDb('sam', KEY)
+
+    const head = readFileSync(backupPathFor('sam')).subarray(0, 16)
+    expect(head.toString('latin1')).not.toBe('SQLite format 3\0')
+  })
+
+  it('survives a failed migration, which is the case it exists for', () => {
+    migration('sam', 1, 'initial', INITIAL)
+    migrateUserDb('sam', KEY)
+    migration('sam', 2, 'broken', 'ALTER TABLE nonexistent ADD COLUMN x TEXT;')
+
+    expect(() => migrateUserDb('sam', KEY)).toThrow(MigrationFailure)
+    expect(existsSync(backupPathFor('sam'))).toBe(true)
   })
 })

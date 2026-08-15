@@ -11,7 +11,8 @@
 // migration, and this module is what buys it back.
 //
 // Design: docs/superpowers/specs/2026-08-15-user-db-migrations-design.md
-import { existsSync } from 'node:fs'
+import { copyFileSync, existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { ManifestError, listMigrations, verifyManifest } from '@/lib/db/migrationFiles'
 import {
   createEmptyEncryptedDbAt,
@@ -55,6 +56,25 @@ export class MigrationFailure extends Error {
  */
 const running = new Set<string>()
 
+/**
+ * Where the migration-window copy lives.
+ *
+ * `.backup.db`, and the suffix is load-bearing. The guard hook denies any
+ * `*.db` that is not `synthetic.db`, so this is denied with NO hook change,
+ * and `.gitignore`'s `*.db` covers it for free. A `.bak` suffix would have
+ * made the backup the one readable copy of the thing the hook exists to
+ * protect — the worst possible place to save four characters.
+ *
+ * NOT A BACKUP SYSTEM. One deep, replaced after the next successful run, and
+ * encrypted under the same key as the original — so a forgotten password still
+ * destroys both. step-6a design section 8.1 is untouched by this, and no
+ * user-facing copy may imply recovery exists.
+ */
+export function backupPathFor(slug: string): string {
+  const path = encryptedUserDbPath(slug)
+  return join(dirname(path), `${slug}.backup.db`)
+}
+
 export function migrateUserDb(slug: string, key: Buffer): void {
   if (running.has(slug)) return
   running.add(slug)
@@ -97,6 +117,16 @@ function runMigrations(slug: string, key: Buffer): void {
     probe.close()
   }
   if (current >= target) return
+
+  // Only when there is something to lose. A database created moments ago in
+  // this same run has no tables and no rows, and copying it would spend the
+  // single backup slot on an empty file.
+  //
+  // Taken on a CLOSED handle — the probe above is already closed — because a
+  // WAL database copied while open can miss committed pages that still live
+  // in its `-wal` sidecar. Closing checkpoints them into the main file, which
+  // is the same reason the atomic create closes before it links.
+  if (!createdNow) copyFileSync(path, backupPathFor(slug))
 
   const db = openEncryptedUserDb(slug, key)
   try {
