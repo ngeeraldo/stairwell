@@ -13,8 +13,8 @@ import { join, resolve } from 'node:path'
 import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
 import DevOneDashboard from '@/users/devone/dashboard'
+import { applyUserMigrations } from '@/tests/support/userMigrations'
 
-const SCHEMA = resolve(__dirname, '..', 'schema.sql')
 
 let dir: string
 let db: UserDb
@@ -23,7 +23,7 @@ beforeEach(() => {
   vi.stubGlobal('React', React)
   dir = mkdtempSync(join(tmpdir(), 'stairwell-devone-dash-'))
   db = new Database(join(dir, 'synthetic.db'))
-  db.exec(readFileSync(SCHEMA, 'utf8'))
+  applyUserMigrations(db, 'devone')
 })
 
 afterEach(() => {

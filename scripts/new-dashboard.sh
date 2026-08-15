@@ -83,14 +83,35 @@ main() {
     exit 2
   fi
 
-  mkdir -p "$dest/tests"
+  mkdir -p "$dest/tests" "$dest/migrations"
   local f
-  for f in schema.sql seed.py queries.ts dashboard.tsx; do
+  for f in seed.py queries.ts dashboard.tsx; do
     sed "s/__SLUG__/$slug/g" "$src/$f.tmpl" > "$dest/$f"
   done
+  sed "s/__SLUG__/$slug/g" "$src/migrations/001_initial.sql.tmpl" \
+    > "$dest/migrations/001_initial.sql"
   sed "s/__SLUG__/$slug/g" "$src/tests/dashboard.test.ts.tmpl" \
     > "$dest/tests/dashboard.test.ts"
   chmod +x "$dest/seed.py"
+
+  # The manifest is generated, never hand-written: it is a checksum of the file
+  # beside it, and a hand-maintained checksum is a checksum nobody updates.
+  # Without one the runner refuses every session for this slug, so a scaffold
+  # that skipped this would produce a folder that cannot be logged into.
+  node -e '
+    const { createHash } = require("node:crypto")
+    const { readFileSync, writeFileSync } = require("node:fs")
+    const dir = process.argv[1] + "/migrations"
+    const sql = readFileSync(dir + "/001_initial.sql", "utf8")
+    writeFileSync(
+      dir + "/manifest.json",
+      JSON.stringify(
+        { migrations: [{ number: 1, sha256: createHash("sha256").update(sql).digest("hex") }] },
+        null,
+        2,
+      ) + "\n",
+    )
+  ' "$dest"
 
   # Deliberately prints only what this script alone knows: the folder it just
   # made, and the registry line for this slug. It does NOT restate the build

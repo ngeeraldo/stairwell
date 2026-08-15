@@ -10,6 +10,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { UserDb } from '@/lib/db/userDb'
+import { applyUserMigrations } from '@/tests/support/userMigrations'
 import {
   currentStreak,
   last14,
@@ -17,7 +18,6 @@ import {
   walkedOn,
 } from '@/users/devtwo/queries'
 
-const SCHEMA = resolve(__dirname, '..', 'schema.sql')
 
 let dir: string
 let db: UserDb
@@ -30,7 +30,7 @@ function walked(...days: string[]) {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-devtwo-'))
   db = new Database(join(dir, 'synthetic.db'))
-  db.exec(readFileSync(SCHEMA, 'utf8'))
+  applyUserMigrations(db, 'devtwo')
 })
 
 afterEach(() => {

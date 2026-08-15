@@ -42,7 +42,7 @@ const slugs = existsSync(USERS)
   : []
 
 /** The five entries a BUILT dashboard has. See the state note below. */
-const REQUIRED = ['schema.sql', 'seed.py', 'queries.ts', 'dashboard.tsx', 'tests']
+const REQUIRED = ['migrations', 'seed.py', 'queries.ts', 'dashboard.tsx', 'tests']
 
 const isBuilt = (slug: string) =>
   REQUIRED.every((entry) => existsSync(join(USERS, slug, entry)))
@@ -108,7 +108,7 @@ describe('users/ folder conventions', () => {
     })
 
     whenBuilt(
-      'seed.py runs clean and produces every object schema.sql declares',
+      'seed.py runs clean and produces every object the migrations declare',
       () => {
         const out = mkdtempSync(join(tmpdir(), `stairwell-conv-${slug}-`))
         temps.push(out)
@@ -127,9 +127,39 @@ describe('users/ folder conventions', () => {
                 .all() as { name: string }[]
             ).map((r) => r.name),
           )
-          const declared = declaredObjects(readFileSync(join(dir, 'schema.sql'), 'utf8'))
-          expect(declared.length).toBeGreaterThan(0)
-          for (const name of declared) expect(present.has(name)).toBe(true)
+          // Built by applying the chain directly, rather than by scanning the
+          // SQL for CREATE statements.
+          //
+          // Scanning would false-fail on the sanctioned rebuild recipe (D4):
+          // `CREATE TABLE x_new; ...; DROP TABLE x; ALTER TABLE x_new RENAME
+          // TO x` textually declares `x_new`, which correctly does not exist
+          // afterwards. Applying the migrations reproduces the real end state,
+          // renames and drops included.
+          //
+          // It also asserts something stronger than the old check did: that
+          // seed.py builds its database FROM the migrations, rather than
+          // declaring shapes of its own that happen to look similar.
+          const migrationsDir = join(dir, 'migrations')
+          const reference = new Database(':memory:')
+          try {
+            for (const file of readdirSync(migrationsDir)
+              .filter((f) => f.endsWith('.sql'))
+              .sort()) {
+              reference.exec(readFileSync(join(migrationsDir, file), 'utf8'))
+            }
+            const declared = (
+              reference
+                .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+                .all() as { name: string }[]
+            )
+              .map((r) => r.name)
+              .filter((name) => !name.startsWith('sqlite_'))
+
+            expect(declared.length).toBeGreaterThan(0)
+            for (const name of declared) expect(present.has(name)).toBe(true)
+          } finally {
+            reference.close()
+          }
         } finally {
           db.close()
         }

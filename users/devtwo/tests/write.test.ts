@@ -29,8 +29,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { UserDb } from '@/lib/db/userDb'
 import { currentStreak, last30, walkedOn } from '@/users/devtwo/queries'
+import { applyUserMigrations } from '@/tests/support/userMigrations'
 
-const SCHEMA = resolve(__dirname, '..', 'schema.sql')
 
 let dir: string
 let db: UserDb
@@ -65,7 +65,7 @@ function countWalks(handle: UserDb): number {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-devtwo-write-'))
   db = new Database(join(dir, 'synthetic.db'))
-  db.exec(readFileSync(SCHEMA, 'utf8'))
+  applyUserMigrations(db, 'devtwo')
 })
 
 afterEach(() => {

@@ -12,8 +12,8 @@ import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
 import Dashboard from '@/users/run3/dashboard'
 import { recentTransactions } from '@/users/run3/queries'
+import { applyUserMigrations } from '@/tests/support/userMigrations'
 
-const SCHEMA = resolve(__dirname, '..', 'schema.sql')
 
 let dir: string
 let db: UserDb
@@ -22,7 +22,7 @@ beforeEach(() => {
   vi.stubGlobal('React', React)
   dir = mkdtempSync(join(tmpdir(), 'stairwell-run3-'))
   db = new Database(join(dir, 'synthetic.db'))
-  db.exec(readFileSync(SCHEMA, 'utf8'))
+  applyUserMigrations(db, 'run3')
   db.prepare(
     'INSERT INTO transactions (merchant, category, amount_cents, at) VALUES (?, ?, ?, ?)',
     // A fixed instant, not Date.now(): a test that pins a boundary cannot be

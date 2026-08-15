@@ -10,13 +10,13 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { UserDb } from '@/lib/db/userDb'
+import { applyUserMigrations } from '@/tests/support/userMigrations'
 import {
   eatingOutThisMonthCents,
   monthWindow,
   recentTransactions,
 } from '@/users/devone/queries'
 
-const SCHEMA = resolve(__dirname, '..', 'schema.sql')
 
 let dir: string
 let db: UserDb
@@ -35,7 +35,7 @@ function add(row: {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-devone-'))
   db = new Database(join(dir, 'synthetic.db'))
-  db.exec(readFileSync(SCHEMA, 'utf8'))
+  applyUserMigrations(db, 'devone')
 })
 
 afterEach(() => {

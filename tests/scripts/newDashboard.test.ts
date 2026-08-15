@@ -6,6 +6,7 @@
 // matter how the process exits.
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -57,13 +58,13 @@ describe('scripts/new-dashboard.sh', () => {
 
       expect(status).toBe(0)
       const dir = join(sandbox, 'users', 'devthree')
-      for (const entry of ['schema.sql', 'seed.py', 'queries.ts', 'dashboard.tsx']) {
+      for (const entry of ['migrations/001_initial.sql', 'migrations/manifest.json', 'seed.py', 'queries.ts', 'dashboard.tsx']) {
         expect(existsSync(join(dir, entry))).toBe(true)
       }
       expect(existsSync(join(dir, 'tests', 'dashboard.test.ts'))).toBe(true)
 
       // No placeholder survives anywhere.
-      for (const entry of ['schema.sql', 'seed.py', 'queries.ts', 'dashboard.tsx']) {
+      for (const entry of ['migrations/001_initial.sql', 'seed.py', 'queries.ts', 'dashboard.tsx']) {
         expect(readFileSync(join(dir, entry), 'utf8')).not.toContain('__SLUG__')
       }
       expect(readFileSync(join(dir, 'dashboard.tsx'), 'utf8')).toContain('devthree')
@@ -147,7 +148,7 @@ describe('scripts/new-dashboard.sh', () => {
       const { status, output } = run(sandbox, ['devthree'])
       expect(status).toBe(2)
       expect(output).toMatch(/already exists/)
-      expect(existsSync(join(sandbox, 'users', 'devthree', 'schema.sql'))).toBe(false)
+      expect(existsSync(join(sandbox, 'users', 'devthree', 'migrations'))).toBe(false)
     },
     SUBPROCESS_TIMEOUT_MS,
   )
@@ -194,10 +195,23 @@ describe('scripts/new-dashboard.sh', () => {
               .all() as { name: string }[]
           ).map((r) => r.name),
         )
-        const schema = readFileSync(join(dir, 'schema.sql'), 'utf8')
+        const schema = readFileSync(join(dir, 'migrations', '001_initial.sql'), 'utf8')
         const declared = declaredObjects(schema)
         expect(declared.length).toBeGreaterThan(0)
         for (const name of declared) expect(present.has(name)).toBe(true)
+
+        // The scaffolded manifest must match the scaffolded migration, or the
+        // runner refuses every session for this slug and the friend cannot log
+        // in at all. A generated folder that cannot be logged into is the one
+        // failure this scaffold must never produce.
+        const manifest = JSON.parse(
+          readFileSync(join(dir, 'migrations', 'manifest.json'), 'utf8'),
+        ) as { migrations: { number: number; sha256: string }[] }
+        expect(manifest.migrations).toHaveLength(1)
+        expect(manifest.migrations[0]?.number).toBe(1)
+        expect(manifest.migrations[0]?.sha256).toBe(
+          createHash('sha256').update(schema).digest('hex'),
+        )
 
         const tables = (
           db
