@@ -12,7 +12,7 @@ import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
 import Dashboard from '@/users/run3/dashboard'
 import { recentTransactions } from '@/users/run3/queries'
-import { applyUserMigrations } from '@/tests/support/userMigrations'
+import { applyUserMigrations, emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
 
 let dir: string
@@ -97,3 +97,26 @@ describe('users/run3', () => {
 // write path to cover — leave this block commented out rather than filling
 // it with a no-op test. See users/devtwo/tests/write.test.ts for a worked
 // example.
+
+it('renders on an EMPTY database without throwing', async () => {
+  // There is no synthetic fallback any more: a friend's first session renders
+  // THEIR database, and it has no rows in it. That is an ordinary state, not
+  // an error (2026-08-15 migrations design, §9), so this is a required test
+  // for every dashboard rather than a nicety.
+  //
+  // Awaited, because the page CALLS the component rather than returning an
+  // element — a throw inside a nested component would otherwise be deferred
+  // past this assertion into React's render pass.
+  const empty = emptyDbFromMigrations('run3')
+  try {
+    // Promise.resolve so this holds whether the component is async or
+    // not — two of the three dashboards are synchronous, and a test that
+    // assumed otherwise would pass for the wrong reason.
+    const rendered = await Promise.resolve(
+      Dashboard({ slug: 'run3', db: empty, today: '2026-01-01', timeZone: 'UTC' }),
+    )
+    expect(rendered).toBeDefined()
+  } finally {
+    empty.close()
+  }
+})

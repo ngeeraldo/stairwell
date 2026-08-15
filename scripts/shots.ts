@@ -99,6 +99,64 @@ type Fixture = {
 type Seeder = (dbPath: string, usersDir: string) => Promise<Fixture>
 
 /**
+ * Build a friend's REAL, encrypted database the way production builds it.
+ *
+ * The server this harness spawns runs `NODE_ENV=production`, so
+ * lib/db/userData.ts serves the encrypted `<slug>.db` and nothing else — there
+ * is no synthetic fallback any more. A fixture that dropped a `synthetic.db`
+ * into USERS_DIR therefore rendered "This dashboard failed to load", which is
+ * exactly what the first shot of the empty-dashboard screen showed. Every test
+ * in the suite was green at the time; only the picture disagreed.
+ *
+ * Mirrors the login path rather than approximating it: derive the account's
+ * key the way `app/api/login/route.ts` does, then run the real migration
+ * runner. Copying the migrations into USERS_DIR first is what lets the runner
+ * find them — it reads from `usersRoot()`, which is the temp tree.
+ *
+ * NODE_ENV is forced to production around the runner because THIS process is
+ * not the server: outside production the runner returns immediately, so
+ * without it the fixture would silently build nothing at all.
+ */
+async function buildFriendsRealDb(
+  db: import('../lib/db/platform').PlatformDb,
+  usersDir: string,
+  slug: string,
+  password: string,
+  seedRows?: (handle: import('better-sqlite3-multiple-ciphers').Database) => void,
+): Promise<void> {
+  const { findAccountBySlug } = await import('../lib/auth/accounts')
+  const { databaseKeyFor } = await import('../lib/auth/flow')
+  const { migrateUserDb } = await import('../lib/db/migrate')
+  const { openEncryptedUserDb } = await import('../lib/db/encryptedUserDb')
+  const { cpSync, mkdirSync } = await import('node:fs')
+
+  mkdirSync(join(usersDir, slug), { recursive: true })
+  cpSync(join(REPO, 'users', slug, 'migrations'), join(usersDir, slug, 'migrations'), {
+    recursive: true,
+  })
+
+  const account = findAccountBySlug(db, slug)
+  if (!account) throw new Error(`shots: no account for '${slug}'`)
+  const key = await databaseKeyFor(db, account, password)
+
+  const before = process.env.NODE_ENV
+  ;(process.env as Record<string, string | undefined>).NODE_ENV = 'production'
+  try {
+    migrateUserDb(slug, key)
+    if (seedRows) {
+      const handle = openEncryptedUserDb(slug, key)
+      try {
+        seedRows(handle)
+      } finally {
+        handle.close()
+      }
+    }
+  } finally {
+    ;(process.env as Record<string, string | undefined>).NODE_ENV = before
+  }
+}
+
+/**
  * One seeder per state, each built through the REAL library functions.
  *
  * Never hand-written INSERTs: a fixture assembled by hand drifts from what the
@@ -277,19 +335,62 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
   'friend-built': async (dbPath, usersDir) => {
     const { openPlatformDb } = await import('../lib/db/platform')
     const { createAccount } = await import('../lib/auth/accounts')
-    const { cpSync, mkdirSync } = await import('node:fs')
     const db = openPlatformDb(dbPath)
     try {
       const password = 'TEST-SHOTS-NOT-A-REAL-PASSWORD'
       await createAccount(db, { slug: 'devone', role: 'user', password })
-      // The dashboard CODE is imported from the repo by the registry; only its
-      // data comes from USERS_DIR. Copying the loudly-fake synthetic.db in is
-      // what lets the real component render — and it is synthetic by
-      // construction, which is the only kind of database this harness may ever
-      // touch.
-      mkdirSync(join(usersDir, 'devone'), { recursive: true })
-      cpSync(join(REPO, 'users', 'devone', 'synthetic.db'), join(usersDir, 'devone', 'synthetic.db'))
+      await buildFriendsRealDb(db, usersDir, 'devone', password, (handle) => {
+        // Loudly fake, like everything this harness touches (CLAUDE.md > Data
+        // safety). These used to be copied wholesale out of devone's
+        // synthetic.db; they are inserted here instead because the file the
+        // server reads is the ENCRYPTED one, and only this process has the key.
+        const insert = handle.prepare(
+          'INSERT INTO transactions (merchant, category, amount_cents, at) VALUES (?, ?, ?, ?)',
+        )
+        // RELATIVE TO NOW, not a fixed date. devone's first panel totals
+        // "eating out THIS MONTH", so rows pinned to a calendar date show
+        // $0.00 for eleven months of the year — a screen that looks broken
+        // while being technically correct, which is the worst kind of review
+        // artifact. The dashboard is still handed its day by the page; only
+        // this fixture reads a clock, and a script may.
+        const day = 86_400_000
+        const at = Date.now() - day
+        insert.run('COFFEE PALACE TEST', 'eating out', 450, at)
+        insert.run('COFFEE PALACE TEST', 'eating out', 380, at - day)
+        insert.run('GROCERY WORLD TEST', 'groceries', 7756, at - 2 * day)
+        insert.run('GROCERY WORLD TEST', 'groceries', 5182, at - 4 * day)
+      })
       return { slug: 'devone', password }
+    } finally {
+      db.close()
+    }
+  },
+
+  /**
+   * A friend whose dashboard is deployed and whose database is EMPTY.
+   *
+   * The state every friend is in on the day their dashboard ships, and now
+   * the state they actually SEE — there is no synthetic fallback to stand in
+   * front of it. Built by giving the folder devone's migrations and no rows,
+   * which is exactly what the runner leaves behind after applying 001 to a
+   * database nobody has written to.
+   */
+  'friend-built-empty': async (dbPath, usersDir) => {
+    const { openPlatformDb } = await import('../lib/db/platform')
+    const { createAccount } = await import('../lib/auth/accounts')
+    const db = openPlatformDb(dbPath)
+    try {
+      // devtwo, NOT devone: every state in a run shares one platform database,
+      // and `friend-built` already holds that slug — two accounts for one slug
+      // is a UNIQUE violation that aborts the whole capture. Using the other
+      // registered dashboard also widens what this screen covers, since its
+      // empty state is a different shape of nothing.
+      const password = 'TEST-SHOTS-NOT-A-REAL-PASSWORD'
+      await createAccount(db, { slug: 'devtwo', role: 'user', password })
+      // Migrated and NOT written to — the state a friend is in on the morning
+      // their dashboard ships. No seedRows callback, deliberately.
+      await buildFriendsRealDb(db, usersDir, 'devtwo', password)
+      return { slug: 'devtwo', password }
     } finally {
       db.close()
     }

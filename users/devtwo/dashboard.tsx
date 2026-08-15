@@ -52,13 +52,35 @@ export default function DevTwoDashboard({ slug, db, today }: DashboardProps) {
 
       <section>
         <h2>Last 14 days at a glance</h2>
-        <ul>
-          {fortnight.map((d) => (
-            <li key={d.day} data-day={d.day} data-walked={d.walked ? 'yes' : 'no'}>
-              {d.day} {d.walked ? 'walked' : 'missed'}
-            </li>
-          ))}
-        </ul>
+        {/*
+          NOTHING LOGGED EVER IS NOT FOURTEEN MISSED DAYS.
+
+          Before the fallback was removed, a friend never saw this panel over
+          their own empty database — they saw devone's sample data under a
+          banner. Now the first screen of their own dashboard is this one, and
+          rendering the list unconditionally told a friend on their FIRST
+          MORNING that they had missed each of the previous fourteen days:
+          days that passed before their dashboard existed, about which the
+          product has nothing to say and no standing to judge.
+
+          Found by reading the screenshot. Every test was green — a list of
+          fourteen "missed" rows is not a throw — which is the whole reason
+          screens are reviewed as pictures (onboarding ledger D16).
+
+          The general rule this is an instance of, for any dashboard measuring
+          adherence: a day before the friend started is not a day they failed.
+        */}
+        {month.walked === 0 && !done ? (
+          <p>Nothing logged yet.</p>
+        ) : (
+          <ul>
+            {fortnight.map((d) => (
+              <li key={d.day} data-day={d.day} data-walked={d.walked ? 'yes' : 'no'}>
+                {d.day} {d.walked ? 'walked' : 'missed'}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </section>
   )

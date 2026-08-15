@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path'
 import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
 import DevOneDashboard from '@/users/devone/dashboard'
-import { applyUserMigrations } from '@/tests/support/userMigrations'
+import { applyUserMigrations, emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
 
 let dir: string
@@ -56,9 +56,24 @@ describe('users/devone/dashboard.tsx', () => {
     expect(json).toContain('GROCERY WORLD TEST')
   })
 
-  it('renders both panels with an empty database instead of throwing', async () => {
-    const json = JSON.stringify(await DevOneDashboard({ slug: 'devone', db, today: '2026-08-14', timeZone: 'UTC' }))
-    expect(json).toContain('$0.00')
+  it('says nothing is logged yet rather than claiming a zero total', async () => {
+    // CHANGED DELIBERATELY, and the old assertion is worth recording: this
+    // used to require '$0.00' on an empty database. Not throwing was the point
+    // and the zero was incidental — until the fallback was removed and this
+    // panel became the first thing a friend sees of their own dashboard, over
+    // a database with nothing in it.
+    //
+    // "$0.00" and "nothing logged yet" are different statements, and only one
+    // of them is true on that morning. A confident zero is a claim about their
+    // month rather than about their data.
+    //
+    // Found by reading the screenshot, not here: rendering $0.00 is not a
+    // throw, so every test stayed green while the screen said something false.
+    const json = JSON.stringify(
+      await DevOneDashboard({ slug: 'devone', db, today: '2026-08-14', timeZone: 'UTC' }),
+    )
+    expect(json).toContain('Nothing logged yet')
+    expect(json).not.toContain('$0.00')
     expect(json).toContain('No transactions yet')
   })
 
@@ -100,4 +115,27 @@ describe('users/devone/dashboard.tsx', () => {
       ),
     ).toContain('$0.00')
   })
+})
+
+it('renders on an EMPTY database without throwing', async () => {
+  // There is no synthetic fallback any more: a friend's first session renders
+  // THEIR database, and it has no rows in it. That is an ordinary state, not
+  // an error (2026-08-15 migrations design, §9), so this is a required test
+  // for every dashboard rather than a nicety.
+  //
+  // Awaited, because the page CALLS the component rather than returning an
+  // element — a throw inside a nested component would otherwise be deferred
+  // past this assertion into React's render pass.
+  const empty = emptyDbFromMigrations('devone')
+  try {
+    // Promise.resolve so this holds whether the component is async or
+    // not — two of the three dashboards are synchronous, and a test that
+    // assumed otherwise would pass for the wrong reason.
+    const rendered = await Promise.resolve(
+      DevOneDashboard({ slug: 'devone', db: empty, today: '2026-01-01', timeZone: 'UTC' }),
+    )
+    expect(rendered).toBeDefined()
+  } finally {
+    empty.close()
+  }
 })

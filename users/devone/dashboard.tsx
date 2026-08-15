@@ -26,7 +26,24 @@ export default function DevOneDashboard({ db, today, timeZone }: DashboardProps)
     <section>
       <section>
         <h2>Eating out this month</h2>
-        <p>{money(eatingOut)}</p>
+        {/*
+          "Nothing logged yet" is NOT the same statement as "$0.00", and on a
+          friend's first morning only one of them is true. There is no
+          synthetic fallback any more, so the first thing anyone sees of their
+          own dashboard is this panel over an empty database — and a confident
+          zero there reads as "you spent nothing this month", which is a claim
+          about their life rather than about their data.
+
+          Caught by looking at the picture, not by a test: the empty-render
+          test passed the whole time, because rendering $0.00 is not a throw.
+          Distinguishing the two is the pattern a dashboard copied from this
+          reference should carry.
+        */}
+        {recent.length === 0 ? (
+          <p>Nothing logged yet.</p>
+        ) : (
+          <p>{money(eatingOut)}</p>
+        )}
       </section>
       <section>
         <h2>Recent transactions</h2>

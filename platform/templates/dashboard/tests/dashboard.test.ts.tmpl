@@ -12,8 +12,8 @@ import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
 import Dashboard from '@/users/__SLUG__/dashboard'
 import { recentTransactions } from '@/users/__SLUG__/queries'
+import { applyUserMigrations, emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
-const SCHEMA = resolve(__dirname, '..', 'schema.sql')
 
 let dir: string
 let db: UserDb
@@ -22,7 +22,7 @@ beforeEach(() => {
   vi.stubGlobal('React', React)
   dir = mkdtempSync(join(tmpdir(), 'stairwell-__SLUG__-'))
   db = new Database(join(dir, 'synthetic.db'))
-  db.exec(readFileSync(SCHEMA, 'utf8'))
+  applyUserMigrations(db, '__SLUG__')
   db.prepare(
     'INSERT INTO transactions (merchant, category, amount_cents, at) VALUES (?, ?, ?, ?)',
     // A fixed instant, not Date.now(): a test that pins a boundary cannot be
@@ -68,6 +68,23 @@ describe('users/__SLUG__', () => {
     expect(recentTransactions(db, 'America/New_York')[0]!.day).toBe('2026-08-31')
     expect(recentTransactions(db, 'UTC')[0]!.day).toBe('2026-09-01')
   })
+
+  it('renders on an EMPTY database without throwing', () => {
+    // REQUIRED OF EVERY DASHBOARD, and scaffolded so a folder is born with it.
+    //
+    // There is no synthetic fallback: a friend's first session renders THEIR
+    // database, and it has no rows in it. An empty dashboard is an ordinary
+    // state (2026-08-15 migrations design, §9), so anything here that reaches
+    // for rows[0] without a guard is a defect this catches — before the friend
+    // does, on the first screen they ever see.
+    const empty = emptyDbFromMigrations('__SLUG__')
+    try {
+      expect(Dashboard({ slug: '__SLUG__', db: empty, today: '2026-01-01', timeZone: 'UTC' }))
+        .toBeDefined()
+    } finally {
+      empty.close()
+    }
+  })
 })
 
 // WRITE PATH — if this dashboard has one (a platform route that inserts into
@@ -80,7 +97,7 @@ describe('users/__SLUG__', () => {
 // always marked today walked, and a dashboard hid its tap control once today
 // was walked, and each half was correct alone. Reviewing either half in
 // isolation could not have found it. Build the test database from
-// schema.sql (NOT synthetic.db — the point is the shape a real write lands
+// the migrations (NOT synthetic.db — the point is the shape a real write lands
 // in), insert through the exact statement the platform route runs, and
 // assert queries.ts reads it back, e.g.:
 //

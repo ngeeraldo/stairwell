@@ -13,6 +13,7 @@
 // reached for it would make every fixture depend on the thing under test.
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import Database from 'better-sqlite3-multiple-ciphers'
 
 type ExecutesSql = { exec(sql: string): unknown }
 
@@ -47,4 +48,22 @@ export function migrationSqlFor(slug: string): string {
 /** Apply a user's migrations to an open database handle. */
 export function applyUserMigrations(db: ExecutesSql, slug: string): void {
   for (const path of migrationFilesFor(slug)) db.exec(readFileSync(path, 'utf8'))
+}
+
+/**
+ * An in-memory database holding a user's shape and NO rows.
+ *
+ * The fixture for the obligation every dashboard now carries: with no
+ * synthetic fallback, a friend's first session renders their own database, and
+ * it is empty. That is an ordinary state, not an error — see the 2026-08-15
+ * migrations design, §9.
+ *
+ * Returned read-only, because that is what a dashboard is handed. A dashboard
+ * that only renders when it can write would pass a laxer fixture and fail in
+ * production.
+ */
+export function emptyDbFromMigrations(slug: string): Database.Database {
+  const db = new Database(':memory:')
+  applyUserMigrations(db, slug)
+  return db
 }
