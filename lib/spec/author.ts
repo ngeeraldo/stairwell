@@ -194,6 +194,36 @@ function metricMessage(error: unknown): string {
 }
 
 /**
+ * The one pair every metrics row this module writes carries: which shape the
+ * writer was asked for, and how many ops it proposed. Factored out narrowly —
+ * unified-loop ledger residual 10 predicted this file's five hand-built
+ * `appendMetric` sites would need a builder once a sixth arrived, and Task 13
+ * added a sixth. This pair is pure mechanical repetition with no per-site
+ * decision in it, so pulling it out costs nothing.
+ *
+ * Deliberately NOT a wrapper around appendMetric itself: `mockup_failed`
+ * reports the SPEC call's counters on purpose, `spec_aborted` reports honest
+ * zeros on purpose, `kind` is computed differently at every site, and
+ * `message` is present at some and absent at others. Residual 10's own
+ * reasoning is that factoring those would either push them back out to the
+ * call sites anyway, or quietly make one site's rule the default for all six
+ * — exactly the hiding of distinctions it was written to prevent. This
+ * helper stops at the one pair that has no such distinction to hide.
+ *
+ * `ops_count` is a COUNT, never the ops themselves: `metrics` is append-only
+ * and the standing bound is counts, never content — an op carries panel ids
+ * derived from what the friend asked for. `patch` must be THIS attempt's
+ * parse outcome, not a stale one — see the reset at the top of the attempt
+ * loop below.
+ */
+function modeFields(
+  mode: 'patch' | 'whole' | null,
+  patch: SpecPatch | undefined,
+): { authoring_mode: 'patch' | 'whole' | null; ops_count: number | null } {
+  return { authoring_mode: mode, ops_count: patch?.ops.length ?? null }
+}
+
+/**
  * The current confirmed version, as the writer sees it. Three arms, because
  * all three are real states and none may silently look like another:
  *
@@ -375,6 +405,10 @@ export async function authorSpec(
     const system = loaded.text
     const schema = mode === 'patch' ? PATCH_JSON_SCHEMA : SPEC_JSON_SCHEMA
 
+    // Named `metricBase`, not `base`: `base` above is the SpecVersion a patch
+    // applies against, and this is a different thing that happens to share
+    // the obvious name — the spread of fields every metrics row this
+    // function writes carries.
     const metricBase = {
       model: CHAT_MODEL,
       effort: CHAT_EFFORT,
@@ -406,6 +440,17 @@ export async function authorSpec(
 
     while (attempt < MAX_SPEC_ATTEMPTS) {
       attempt += 1
+      // Reset per attempt, not just declared once: `patch` must reflect only
+      // THIS attempt's parse outcome. Without this reset an attempt that
+      // never reaches (or never completes) parsePatch — a network error, an
+      // abort, or a reply that fails to parse at all — would report
+      // ops_count from an EARLIER attempt's successfully-parsed-but-
+      // inapplicable patch onto a row that never held one. That is a
+      // permanently wrong row: `metrics` rejects UPDATE. The post-loop uses
+      // (sealVersion, spec_proposed, mockup_failed) are unaffected — they run
+      // only after the winning attempt reassigned `patch` in that same
+      // iteration.
+      patch = undefined
       const attemptMessages =
         feedback === undefined
           ? specMessages
@@ -430,8 +475,7 @@ export async function authorSpec(
               ...metricBase,
               ...NO_SERVED,
               attempt,
-              authoring_mode: mode,
-              ops_count: patch?.ops.length ?? null,
+              ...modeFields(mode, patch),
             },
           })
           return undefined
@@ -460,8 +504,7 @@ export async function authorSpec(
             status: shape.status,
             type: shape.type,
             attempt,
-            authoring_mode: mode,
-            ops_count: patch?.ops.length ?? null,
+            ...modeFields(mode, patch),
           },
         })
         return undefined
@@ -489,7 +532,13 @@ export async function authorSpec(
       // mode worth watching.
       let phase: 'malformed_spec' | 'patch_failed' = 'malformed_spec'
       try {
-        if (mode === 'patch' && base !== undefined) {
+        // `base !== undefined` is the whole condition: `mode` is DERIVED from
+        // it above (`mode = base === undefined ? 'whole' : 'patch'`), so the
+        // two can never disagree — checking `mode === 'patch'` here too would
+        // be redundant. Kept as this narrowing form (not `mode === 'patch'`)
+        // because it is what lets the compiler prove `base` is a SpecVersion
+        // at the applyPatch call below, without a non-null assertion.
+        if (base !== undefined) {
           patch = parsePatch(proposed.input)
           phase = 'patch_failed'
           draft = applyPatch(base, patch)
@@ -529,8 +578,7 @@ export async function authorSpec(
             type: null,
             attempt,
             message: metricMessage(error),
-            authoring_mode: mode,
-            ops_count: patch?.ops.length ?? null,
+            ...modeFields(mode, patch),
           },
         })
         // Checked BEFORE the retry, not after: the friend has walked away and
@@ -601,8 +649,7 @@ export async function authorSpec(
           type: shape.type,
           attempt,
           message: metricMessage(error),
-          authoring_mode: mode,
-          ops_count: patch?.ops.length ?? null,
+          ...modeFields(mode, patch),
           ...mockupFields(mockupResult?.usage ?? shape.usage, mockupPromptSha),
         },
       })
@@ -673,11 +720,7 @@ export async function authorSpec(
         spec_id: id,
         version,
         attempt,
-        authoring_mode: mode,
-        // A COUNT, never the ops themselves. `metrics` is append-only and the
-        // standing bound is counts, never content — an op carries panel ids
-        // derived from what the friend asked for.
-        ops_count: patch?.ops.length ?? null,
+        ...modeFields(mode, patch),
         // Both calls returned and both were billed. Without these the
         // success path would be the one path where a returning model call's
         // usage reaches no metrics row at all — and the one stored
@@ -746,8 +789,7 @@ export async function authorSpec(
         type: null,
         attempt,
         message: metricMessage(error),
-        authoring_mode: mode,
-        ops_count: patch?.ops.length ?? null,
+        ...modeFields(mode, patch),
         ...mockupFields(mockupResult?.usage, mockupPromptSha),
       },
     })

@@ -451,11 +451,24 @@ describe('authorSpec', () => {
     // Seeded so the transcript ends on an assistant turn, which is the ONLY
     // case where the synthetic instruction actually gets constructed and sent
     // (see the messages-shape tests below), and driven through a REJECTED
-    // first draft so the retry message is constructed too.
+    // first attempt so the retry message is constructed too.
+    //
+    // confirmed(CURRENT_V1) puts a current-shape spec on the account, which
+    // is what makes the "current confirmed" text below exist to check for in
+    // the first place (the v1 arm never renders those words) — but it ALSO
+    // now selects patch mode (Task 13). The two drafts below were originally
+    // whole-surface-shaped and, under patch mode, both failed to parse as a
+    // patch at all: the test stayed green (it only asserts on `transcripts`,
+    // which authorSpec never touches on any path) while silently exercising
+    // "two failed attempts" instead of the "reject, retry, succeed" it
+    // describes and its own comment claims. Fixed by making the drafts
+    // PATCH-shaped instead, so the retry really does run, under the mode this
+    // account now actually gets.
     seedConversation()
     confirmed(CURRENT_V1)
 
-    await authorSpec(deps(fake({ drafts: [BAD_DRAFT, GOOD_DRAFT] }).client), INPUT)
+    const rejectedPatch = { ...GOOD_PATCH, ops: [] } // shape-valid, validator rejects it (empty ops)
+    await authorSpec(deps(fake({ drafts: [rejectedPatch, GOOD_PATCH] }).client), INPUT)
 
     const rows = db.prepare('SELECT role, body FROM transcripts ORDER BY id').all() as {
       role: string
@@ -1118,6 +1131,31 @@ describe('authorSpec', () => {
       expect(errors.map((e) => e.data.attempt)).toEqual([1, 2])
       expect(errors[0]!.data.kind).toBe('patch_failed')
       expect(errors[1]!.data.kind).toBe('patch_failed')
+    })
+
+    it('does not carry a previous attempt\'s ops_count onto a row that never parsed a patch', async () => {
+      // Reproduces a real bug: `patch` is set once, on a successful
+      // parsePatch, and was never reset per attempt. Attempt 1 here parses
+      // fine and fails to APPLY (patch_failed, patch is set to one op).
+      // Attempt 2 returns something that is not even patch-SHAPED, so
+      // parsePatch throws before it ever assigns `patch` again — that row
+      // must report ops_count: null, not attempt 1's leftover 1. A stale
+      // count here is a permanently wrong row: `metrics` rejects UPDATE.
+      confirmed(TWO_PANEL_CURRENT)
+      const client = fake({ drafts: [GHOST_PATCH, {}] })
+      const result = await authorSpec(deps(client.client), INPUT)
+
+      expect(result).toBeUndefined()
+      const errors = metrics().filter((r) => r.event === 'spec_error')
+      expect(errors).toHaveLength(2)
+
+      expect(errors[0]!.data.attempt).toBe(1)
+      expect(errors[0]!.data.kind).toBe('patch_failed')
+      expect(errors[0]!.data.ops_count).toBe(1)
+
+      expect(errors[1]!.data.attempt).toBe(2)
+      expect(errors[1]!.data.kind).toBe('malformed_spec')
+      expect(errors[1]!.data.ops_count).toBeNull()
     })
 
     it('redacts the quoted id out of the patch_failed metric message', async () => {
