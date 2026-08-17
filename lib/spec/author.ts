@@ -9,7 +9,7 @@ import {
   type SpecRecord,
 } from '@/lib/db/specs'
 import { toMessages } from '@/lib/chat/history'
-import { MOCKUP_PROMPT, SPEC_PROMPT, loadPrompt } from '@/lib/chat/prompt'
+import { MOCKUP_PROMPT, SPEC_PATCH_PROMPT, SPEC_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import type { ChatContext } from '@/lib/chat/context'
 import {
   CHAT_EFFORT,
@@ -30,6 +30,7 @@ import {
 import { parseMockupInput, parseSpecDraft, sealVersion } from './validate'
 import { renderLegacyMarkdown } from './render'
 import { readStoredSpec, type StoredSpec } from './stored'
+import { applyPatch, parsePatch, PATCH_JSON_SCHEMA, type SpecPatch } from './patch'
 
 /**
  * One proposal, as it reaches the card — whichever way it got there.
@@ -325,22 +326,46 @@ export async function authorSpec(
   let attempt = 0
 
   try {
-    const loaded = loadPrompt(SPEC_PROMPT)
-    promptSha = loaded.sha
-    const system = loaded.text
-
-    const base = {
-      model: CHAT_MODEL,
-      effort: CHAT_EFFORT,
-      prompt_sha: promptSha,
-      context,
-    }
-
     // What the writer is SHOWN as the current confirmed version. Read here
     // because that is when the prompt is built; the lineage pointer stored on
     // the row is read again at write time instead, and the two reads are
     // deliberately separate — see sealVersion below.
     const current = currentSpec(db, input.accountId)
+
+    /**
+     * WHICH SHAPE THE WRITER IS ASKED FOR — and it is decided in the same place
+     * that already decides what the writer is SHOWN (currentVersionBlock's three
+     * arms), so the two can never disagree about which era this account is in.
+     *
+     * `patch` only when there is a confirmed row AND it is in the current shape.
+     * Both other arms author the whole surface:
+     *
+     *   - v1 has no base to patch, and the first-ever conversation is the one
+     *     thing this may not change (unified-loop §7 R3). Same prompt, same
+     *     schema, same code as before this existed.
+     *   - a LEGACY row carries no ids, so there is nothing for an op to name.
+     *     `specs` rejects UPDATE, so it can never gain any. That account authors
+     *     whole-surface exactly once and is on the patch path from its next
+     *     version.
+     */
+    const storedCurrent = current === undefined ? undefined : readStoredSpec(current.payload)
+    const base =
+      storedCurrent !== undefined && storedCurrent.kind === 'version'
+        ? storedCurrent.version
+        : undefined
+    const mode: 'patch' | 'whole' = base === undefined ? 'whole' : 'patch'
+
+    const loaded = loadPrompt(mode === 'patch' ? SPEC_PATCH_PROMPT : SPEC_PROMPT)
+    promptSha = loaded.sha
+    const system = loaded.text
+    const schema = mode === 'patch' ? PATCH_JSON_SCHEMA : SPEC_JSON_SCHEMA
+
+    const metricBase = {
+      model: CHAT_MODEL,
+      effort: CHAT_EFFORT,
+      prompt_sha: promptSha,
+      context,
+    }
 
     const history = toMessages(readTranscript(db, input.accountId))
     const last = history[history.length - 1]
@@ -363,6 +388,11 @@ export async function authorSpec(
 
     let draft: SpecDraft | undefined
     let feedback: string | undefined
+    // The ops as PARSED on a patch attempt, undefined on a whole-surface
+    // attempt or before any attempt has parsed successfully. Read at the seal
+    // below and on every metrics row from here down, so a query can group any
+    // of them by how many ops the writer actually proposed.
+    let patch: SpecPatch | undefined
 
     while (attempt < MAX_SPEC_ATTEMPTS) {
       attempt += 1
@@ -377,7 +407,7 @@ export async function authorSpec(
           system,
           messages: attemptMessages,
           signal: input.signal,
-          schema: SPEC_JSON_SCHEMA,
+          schema,
         })
       } catch (error) {
         if (input.signal.aborted) {
@@ -385,7 +415,7 @@ export async function authorSpec(
             accountId: input.accountId,
             event: 'spec_aborted',
             at: now(),
-            data: { ...NO_USAGE, ...base, ...NO_SERVED, attempt },
+            data: { ...NO_USAGE, ...metricBase, ...NO_SERVED, attempt },
           })
           return undefined
         }
@@ -407,12 +437,14 @@ export async function authorSpec(
           at: now(),
           data: {
             ...(shape.usage ?? NO_USAGE),
-            ...base,
+            ...metricBase,
             ...(shape.served ?? NO_SERVED),
             kind: shape.kind,
             status: shape.status,
             type: shape.type,
             attempt,
+            authoring_mode: mode,
+            ops_count: patch?.ops.length ?? null,
           },
         })
         return undefined
@@ -420,8 +452,33 @@ export async function authorSpec(
       // Recorded for the outer catch as well — see the declaration above.
       result = proposed
 
+      // WHICH PHASE FAILED IS THE CLASSIFICATION — not which error class was
+      // thrown. Ruled at Task 9's re-review, and it is the whole reason the
+      // metrics kinds can be trusted.
+      //
+      // The tempting version discriminates on `error instanceof SpecPatchError`.
+      // That silently misclassifies, because the shape checks inside a patch are
+      // shared with the whole-surface path: a malformed `order` in an
+      // update_screen op, a non-string in `open_questions`, and any bad nested
+      // panel all reach `fields.ts` helpers that throw the BASE class. Those
+      // rows would land in an append-only log as `malformed_spec` forever, and
+      // `metrics` rejects UPDATE.
+      //
+      // Phase cannot be got wrong, because it is not inferred: parsing failed,
+      // or applying failed, and the code knows which one it was standing in.
+      // The meanings come out clean too — `malformed_spec` is "the model
+      // returned the wrong shape", `patch_failed` is "the shape was right and
+      // it would not apply to this base", which is the genuinely new failure
+      // mode worth watching.
+      let phase: 'malformed_spec' | 'patch_failed' = 'malformed_spec'
       try {
-        draft = parseSpecDraft(proposed.input)
+        if (mode === 'patch' && base !== undefined) {
+          patch = parsePatch(proposed.input)
+          phase = 'patch_failed'
+          draft = applyPatch(base, patch)
+        } else {
+          draft = parseSpecDraft(proposed.input)
+        }
         break
       } catch (error) {
         // A schema-constrained REQUEST is not a guarantee about the row that
@@ -447,13 +504,16 @@ export async function authorSpec(
           at: now(),
           data: {
             ...proposed.usage,
-            ...base,
+            ...metricBase,
             ...proposed.served,
-            kind: 'malformed_spec',
+            // Set above, before the call that can fail. See the phase comment.
+            kind: phase,
             status: null,
             type: null,
             attempt,
             message: metricMessage(error),
+            authoring_mode: mode,
+            ops_count: patch?.ops.length ?? null,
           },
         })
         // Checked BEFORE the retry, not after: the friend has walked away and
@@ -517,13 +577,15 @@ export async function authorSpec(
         at: now(),
         data: {
           ...result.usage,
-          ...base,
+          ...metricBase,
           ...result.served,
           kind: 'mockup_failed',
           status: shape.status,
           type: shape.type,
           attempt,
           message: metricMessage(error),
+          authoring_mode: mode,
+          ops_count: patch?.ops.length ?? null,
           ...mockupFields(mockupResult?.usage ?? shape.usage, mockupPromptSha),
         },
       })
@@ -553,9 +615,14 @@ export async function authorSpec(
     // version would supersede when confirmed — which is the record at write
     // time. That the writer was shown an older version is a separate fact, and
     // it is one the transcript and the prompt already carry.
-    // ops: null for now — this is the whole-surface authoring path. Task 13
-    // supplies the real value for the patch path.
-    const sealed = sealVersion(draft, currentSpec(db, input.accountId)?.version ?? null, null)
+    const sealed = sealVersion(
+      draft,
+      currentSpec(db, input.accountId)?.version ?? null,
+      // The ops as PARSED, never as the model returned them: parsePatch is what
+      // turned a reply into a value, and the row must carry the thing the
+      // applier actually acted on.
+      patch?.ops ?? null,
+    )
 
     // Read ONCE and used for both the row and the proposal that describes it.
     // Two calls to now() would put the card at a different moment from the row
@@ -584,11 +651,16 @@ export async function authorSpec(
       at: now(),
       data: {
         ...result.usage,
-        ...base,
+        ...metricBase,
         ...result.served,
         spec_id: id,
         version,
         attempt,
+        authoring_mode: mode,
+        // A COUNT, never the ops themselves. `metrics` is append-only and the
+        // standing bound is counts, never content — an op carries panel ids
+        // derived from what the friend asked for.
+        ops_count: patch?.ops.length ?? null,
         // Both calls returned and both were billed. Without these the
         // success path would be the one path where a returning model call's
         // usage reaches no metrics row at all — and the one stored

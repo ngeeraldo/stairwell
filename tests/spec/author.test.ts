@@ -7,7 +7,8 @@ import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { appendTranscript } from '@/lib/db/appendOnly'
 import { confirmSpec, insertSpec, readSpecs } from '@/lib/db/specs'
 import { CHAT_MODEL, ChatStreamError, type ChatClient, type Usage } from '@/lib/chat/client'
-import { MOCKUP_JSON_SCHEMA, SPEC_JSON_SCHEMA } from '@/lib/spec/schema'
+import { MOCKUP_JSON_SCHEMA } from '@/lib/spec/schema'
+import { PATCH_JSON_SCHEMA } from '@/lib/spec/patch'
 import { readStoredSpec } from '@/lib/spec/stored'
 import { authorSpec } from '@/lib/spec/author'
 
@@ -80,6 +81,20 @@ const GOOD_MOCKUP = {
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
 
+/**
+ * A default PATCH response for tests that only care that authoring
+ * SUCCEEDED, not what the writer said — chosen to touch neither a screen id
+ * nor a panel id, so it applies cleanly against ANY confirmed current-shape
+ * base a test happens to set up, the same way GOOD_DRAFT works as a default
+ * regardless of which account is asking.
+ */
+const GOOD_PATCH = {
+  change_summary: 'A small change.',
+  data_requirements: [],
+  open_questions: [],
+  ops: [{ op: 'set_meta', title: null, summary: 'Updated.', background: null }],
+}
+
 /** The SPEC call's usage and the MOCKUP call's usage differ on purpose: the
  * mockup_failed row has to prove which call's numbers it is carrying. */
 const USAGE: Usage = { input: 50, output: 900, cache_read: 0, cache_creation: 0 }
@@ -100,7 +115,12 @@ type FakeOptions = {
 
 function fake(options: FakeOptions = {}) {
   const calls: Call[] = []
-  const drafts = [...(options.drafts ?? [GOOD_DRAFT])]
+  // undefined (not defaulted to [GOOD_DRAFT] here) when the test supplied no
+  // explicit drafts, so the schema-aware default below can pick GOOD_DRAFT or
+  // GOOD_PATCH per call — a test written before patch mode existed and never
+  // mentioning `drafts` should not have to know or care which shape the
+  // writer was actually asked for.
+  const drafts = options.drafts === undefined ? undefined : [...options.drafts]
 
   const client = {
     async stream() {
@@ -121,16 +141,28 @@ function fake(options: FakeOptions = {}) {
         }
       }
 
-      const next = drafts.shift()
-      if (next === undefined) {
-        throw new Error('propose() called more times than the test supplied drafts')
+      if (drafts !== undefined) {
+        const next = drafts.shift()
+        if (next === undefined) {
+          throw new Error('propose() called more times than the test supplied drafts')
+        }
+        if (next instanceof Error) throw next
+        return { input: next, usage: USAGE, stop_reason: 'end_turn', served: SERVED }
       }
-      if (next instanceof Error) throw next
-      return { input: next, usage: USAGE, stop_reason: 'end_turn', served: SERVED }
+
+      const input = schema === PATCH_JSON_SCHEMA ? GOOD_PATCH : GOOD_DRAFT
+      return { input, usage: USAGE, stop_reason: 'end_turn', served: SERVED }
     },
   } as unknown as ChatClient
 
-  return { client, calls, specCalls: () => calls.filter((c) => c.schema === SPEC_JSON_SCHEMA) }
+  return {
+    client,
+    calls,
+    // MOCKUP_JSON_SCHEMA is the one call this is never asked about — every
+    // other schema (whole-surface SPEC_JSON_SCHEMA or PATCH_JSON_SCHEMA) is a
+    // "spec call" as far as a caller of this helper is concerned.
+    specCalls: () => calls.filter((c) => c.schema !== MOCKUP_JSON_SCHEMA),
+  }
 }
 
 const INPUT = {
@@ -946,6 +978,143 @@ describe('authorSpec', () => {
       ).toBeUndefined()
 
       expect(seen).toEqual([])
+    })
+  })
+
+  /**
+   * Task 13: which shape the writer is asked for. `mode` is decided in the
+   * same place currentVersionBlock already branches — a confirmed row in the
+   * current shape gets PATCH, everything else (no confirmed row at all, or a
+   * legacy one with no ids) gets WHOLE, same as before this task existed.
+   */
+  describe('authoring mode', () => {
+    const PANEL_WALKS = {
+      ...PANEL,
+      id: 'walks',
+      values: [{ kind: 'entered', id: 'walks_flag', description: 'One tap per day.' }],
+    }
+    const PANEL_EATING = {
+      ...PANEL,
+      id: 'eating_out',
+      values: [{ kind: 'entered', id: 'eating_out_flag', description: 'One tap per day.' }],
+    }
+
+    /** A current confirmed version with two panels, so a patch has something
+     * to remove and something left over to prove the rest survived untouched. */
+    const TWO_PANEL_CURRENT = {
+      ...GOOD_DRAFT,
+      based_on_version: null,
+      screens: [{ id: 'today', title: 'Today', order: 1, panels: [PANEL_WALKS, PANEL_EATING] }],
+    }
+
+    const REMOVE_WALKS_PATCH = {
+      change_summary: 'Dropped the walk panel.',
+      data_requirements: [],
+      open_questions: [],
+      ops: [{ op: 'remove_panel', id: 'walks' }],
+    }
+
+    /** Shape-valid but names a panel absent from the base — a patch that
+     * cannot APPLY, the genuinely new failure mode this task adds. */
+    const GHOST_PATCH = {
+      change_summary: 'Dropped a panel.',
+      data_requirements: [],
+      open_questions: [],
+      ops: [{ op: 'remove_panel', id: 'ghost' }],
+    }
+
+    /** Same failure, naming SECRET_ID instead — proves the id is redacted out
+     * of the metrics row the same way a malformed_spec id already is. */
+    const SECRET_PATCH = {
+      change_summary: 'Dropped a panel.',
+      data_requirements: [],
+      open_questions: [],
+      ops: [{ op: 'remove_panel', id: SECRET_ID }],
+    }
+
+    it('authors WHOLE for a first version', async () => {
+      // No confirmed spec at all: v1 has no base to patch, and this is the
+      // one path this whole task may not change — same prompt, same schema.
+      const client = fake()
+      await authorSpec(deps(client.client), INPUT)
+
+      const [row] = metrics()
+      expect(row!.event).toBe('spec_proposed')
+      expect(row!.data.authoring_mode).toBe('whole')
+      // null, not 0 — 0 would claim a patch with no ops, which is impossible
+      // on the whole-surface path.
+      expect(row!.data.ops_count).toBeNull()
+
+      const stored = readStoredSpec(readSpecs(db, 1)[0]!.payload)
+      if (stored.kind !== 'version') throw new Error('unreachable')
+      expect(stored.version.ops).toBeNull()
+
+      expect(client.specCalls()[0]!.system).toContain('complete next version')
+    })
+
+    it('authors WHOLE against a legacy base — it has no ids to patch', async () => {
+      confirmed(LEGACY_V1)
+      await authorSpec(deps(fake().client), INPUT)
+
+      const row = metrics().find((r) => r.event === 'spec_proposed')!
+      expect(row.data.authoring_mode).toBe('whole')
+    })
+
+    it('authors a PATCH against a current base', async () => {
+      confirmed(TWO_PANEL_CURRENT)
+      const client = fake({ drafts: [REMOVE_WALKS_PATCH] })
+      await authorSpec(deps(client.client), INPUT)
+
+      const row = metrics().find((r) => r.event === 'spec_proposed')!
+      expect(row.data.authoring_mode).toBe('patch')
+      expect(row.data.ops_count).toBe(1)
+    })
+
+    it('stores the applied WHOLE surface alongside the ops', async () => {
+      confirmed(TWO_PANEL_CURRENT)
+      const client = fake({ drafts: [REMOVE_WALKS_PATCH] })
+      await authorSpec(deps(client.client), INPUT)
+
+      const stored = readStoredSpec(readSpecs(db, 1)[0]!.payload)
+      if (stored.kind !== 'version') throw new Error('unreachable')
+      // The whole surface — a builder never replays history.
+      expect(stored.version.screens[0]!.panels.map((p) => p.id)).toEqual(['eating_out'])
+      // And the ops, so the card and the mockup know what changed.
+      expect(stored.version.ops).toEqual(REMOVE_WALKS_PATCH.ops)
+    })
+
+    it('retries once on a patch that does not apply, then records patch_failed', async () => {
+      confirmed(TWO_PANEL_CURRENT)
+      const client = fake({ drafts: [GHOST_PATCH, GHOST_PATCH] })
+      const result = await authorSpec(deps(client.client), INPUT)
+
+      expect(result).toBeUndefined()
+      expect(client.specCalls()).toHaveLength(2)
+
+      const errors = metrics().filter((r) => r.event === 'spec_error')
+      expect(errors.map((e) => e.data.attempt)).toEqual([1, 2])
+      expect(errors[0]!.data.kind).toBe('patch_failed')
+      expect(errors[1]!.data.kind).toBe('patch_failed')
+    })
+
+    it('redacts the quoted id out of the patch_failed metric message', async () => {
+      confirmed(TWO_PANEL_CURRENT)
+      const client = fake({ drafts: [SECRET_PATCH, SECRET_PATCH] })
+      await authorSpec(deps(client.client), INPUT)
+
+      const row = metrics().find((r) => r.data.kind === 'patch_failed')!
+      const message = row.data.message as string
+      expect(message).not.toContain(SECRET_ID)
+      expect(message).toContain('"…"')
+    })
+
+    it('feeds the FULL patch error back to the model on the retry', async () => {
+      confirmed(TWO_PANEL_CURRENT)
+      const client = fake({ drafts: [GHOST_PATCH, GHOST_PATCH] })
+      await authorSpec(deps(client.client), INPUT)
+
+      const retryMessages = client.specCalls()[1]!.messages
+      expect(JSON.stringify(retryMessages)).toContain('ghost')
     })
   })
 })
