@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   AGENT_PROMPT,
   ANNOUNCE_PROMPT,
@@ -21,6 +21,17 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
+
+/**
+ * Every shipped prompt, discovered from disk rather than enumerated by name.
+ * Enumeration is what let a fifth prompt (announce-v1.md) go unchecked by the
+ * Plaid-terms sweep below — a name added to lib/chat/prompt.ts is not
+ * necessarily added to every test that lists prompts by name. Discovery
+ * closes that genus permanently: any prompt that exists gets swept, whether
+ * or not a test author remembered to list it.
+ */
+const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
+const ALL_SHIPPED_PROMPTS = readdirSync(PROMPT_DIR).filter((f) => f.endsWith('.md'))
 
 /**
  * Plaid products/synonyms this project does not enable (architecture-overview.md
@@ -122,7 +133,7 @@ describe('loadPrompt', () => {
   it('loads the announce prompt and hashes it', () => {
     const loaded = loadPrompt(ANNOUNCE_PROMPT)
     expect(loaded.text).toContain('Saying nothing extra is a complete answer')
-    expect(loaded.sha).toHaveLength(12)
+    expect(loaded.sha).toMatch(/^[0-9a-f]{12}$/)
   })
 
   it('gives every shipped prompt a distinct sha', () => {
@@ -141,10 +152,14 @@ describe('loadPrompt', () => {
 
   it('never mentions an un-enabled Plaid product without disclaiming it, in ANY prompt', () => {
     // architecture-overview.md section 3: Investments and Liabilities are NOT
-    // enabled, and line 98 requires checking before promising a panel. This
-    // covers spec-v1.md/spec-v2.md/mockup-v1.md too — "in ANY prompt" means
-    // all of them, including the mockup call, which turns a spec that may
-    // carry open_questions naming these products into rendered HTML.
+    // enabled, and line 98 requires checking before promising a panel. "in ANY
+    // prompt" means every prompt shipped on disk (ALL_SHIPPED_PROMPTS, above)
+    // rather than a hand-maintained list — a fifth prompt (announce-v1.md) was
+    // added to lib/chat/prompt.ts without being added to this sweep's old
+    // enumerated list, which is exactly the gap discovery closes: the sweep
+    // now needs no edit when a new prompt file ships. This also newly covers
+    // agent-v1.md/agent-v3.md/agent-v4.md/mockup-v1.md/mockup-v2.md/spec-v1.md,
+    // which the old enumerated list never checked.
     //
     // v2/v3 changed strategy from v1: instead of staying silent about
     // investments/liabilities, agent-v3.md and spec-v2.md name them
@@ -155,7 +170,7 @@ describe('loadPrompt', () => {
     // anymore" would pass it) — see the counter-example test below — so this
     // requires DISCLAIM_NEARBY: "not" anchored to a real disclaiming verb
     // this project actually uses, not any "not" in the neighbourhood.
-    for (const name of [AGENT_PROMPT, 'agent-v2.md', SPEC_PROMPT, MOCKUP_PROMPT]) {
+    for (const name of ALL_SHIPPED_PROMPTS) {
       const { text } = loadPrompt(name)
       for (const global of FORBIDDEN_TERMS_GLOBAL) {
         for (const match of text.matchAll(global)) {
@@ -219,7 +234,7 @@ describe('loadPrompt', () => {
   })
 
   it('names prompt files that exist on disk', () => {
-    for (const name of [AGENT_PROMPT, SPEC_PROMPT, MOCKUP_PROMPT]) {
+    for (const name of [AGENT_PROMPT, SPEC_PROMPT, MOCKUP_PROMPT, ANNOUNCE_PROMPT]) {
       expect(existsSync(promptPath(name))).toBe(true)
     }
   })
