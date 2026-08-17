@@ -6,10 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { confirmSpec, insertSpec } from '@/lib/db/specs'
-import { readTranscript } from '@/lib/db/appendOnly'
+import { appendTranscript, readTranscript } from '@/lib/db/appendOnly'
 import type { ChatClient } from '@/lib/chat/client'
 import type { SpecVersion } from '@/lib/spec/schema'
-import { runAnnounce, type AnnounceDeps } from '@/scripts/announce-deploy'
+import {
+  exitCodeFor,
+  resolveClient,
+  runAnnounce,
+  type AnnounceDeps,
+  type AnnounceOutcome,
+} from '@/scripts/announce-deploy'
 
 const MOCKUP = '<!doctype html><html><body>COFFEE PALACE TEST</body></html>'
 
@@ -180,12 +186,22 @@ describe('runAnnounce', () => {
     expect(transcriptCount(db)).toBe(1)
   })
 
-  it('warns when ## Open is non-empty, and still announces', async () => {
+  it('warns when ## Open is non-empty, and never sends it to the drafting call', async () => {
     writeNotes('sam', 1, { open: 'The investment tile needs a connection.' })
-    const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
+    const client = clientReturning('Your takeaway total is up now.')
+    const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: false })
     expect(out.kind).toBe('announced')
     expect(out.warnings.join(' ')).toMatch(/Open/)
-    // Builder-only: it warns Nico and never reaches the friend.
+    // Builder-only: it warns Nico and never reaches the friend. Asserting on
+    // the transcript body ALONE would pass even if the raw notes — "## Open"
+    // included — were handed straight to draftAnnouncement, because this
+    // fixture's fake client ignores its input and always returns the same
+    // fixed string (the vacuous-assertion trap tests/chat/draftAnnouncement
+    // .test.ts's sentinel test guards against for the lower-level call). The
+    // real guarantee has to be checked at the boundary that actually sends
+    // bytes: what was passed to propose().
+    const sent = JSON.stringify((client.propose as ReturnType<typeof vi.fn>).mock.calls[0]![0])
+    expect(sent).not.toContain('investment')
     expect(lastTranscriptBody(db)).not.toContain('investment')
   })
 
@@ -215,5 +231,121 @@ describe('runAnnounce', () => {
     const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: false })
     expect(out.kind).toBe('already_announced')
     expect(client.propose).not.toHaveBeenCalled()
+  })
+
+  // D17 (unified-loop ledger), exercised end to end. Every test above seeds
+  // no transcript rows, so readTranscript returns [] and the trailing-user-
+  // turn branch in scripts/announce-deploy.ts never runs — this is the one
+  // test that actually puts an unanswered user turn on the account first.
+  it('never sends two consecutive user messages, even when the account’s last turn was an unanswered user message (D17)', async () => {
+    writeNotes('sam', 1)
+    // A real conversation: friend asks, agent replies, friend asks again and
+    // gets no reply before Nico runs this script — readTranscript makes no
+    // promise otherwise.
+    appendTranscript(db, {
+      accountId,
+      sessionId: 'sess-1',
+      conversationId: 'conv-1',
+      promptSha: 'sha-turn-1',
+      role: 'user',
+      body: 'Can you add a total? TEST',
+      at: 100,
+    })
+    appendTranscript(db, {
+      accountId,
+      sessionId: 'sess-1',
+      conversationId: 'conv-1',
+      promptSha: 'sha-turn-2',
+      role: 'assistant',
+      body: 'Working on it TEST.',
+      at: 200,
+    })
+    appendTranscript(db, {
+      accountId,
+      sessionId: 'sess-1',
+      conversationId: 'conv-1',
+      promptSha: 'sha-turn-3',
+      role: 'user',
+      body: 'Any update? TEST',
+      at: 300,
+    })
+
+    const client = clientReturning('Your takeaway total is up now.')
+    await runAnnounce({ ...deps, client }, { slug: 'sam', send: false, plain: false })
+
+    const sent = (client.propose as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: { role: string; content: string }[]
+    }
+    const roles = sent.messages.map((m) => m.role)
+    expect(roles.length).toBeGreaterThan(1)
+    for (let i = 1; i < roles.length; i++) {
+      expect(roles[i]).not.toBe(roles[i - 1])
+    }
+    // And specifically: the trailing unanswered user turn was dropped rather
+    // than kept, so the request ends with draftAnnouncement's OWN appended
+    // user turn, not two of them back to back.
+    expect(roles.at(-1)).toBe('user')
+    expect(roles.at(-2)).toBe('assistant')
+  })
+})
+
+describe('resolveClient', () => {
+  it('--plain: returns a stub that rejects if ever called, needing no credential', async () => {
+    const client = resolveClient(true)
+    await expect(
+      client.propose({
+        system: '',
+        messages: [],
+        signal: new AbortController().signal,
+        schema: {},
+      }),
+    ).rejects.toThrow()
+    await expect(
+      client.stream({
+        system: '',
+        messages: [],
+        signal: new AbortController().signal,
+        onText: () => {},
+        onUsage: () => {},
+        onServed: () => {},
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('not --plain: constructs a real client when a credential is present', () => {
+    const original = process.env.ANTHROPIC_API_KEY
+    process.env.ANTHROPIC_API_KEY = 'sk-test-FAKE-NEVER-SENT'
+    try {
+      const client = resolveClient(false)
+      expect(typeof client.propose).toBe('function')
+      expect(typeof client.stream).toBe('function')
+    } finally {
+      if (original === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = original
+    }
+  })
+
+  it('not --plain: throws (rather than silently degrading) when no credential is set', () => {
+    const original = process.env.ANTHROPIC_API_KEY
+    delete process.env.ANTHROPIC_API_KEY
+    try {
+      expect(() => resolveClient(false)).toThrow(/ANTHROPIC_API_KEY/)
+    } finally {
+      if (original !== undefined) process.env.ANTHROPIC_API_KEY = original
+    }
+  })
+})
+
+describe('exitCodeFor', () => {
+  it('is nonzero for every refusal kind, zero for everything else', () => {
+    const refusals: AnnounceOutcome['kind'][] = [
+      'notes_missing',
+      'notes_invalid',
+      'draft_failed',
+      'no_confirmed_spec',
+    ]
+    const ok: AnnounceOutcome['kind'][] = ['drafted', 'announced', 'already_announced']
+    for (const kind of refusals) expect(exitCodeFor(kind)).not.toBe(0)
+    for (const kind of ok) expect(exitCodeFor(kind)).toBe(0)
   })
 })

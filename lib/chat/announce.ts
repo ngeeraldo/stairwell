@@ -8,10 +8,10 @@
 // session_id is unconditionally the sentinel 'operator': there is never a
 // real session behind a row this module writes, drafted or not. prompt_sha
 // is conditional — the same sentinel when no prompt produced the row (an
-// operator typing a question by hand, or announceDeploy's --plain path),
-// but the real drafting prompt's content hash when one did (a DRAFTED
-// announcement). Every other row in the table can be traced to the exact
-// prompt text behind it; a row with prompt_sha = OPERATOR_SHA says,
+// operator typing a question by hand, or scripts/announce-deploy.ts's
+// --plain path), but the real drafting prompt's content hash when one did (a
+// DRAFTED announcement). Every other row in the table can be traced to the
+// exact prompt text behind it; a row with prompt_sha = OPERATOR_SHA says,
 // permanently, that there was none. transcripts is append-only — the
 // distinction has to be right at write time or not at all.
 import type { PlatformDb } from '@/lib/db/platform'
@@ -68,10 +68,6 @@ export function announce(
   })
 }
 
-export type AnnounceDeployResult =
-  | { announced: true }
-  | { announced: false; reason: 'no_confirmed_spec' | 'already_announced' }
-
 /**
  * Whether `specId` already has a `deploy_announced` metric row.
  *
@@ -116,10 +112,10 @@ export type AnnounceTarget =
 /**
  * Decide, without writing anything and without spending a model call.
  *
- * Split out from announceDeploy so scripts/announce-deploy.ts can answer
- * "is there anything to announce?" BEFORE paying to draft a sentence — and so
- * its dry run can print a draft while writing neither the transcript row nor
- * the deploy_announced metric that would make the real send a no-op.
+ * So scripts/announce-deploy.ts's runAnnounce can answer "is there anything
+ * to announce?" BEFORE paying to draft a sentence — and so its dry run can
+ * print a draft while writing neither the transcript row nor the
+ * deploy_announced metric that would make the real send a no-op.
  */
 export function announceTarget(db: PlatformDb, slug: string): AnnounceTarget {
   const account = findAccountBySlug(db, slug)
@@ -217,34 +213,3 @@ export function commitAnnouncement(
   })()
 }
 
-/**
- * Post a deploy announcement into an account's chat, once per confirmed spec
- * version.
- *
- * `deploy.sh` may run repeatedly against the same confirmed version — a
- * restart, a retry, a redeploy for an unrelated reason — and transcripts is
- * append-only, so a duplicate announcement would be permanent. The guard is
- * keyed on the CONFIRMED spec's id specifically (not "has this account ever
- * been announced to"), so a NEW confirmed version announces again: each
- * version is its own event.
- *
- * The fixed-sentence path, unchanged in behaviour and still the --plain
- * valve. Now expressed in terms of the two functions above rather than
- * duplicating them, so there is one place that decides and one place that
- * writes.
- */
-export function announceDeploy(
-  db: PlatformDb,
-  slug: string,
-  now: () => number,
-): AnnounceDeployResult {
-  const target = announceTarget(db, slug)
-  if (!target.ok) return { announced: false, reason: target.reason }
-
-  commitAnnouncement(db, target, {
-    body: plainBody(target.headline, target.first),
-    promptSha: OPERATOR_SHA,
-    at: now(),
-  })
-  return { announced: true }
-}

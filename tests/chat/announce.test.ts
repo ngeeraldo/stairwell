@@ -9,6 +9,7 @@ import { readTranscript } from '@/lib/db/appendOnly'
 import { insertSpec, confirmSpec } from '@/lib/db/specs'
 import { announce, announceTarget, commitAnnouncement, plainBody } from '@/lib/chat/announce'
 import type { SpecVersion } from '@/lib/spec/schema'
+import type { LegacySpecPayload } from '@/lib/spec/legacy'
 
 let dir: string
 let db: PlatformDb
@@ -52,6 +53,20 @@ function currentPayload(overrides: Partial<SpecVersion> = {}): SpecVersion {
       },
     ],
     data_requirements: [],
+    open_questions: [],
+    ...overrides,
+  }
+}
+
+function legacyPayload(overrides: Partial<LegacySpecPayload> = {}): LegacySpecPayload {
+  return {
+    title: 'A legacy dashboard TEST',
+    summary: 'A summary, COFFEE PALACE TEST.',
+    background: 'Loudly-fake background, COFFEE PALACE TEST.',
+    panels: [
+      { name: 'Panel one', shows: 'Something', why: 'A reason', source: 'plaid' },
+    ],
+    manual_logging: [],
     open_questions: [],
     ...overrides,
   }
@@ -156,6 +171,72 @@ describe('announceTarget', () => {
       ok: false,
       reason: 'already_announced',
     })
+  })
+
+  // Own account, not the shared 'devtwo' fixture: a legacy row is a
+  // different SHAPE of confirmed spec, not just another version of the same
+  // account's history, and mixing it into devtwo's sequential version count
+  // would make this test's meaning depend on where in that sequence it ran.
+  it("falls back to a legacy spec's title as the headline — legacy rows can never be migrated to carry change_summary", async () => {
+    const legacyAccountId = await createAccount(db, {
+      slug: 'legacyannounce',
+      role: 'user',
+      password: 'TEST-legacyannounce',
+    })
+    const specId = insertSpec(db, {
+      accountId: legacyAccountId,
+      conversationId: 'conv-legacyannounce',
+      promptSha: 'sha-legacyannounce-0001',
+      payload: legacyPayload(),
+      mockupHtml: MOCKUP,
+      at: 1_000,
+    })
+    confirmSpec(db, { specId, accountId: legacyAccountId, at: 1_500 })
+
+    const target = announceTarget(db, 'legacyannounce')
+    expect(target.ok).toBe(true)
+    if (!target.ok) return
+    expect(target.headline).toBe('A legacy dashboard TEST')
+  })
+
+  // Ledger D9: a promise made to a person, gotten wrong twice already. A
+  // SECOND confirmed build for an account must not read as its first launch.
+  it('calls a second confirmed build a rebuild, not a first-time launch', async () => {
+    const rebuildAccountId = await createAccount(db, {
+      slug: 'rebuildannounce',
+      role: 'user',
+      password: 'TEST-rebuildannounce',
+    })
+    const firstSpecId = insertSpec(db, {
+      accountId: rebuildAccountId,
+      conversationId: 'conv-rebuildannounce',
+      promptSha: 'sha-rebuildannounce-0001',
+      payload: currentPayload({ change_summary: 'Added a streak panel TEST.' }),
+      mockupHtml: MOCKUP,
+      at: 1_000,
+    })
+    confirmSpec(db, { specId: firstSpecId, accountId: rebuildAccountId, at: 1_500 })
+
+    const secondSpecId = insertSpec(db, {
+      accountId: rebuildAccountId,
+      conversationId: 'conv-rebuildannounce',
+      promptSha: 'sha-rebuildannounce-0002',
+      payload: currentPayload({
+        change_summary: 'Renamed the eating-out panel TEST.',
+        based_on_version: 1,
+      }),
+      mockupHtml: MOCKUP,
+      at: 2_000,
+    })
+    confirmSpec(db, { specId: secondSpecId, accountId: rebuildAccountId, at: 2_500 })
+
+    const target = announceTarget(db, 'rebuildannounce')
+    expect(target.ok).toBe(true)
+    if (!target.ok) return
+    expect(target.first).toBe(false)
+    expect(plainBody(target.headline, target.first)).toBe(
+      'Your dashboard was just rebuilt: Renamed the eating-out panel TEST.',
+    )
   })
 })
 

@@ -60,7 +60,11 @@ export type AnnounceDeps = {
 
 /**
  * The whole command, as a function, so every branch is testable without a
- * subprocess. The CLI below parses argv and prints; it holds no logic.
+ * subprocess. The CLI below parses argv, calls resolveClient and this
+ * function, and prints; every DECISION it makes (which client, which exit
+ * code) is pulled out into its own small exported function below
+ * (resolveClient, exitCodeFor) so the claim "the wrapper holds no logic" is
+ * true of the code, not just of this comment.
  *
  * ORDER MATTERS. The target is resolved FIRST: an already-announced version
  * must not pay for a drafting call, and a missing notes file must refuse
@@ -77,7 +81,11 @@ export async function runAnnounce(
       kind: target.reason,
       message:
         target.reason === 'already_announced'
-          ? `v? already announced to '${opts.slug}' — nothing to do`
+          ? // No version number to name here — AnnounceTarget's false arm
+            // does not carry one (see lib/chat/announce.ts). Reworded rather
+            // than printing a literal placeholder, which reads at a terminal
+            // as a forgotten template value.
+            `the confirmed build for '${opts.slug}' was already announced — nothing to do`
           : `no confirmed spec for '${opts.slug}'`,
       warnings,
     }
@@ -191,6 +199,37 @@ const NEVER_CALLED_CLIENT: ChatClient = {
   },
 }
 
+/**
+ * Which client runAnnounce gets, decided from one flag — pulled out of the
+ * CLI wrapper so this decision is unit tested directly instead of only
+ * through a subprocess.
+ *
+ * --plain never touches the model: constructing the real client would throw
+ * MissingCredentialError when ANTHROPIC_API_KEY is unset — exactly the
+ * situation --plain exists to route around (see deploy/required-env's
+ * ANTHROPIC_API_KEY note). Throws synchronously when !plain and no
+ * credential is set, same as anthropicClient() itself.
+ */
+export function resolveClient(plain: boolean): ChatClient {
+  return plain ? NEVER_CALLED_CLIENT : anthropicClient()
+}
+
+/**
+ * The exit code for one outcome. A refusal must not exit 0 — Nico is reading
+ * a terminal after a deploy, and a green exit on "notes missing" is the one
+ * that gets skimmed past. Pulled out of the CLI wrapper for the same reason
+ * as resolveClient: a real decision, unit tested directly.
+ */
+export function exitCodeFor(kind: AnnounceOutcome['kind']): number {
+  const refusal: AnnounceOutcome['kind'][] = [
+    'notes_missing',
+    'notes_invalid',
+    'draft_failed',
+    'no_confirmed_spec',
+  ]
+  return refusal.includes(kind) ? 1 : 0
+}
+
 if (process.argv[1]?.endsWith('announce-deploy.ts')) {
   const args = process.argv.slice(2)
   const slug = args.find((a) => !a.startsWith('--'))
@@ -201,12 +240,9 @@ if (process.argv[1]?.endsWith('announce-deploy.ts')) {
     process.exit(2)
   }
 
-  // Built only when a model call might actually happen. See
-  // NEVER_CALLED_CLIENT above for why --plain does not construct the real
-  // client at all.
   let client: ChatClient
   try {
-    client = plain ? NEVER_CALLED_CLIENT : anthropicClient()
+    client = resolveClient(plain)
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exit(1)
@@ -218,10 +254,8 @@ if (process.argv[1]?.endsWith('announce-deploy.ts')) {
     for (const w of out.warnings) console.error(`warning: ${w}`)
     if (out.body) console.log(`\n${out.body}\n`)
     console.log(out.message)
-    // A refusal must not exit 0. Nico is reading a terminal after a deploy and
-    // a green exit on "notes missing" is the one that gets skimmed past.
-    const failed = ['notes_missing', 'notes_invalid', 'draft_failed', 'no_confirmed_spec']
-    if (failed.includes(out.kind)) process.exit(1)
+    const code = exitCodeFor(out.kind)
+    if (code !== 0) process.exit(code)
   } finally {
     db.close()
   }

@@ -389,10 +389,11 @@ architectural changes; do not relitigate decided items).
   or "clean up" these files.
 - **TWO metric events are load-bearing for correctness rather than purely
   observational, and neither is disposable telemetry.**
-  - `deploy_announced` — `announceDeploy` (`lib/chat/announce.ts`) reads it to
-    decide whether it has already spoken for a confirmed spec version, so
-    pruning or archiving one makes a weeks-old build announce itself again
-    into an append-only transcript (unified-loop ledger D16).
+  - `deploy_announced` — `announceTarget` (`lib/chat/announce.ts`, called from
+    `runAnnounce` in `scripts/announce-deploy.ts`) reads it to decide whether
+    it has already spoken for a confirmed spec version, so pruning or
+    archiving one makes a weeks-old build announce itself again into an
+    append-only transcript (unified-loop ledger D16).
   - `first_session_start` — `app/[user]/page.tsx` reads it to decide whether
     this account has ever reached the shell before. Pruning one makes a
     months-old account report a first session again, and nothing afterwards
