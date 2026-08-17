@@ -205,11 +205,14 @@ would make them all look the same.
 one.** A composed document holds fragments drawn by separate model calls, weeks
 apart. An unscoped `.panel {}` in a screen edited today would silently restyle
 a screen nobody touched — the exact class of hazard `lib/spec/banner.ts`
-addresses for the SYNTHETIC banner (unified-loop ledger D19): *"a rule the
-model must remember is a rule that eventually is not."* So `composeMockup`
-lifts each fragment's own `<style>` block and rewrites every selector under
-`#screen-<id>` itself (`scopeFragmentStyles`), rather than instructing the
-model to scope its own selectors.
+addresses for the SYNTHETIC banner (unified-loop ledger D19). `composeMockup`'s
+own doc comment states the principle directly rather than asking the model to
+follow it: *"a rule the model must remember is a rule that eventually is not"*
+(`lib/spec/mockupCompose.ts:413`) — D19 is where that reasoning comes from,
+not where that sentence was written. So `composeMockup` lifts each fragment's
+own `<style>` block and rewrites every selector under `#screen-<id>` itself
+(`scopeFragmentStyles`), rather than instructing the model to scope its own
+selectors.
 
 The scoper is bounded and fails **all-or-nothing per `<style>` block, never as
 a silent partial**. It was executed against adversarial CSS during review — a
@@ -241,9 +244,14 @@ independent reasons a fragment cannot live in `payload`:
   formatting rule — precisely what unified-loop ledger D19 says not to do.
 
 `spec_screen_mockups (spec_id, screen_id, html, at)` needs no new migration
-mechanism — `CREATE TABLE IF NOT EXISTS` plus the same append-only trigger pair
-as its neighbours, the same precedent `account_keys` already set.
-`lib/db/screenMockups.ts` only appends and reads; `lib/spec/mockupCompose.ts`
+mechanism — a plain `CREATE TABLE IF NOT EXISTS`, the same precedent
+`account_keys` already set for adding a table with no additive migration
+mechanism in this repo. That precedent is narrower than it might look:
+`account_keys` carries no trigger at all (`platform/schema.sql:156-160`) and
+is deliberately mutable — its own comment states a password change "rewrites
+this row and nothing else, which is the entire point of the indirection." The
+append-only trigger pair on `spec_screen_mockups` matches `specs`, its actual
+sibling, not `account_keys`. `lib/db/screenMockups.ts` only appends and reads; `lib/spec/mockupCompose.ts`
 is the only place that composes fragments into a document. `specs.mockup_html`
 keeps holding the whole composed document and stays the build contract
 untouched — `pull-spec.sh`, `users/<slug>/mockup.html`, the admin Mockup tab
@@ -251,8 +259,12 @@ and `dashboard.tsx`'s build target all still read it unscoped.
 
 ### D11. The announcement is an update, never a disclosure; `## Open` is builder-only and routes back to the chat
 
-Nico's ruling, 2026-08-17, already carried into CLAUDE.md's Build notes bullet
-(around line 307) from Part A. Recorded here because it is one of this branch's
+Nico's ruling, 2026-08-17, already carried into CLAUDE.md's Onboarding section,
+in the bullet beginning "A build that could not deliver something goes back to
+the chat, never into the announcement" — cited by section and text, not by
+line number, since this repo's own docs-drift lesson is that a line number is
+exactly the part that goes stale first (it already had, once, by the time this
+finding was fixed). Recorded here because it is one of this branch's
 load-bearing decisions, not because it needs a second implementation: `## Open`
 and `## Notes for the next build` are two of `notes/v<n>.md`'s four fixed
 sections, and `lib/build/notes.ts`'s parser — not prompt wording — is what
@@ -262,6 +274,45 @@ never content the announcement discloses on the builder's behalf.
 `announce-deploy.ts` warns when that section is non-empty rather than blocking
 on it: what landed should still be announced, and what did not land needs a
 conversation — neither should hold up the other.
+
+### D12. Metrics honesty on EVERY `appendMetric` site in `lib/spec/author.ts` — and why the six sites are not merged into one wrapper
+
+Same genus as D2 and D7: a field that is present at some call sites and absent
+at others, in a table that rejects UPDATE, is a hole a query cannot see. Three
+separate decisions, all Task 13:
+
+- **`authoring_mode` (and its paired `ops_count`) is stamped on every metric
+  row this function writes — the brief named three sites; the field goes on
+  all of them.** The field's whole justification is making this branch's cost
+  claim measurable against an append-only log; a `spec_aborted` row with no
+  mode is a permanent hole in that series. `mode` is nullable, and `null` is a
+  real third value — "failed before the mode was decided" — never a missing
+  one.
+- **`prompt_sha: null` on a corrupt current-spec-read failure is the honest
+  value, and stays null rather than being backfilled.** A failure while
+  reading the account's current spec (`currentSpec`/`readStoredSpec` in
+  `lib/spec/author.ts`) happens before any prompt is chosen. Stamping
+  `SPEC_PROMPT`'s hash there would assert a prompt was involved when none was
+  — permanently, since the row can never be corrected. `prompt_sha: null` +
+  `authoring_mode: null` together mean one thing: "failed before the prompt
+  was chosen."
+- **The six `appendMetric` sites in this function are deliberately NOT
+  factored into a generic wrapper**, even though this crosses the trigger
+  unified-loop residual 10 named (six call sites repeating their field
+  shape). Only the `authoring_mode`/`ops_count` pair — which carries no
+  per-site decision — was pulled out (`modeFields`). The bodies stayed apart
+  on purpose: `mockup_failed` reports the SPEC call's four standard counters,
+  not the mockup call's (D15, unified-loop ledger); `spec_aborted` reports
+  honest zeros; `kind` is computed differently at every site (including D4's
+  `phase` variable above); `message` is present at some sites and absent at
+  others. A generic wrapper would make one site's honesty rule the silent
+  default for all six — the exact hiding unified-loop residual 10 warned
+  against, reintroduced in the name of fixing it.
+
+A future sixth-plus `appendMetric` site in this file that copies an existing
+call rather than checking this ruling is the failure mode this exists to
+name: the field it silently omits will look like every other row in a query,
+until someone needs precisely the row where it is missing.
 
 ---
 
@@ -427,6 +478,29 @@ anything but test temp files.
 15. **`docs/dashboard-build-rules.md:32` cites `conventions.test.ts:45` for
     the REQUIRED array; the actual line is 47.** Pre-existing, not introduced
     by this branch.
+
+16. **The "every note in `notes/` parses" sweep test is vacuous today.** No
+    folder has a `v<n>.md` yet — by design, since build notes only start
+    existing once a version actually ships — so the loop body that would
+    parse each one never runs, and the test cannot fail no matter what
+    `parseBuildNotes` does. Correct per "shape not presence" (the sweep
+    checks the folder's shape, not whether notes exist), but it has never
+    been exercised RED, and it stops being vacuous the moment a real build
+    lands its first `notes/v1.md`. Flagged for triage at the final review.
+
+17. **`lib/build/notes.ts`'s `usersRoot()` deliberately duplicates the
+    one-line `USERS_DIR` fallback `lib/db/userDb.ts` already exports**, rather
+    than importing it (Task 2). `userDb.ts` imports
+    `better-sqlite3-multiple-ciphers` — a native SQLite binding — at module
+    top level; importing from it would drag that binding into every
+    downstream consumer of `lib/build/notes.ts`, including an operator CLI
+    (`scripts/announce-deploy.ts`) that has no business opening a database.
+    The comment at the duplicated function names this by reason
+    (`lib/build/notes.ts:162-174`). Not a defect — a deliberate rejection of
+    the "obvious" DRY refactor — but a future edit that "cleans up" the
+    duplication by importing `usersRoot` from `userDb.ts` reintroduces
+    exactly the coupling this avoided, and the two copies have to be kept in
+    step by hand if the `USERS_DIR` convention ever changes.
 
 ---
 
