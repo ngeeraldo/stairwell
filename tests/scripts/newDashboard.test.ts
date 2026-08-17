@@ -88,6 +88,17 @@ describe('scripts/new-dashboard.sh', () => {
     SUBPROCESS_TIMEOUT_MS,
   )
 
+  it('scaffolds a notes/ directory with its README', () => {
+    // <dir> is the temp scaffold this file's existing helper produces.
+    const sandbox = makeSandbox()
+    expect(run(sandbox, ['devthree']).status).toBe(0)
+    const dir = join(sandbox, 'users', 'devthree')
+    expect(existsSync(join(dir, 'notes', 'README.md'))).toBe(true)
+    expect(readFileSync(join(dir, 'notes', 'README.md'), 'utf8')).toContain(
+      'Added, never edited',
+    )
+  })
+
   it(
     'points at the runbook instead of restating the build sequence',
     () => {

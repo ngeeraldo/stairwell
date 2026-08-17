@@ -16,6 +16,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { SLUG_PATTERN } from '@/lib/auth/slug'
 import { declaredObjects } from '@/tests/support/declaredObjects'
 import { verifyManifest } from '@/lib/db/migrationFiles'
+import { readBuildNotes } from '@/lib/build/notes'
 
 /**
  * Every test in this file spawns python3 once per user folder. vitest's
@@ -131,6 +132,33 @@ describe('users/ folder conventions', () => {
       // live.
       if (hasShape) return
       expect(existsSync(join(dir, 'migrations', 'README.md'))).toBe(true)
+    })
+
+    whenComplete('has a notes/ directory', () => {
+      // Required on every complete folder, including scaffolded ones — the
+      // directory is the convention, and it must exist before the first build
+      // finishes so there is somewhere obvious to write v1.md.
+      expect(existsSync(join(dir, 'notes'))).toBe(true)
+    })
+
+    whenComplete('has nothing in notes/ but README.md and v<n>.md files', () => {
+      // Shape, NOT presence. This sweep cannot know which versions were built —
+      // that lives in the platform database, not in this folder — so demanding
+      // "at least one note" would be a false failure on devone (hand-written,
+      // never had a spec) and on every folder built before this convention.
+      // Presence is enforced where the version number is actually known:
+      // scripts/announce-deploy.ts.
+      const strays = readdirSync(join(dir, 'notes')).filter(
+        (f) => f !== 'README.md' && !/^v\d+\.md$/.test(f),
+      )
+      expect(strays, `unexpected files in notes/: ${strays.join(', ')}`).toHaveLength(0)
+    })
+
+    whenComplete('every note in notes/ parses', () => {
+      for (const f of readdirSync(join(dir, 'notes')).filter((f) => /^v\d+\.md$/.test(f))) {
+        const version = Number(/^v(\d+)\.md$/.exec(f)![1])
+        expect(() => readBuildNotes(slug, version, USERS)).not.toThrow()
+      }
     })
 
     whenBuilt('has a manifest covering every migration it declares', () => {
