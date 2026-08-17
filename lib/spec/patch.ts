@@ -22,7 +22,7 @@ import {
   type Panel,
   type Screen,
 } from './schema'
-import { parsePanel, parseScreen } from './fields'
+import { integer, parsePanel, parseScreen, textList } from './fields'
 
 /**
  * Extends SpecShapeError deliberately, and it buys two things for free:
@@ -178,20 +178,27 @@ function parseOp(raw: unknown, at: string): SpecPatchOp {
   const src = obj(raw, at)
   const op = reqText(src, 'op', at)
   switch (op) {
-    case 'set_meta':
-      return {
-        op,
-        title: optText(src, 'title', at),
-        summary: optText(src, 'summary', at),
-        background: optText(src, 'background', at),
+    case 'set_meta': {
+      const title = optText(src, 'title', at)
+      const summary = optText(src, 'summary', at)
+      const background = optText(src, 'background', at)
+      // Same failure mode as an empty ops list, a different door: three
+      // nulls is an op that changes nothing, and it would otherwise slip
+      // past the "ops must not be empty" check into a permanent no-op row.
+      if (title === null && summary === null && background === null) {
+        throw new SpecPatchError(
+          `${at} is a set_meta op with title, summary, and background all null — it changes nothing`,
+        )
       }
+      return { op, title, summary, background }
+    }
     case 'add_screen':
       return { op, screen: parseScreen(src.screen, `${at}.screen`) }
     case 'update_screen': {
-      const order = src.order
-      if (typeof order !== 'number' || !Number.isInteger(order)) {
-        throw new SpecPatchError(`${at}.order is not an integer`)
-      }
+      // integer() is the same rule parseScreen uses for a screen's own
+      // order — reused here rather than re-implemented, so the two cannot
+      // drift apart.
+      const order = integer(src, 'order', at)
       return { op, id: reqText(src, 'id', at), title: reqText(src, 'title', at), order }
     }
     case 'remove_screen':
@@ -236,16 +243,18 @@ export function parsePatch(raw: unknown): SpecPatch {
   if (!Array.isArray(requirements)) {
     throw new SpecPatchError('patch.data_requirements is not an array')
   }
-  const questions = src.open_questions
-  if (!Array.isArray(questions)) throw new SpecPatchError('patch.open_questions is not an array')
 
   return {
     change_summary: reqText(src, 'change_summary', 'patch'),
-    // Passed through untouched: applyPatch hands these to parseSpecDraft, which
-    // is the validator that owns their shape. Validating them twice, in two
+    // Passed through untouched: applyPatch hands this to parseSpecDraft, which
+    // is the validator that owns its shape. Validating it twice, in two
     // places, is two chances to disagree.
     data_requirements: requirements,
-    open_questions: questions.filter((q): q is string => typeof q === 'string'),
+    // textList is the same helper draftFrom uses for the whole-surface
+    // open_questions: it throws on a non-string entry instead of silently
+    // dropping it — the same "answer became none" laundering arrayField's
+    // comment (fields.ts) warns against, applied to a smaller field.
+    open_questions: textList(src, 'open_questions', 'patch'),
     ops: ops.map((o, i) => parseOp(o, `patch.ops[${i}]`)),
   }
 }

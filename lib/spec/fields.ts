@@ -69,6 +69,14 @@ function textList(src: Record<string, unknown>, key: string, at: string): string
   return out
 }
 
+function integer(src: Record<string, unknown>, key: string, at: string): number {
+  const value = src[key]
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new SpecShapeError(`${at}.${key} is not an integer`)
+  }
+  return value
+}
+
 function oneOf<T extends string>(value: string, allowed: readonly T[], at: string): T {
   if (!(allowed as readonly string[]).includes(value)) {
     throw new SpecShapeError(`${at} is not one of ${allowed.join(', ')}`)
@@ -167,10 +175,7 @@ function entryOrNull(src: Record<string, unknown>, at: string): EntryWidget | nu
 
 export function parseScreen(raw: unknown, at: string): Screen {
   const src = record(raw, at)
-  const order = src.order
-  if (typeof order !== 'number' || !Number.isInteger(order)) {
-    throw new SpecShapeError(`${at}.order is not an integer`)
-  }
+  const order = integer(src, 'order', at)
   return {
     id: id(src, at),
     title: text(src, 'title', at),
@@ -267,4 +272,7 @@ export function parseSpecDraft(raw: unknown): SpecDraft {
 // Exported because validate.ts still needs them directly (record/text for
 // parseMockupInput and parseSpecVersion's based_on_version check; draftFrom
 // for re-validating a stored payload without re-checking based_on_version).
-export { record, text }
+// textList and integer are exported for lib/spec/patch.ts, which reuses them
+// for its own open_questions and update_screen.order fields rather than
+// re-implementing the same rule a second time.
+export { record, text, textList, integer }
