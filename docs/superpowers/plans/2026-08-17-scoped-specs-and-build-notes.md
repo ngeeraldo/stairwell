@@ -1644,17 +1644,46 @@ git commit -m "Document build notes: the artifact, the split, and the announce f
 - Consumes: `Panel`, `Screen`, `SpecShapeError` from `lib/spec/schema.ts`; `parsePanel`, `parseScreen` newly exported from `lib/spec/validate.ts`.
 - Produces: `SpecPatchOp` (8 variants), `SpecPatch`, `SpecPatchError`, `PATCH_JSON_SCHEMA`, `parsePatch(raw: unknown): SpecPatch`.
 
-- [ ] **Step 1: Export the two helpers from `lib/spec/validate.ts`**
+- [ ] **Step 1: Extract `lib/spec/fields.ts` to break an import cycle**
 
-Rename the module-private `panel` and `screen` functions to exported ones, updating their call sites in that file:
+**Do this first, as its own commit.** Task 11 will have `validate.ts` import `parseOp`
+(a value) from `patch.ts`, while this task has `patch.ts` import `parsePanel`,
+`parseScreen`, and `parseSpecDraft` (values) from `validate.ts`. That is a runtime
+import cycle. ESM tolerates it only because every use sits inside a function body —
+a temporal-dead-zone hazard one refactor away from a crash, in the module that is
+this repo's last gate before an append-only table.
+
+Move these out of `lib/spec/validate.ts` into a new `lib/spec/fields.ts`, unchanged
+except for the two renames: `record`, `text`, `nullableText`, `id`, `textList`,
+`oneOf`, `arrayField`, `nonEmptyArray`, `valueSpec`, `entryField`, `entryOrNull`,
+`entryWidget`, `requirement`, `panel` → **`parsePanel`**, `screen` → **`parseScreen`**,
+`checkInvariants`, `draftFrom`, `parseSpecDraft`.
+
+Export from `fields.ts` everything `validate.ts` or `patch.ts` needs. Then in
+`validate.ts`, import what it still uses and **re-export `parseSpecDraft`**, so every
+existing call site and test keeps working untouched:
 
 ```ts
-/** Exported for lib/spec/patch.ts: an op carries a whole panel or screen, and
- * it must be validated by the same code the whole-surface path uses. Two
- * validators for one shape is two chances to disagree. */
-export function parsePanel(raw: unknown, at: string): Panel { /* body of `panel` */ }
-export function parseScreen(raw: unknown, at: string): Screen { /* body of `screen` */ }
+// lib/spec/validate.ts
+import { draftFrom, parseSpecDraft, record, text, arrayField } from './fields'
+export { parseSpecDraft } from './fields'
 ```
+
+Resulting import directions — one way only, no cycle:
+
+```
+fields.ts   -> schema.ts
+patch.ts    -> fields.ts, schema.ts
+validate.ts -> fields.ts, patch.ts
+```
+
+`fields.ts` = how ONE spec field is validated. `validate.ts` = how a whole emitted or
+stored document is validated. Keep every existing comment with the function it belongs
+to — several of them explain why a laundering shortcut was rejected, and they are worth
+more than the code.
+
+Verify before moving on: `npx vitest run tests/spec && npx tsc --noEmit` with **no test
+file edited**. If a test had to change, the move was not behaviour-preserving.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1762,8 +1791,17 @@ Expected: FAIL — module not found.
 // The stored row is still the whole surface — applyPatch produces it and
 // lib/spec/validate.ts validates it, unchanged. The ops ride alongside so the
 // card and the mockup know what actually changed.
-import { SpecShapeError, type Panel, type Screen } from './schema'
-import { parsePanel, parseScreen } from './validate'
+// Every import at the top of the file. PANEL_SCHEMA and SCREEN_SCHEMA come
+// from schema.ts (Step 5 exports them); the field parsers come from fields.ts
+// (Step 1), never from validate.ts — that direction is the cycle.
+import {
+  PANEL_SCHEMA,
+  SCREEN_SCHEMA,
+  SpecShapeError,
+  type Panel,
+  type Screen,
+} from './schema'
+import { parsePanel, parseScreen } from './fields'
 
 /**
  * Extends SpecShapeError deliberately, and it buys two things for free:
@@ -1810,12 +1848,6 @@ export type SpecPatch = {
 
 const str = { type: 'string' } as const
 const nullableStr = { type: ['string', 'null'] } as const
-
-// PANEL_SCHEMA and the screen shape are re-declared here rather than imported
-// from schema.ts's SPEC_JSON_SCHEMA internals, because that module exports the
-// assembled document and not its parts. If schema.ts is ever refactored to
-// export PANEL_SCHEMA, import it instead — one shape, one declaration.
-import { PANEL_SCHEMA, SCREEN_SCHEMA } from './schema'
 
 export const PATCH_JSON_SCHEMA = {
   type: 'object',
@@ -2963,37 +2995,68 @@ git commit -m "Add spec_screen_mockups: per-screen fragments, append-only"
 
 **Interfaces:**
 - Consumes: `SpecPatchOp`, `Screen`.
-- Produces: `affectedScreens(screens: Screen[], ops: SpecPatchOp[] | null): string[]`, `composeMockup(screens: Screen[], fragments: Map<string, string>, only?: string[]): string`, `MOCKUP_SHELL_CLASSES`.
+- Produces: `affectedScreens(base: Screen[] | null, next: Screen[], ops: SpecPatchOp[] | null): string[]`, `composeMockup(screens: Screen[], fragments: Map<string, string>, only?: string[]): string`, `MOCKUP_SHELL_CLASSES`.
+
+> **Two corrections ruled at pre-flight — read before writing the tests.**
+>
+> **The source screen of a removed or moved panel cannot be found in the
+> result.** A removed panel is gone from `next`, and a moved panel is already at
+> its destination — so resolving against `next` alone names no screen for
+> `remove_panel` and only the destination for `move_panel`. The screen the panel
+> LEFT would keep a stale fragment showing a panel that is no longer there, in
+> the friend's preview *and* in the stored build contract. Hence the `base`
+> parameter: sources resolve against `base`, destinations against `next` and the
+> op.
+>
+> **`set_meta` affects NO screens.** The composed shell renders no title, summary
+> or background, so a meta-only change alters no pixel. Returning every screen
+> for it would redraw the whole dashboard — the exact cost this branch exists to
+> avoid. An empty result is legitimate and Task 18 handles it by skipping the
+> mockup call entirely.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
 describe('affectedScreens', () => {
   it('returns every screen id when ops is null — a whole-surface version', () => {
-    expect(affectedScreens(SCREENS, null)).toEqual(['morning', 'money'])
+    expect(affectedScreens(null, SCREENS, null)).toEqual(['morning', 'money'])
   })
 
   it('names the screen a replaced panel lives on', () => {
-    expect(affectedScreens(SCREENS, [{ op: 'replace_panel', panel: panel('eating_out') }]))
+    expect(affectedScreens(SCREENS, SCREENS, [{ op: 'replace_panel', panel: panel('eating_out') }]))
       .toEqual(['morning'])
   })
 
-  it('names both screens for a move', () => {
-    expect(affectedScreens(SCREENS, [{ op: 'move_panel', panel_id: 'eating_out', screen_id: 'money' }]))
-      .toEqual(['money'])  // the panel's new home; its old one is named by the remove side
+  // BOTH ends. The destination is where it now is; the source is where it was,
+  // and that screen has to be redrawn without it.
+  it('names both ends of a move', () => {
+    const next = movePanel(SCREENS, 'eating_out', 'money')
+    expect(affectedScreens(SCREENS, next, [
+      { op: 'move_panel', panel_id: 'eating_out', screen_id: 'money' },
+    ])).toEqual(['morning', 'money'])
+  })
+
+  // The panel is gone from `next`, so only `base` knows which screen lost it.
+  it('names the screen a removed panel used to live on', () => {
+    const next = removePanel(SCREENS, 'eating_out')
+    expect(affectedScreens(SCREENS, next, [{ op: 'remove_panel', id: 'eating_out' }]))
+      .toEqual(['morning'])
   })
 
   it('names an added screen', () => {
-    expect(affectedScreens(SCREENS, [{ op: 'add_screen', screen: SCREENS[1]! }])).toContain('money')
+    expect(affectedScreens(SCREENS, SCREENS, [{ op: 'add_screen', screen: SCREENS[1]! }]))
+      .toContain('money')
   })
 
   it('never names a screen that no longer exists', () => {
-    expect(affectedScreens(SCREENS, [{ op: 'remove_screen', id: 'gone' }])).toEqual([])
+    expect(affectedScreens(SCREENS, SCREENS, [{ op: 'remove_screen', id: 'gone' }])).toEqual([])
   })
 
-  it('returns every screen for set_meta — the shell changed', () => {
-    expect(affectedScreens(SCREENS, [{ op: 'set_meta', title: 'X', summary: null, background: null }]))
-      .toEqual(['morning', 'money'])
+  // The shell renders no meta, so nothing is redrawn. Task 18 skips the call.
+  it('names no screen for set_meta', () => {
+    expect(affectedScreens(SCREENS, SCREENS, [
+      { op: 'set_meta', title: 'X', summary: null, background: null },
+    ])).toEqual([])
   })
 
   it('deduplicates and returns screens in document order', () => {
@@ -3001,7 +3064,7 @@ describe('affectedScreens', () => {
       { op: 'replace_panel' as const, panel: panel('walks') },
       { op: 'replace_panel' as const, panel: panel('eating_out') },
     ]
-    expect(affectedScreens(SCREENS, ops)).toEqual(['morning'])
+    expect(affectedScreens(SCREENS, SCREENS, ops)).toEqual(['morning'])
   })
 })
 
@@ -3063,28 +3126,43 @@ import type { SpecPatchOp } from './patch'
 export const MOCKUP_SHELL_CLASSES = ['screen', 'screen-title', 'panel', 'panel-title', 'figure', 'note'] as const
 
 /**
- * Which screens a patch changed, in document order.
+ * Which screens a patch changed, in the NEXT version's document order.
  *
- * `null` ops means the version was authored whole-surface, so everything is
- * affected — v1, and the one-time legacy fallback.
+ * `ops === null` means the version was authored whole-surface, so everything is
+ * affected — v1, and the one-time legacy fallback. `base` is null there too.
  *
- * A screen named by an op but absent from `screens` is DROPPED rather than
+ * TWO SIDES, TWO SOURCES OF TRUTH, and this is the whole subtlety. A panel that
+ * was removed is gone from `next`, and a panel that was moved is already at its
+ * destination — so `next` cannot say which screen either one LEFT. That screen
+ * has to be redrawn without it, or it keeps a carried-forward fragment showing a
+ * panel that is no longer there, both on the friend's card and in the stored
+ * build contract. Sources therefore resolve against `base`; destinations
+ * against `next` and the op itself.
+ *
+ * A screen named by an op but absent from `next` is DROPPED rather than
  * returned: a removed screen has no fragment to draw and nothing to preview.
  */
-export function affectedScreens(screens: Screen[], ops: SpecPatchOp[] | null): string[] {
-  const order = screens.map((s) => s.id)
+export function affectedScreens(
+  base: Screen[] | null,
+  next: Screen[],
+  ops: SpecPatchOp[] | null,
+): string[] {
+  const order = next.map((s) => s.id)
   if (ops === null) return order
 
   const touched = new Set<string>()
-  const screenOf = (panelId: string): string | undefined =>
+  const screenIn = (screens: Screen[], panelId: string): string | undefined =>
     screens.find((s) => s.panels.some((p) => p.id === panelId))?.id
+  const was = (panelId: string) => (base ? screenIn(base, panelId) : undefined)
 
   for (const op of ops) {
     switch (op.op) {
-      // The dashboard's title and framing sit in the shell above every screen,
-      // so a meta change redraws all of them.
+      // NOTHING. The composed shell renders no title, summary or background, so
+      // a meta-only change alters no pixel — and redrawing every screen for it
+      // would be the whole cost this branch exists to avoid. An empty result is
+      // legitimate; lib/spec/author.ts skips the mockup call on it.
       case 'set_meta':
-        return order
+        break
       case 'add_screen':
         touched.add(op.screen.id)
         break
@@ -3096,19 +3174,22 @@ export function affectedScreens(screens: Screen[], ops: SpecPatchOp[] | null): s
       case 'add_panel':
         touched.add(op.screen_id)
         break
-      case 'replace_panel':
-      case 'remove_panel': {
-        const id = screenOf(op.op === 'replace_panel' ? op.panel.id : op.id)
+      case 'replace_panel': {
+        // Still present in `next`, and it cannot have moved — replace keeps a
+        // panel's position — so either side answers. `next` is the honest one.
+        const id = screenIn(next, op.panel.id)
         if (id) touched.add(id)
         break
       }
+      case 'remove_panel': {
+        // Only `base` remembers where it was.
+        const from = was(op.id)
+        if (from) touched.add(from)
+        break
+      }
       case 'move_panel': {
-        // Both ends move: the panel left one screen and joined another. The
-        // source is resolved against the RESULT, where the panel is already
-        // gone — so `screenOf` names the destination and the source is added
-        // explicitly from the op.
         touched.add(op.screen_id)
-        const from = screenOf(op.panel_id)
+        const from = was(op.panel_id)
         if (from) touched.add(from)
         break
       }
@@ -3395,7 +3476,9 @@ Replace the mockup block in `authorSpec` with:
 ```ts
       input.onStage?.('mockup')
 
-      const affected = affectedScreens(draft.screens, patch?.ops ?? null)
+      // base is the version the patch was applied to — null on the
+      // whole-surface paths, where ops is null and everything is affected.
+      const affected = affectedScreens(base ?? null, draft.screens, patch?.ops ?? null)
 
       // Fragments this version keeps unchanged, taken from the version the
       // patch was applied to. A version confirmed BEFORE this existed has
@@ -3403,28 +3486,37 @@ Replace the mockup block in `authorSpec` with:
       // mockup_failed with no row written, exactly like any other mockup
       // failure, rather than composing a document with holes in it.
       const carried = current === undefined ? new Map() : readScreenMockups(db, current.id)
-
-      const mockupPrompt = loadPrompt(MOCKUP_SCREENS_PROMPT)
-      mockupPromptSha = mockupPrompt.sha
-      mockupResult = await client.propose({
-        system: mockupPrompt.text,
-        // Only the affected screens, from the VALIDATED draft (ledger D7).
-        messages: [
-          {
-            role: 'user',
-            content: JSON.stringify({
-              title: draft.title,
-              screens: draft.screens.filter((s) => affected.includes(s.id)),
-            }),
-          },
-        ],
-        signal: input.signal,
-        schema: SCREEN_MOCKUP_JSON_SCHEMA,
-      })
-
-      drawn = parseScreenMockups(mockupResult.input, affected)
       fragments = new Map(carried)
-      for (const f of drawn) fragments.set(f.screenId, f.html)
+
+      // NO AFFECTED SCREENS MEANS NO CALL. A meta-only patch changes the spec
+      // and no pixel, so there is nothing to draw and every fragment carries
+      // forward untouched. Skipping is not an optimisation here — asking for a
+      // mockup of zero screens would send an empty list and get back something
+      // that could only be wrong. mockupResult stays undefined, and the metrics
+      // helper already reports null for a call that never happened.
+      if (affected.length > 0) {
+        const mockupPrompt = loadPrompt(MOCKUP_SCREENS_PROMPT)
+        mockupPromptSha = mockupPrompt.sha
+        mockupResult = await client.propose({
+          system: mockupPrompt.text,
+          // Only the affected screens, from the VALIDATED draft (ledger D7).
+          messages: [
+            {
+              role: 'user',
+              content: JSON.stringify({
+                title: draft.title,
+                screens: draft.screens.filter((s) => affected.includes(s.id)),
+              }),
+            },
+          ],
+          signal: input.signal,
+          schema: SCREEN_MOCKUP_JSON_SCHEMA,
+        })
+
+        for (const f of parseScreenMockups(mockupResult.input, affected)) {
+          fragments.set(f.screenId, f.html)
+        }
+      }
 
       // The WHOLE document: this is specs.mockup_html, which is the build
       // contract on disk and what the admin pane renders. Throws if any screen
@@ -3432,8 +3524,14 @@ Replace the mockup block in `authorSpec` with:
       mockupHtml = composeMockup(draft.screens, fragments)
       // The friend's card: only what changed. For v1, affected IS every
       // screen, so this degenerates to the whole dashboard — which is correct,
-      // because on a first version everything is new.
-      previewHtml = composeMockup(draft.screens, fragments, affected)
+      // because on a first version everything is new. An EMPTY affected list
+      // falls back to the whole dashboard too: a meta-only change has no screen
+      // to point at, and a blank card is worse than a redundant one at the
+      // moment someone is deciding whether to confirm.
+      previewHtml =
+        affected.length > 0
+          ? composeMockup(draft.screens, fragments, affected)
+          : mockupHtml
 ```
 
 After `insertSpec`, inside the same flow:
