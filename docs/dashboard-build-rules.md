@@ -204,6 +204,9 @@ Sacred data.
   these.
 - A confirmed spec version is **whole-surface** — it describes the friend's
   entire dashboard, not one conversation's worth of changes — CLAUDE.md.
+- The spec-writer emits a PATCH against a current-shape base; the stored row
+  is still the whole surface, so the build contract above is unchanged —
+  CLAUDE.md > Dashboard folder conventions.
 
 ---
 

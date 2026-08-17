@@ -115,6 +115,20 @@ architectural changes; do not relitigate decided items).
   is supplied by the server from the account's current confirmed version,
   never authored by the model — a model-authored lineage pointer would be a
   hallucination becoming a permanent row in an append-only table.
+  The MODEL is asked only for the change: against a current-shape base it
+  emits a PATCH (`lib/spec/patch.ts`, eight ops — `set_meta`, `add_screen`,
+  `update_screen`, `remove_screen`, `add_panel`, `replace_panel`,
+  `move_panel`, `remove_panel`) and `lib/spec/author.ts` applies it via
+  `applyPatch`, so an untouched panel is COPIED rather than regenerated. The
+  stored row is still the whole surface — `applyPatch` produces it and hands
+  it to `parseSpecDraft`, the same validator every version goes through — and
+  the ops ride flat inside `payload` beside it as `SpecVersion.ops`, `null`
+  when a version was authored whole-surface, **never `[]`**. A row stored
+  before `ops` existed has no `ops` key at all; `parseSpecVersion` reads that
+  the same as null, since `specs` rejects UPDATE and none can ever gain one.
+  Three paths author, not two: `patch` against a current-shape base; `whole`
+  for a first version, which has no base to patch; `whole` for a legacy base,
+  which carries no ids for an op to name and can never gain any.
 - `specs` rejects UPDATE, so a row written before the unified proposal loop
   can never be rewritten into the current shape — it is read as legacy
   forever. Read every stored spec payload through `lib/spec/stored.ts`, the
@@ -168,6 +182,13 @@ architectural changes; do not relitigate decided items).
   like `divorce_lawyer_fund` is derived from what the friend asked for, which
   is why `lib/spec/author.ts` strips quoted ids out of `spec_error` messages
   too. The content of what changed stays in `specs`, never in `metrics`.
+  The same bound covers patch authoring: every metric row the authoring path
+  writes — `spec_proposed` and every `spec_error`/`spec_aborted` row too, not
+  `spec_proposed` alone — carries `authoring_mode` (`patch`, `whole`, or
+  `null` for a call that failed before a mode was chosen) and `ops_count`
+  (the parsed op count; `null` on every whole-surface row, and on a patch
+  attempt whose ops never parsed). A mode name and a count, never an op and
+  never a panel id.
 - **Build notes never carry user values either.** `users/<slug>/notes/v<n>.md`
   is committed to the repo and describes the SHAPE of what was built — a table,
   a panel, a computation — never a row, a value, or a merchant. Same bound as

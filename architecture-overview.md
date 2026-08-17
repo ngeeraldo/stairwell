@@ -168,6 +168,17 @@ Server (single VPS)
   every account's chat on every push, a permanent lie in an append-only
   transcript for every account not being deployed for.
   Friends know you're behind it; the agent framing gives permission to ask freely. Explicit first-join line: "send anything, any time — every request is data I need." (Optional: a text/Telegram relay for when they're not in the app, but the chat is the canonical channel and the log of record.)
+- **`propose_spec` asks the writer for only the change.** Against a
+  current-shape base — a confirmed version already in the unified-loop
+  shape — the writer emits a PATCH (`lib/spec/patch.ts`) instead of the whole
+  surface, and the server applies it (`applyPatch`, `lib/spec/author.ts`)
+  before validating the result through `parseSpecDraft`, the same validator a
+  whole-surface draft goes through. An untouched panel is copied out of the
+  base rather than regenerated. A first version has no base to patch, and a
+  legacy base carries no ids for an op to name, so both still author the
+  whole surface — the stored version row is whole-surface JSON either way,
+  so nothing downstream (preview, diff, admin pane) needs to know which path
+  produced it.
 - Response expectation: small changes within a few hours; consistency over speed.
 - **Live-build + notify:** a request comes in, you build live via Claude Code against the newly confirmed version, and when the deploy lands the agent posts in chat ("your eating-out panel is live"). No scheduled studio sessions — the chat is the whole loop.
 - **The confirmed version *is* the approval gate, and it is never optional.** No version deploys unconfirmed, regardless of how trivial the change looks. This replaces an earlier, deferred idea of a separate message-mirror → headless-build → diff-summary-and-screenshot approval step: the preview card already leads with what changed, and the confirm button already is that gate, so there is nothing further to build.
@@ -188,6 +199,7 @@ Retention curves cannot be reconstructed retroactively, and they are the fundrai
 - **A `device_class` on every row of that funnel and on every dashboard open** (`phone`/`tablet`/`desktop`, a field inside `metrics.data` — never a column, since `metrics` is never migrated). It answers the one question the pilot cannot answer retroactively and cannot guess: where do people actually glance from. Dashboard-era layout investment follows that data rather than an assumption.
 - Every conversation in the proposal loop, timestamped, verbatim — the chat log is the log of record
 - **Spec-version diffs, first-class.** The structural diff between a confirmed version and the version it was based on (screens/panels added, removed, changed) is the canonical record of what a request was. It replaces classifying chat text after the fact, and it is what settles the "expressible as config" vs. "needed custom code" question — the distribution that decides the future architecture debate.
+- **`authoring_mode` and `ops_count`, first-class alongside the diff.** Every metric row `lib/spec/author.ts` writes carries which shape the writer was asked for (`patch`/`whole`/`null`) and how many ops it proposed (a count, `null` on a whole-surface row). This is what makes the token-cost claim below checkable after the fact rather than asserted: a patch run's cost can be read off against the size of the change it proposed, and against the whole-surface cost it replaced.
 - Token costs per user (interview, discovery, spec-authoring runs) and Plaid per-item cost
 - Every manual intervention you make that the agent flow didn't produce (= product backlog or evidence it doesn't automate)
 
