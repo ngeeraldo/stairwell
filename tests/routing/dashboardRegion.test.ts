@@ -70,7 +70,18 @@ vi.mock('next/headers', () => ({
 }))
 
 // --- the two seams under test ---------------------------------------------
-type Loader = (() => Promise<{ default: (p: unknown) => unknown }>) | undefined
+//
+// `screens` is optional on the fixture's module shape for the same reason it
+// is optional on lib/dashboard/contract.ts's real DashboardModule: most tests
+// in this file exercise a module that has not declared any (today's actual
+// state for every registered dashboard), and only the tab-strip tests below
+// set it.
+type Loader =
+  | (() => Promise<{
+      default: (p: unknown) => unknown
+      screens?: { id: string; title: string; order: number }[]
+    }>)
+  | undefined
 const loaderSlot: { value: Loader } = { value: undefined }
 const loaderFor = vi.fn((_slug: string): Loader => loaderSlot.value)
 vi.mock('@/lib/dashboard/registry', () => ({
@@ -379,6 +390,153 @@ describe('app/[user]/page.tsx data region', () => {
       source: 'synthetic',
       device_class: 'desktop',
     })
+  })
+
+  // --- Part D, task 22: the platform's tab chrome ---------------------------
+  //
+  // The tab strip is server-rendered anchors on `?screen=`, built from the
+  // DASHBOARD's own declared `screens` list (never the spec, never a second
+  // source). These tests exercise the two rulings task 22 makes: one screen
+  // (or none declared yet, which is every dashboard on this branch today)
+  // renders no strip at all, and an out-of-order `screens` array is sorted by
+  // its own `order` field rather than array position.
+  const TWO_SCREENS = [
+    // Declared out of order on purpose: 'money' comes first in the array but
+    // has the HIGHER order, so a test that defaulted to array position
+    // instead of reading `order` would pass on an accidentally-sorted
+    // fixture and fail here.
+    { id: 'money', title: 'Money', order: 2 },
+    { id: 'morning', title: 'Morning', order: 1 },
+  ]
+
+  function screenEchoingLoader(screens?: typeof TWO_SCREENS): Loader {
+    return async () => ({
+      default: (props: unknown) =>
+        React.createElement('p', null, `SCREEN:${(props as { screen?: string }).screen}`),
+      screens,
+    })
+  }
+
+  it('renders a tab link per declared screen, titled and ordered from the screens array, defaulting to the lowest order', async () => {
+    loaderSlot.value = screenEchoingLoader(TWO_SCREENS)
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    const html = renderToStaticMarkup(element as React.ReactElement)
+    expect(html).toContain('>Money<')
+    expect(html).toContain('>Morning<')
+    expect(html).toContain('href="?screen=money"')
+    expect(html).toContain('href="?screen=morning"')
+    // Default is the LOWEST order, not the first array entry — 'money' is
+    // declared first but has the higher order.
+    expect(html).toContain('SCREEN:morning')
+    // The active tab, and only the active tab, is marked. There is exactly
+    // one aria-current in the whole tree, and it sits on Morning's anchor.
+    expect(html.match(/aria-current="page"/g)).toHaveLength(1)
+    expect(html).toMatch(/aria-current="page"[^>]*>Morning</)
+  })
+
+  it('honours a requested ?screen= and marks that one active instead of the default', async () => {
+    loaderSlot.value = screenEchoingLoader(TWO_SCREENS)
+    const UserSpace = await arrange()
+    const element = await UserSpace({
+      params: Promise.resolve({ user: SLUG }),
+      searchParams: Promise.resolve({ screen: 'money' }),
+    })
+
+    const html = renderToStaticMarkup(element as React.ReactElement)
+    expect(html).toContain('SCREEN:money')
+    expect(html).toMatch(/aria-current="page"[^>]*>Money</)
+  })
+
+  it('falls back to the default screen for an unknown ?screen= rather than failing the render', async () => {
+    // A URL is user input — a typo, a stale bookmark, a dropped tab — and
+    // must not 404 or 500 the page. It lands on the same default the page
+    // would show with no ?screen= at all.
+    loaderSlot.value = screenEchoingLoader(TWO_SCREENS)
+    const UserSpace = await arrange()
+    const element = await UserSpace({
+      params: Promise.resolve({ user: SLUG }),
+      searchParams: Promise.resolve({ screen: 'nope' }),
+    })
+
+    const html = renderToStaticMarkup(element as React.ReactElement)
+    expect(html).toContain('SCREEN:morning')
+    expect(metricEvents()).toContain('dashboard_open')
+    expect(metricEvents()).not.toContain('dashboard_error')
+  })
+
+  it('renders no tab strip at all for a single declared screen', async () => {
+    // A single tab is chrome that explains nothing (Part D ruling).
+    loaderSlot.value = screenEchoingLoader([{ id: 'main', title: 'Main', order: 1 }])
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    const html = renderToStaticMarkup(element as React.ReactElement)
+    expect(html).not.toContain('<nav')
+    expect(html).toContain('SCREEN:main')
+  })
+
+  it('renders no tab strip when the dashboard has not declared screens yet', async () => {
+    // Every dashboard registered on this branch today falls in exactly this
+    // case — task 22 introduces the contract without migrating any of the
+    // four onto it. That must stay a visual no-op, not a broken render.
+    loaderSlot.value = screenEchoingLoader(undefined)
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    const html = renderToStaticMarkup(element as React.ReactElement)
+    expect(html).not.toContain('<nav')
+    expect(html).toContain('SCREEN:undefined')
+  })
+
+  it('degrades, rather than 500ing, a registered dashboard that explicitly declares zero screens', async () => {
+    // Different in kind from "not declared yet": a module that HAS opted
+    // into the contract and exports `screens: []` has gotten it wrong. That
+    // is the real defect activeScreen's throw exists to catch, and it is
+    // caught the same way any other throwing Dashboard() call already is.
+    loaderSlot.value = screenEchoingLoader([])
+    const UserSpace = await arrange()
+    const element = await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+
+    expect(JSON.stringify(element)).toContain('This dashboard failed to load')
+    expect(metricEvents()).toContain('dashboard_error')
+    expect(metricEvents()).not.toContain('dashboard_open')
+  })
+
+  it('records screen_order — the position, never the screen id — on dashboard_open', async () => {
+    // CLAUDE.md's metrics bound forbids a friend-derived id in this table
+    // (screen ids come from the same slug rule as a panel id); an integer
+    // order distinguishes tabs and names nothing.
+    loaderSlot.value = screenEchoingLoader(TWO_SCREENS)
+    const UserSpace = await arrange()
+    await UserSpace({
+      params: Promise.resolve({ user: SLUG }),
+      searchParams: Promise.resolve({ screen: 'money' }),
+    })
+
+    expect(metricData('dashboard_open')).toEqual({
+      slug: SLUG,
+      source: 'synthetic',
+      device_class: 'desktop',
+      screen_order: 2,
+    })
+    expect(rawMetricData('dashboard_open')).not.toContain('money')
+  })
+
+  it('writes one dashboard_open row per render with no dedup, even across two "tab switches"', async () => {
+    // Nico's ruling: the log stays raw and append-only; "an open" is a
+    // definition applied when the log is READ, never a write-time decision.
+    // No throttling, no conditional write.
+    loaderSlot.value = screenEchoingLoader(TWO_SCREENS)
+    const UserSpace = await arrange()
+    await UserSpace({ params: Promise.resolve({ user: SLUG }) })
+    await UserSpace({
+      params: Promise.resolve({ user: SLUG }),
+      searchParams: Promise.resolve({ screen: 'money' }),
+    })
+
+    expect(metricEvents().filter((e) => e === 'dashboard_open')).toHaveLength(2)
   })
 
   it("hands the dashboard the day in the FRIEND'S zone, not the server's", async () => {

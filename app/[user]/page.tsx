@@ -29,6 +29,7 @@ import { isDevData, openUserDataForRead } from '@/lib/db/userData'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getKey } from '@/lib/session/keymap'
 import { dashboardLoaderFor, hasDashboard } from '@/lib/dashboard/registry'
+import { activeScreen, type DashboardModule, type DashboardScreen } from '@/lib/dashboard/contract'
 import { ensureOpeningMessage } from '@/lib/chat/opening'
 import { hasMetric } from '@/lib/db/appendOnly'
 import ChatPanel from './ChatPanel'
@@ -131,6 +132,7 @@ async function dashboardRegion(
   sessionId: string,
   device_class: DeviceClass,
   day: { today: string; timeZone: string | undefined },
+  requestedScreen: string | undefined,
 ) {
   const loader = dashboardLoaderFor(slug)
   // The placeholder card, not a sentence. onboarding-ux-spec.md S3: it is what
@@ -180,6 +182,7 @@ async function dashboardRegion(
       isDevData() ? 'synthetic' : 'real',
       device_class,
       day,
+      requestedScreen,
     )
   } catch (error) {
     logDbFailure('dashboard_error', slug, error)
@@ -199,35 +202,105 @@ async function dashboardRegion(
   }
 }
 
+/**
+ * The tab strip: plain server-rendered `<a href="?screen=...">` anchors on a
+ * search param — no client component, no route segment, no middleware. This
+ * is PLATFORM chrome, called as a plain function the same way dashboardRegion
+ * and renderDashboard already are, never returned as a JSX element for React
+ * to render later — it lives entirely inside renderDashboard's own try/catch.
+ *
+ * Renders NOTHING for one screen (or fewer): a single tab is chrome that
+ * explains nothing, and all four dashboards on this branch are one screen
+ * today, so this is a visual no-op for every one of them right now.
+ *
+ * Labels and order come from the dashboard's OWN declared `screens` — never
+ * a second source that could drift from what the confirmed spec promised.
+ */
+function tabStrip(screens: DashboardScreen[], activeId: string) {
+  if (screens.length <= 1) return null
+  const sorted = [...screens].sort((a, b) => a.order - b.order)
+  return (
+    <nav aria-label="Dashboard screens" className="flex gap-4 border-b pb-2 text-sm">
+      {sorted.map((s) => {
+        const current = s.id === activeId
+        return (
+          <a
+            key={s.id}
+            href={`?screen=${encodeURIComponent(s.id)}`}
+            aria-current={current ? 'page' : undefined}
+            className={
+              current
+                ? 'font-medium underline underline-offset-4'
+                : 'text-muted-foreground'
+            }
+          >
+            {s.title}
+          </a>
+        )
+      })}
+    </nav>
+  )
+}
+
 async function renderDashboard(
-  loader: () => Promise<{
-    default: (p: {
-      slug: string
-      db: UserDb
-      today: string
-      timeZone: string | undefined
-    }) => unknown
-  }>,
+  loader: () => Promise<DashboardModule>,
   slug: string,
   db: UserDb,
   accountId: number,
   source: 'synthetic' | 'real',
   device_class: DeviceClass,
   day: { today: string; timeZone: string | undefined },
+  requestedScreen: string | undefined,
 ) {
   try {
-    const { default: Dashboard } = await loader()
+    const { default: Dashboard, screens } = await loader()
+    // `screens` is undefined for every dashboard registered on this branch
+    // today — task 22 is the first task of Part D, and migrating each
+    // dashboard onto a declared `screens` list is later work. That is a
+    // known, harmless, present-day state: it degrades to a single implicit
+    // screen and no tab chrome below, rather than calling activeScreen with
+    // an empty list. A dashboard that HAS migrated and explicitly exports
+    // `screens: []` has opted into the contract and gotten it wrong — THAT
+    // goes through activeScreen normally, which throws (see contract.ts),
+    // and is caught by this function's own try/catch below exactly like a
+    // throwing Dashboard() call, turning it into `dashboard_error` rather
+    // than a 500.
+    const active = screens === undefined ? undefined : activeScreen(screens, requestedScreen)
     // CALLED, not returned as <Dashboard />: an element would defer execution
     // to React's render, outside this try, and the catch is the whole point.
-    const rendered = await Dashboard({ slug, db, today: day.today, timeZone: day.timeZone })
+    const rendered = await Dashboard({
+      slug,
+      db,
+      today: day.today,
+      timeZone: day.timeZone,
+      screen: active?.id,
+    })
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_open',
-      data: { slug, source, device_class },
+      // `screen_order` is the integer POSITION, never the screen id: an id
+      // is friend-derived (the same slug rule as a panel id) and CLAUDE.md's
+      // metrics bound forbids that in this unencrypted table. An order names
+      // nothing. Omitted entirely (not 0) when this dashboard hasn't
+      // declared screens yet — there is no tab to name a position for.
+      //
+      // ONE ROW PER RENDER, EVERY RENDER, NO DEDUP. Nico's ruling: the log
+      // stays raw and append-only; "an open" is a definition applied when
+      // the log is READ (first render in a window), never a write-time
+      // decision. A tab switch re-running this function and writing another
+      // row is the cost of that, accepted deliberately — see this task's
+      // brief.
+      data: {
+        slug,
+        source,
+        device_class,
+        ...(active !== undefined ? { screen_order: active.order } : {}),
+      },
       at: Date.now(),
     })
     return (
       <>
+        {screens !== undefined && active !== undefined && tabStrip(screens, active.id)}
         {source === 'synthetic' && (
           /*
             PLATFORM CHROME, and it has to look like it.
@@ -278,10 +351,25 @@ async function renderDashboard(
 
 export default async function UserSpace({
   params,
+  searchParams,
 }: {
   params: Promise<{ user: string }>
+  /**
+   * OPTIONAL, unlike `params`: every real request Next serves supplies both,
+   * but tests/routing/dashboardRegion.test.ts and userSpace.test.ts call this
+   * function directly with an object literal that predates this field, and
+   * there is no reason to touch every one of those call sites for a param
+   * only the dashboard-screens path reads. `?screen=` is the only key read
+   * from it — see requestedScreen below.
+   */
+  searchParams?: Promise<{ screen?: string | string[] }>
 }) {
   const { user } = await params
+  const sp = (await searchParams) ?? {}
+  // A URL is user input: an array (repeated `?screen=a&screen=b`) or an
+  // absent key both fall through to `undefined`, which activeScreen already
+  // treats as "use the default" rather than as an error.
+  const requestedScreen = typeof sp.screen === 'string' ? sp.screen : undefined
 
   // Still enforced: anonymous goes to /login. A locked session now passes
   // through to the page — the lock is applied to the data region below.
@@ -444,7 +532,7 @@ export default async function UserSpace({
       content={
         <div className="space-y-8">
           {unlocked ? (
-            await dashboardRegion(user, accountId, sessionId!, device_class, day)
+            await dashboardRegion(user, accountId, sessionId!, device_class, day, requestedScreen)
           ) : (
             <p className="text-sm text-muted-foreground">
               Locked.{' '}
