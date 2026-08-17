@@ -58,6 +58,19 @@ export const SPEC_PATCH_PROMPT = 'spec-v3.md'
 export const MOCKUP_PROMPT = 'mockup-v3.md'
 
 /**
+ * The per-screen mockup prompt. Not v4 of MOCKUP_PROMPT's call — a separate
+ * call with a separate schema (SCREEN_MOCKUP_JSON_SCHEMA), asking for one
+ * `<section class="screen">` fragment per affected screen rather than a whole
+ * self-contained document. lib/spec/mockupCompose.ts owns the document
+ * around the fragments: the frame, the published default styles (the
+ * "nudge"), and confining each fragment's own `<style>` block to the screen
+ * that authored it. This is what makes reuse possible at all — a screen a
+ * patch did not touch keeps its already-drawn fragment rather than being
+ * redrawn (and re-billed) alongside the ones that changed.
+ */
+export const MOCKUP_SCREENS_PROMPT = 'mockup-v4.md'
+
+/**
  * The deploy-announcement prompt. Turns one build's friend-facing notes into
  * the sentence that lands in their chat.
  *

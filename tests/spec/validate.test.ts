@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SpecShapeError } from '@/lib/spec/schema'
 import {
   parseMockupInput,
+  parseScreenMockups,
   parseSpecDraft,
   parseSpecVersion,
   sealVersion,
@@ -222,5 +223,50 @@ describe('parseMockupInput', () => {
 
   it('rejects an empty mockup', () => {
     expect(() => parseMockupInput({ mockup_html: '   ' })).toThrow(SpecShapeError)
+  })
+})
+
+describe('parseScreenMockups', () => {
+  it('accepts exactly the requested screens', () => {
+    expect(parseScreenMockups({ screens: [{ id: 'a', html: '<section/>' }] }, ['a'])).toHaveLength(1)
+  })
+
+  it('throws on a missing screen', () => {
+    expect(() => parseScreenMockups({ screens: [] }, ['a'])).toThrow(/missing screen "a"/)
+  })
+
+  it('throws on an unrequested screen', () => {
+    // The requested screen ('a') must also be present here — otherwise the
+    // missing-screen check above fires first and this never reaches the
+    // "not requested" branch it's meant to isolate.
+    expect(() =>
+      parseScreenMockups(
+        { screens: [{ id: 'a', html: 'x' }, { id: 'b', html: 'y' }] },
+        ['a'],
+      ),
+    ).toThrow(/not requested/)
+  })
+
+  it('accepts an empty call when nothing was requested', () => {
+    // A meta-only patch affects no screen; lib/spec/author.ts skips the call
+    // entirely in that case, but the parser itself must not treat "nothing
+    // requested, nothing returned" as an error.
+    expect(parseScreenMockups({ screens: [] }, [])).toEqual([])
+  })
+
+  it('returns screenId/html pairs, not the raw id/html keys', () => {
+    const [fragment] = parseScreenMockups(
+      { screens: [{ id: 'today', html: '<section class="screen">hi</section>' }] },
+      ['today'],
+    )
+    expect(fragment).toEqual({ screenId: 'today', html: '<section class="screen">hi</section>' })
+  })
+
+  it('rejects a non-array screens field', () => {
+    expect(() => parseScreenMockups({ screens: 'nope' }, ['a'])).toThrow(SpecShapeError)
+  })
+
+  it('rejects a screen entry missing html', () => {
+    expect(() => parseScreenMockups({ screens: [{ id: 'a' }] }, ['a'])).toThrow(SpecShapeError)
   })
 })

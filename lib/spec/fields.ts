@@ -274,8 +274,10 @@ export function parseSpecDraft(raw: unknown): SpecDraft {
 
 // Exported because validate.ts still needs them directly (record/text for
 // parseMockupInput and parseSpecVersion's based_on_version check; draftFrom
-// for re-validating a stored payload without re-checking based_on_version).
+// for re-validating a stored payload without re-checking based_on_version;
+// arrayField for parseScreenMockups' `screens` array, which has no minimum —
+// zero affected screens is legitimate, see lib/spec/mockupCompose.ts).
 // textList and integer are exported for lib/spec/patch.ts, which reuses them
 // for its own open_questions and update_screen.order fields rather than
 // re-implementing the same rule a second time.
-export { record, text, textList, integer }
+export { record, text, textList, integer, arrayField }

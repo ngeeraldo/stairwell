@@ -249,3 +249,25 @@ export const MOCKUP_JSON_SCHEMA = {
   properties: { mockup_html: { type: 'string' } },
   required: ['mockup_html'],
 } as const
+
+/**
+ * The per-screen mockup call's contract. An ARRAY, so one call draws every
+ * affected screen — a call per screen would multiply latency by the number of
+ * screens for no gain, since they are drawn from one prompt anyway.
+ */
+export const SCREEN_MOCKUP_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    screens: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { id: { type: 'string' }, html: { type: 'string' } },
+        required: ['id', 'html'],
+      },
+    },
+  },
+  required: ['screens'],
+} as const

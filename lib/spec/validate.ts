@@ -8,8 +8,9 @@
 // Field-level validation lives in ./fields — this module validates a whole
 // emitted or stored document.
 import { SpecShapeError, type SpecDraft, type SpecVersion } from './schema'
-import { draftFrom, record, text } from './fields'
+import { arrayField, draftFrom, record, text } from './fields'
 import { parseOp, type SpecPatchOp } from './patch'
+import type { ScreenFragment } from '@/lib/db/screenMockups'
 
 export { parseSpecDraft } from './fields'
 
@@ -50,4 +51,35 @@ export function parseSpecVersion(json: string): SpecVersion {
 
 export function parseMockupInput(raw: unknown): string {
   return text(record(raw, 'mockup'), 'mockup_html', 'mockup')
+}
+
+/**
+ * Validate the per-screen mockup reply.
+ *
+ * Every requested screen must come back, and nothing else may. A silently
+ * missing screen would compose into a document with a hole in it, and an extra
+ * one would be a screen the spec does not contain — the same "a promise made
+ * on the friend's behalf" that ledger D7 split the mockup call to prevent.
+ */
+export function parseScreenMockups(raw: unknown, requested: string[]): ScreenFragment[] {
+  const src = record(raw, 'mockup')
+  const screens = arrayField(src, 'screens', 'mockup')
+  const out = screens.map((s, i) => {
+    const entry = record(s, `mockup.screens[${i}]`)
+    return {
+      screenId: text(entry, 'id', `mockup.screens[${i}]`),
+      html: text(entry, 'html', `mockup.screens[${i}]`),
+    }
+  })
+
+  const got = new Set(out.map((f) => f.screenId))
+  for (const id of requested) {
+    if (!got.has(id)) throw new SpecShapeError(`mockup is missing screen "${id}"`)
+  }
+  for (const f of out) {
+    if (!requested.includes(f.screenId)) {
+      throw new SpecShapeError(`mockup returned screen "${f.screenId}", which was not requested`)
+    }
+  }
+  return out
 }

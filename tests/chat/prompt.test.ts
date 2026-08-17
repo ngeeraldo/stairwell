@@ -6,6 +6,7 @@ import {
   AGENT_PROMPT,
   ANNOUNCE_PROMPT,
   MOCKUP_PROMPT,
+  MOCKUP_SCREENS_PROMPT,
   SPEC_PATCH_PROMPT,
   SPEC_PROMPT,
   loadPrompt,
@@ -176,7 +177,14 @@ describe('loadPrompt', () => {
   // discovered list proves the sweep found the actual platform/prompts
   // directory and the files that actually ship, not merely some files.
   it('discovers every exported prompt constant, not just some files', () => {
-    for (const name of [AGENT_PROMPT, SPEC_PROMPT, SPEC_PATCH_PROMPT, MOCKUP_PROMPT, ANNOUNCE_PROMPT]) {
+    for (const name of [
+      AGENT_PROMPT,
+      SPEC_PROMPT,
+      SPEC_PATCH_PROMPT,
+      MOCKUP_PROMPT,
+      MOCKUP_SCREENS_PROMPT,
+      ANNOUNCE_PROMPT,
+    ]) {
       expect(ALL_SHIPPED_PROMPTS, name).toContain(name)
     }
   })
@@ -265,7 +273,14 @@ describe('loadPrompt', () => {
   })
 
   it('names prompt files that exist on disk', () => {
-    for (const name of [AGENT_PROMPT, SPEC_PROMPT, SPEC_PATCH_PROMPT, MOCKUP_PROMPT, ANNOUNCE_PROMPT]) {
+    for (const name of [
+      AGENT_PROMPT,
+      SPEC_PROMPT,
+      SPEC_PATCH_PROMPT,
+      MOCKUP_PROMPT,
+      MOCKUP_SCREENS_PROMPT,
+      ANNOUNCE_PROMPT,
+    ]) {
       expect(existsSync(promptPath(name))).toBe(true)
     }
   })
