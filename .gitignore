@@ -27,7 +27,11 @@ node_modules/
 # Next.js build artifacts
 .next/
 out/
-build/
+# Anchored to repo root: an unanchored `build/` also matches lib/build/ and
+# tests/build/ (this repo's convention for build-notes parsing code), which
+# silently blocked `git add` on real source. Root output is the only thing
+# this line was ever meant to ignore.
+/build/
 next-env.d.ts
 .vercel
 
