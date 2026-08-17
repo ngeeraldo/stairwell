@@ -152,7 +152,7 @@ describe('announceTarget', () => {
     confirmAVersion(db, 'devtwo', { change_summary: 'x' })
     const target = announceTarget(db, 'devtwo')
     if (!target.ok) throw new Error('expected a target')
-    commitAnnouncement(db, { ...target, body: 'hello', promptSha: 'abc123abc123', at: 5 })
+    commitAnnouncement(db, target, { body: 'hello', promptSha: 'abc123abc123', at: 5 })
     expect(announceTarget(db, 'devtwo')).toEqual({
       ok: false,
       reason: 'already_announced',
@@ -165,7 +165,7 @@ describe('commitAnnouncement', () => {
     confirmAVersion(db, 'devtwo', { change_summary: 'x' })
     const target = announceTarget(db, 'devtwo')
     if (!target.ok) throw new Error('expected a target')
-    commitAnnouncement(db, { ...target, body: 'hello', promptSha: 'deadbeef1234', at: 5 })
+    commitAnnouncement(db, target, { body: 'hello', promptSha: 'deadbeef1234', at: 5 })
     const row = db
       .prepare(`SELECT prompt_sha, session_id FROM transcripts ORDER BY id DESC LIMIT 1`)
       .get() as { prompt_sha: string; session_id: string }
@@ -175,13 +175,29 @@ describe('commitAnnouncement', () => {
     expect(row.session_id).toBe('operator')
   })
 
-  it('refuses a blank body', () => {
+  it('refuses a blank body, and writes neither half of the pair', () => {
     confirmAVersion(db, 'devtwo', { change_summary: 'x' })
     const target = announceTarget(db, 'devtwo')
     if (!target.ok) throw new Error('expected a target')
+    const metricsBefore = (
+      db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
+        n: number
+      }
+    ).n
     expect(() =>
-      commitAnnouncement(db, { ...target, body: '  ', promptSha: 'a'.repeat(12), at: 5 }),
+      commitAnnouncement(db, target, { body: '  ', promptSha: 'a'.repeat(12), at: 5 }),
     ).toThrow()
+    // The transaction guarantee this task is about: announce() threw before
+    // appendMetric ever ran, so the rejected write must not have posted a
+    // deploy_announced row either — otherwise a later run would believe this
+    // spec was already announced when nothing was ever said.
+    expect(
+      (
+        db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
+          n: number
+        }
+      ).n,
+    ).toBe(metricsBefore)
   })
 })
 

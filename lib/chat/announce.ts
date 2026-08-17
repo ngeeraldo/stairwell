@@ -5,10 +5,14 @@
 // arrive in chat, and chat is the log of record, so they are ordinary
 // assistant transcript rows — written by an operator CLI, not by a model.
 //
-// prompt_sha is the sentinel 'operator' rather than a content hash, because
-// this row was typed by a person and no prompt produced it. Every other row
-// in the table can be traced to the exact prompt text behind it; this one
-// says, permanently, that there was none. transcripts is append-only — the
+// session_id is unconditionally the sentinel 'operator': there is never a
+// real session behind a row this module writes, drafted or not. prompt_sha
+// is conditional — the same sentinel when no prompt produced the row (an
+// operator typing a question by hand, or announceDeploy's --plain path),
+// but the real drafting prompt's content hash when one did (a DRAFTED
+// announcement). Every other row in the table can be traced to the exact
+// prompt text behind it; a row with prompt_sha = OPERATOR_SHA says,
+// permanently, that there was none. transcripts is append-only — the
 // distinction has to be right at write time or not at all.
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, appendTranscript } from '@/lib/db/appendOnly'
@@ -47,15 +51,16 @@ export function announce(
 
   appendTranscript(db, {
     accountId: input.accountId,
-    // There is no session for a row a human typed — OPERATOR_SHA fills both
-    // slots that would otherwise carry session/prompt provenance, and it is
-    // the sentinel value CLAUDE.md and the ledger point at.
+    // session_id is unconditionally the sentinel — there is never a real
+    // session behind a row this module writes, and it is the sentinel value
+    // CLAUDE.md and the ledger point at.
     sessionId: OPERATOR_SHA,
     conversationId: conversation.id,
-    // OPERATOR_SHA means "a human typed this and no prompt produced it".
-    // A DRAFTED announcement did have a prompt behind it, so it names that
-    // prompt's hash and the sentinel keeps meaning what it says. session_id
-    // stays the sentinel either way — there genuinely is no session.
+    // prompt_sha is conditional, unlike session_id above: OPERATOR_SHA means
+    // "no prompt produced this row" (an operator typing it by hand, or the
+    // --plain path). A DRAFTED announcement did have a prompt behind it, so
+    // it names that prompt's hash instead — the sentinel keeps meaning what
+    // it says.
     promptSha: input.promptSha ?? OPERATOR_SHA,
     role: 'assistant',
     body: input.body,
@@ -127,7 +132,9 @@ export function announceTarget(db: PlatformDb, slug: string): AnnounceTarget {
   }
 
   // The renderer's own discriminator, reused rather than re-implemented: a
-  // legacy row has no change_summary field at all.
+  // legacy row has no change_summary field at all, so headline falls back to
+  // the title. Saying something generic beats saying nothing on the one
+  // morning the promise ("your build landed") is being kept.
   const stored = readStoredSpec(spec.payload)
   const headline =
     stored.kind === 'version' ? stored.version.change_summary : stored.payload.title
@@ -158,6 +165,19 @@ export function plainBody(headline: string, first: boolean): string {
 }
 
 /**
+ * The success arm of AnnounceTarget, narrowed for callers that write.
+ *
+ * A target is a thing `announceTarget` DECIDED, not a record a caller may
+ * assemble by hand. Typing `commitAnnouncement`'s first parameter as this
+ * (rather than a bespoke `{ accountId, specId, version }` literal) means the
+ * compiler, not a convention, is what stops a caller hand-constructing a
+ * `specId`/`version` that never went through `announceTarget`'s
+ * `alreadyAnnounced` check — which is exactly the check whose bypass would
+ * post a permanent duplicate into an append-only transcript.
+ */
+export type ConfirmedTarget = Extract<AnnounceTarget, { ok: true }>
+
+/**
  * Write the announcement and its guard row, together or not at all.
  *
  * The transaction is the whole idempotency guarantee: two independent INSERTs
@@ -167,10 +187,8 @@ export function plainBody(headline: string, first: boolean): string {
  */
 export function commitAnnouncement(
   db: PlatformDb,
-  input: {
-    accountId: number
-    specId: number
-    version: number
+  target: ConfirmedTarget,
+  write: {
     body: string
     /** announce-v1.md's hash, or OPERATOR_SHA for the --plain path. */
     promptSha: string
@@ -179,16 +197,16 @@ export function commitAnnouncement(
 ): void {
   db.transaction(() => {
     announce(db, {
-      accountId: input.accountId,
-      body: input.body,
-      at: input.at,
-      promptSha: input.promptSha,
+      accountId: target.accountId,
+      body: write.body,
+      at: write.at,
+      promptSha: write.promptSha,
     })
     appendMetric(db, {
-      accountId: input.accountId,
+      accountId: target.accountId,
       event: 'deploy_announced',
-      at: input.at,
-      data: { spec_id: input.specId, version: input.version },
+      at: write.at,
+      data: { spec_id: target.specId, version: target.version },
     })
   })()
 }
@@ -217,8 +235,7 @@ export function announceDeploy(
   const target = announceTarget(db, slug)
   if (!target.ok) return { announced: false, reason: target.reason }
 
-  commitAnnouncement(db, {
-    ...target,
+  commitAnnouncement(db, target, {
     body: plainBody(target.headline, target.first),
     promptSha: OPERATOR_SHA,
     at: now(),
