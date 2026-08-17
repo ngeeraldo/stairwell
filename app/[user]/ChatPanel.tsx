@@ -525,12 +525,14 @@ export function SpecCard({
    * Proposal.preview_html (lib/spec/author.ts) for what "scoped" means.
    *
    * `?? proposal.mockup_html` is the SAME defect shape as `first` just above,
-   * ledger D9: `preview_html` is REQUIRED on the server's `Proposal` but
-   * OPTIONAL on `CardProposal` (see its own doc comment), because a card that
-   * streamed in through the `proposal` NDJSON line is JSON.parse output cast
-   * to that type and nothing validates it. TypeScript does not object to a
-   * possibly-undefined value in a string position the way it does in a
-   * boolean one — an edit that dropped this fallback would compile clean.
+   * ledger D9. FIX ROUND 1, FINDING 3: `preview_html` is required on
+   * `CardProposal` too — `Omit<Proposal, 'first'>` touches nothing but
+   * `first` (see CardProposal's own doc comment) — so this is not a type-
+   * level gap the way `first` is. The gap is at RUNTIME: a card that streamed
+   * in through the `proposal` NDJSON line is `JSON.parse` output cast to that
+   * type, and nothing validates it, so the field can be absent despite what
+   * the type claims. The compiler has no way to flag that — an edit that
+   * dropped this fallback would compile clean regardless.
    * tests/chat/panel.test.ts is what actually catches its removal.
    */
   const previewHtml = withBanner(proposal.preview_html ?? proposal.mockup_html)
@@ -609,12 +611,22 @@ export function SpecCard({
         fine" without a second mechanism; the full-screen dialog is where a
         friend actually looks.
       */}
-      <div className="h-64 w-full overflow-hidden rounded-md border bg-background">
+      {/* h-48/h-[24rem], not the h-64/h-[32rem] this shipped with (fix round
+          1, finding 2): that height was sized for a denser mockup, and it
+          left a single-screen preview roughly 60% empty box. This task makes
+          a short, single-screen preview the COMMON case rather than the
+          exception, so the box shrinks with it. Still CSS-only — no JS-
+          measured scale factor, which is the same rule the comment above
+          already states and which still stands — and a taller multi-screen
+          preview still clips under `overflow-hidden` exactly as it did
+          before; only the threshold moved, not the failure mode. "View full
+          screen" is the escape hatch either way. */}
+      <div className="h-48 w-full overflow-hidden rounded-md border bg-background">
         <iframe
           title={`Preview of ${title}`}
           srcDoc={previewHtml}
           sandbox=""
-          className="pointer-events-none h-[32rem] w-[200%] origin-top-left scale-50 border-0"
+          className="pointer-events-none h-[24rem] w-[200%] origin-top-left scale-50 border-0"
         />
       </div>
 

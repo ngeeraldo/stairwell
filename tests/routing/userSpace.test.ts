@@ -760,6 +760,125 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     expect(proposal?.mockup_html).toContain('moneytouched')
   })
 
+  it('resolves the base version to scope a remove_panel-only patch, not the whole document (fix round 1, finding 1)', async () => {
+    // The bug the reviewer found: affectedScreens's ONLY way to attribute a
+    // remove_panel op to a screen is `was(op.id)` (mockupCompose.ts), which
+    // needs the BASE version's own screens to resolve at all. The
+    // pre-fix pageLoadPreview passed `base=null` unconditionally, so a patch
+    // made only of remove_panel ops produced an EMPTY affected list — which
+    // fell through to the WHOLE mockup_html, wider than what the live card
+    // showed, not narrower. This proves the reload agrees with the live card:
+    // the screen a panel was removed FROM stays scoped in, and the untouched
+    // screen stays scoped out.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    const { insertSpec, confirmSpec } = await import('@/lib/db/specs')
+    const { insertScreenMockups } = await import('@/lib/db/screenMockups')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    putK(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+
+    // v1: `money` starts with TWO panels, so removing one leaves the screen
+    // non-empty and the removal is the only thing that changes about it.
+    const v1Payload = {
+      ...TWO_SCREEN_VERSION_PAYLOAD,
+      ops: null,
+      based_on_version: null,
+      screens: [
+        TWO_SCREEN_VERSION_PAYLOAD.screens[0]!,
+        {
+          ...TWO_SCREEN_VERSION_PAYLOAD.screens[1]!,
+          panels: [
+            ...TWO_SCREEN_VERSION_PAYLOAD.screens[1]!.panels,
+            {
+              id: 'groceries',
+              title: 'Groceries',
+              intent: 'Watch the spend.',
+              display: 'This month against last.',
+              context_of_use: null,
+              values: [{ kind: 'entered', id: 'groceries_val', description: 'Manually entered.' }],
+              entry: null,
+            },
+          ],
+        },
+      ],
+    }
+    const v1Id = insertSpec(handle, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: v1Payload,
+      mockupHtml: '<html><body>morninguntouched moneybothpanels</body></html>',
+      at: 1_000,
+    })
+    insertScreenMockups(
+      handle,
+      v1Id,
+      [
+        { screenId: 'morning', html: '<p>morninguntouched</p>' },
+        { screenId: 'money', html: '<p>moneybothpanels</p>' },
+      ],
+      1_000,
+    )
+    confirmSpec(handle, { specId: v1Id, accountId: id, at: 1_500 })
+
+    // v2: removes the `balance` panel from `money`. `morning` — the OTHER
+    // screen — is untouched by this op and must NOT be scoped in.
+    const v2Payload = {
+      ...v1Payload,
+      change_summary: 'Removed the balance panel.',
+      based_on_version: 1,
+      ops: [{ op: 'remove_panel', id: 'balance' }],
+      screens: [
+        v1Payload.screens[0],
+        {
+          ...v1Payload.screens[1],
+          panels: v1Payload.screens[1]!.panels.filter((p) => p.id !== 'balance'),
+        },
+      ],
+    }
+    const v2Id = insertSpec(handle, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: v2Payload,
+      mockupHtml: '<html><body>morninguntouched moneyafterremoval</body></html>',
+      at: 2_000,
+    })
+    insertScreenMockups(
+      handle,
+      v2Id,
+      [
+        { screenId: 'morning', html: '<p>morninguntouched</p>' }, // carried forward
+        { screenId: 'money', html: '<p>moneyafterremoval</p>' }, // redrawn without balance
+      ],
+      2_000,
+    )
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+    const proposal = findChatPanelProps(element)?.proposal as
+      | { preview_html?: string; mockup_html?: string }
+      | undefined
+
+    // Scoped to `money` — the screen the panel was removed FROM — not the
+    // whole document. This is exactly the assertion that broke under
+    // `base=null`: `affected` came back empty and this test's `not.toContain`
+    // would have failed against the fallen-back whole `mockup_html`.
+    expect(proposal?.preview_html).toContain('moneyafterremoval')
+    expect(proposal?.preview_html).not.toContain('morninguntouched')
+    // The whole stored document still has both, untouched by any of this.
+    expect(proposal?.mockup_html).toContain('morninguntouched')
+    expect(proposal?.mockup_html).toContain('moneyafterremoval')
+  })
+
   it('falls back to the whole mockup when a version has no stored fragments, rather than throwing', async () => {
     // What every version confirmed before this branch shipped looks like:
     // screens and ops, but no spec_screen_mockups rows at all, because

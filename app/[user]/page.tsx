@@ -9,8 +9,14 @@ import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { readDeviceClass, readTimeZone } from '@/lib/metrics/deviceClass'
 import { dayKey } from '@/lib/time/dayKey'
-import { hasConfirmedSpecBelow, newestSpec, readConfirmations, type SpecRecord } from '@/lib/db/specs'
-import { SpecShapeError } from '@/lib/spec/schema'
+import {
+  hasConfirmedSpecBelow,
+  newestSpec,
+  readConfirmations,
+  specByVersion,
+  type SpecRecord,
+} from '@/lib/db/specs'
+import { SpecShapeError, type Screen } from '@/lib/spec/schema'
 import { readStoredSpec, type StoredSpec } from '@/lib/spec/stored'
 import { affectedScreens, composeMockup } from '@/lib/spec/mockupCompose'
 import { readScreenMockups } from '@/lib/db/screenMockups'
@@ -62,34 +68,55 @@ function dashboardErrorKind(error: unknown): 'wrong_key' | 'error' {
 }
 
 /**
+ * The base version's own screens, for affectedScreens's `base` argument — or
+ * null when there genuinely is none (a v1 card, where `based_on_version` is
+ * null and every screen is affected anyway) or the base row cannot be read as
+ * the current shape (a legacy base, which carries no ids to resolve against —
+ * see currentVersionBlock in lib/spec/author.ts for the same distinction made
+ * at authoring time).
+ *
+ * FIX ROUND 1, FINDING 1: this used to be skipped (base passed as `null`
+ * unconditionally) on the reasoning that the result was "narrower, never
+ * wrong". That reasoning missed `remove_panel`: its ONLY possible
+ * contribution to `affectedScreens` is the screen the panel was removed FROM
+ * (`was(op.id)` in mockupCompose.ts), which needs `base` to resolve at all.
+ * With `base` null, a patch made only of `remove_panel` ops produced an EMPTY
+ * `affected` list — which falls through to the WHOLE `mockup_html`, not a
+ * narrower document. That is wider than what the live card showed, on the one
+ * surface where the friend is deciding, and the exact D9 genus this task
+ * exists to close: the same card answering differently depending on when it
+ * is read.
+ */
+function baseScreensFor(db: PlatformDb, accountId: number, basedOnVersion: number | null): Screen[] | null {
+  if (basedOnVersion === null) return null
+  const baseRecord = specByVersion(db, accountId, basedOnVersion)
+  if (!baseRecord) return null
+  const baseStored = readStoredSpec(baseRecord.payload)
+  return baseStored.kind === 'version' ? baseStored.version.screens : null
+}
+
+/**
  * The scoped preview for the PAGE-LOAD card, mirroring what lib/spec/author.ts
  * computes at authoring time — same two ingredients (affectedScreens,
- * composeMockup), from the STORED record instead of a fresh model call.
- *
- * `base` is passed as null rather than fetched from `based_on_version`: this
- * means a remove_panel or move_panel op's SOURCE screen (only findable via the
- * base version's screens — see affectedScreens's own doc) is not marked
- * affected on a RELOAD the way it was on the live card that streamed in
- * through the `proposal` NDJSON line at authoring time. That is a narrower
- * preview than the friend originally saw, never a wrong one — every
- * DESTINATION screen an op names is still exactly right — and it is a far
- * smaller hazard than the one this task exists to close (a friend reviewing
- * their whole dashboard for a one-word relabel). Revisit only if a reload
- * showing a narrower scope than the live card turns out to matter in
- * practice.
+ * composeMockup), from the STORED record instead of a fresh model call, and
+ * now the same THREE ingredients: `base` is fetched via `based_on_version`
+ * (baseScreensFor above), exactly as author.ts fetches it via `currentSpec` at
+ * authoring time, so a reload cannot disagree with what the live card showed.
  *
  * A MISSING FRAGMENT THROWS inside composeMockup, by design — right for
  * authoring (ledger D7: a mockup call that returned but left a hole must not
  * silently become a complete-looking document) and WRONG for a render: a
  * version confirmed before this branch existed has no `spec_screen_mockups`
  * rows at all, and a page render must not fail over a preview. Any failure
- * here — that throw, or anything else — degrades to `mockup_html`, the same
- * whole document `dashboard.tsx`'s build contract already renders correctly.
+ * here — that throw, or anything else, including a corrupt or unreadable base
+ * row — degrades to `mockup_html`, the same whole document `dashboard.tsx`'s
+ * build contract already renders correctly.
  */
-function pageLoadPreview(db: PlatformDb, newest: SpecRecord, stored: StoredSpec): string {
+function pageLoadPreview(db: PlatformDb, accountId: number, newest: SpecRecord, stored: StoredSpec): string {
   if (stored.kind !== 'version') return newest.mockup_html
   try {
-    const affected = affectedScreens(null, stored.version.screens, stored.version.ops)
+    const base = baseScreensFor(db, accountId, stored.version.based_on_version)
+    const affected = affectedScreens(base, stored.version.screens, stored.version.ops)
     if (affected.length === 0) return newest.mockup_html
     const fragments = readScreenMockups(db, newest.id)
     return composeMockup(stored.version.screens, fragments, affected)
@@ -327,7 +354,7 @@ export default async function UserSpace({
         // The scoped preview for THIS card — see pageLoadPreview. Degrades to
         // mockup_html (the whole document) for a legacy row and for any
         // version with no stored fragments, rather than ever throwing here.
-        preview_html: pageLoadPreview(getDb(), newest, stored),
+        preview_html: pageLoadPreview(getDb(), accountId, newest, stored),
         confirmed: newest.confirmed_at !== null,
       }
     } catch (error) {
