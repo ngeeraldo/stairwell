@@ -60,12 +60,11 @@ function currentPayload(overrides: Partial<SpecVersion> = {}): SpecVersion {
 let specSeq = 0
 
 /**
- * Confirm a new spec version for an already-existing account, in the style
- * of tests/scripts/announceDeploy.test.ts's confirmedAccount — but against
- * this file's shared 'devtwo' fixture rather than minting a fresh account
- * per scenario, since these tests share one account's spec history on
- * purpose (each call adds the NEXT confirmed version, matching how a real
- * account accumulates them).
+ * Confirm a new spec version for an already-existing account — against this
+ * file's shared 'devtwo' fixture rather than minting a fresh account per
+ * scenario, since these tests share one account's spec history on purpose
+ * (each call adds the NEXT confirmed version, matching how a real account
+ * accumulates them).
  */
 function confirmAVersion(
   db: PlatformDb,

@@ -28,5 +28,5 @@
 #                    should normally be unset.
 
 PLATFORM_DB        REQUIRED  # Path to the platform database. Absent, lib/db/instance.ts falls back to the SYNTHETIC dev database and production serves loudly-fake data with every health check green.
-ANTHROPIC_API_KEY  DEGRADED  # Read by @anthropic-ai/sdk. Absent, POST /api/chat returns 503 and logs a chat_error; the rest of the site is unaffected.
+ANTHROPIC_API_KEY  DEGRADED  # Read by @anthropic-ai/sdk. Absent, POST /api/chat returns 503 and logs a chat_error, and scripts/announce-deploy.ts refuses to draft (use --plain to send the fixed sentence); the rest of the site is unaffected.
 NTFY_TOPIC         REQUIRED  # ntfy.sh topic for conversation-start alerts (lib/alerts/ntfy.ts). Absent, nothing user-visible fails and no page errors — the only symptom is a phone that never buzzes, which is the REQUIRED tier's definition rather than the DEGRADED one.

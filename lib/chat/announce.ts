@@ -169,11 +169,17 @@ export function plainBody(headline: string, first: boolean): string {
  *
  * A target is a thing `announceTarget` DECIDED, not a record a caller may
  * assemble by hand. Typing `commitAnnouncement`'s first parameter as this
- * (rather than a bespoke `{ accountId, specId, version }` literal) means the
- * compiler, not a convention, is what stops a caller hand-constructing a
- * `specId`/`version` that never went through `announceTarget`'s
- * `alreadyAnnounced` check — which is exactly the check whose bypass would
- * post a permanent duplicate into an append-only transcript.
+ * (rather than a bespoke `{ accountId, specId, version }` literal) does NOT
+ * stop a caller hand-constructing one — TypeScript is structurally typed
+ * with no branding, so a matching object literal still satisfies
+ * `ConfirmedTarget` and would type-check. What it actually buys: the
+ * narrowed type makes fabricating one by accident harder (there is no
+ * `{ accountId, specId, version }` literal lying around to copy), and at
+ * every real call site the value comes from `if (!target.ok) return ...`
+ * control-flow narrowing on `announceTarget`'s own result — so in practice
+ * a `ConfirmedTarget` reaching `commitAnnouncement` did go through the
+ * `alreadyAnnounced` check, even though nothing in the type system enforces
+ * that.
  */
 export type ConfirmedTarget = Extract<AnnounceTarget, { ok: true }>
 
