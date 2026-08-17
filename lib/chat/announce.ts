@@ -31,7 +31,7 @@ export const OPERATOR_SHA = 'operator'
  */
 export function announce(
   db: PlatformDb,
-  input: { accountId: number; body: string; at: number },
+  input: { accountId: number; body: string; at: number; promptSha?: string },
 ): void {
   if (input.body.trim() === '') {
     throw new Error(
@@ -52,7 +52,11 @@ export function announce(
     // the sentinel value CLAUDE.md and the ledger point at.
     sessionId: OPERATOR_SHA,
     conversationId: conversation.id,
-    promptSha: OPERATOR_SHA,
+    // OPERATOR_SHA means "a human typed this and no prompt produced it".
+    // A DRAFTED announcement did have a prompt behind it, so it names that
+    // prompt's hash and the sentinel keeps meaning what it says. session_id
+    // stays the sentinel either way — there genuinely is no session.
+    promptSha: input.promptSha ?? OPERATOR_SHA,
     role: 'assistant',
     body: input.body,
     at: input.at,
@@ -90,6 +94,105 @@ function alreadyAnnounced(db: PlatformDb, accountId: number, specId: number): bo
   })
 }
 
+/** What an announcement would be about, or why there is nothing to say. */
+export type AnnounceTarget =
+  | {
+      ok: true
+      accountId: number
+      specId: number
+      version: number
+      /** The confirmed version's change_summary, or a legacy row's title. */
+      headline: string
+      /** Whether this is the account's first dashboard (ledger D9). */
+      first: boolean
+    }
+  | { ok: false; reason: 'no_confirmed_spec' | 'already_announced' }
+
+/**
+ * Decide, without writing anything and without spending a model call.
+ *
+ * Split out from announceDeploy so scripts/announce-deploy.ts can answer
+ * "is there anything to announce?" BEFORE paying to draft a sentence — and so
+ * its dry run can print a draft while writing neither the transcript row nor
+ * the deploy_announced metric that would make the real send a no-op.
+ */
+export function announceTarget(db: PlatformDb, slug: string): AnnounceTarget {
+  const account = findAccountBySlug(db, slug)
+  if (!account) throw new Error(`no account with slug '${slug}'`)
+
+  const spec = currentSpec(db, account.id)
+  if (!spec) return { ok: false, reason: 'no_confirmed_spec' }
+  if (alreadyAnnounced(db, account.id, spec.id)) {
+    return { ok: false, reason: 'already_announced' }
+  }
+
+  // The renderer's own discriminator, reused rather than re-implemented: a
+  // legacy row has no change_summary field at all.
+  const stored = readStoredSpec(spec.payload)
+  const headline =
+    stored.kind === 'version' ? stored.version.change_summary : stored.payload.title
+
+  return {
+    ok: true,
+    accountId: account.id,
+    specId: spec.id,
+    version: spec.version,
+    headline,
+    first: !hasConfirmedSpecBelow(db, account.id, spec.version),
+  }
+}
+
+/**
+ * The two fixed sentences, unchanged and still fixed chrome.
+ *
+ * "Rebuilt" is false on the one morning it matters most: a first build had
+ * nothing to rebuild. Bounded by hasConfirmedSpecBelow, the same question and
+ * the same helper the delivery promise on the card uses (ledger D9), so the
+ * sentence that promised the build and the sentence announcing it cannot
+ * disagree about which one this was.
+ */
+export function plainBody(headline: string, first: boolean): string {
+  return first
+    ? `Your dashboard is live: ${headline}`
+    : `Your dashboard was just rebuilt: ${headline}`
+}
+
+/**
+ * Write the announcement and its guard row, together or not at all.
+ *
+ * The transaction is the whole idempotency guarantee: two independent INSERTs
+ * would leave the failure open where the transcript commits and the metric
+ * does not, so the next run sees "not yet announced" and posts a second,
+ * permanent duplicate into a table that rejects DELETE.
+ */
+export function commitAnnouncement(
+  db: PlatformDb,
+  input: {
+    accountId: number
+    specId: number
+    version: number
+    body: string
+    /** announce-v1.md's hash, or OPERATOR_SHA for the --plain path. */
+    promptSha: string
+    at: number
+  },
+): void {
+  db.transaction(() => {
+    announce(db, {
+      accountId: input.accountId,
+      body: input.body,
+      at: input.at,
+      promptSha: input.promptSha,
+    })
+    appendMetric(db, {
+      accountId: input.accountId,
+      event: 'deploy_announced',
+      at: input.at,
+      data: { spec_id: input.specId, version: input.version },
+    })
+  })()
+}
+
 /**
  * Post a deploy announcement into an account's chat, once per confirmed spec
  * version.
@@ -100,64 +203,25 @@ function alreadyAnnounced(db: PlatformDb, accountId: number, specId: number): bo
  * keyed on the CONFIRMED spec's id specifically (not "has this account ever
  * been announced to"), so a NEW confirmed version announces again: each
  * version is its own event.
+ *
+ * The fixed-sentence path, unchanged in behaviour and still the --plain
+ * valve. Now expressed in terms of the two functions above rather than
+ * duplicating them, so there is one place that decides and one place that
+ * writes.
  */
 export function announceDeploy(
   db: PlatformDb,
   slug: string,
   now: () => number,
 ): AnnounceDeployResult {
-  const account = findAccountBySlug(db, slug)
-  if (!account) throw new Error(`no account with slug '${slug}'`)
+  const target = announceTarget(db, slug)
+  if (!target.ok) return { announced: false, reason: target.reason }
 
-  const spec = currentSpec(db, account.id)
-  if (!spec) return { announced: false, reason: 'no_confirmed_spec' }
-
-  if (alreadyAnnounced(db, account.id, spec.id)) {
-    return { announced: false, reason: 'already_announced' }
-  }
-
-  // The renderer's own discriminator, reused rather than re-implemented: a
-  // legacy row has no change_summary field at all, so the body falls back to
-  // the title. Saying something generic beats saying nothing on the one
-  // morning the promise ("your build landed") is being kept.
-  const stored = readStoredSpec(spec.payload)
-  const headline =
-    stored.kind === 'version' ? stored.version.change_summary : stored.payload.title
-  // "Rebuilt" is false on the one morning it matters most: a first build had
-  // nothing to rebuild, and this sentence is the first thing the friend reads
-  // about the dashboard they were promised. Bounded by the confirmed version's
-  // own number rather than "has this account ever confirmed anything", the
-  // same question and the same helper the delivery promise on the card uses
-  // (ledger D9) — so the sentence that promised the build and the sentence
-  // announcing it cannot disagree about which one this was.
-  const first = !hasConfirmedSpecBelow(db, account.id, spec.version)
-  const body = first
-    ? `Your dashboard is live: ${headline}`
-    : `Your dashboard was just rebuilt: ${headline}`
-
-  const at = now()
-  // Both inserts commit together or not at all. Two independent INSERTs
-  // here would leave one direction of failure open: transcript commits,
-  // metric insert fails (disk full, a constraint, anything) — the
-  // announcement is now permanently in the log, but the guard row
-  // `alreadyAnnounced` checks does not exist, so the next run sees "not yet
-  // announced" and posts a second, permanent duplicate into a table that
-  // rejects DELETE. That is exactly the failure this idempotency check
-  // exists to prevent, so it cannot be left open by the write that
-  // implements the check. Wrapping both in one transaction closes it: a
-  // failure on either insert rolls back both, so no half-announced state is
-  // ever observable by a later run. A rollback of an uncommitted INSERT is
-  // neither an UPDATE nor a DELETE against a committed row, so the
-  // append-only triggers on `transcripts` and `metrics` are untouched.
-  db.transaction(() => {
-    announce(db, { accountId: account.id, body, at })
-    appendMetric(db, {
-      accountId: account.id,
-      event: 'deploy_announced',
-      at,
-      data: { spec_id: spec.id, version: spec.version },
-    })
-  })()
-
+  commitAnnouncement(db, {
+    ...target,
+    body: plainBody(target.headline, target.first),
+    promptSha: OPERATOR_SHA,
+    at: now(),
+  })
   return { announced: true }
 }
