@@ -187,3 +187,38 @@ CREATE TABLE IF NOT EXISTS invites (
   revoked_at INTEGER,
   account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL
 );
+
+-- Per-screen mockup fragments. Sacred like its neighbours: append-only, never
+-- migrated. A row is one screen's HTML as drawn for one spec version.
+--
+-- A TABLE rather than more JSON inside specs.payload, and the difference is
+-- load-bearing: payload is read on EVERY proposal to build the writer's
+-- current-version block, so HTML in there would be fed back into the model's
+-- own input. CREATE TABLE IF NOT EXISTS needs no migration mechanism — the
+-- precedent is account_keys, added the same way for the same reason.
+--
+-- specs.mockup_html keeps holding the COMPOSED document, so pull-spec.sh,
+-- users/<slug>/mockup.html, the admin Mockup tab and the build contract are
+-- all untouched by this table's existence.
+CREATE TABLE IF NOT EXISTS spec_screen_mockups (
+  id        INTEGER PRIMARY KEY,
+  spec_id   INTEGER NOT NULL,
+  screen_id TEXT    NOT NULL,
+  html      TEXT    NOT NULL,
+  at        INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS spec_screen_mockups_unique
+  ON spec_screen_mockups(spec_id, screen_id);
+
+CREATE TRIGGER IF NOT EXISTS spec_screen_mockups_no_update
+BEFORE UPDATE ON spec_screen_mockups
+BEGIN
+  SELECT RAISE(ABORT, 'spec_screen_mockups is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS spec_screen_mockups_no_delete
+BEFORE DELETE ON spec_screen_mockups
+BEGIN
+  SELECT RAISE(ABORT, 'spec_screen_mockups is append-only');
+END;
