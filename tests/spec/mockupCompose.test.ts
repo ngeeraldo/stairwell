@@ -198,6 +198,73 @@ describe('composeMockup', () => {
     expect(html).toMatch(/#screen-morning[^{]*\.tile/)
   })
 
+  // Fix round 1, Finding 1(a). A literal `{` inside a quoted attribute
+  // selector is legal CSS and a plausible one in a generated mockup
+  // (`[data-x="{"]`). Before the fix, the naive brace/paren scanner mistook
+  // it for a rule's opening brace, desynced, and silently dropped every rule
+  // after it — including this unrelated sibling. Both must now survive,
+  // correctly scoped, with nothing vanishing.
+  it('parses a `{` inside a quoted attribute selector without desyncing, and keeps the following sibling rule', () => {
+    const fragments = new Map([
+      ['morning', '<section><style>[data-x="{"] { color: red } .after { color: blue }</style>M</section>'],
+      ['money', '<section>£</section>'],
+    ])
+    const html = composeMockup(SCREENS, fragments)
+    expect(html).toContain('#screen-morning [data-x="{"]')
+    expect(html).toContain('#screen-morning .after')
+  })
+
+  // Fix round 1, Finding 1(b), the fallback for CSS this scanner genuinely
+  // cannot parse (as opposed to (a)'s case, which it now parses correctly).
+  // An unterminated quoted string inside a rule's body makes the rest of the
+  // block unparseable. Before the fix, `matchingBrace` returning -1 there
+  // caused the scanner to `break` and return whatever partial output it had
+  // already built — which here would be nothing, since it desyncs on the
+  // FIRST rule, but the failure mode this proves is real: no half-scoped
+  // fragment of the block, and no unrelated sibling rule surviving unscoped
+  // either, leaks into the composed document.
+  it('drops the WHOLE style block, not a truncated prefix, when it cannot be parsed', () => {
+    const fragments = new Map([
+      ['morning', '<section><style>.a { content: "unterminated } .after { color: blue }</style>M</section>'],
+      ['money', '<section>£</section>'],
+    ])
+    const html = composeMockup(SCREENS, fragments)
+    expect(html).not.toContain('unterminated')
+    // Neither rule survives — not scoped, not unscoped, not truncated.
+    expect(html).not.toMatch(/\.after\s*\{/)
+    expect(html).not.toMatch(/#screen-morning[^{]*\.a\b/)
+    // The rest of the fragment (the markup outside <style>) is untouched.
+    expect(html).toContain('<div id="screen-morning">')
+    expect(html).toContain('M</section>')
+  })
+
+  // Fix round 1, Finding 2. A naive `.split(',')` treats the comma inside
+  // `:is(.a, .b)` as a group boundary, corrupting the selector into
+  // "#screen-morning :is(.a, #screen-morning .b) > .c". The whole selector
+  // must come out as ONE scoped unit instead.
+  it('keeps commas inside :is()/:not() parens intact when splitting a selector group', () => {
+    const fragments = new Map([
+      ['morning', '<section><style>:is(.a, .b) > .c { color: red }</style>M</section>'],
+      ['money', '<section>£</section>'],
+    ])
+    const html = composeMockup(SCREENS, fragments)
+    expect(html).toContain('#screen-morning :is(.a, .b) > .c')
+    // The corrupted shape a naive comma-split would produce.
+    expect(html).not.toContain('#screen-morning .b')
+  })
+
+  // Fix round 1, Finding 4. A comma inside a quoted attribute value is not a
+  // group boundary either — same fix (splitSelectorsTopLevel), different
+  // shape.
+  it('keeps a comma inside a quoted attribute value intact', () => {
+    const fragments = new Map([
+      ['morning', '<section><style>[data-list="a,b"] { color: red }</style>M</section>'],
+      ['money', '<section>£</section>'],
+    ])
+    const html = composeMockup(SCREENS, fragments)
+    expect(html).toContain('#screen-morning [data-list="a,b"]')
+  })
+
   it('throws when a screen has no fragment rather than composing a gap', () => {
     expect(() => composeMockup(SCREENS, new Map([['morning', 'x']]))).toThrow(/money/)
   })

@@ -24,7 +24,19 @@ import type { SpecPatchOp } from './patch'
 export const MOCKUP_SHELL_CLASSES = ['screen', 'screen-title', 'panel', 'panel-title', 'figure', 'note'] as const
 
 /**
- * Which screens a patch changed, in the NEXT version's document order.
+ * Which screens a patch changed, in `next`'s ARRAY order.
+ *
+ * CORRECTED 2026-08-17 (fix round 1, Finding 3): this used to claim "the NEXT
+ * version's document order", which promises a sort by `.order` that this
+ * function does not do — it walks `next` as given, and `applyPatch` pushes a
+ * newly added screen onto the end of the array without re-sorting. No visible
+ * defect today, because `composeMockup` re-sorts its input by `.order` before
+ * rendering regardless of what order this function's caller passes as `only`
+ * — but the comment was promising a guarantee the code did not keep, which is
+ * exactly the kind of drift this codebase does not tolerate in a doc comment.
+ * Softened rather than fixed by adding a sort: nothing downstream needs this
+ * array itself to be canonically ordered, and sorting here would be a second
+ * place that could disagree with composeMockup's own sort.
  *
  * `ops === null` means the version was authored whole-surface, so everything is
  * affected — v1, and the one-time legacy fallback. `base` is null there too.
@@ -129,21 +141,167 @@ const NUDGE = `
 const FRAME_OWNED = new Set(['html', 'body', ':root'])
 
 /**
+ * Find the index in `css`, at or after `start`, where the quoted string that
+ * opens with `quote` at `start` closes. Honours `\`-escapes inside the
+ * string. Returns -1 for an unterminated string — everything after an
+ * unclosed quote is unparseable, so the caller must not guess where it would
+ * have closed.
+ */
+function findStringEnd(css: string, start: number, quote: string): number {
+  let i = start + 1
+  while (i < css.length) {
+    if (css[i] === '\\') {
+      i += 2
+      continue
+    }
+    if (css[i] === quote) return i
+    i++
+  }
+  return -1
+}
+
+/**
+ * Advance past whitespace and `/* … *\/` comments, both of which are
+ * insignificant between rules. Returns `css.length` when nothing but
+ * insignificant content remains, or -1 when a comment is left unterminated —
+ * a distinct outcome from "nothing left", because the former means parsing
+ * can stop cleanly and the latter means it cannot trust anything after it.
+ */
+function skipInsignificant(css: string, from: number): number {
+  let i = from
+  const n = css.length
+  while (i < n) {
+    if (/\s/.test(css[i]!)) {
+      i++
+      continue
+    }
+    if (css[i] === '/' && css[i + 1] === '*') {
+      const end = css.indexOf('*/', i + 2)
+      if (end === -1) return -1
+      i = end + 2
+      continue
+    }
+    break
+  }
+  return i
+}
+
+/**
+ * Find the next occurrence of `ch` in `css` at or after `from`, treating
+ * quoted strings and `/* … *\/` comments as opaque spans that cannot contain
+ * CSS structure. THIS IS THE FIX FOR FINDING 1: without it, the literal `{`
+ * inside `[data-x="{"]` — a legal attribute selector — is mistaken for the
+ * start of a rule body, which desyncs every brace count that follows it.
+ * Returns -1 if `ch` never appears outside such spans, including when a
+ * string or comment is left unterminated: nothing after an unclosed quote or
+ * comment can be trusted to mean what it looks like.
+ */
+function indexOfOutsideStrings(css: string, ch: string, from: number): number {
+  let i = from
+  const n = css.length
+  while (i < n) {
+    const c = css[i]!
+    if (c === '"' || c === "'") {
+      const end = findStringEnd(css, i, c)
+      if (end === -1) return -1
+      i = end + 1
+      continue
+    }
+    if (c === '/' && css[i + 1] === '*') {
+      const end = css.indexOf('*/', i + 2)
+      if (end === -1) return -1
+      i = end + 2
+      continue
+    }
+    if (c === ch) return i
+    i++
+  }
+  return -1
+}
+
+/**
  * Find the index of the `}` that closes the `{` at `openIdx`, accounting for
- * nesting (an `@media` block's own rules). Returns -1 on unbalanced input,
- * which the caller treats as "nothing more to safely parse" rather than a
- * crash — malformed CSS from a model is an input to survive, not throw on.
+ * nesting (an `@media` block's own rules) AND for quoted strings / comments,
+ * which may contain `{`/`}` characters that are not structural (the same
+ * fix as indexOfOutsideStrings, applied to brace counting). Returns -1 on
+ * input this cannot make sense of — an unterminated string/comment, or
+ * brace depth that never returns to zero — which the caller treats as "this
+ * whole block failed to parse", not "guess where it would have ended".
  */
 function matchingBrace(css: string, openIdx: number): number {
   let depth = 0
-  for (let i = openIdx; i < css.length; i++) {
-    if (css[i] === '{') depth++
-    else if (css[i] === '}') {
+  let i = openIdx
+  const n = css.length
+  while (i < n) {
+    const c = css[i]!
+    if (c === '"' || c === "'") {
+      const end = findStringEnd(css, i, c)
+      if (end === -1) return -1
+      i = end + 1
+      continue
+    }
+    if (c === '/' && css[i + 1] === '*') {
+      const end = css.indexOf('*/', i + 2)
+      if (end === -1) return -1
+      i = end + 2
+      continue
+    }
+    if (c === '{') {
+      depth++
+    } else if (c === '}') {
       depth--
       if (depth === 0) return i
     }
+    i++
   }
   return -1
+}
+
+/**
+ * Split a selector prelude on top-level commas only — commas inside `(...)`
+ * (e.g. `:is(.a, .b)`) or inside a quoted attribute value (e.g.
+ * `[data-list="a,b"]`) do not start a new selector. FIX FOR FINDINGS 2 AND 4:
+ * a naive `.split(',')` corrupts both shapes by treating an inner comma as a
+ * group boundary.
+ */
+function splitSelectorsTopLevel(prelude: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let depth = 0
+  let i = 0
+  const n = prelude.length
+  while (i < n) {
+    const c = prelude[i]!
+    if (c === '"' || c === "'") {
+      const end = findStringEnd(prelude, i, c)
+      const stop = end === -1 ? n - 1 : end
+      current += prelude.slice(i, stop + 1)
+      i = stop + 1
+      continue
+    }
+    if (c === '(') {
+      depth++
+      current += c
+      i++
+      continue
+    }
+    if (c === ')') {
+      depth = Math.max(0, depth - 1)
+      current += c
+      i++
+      continue
+    }
+    if (c === ',' && depth === 0) {
+      parts.push(current)
+      current = ''
+      i++
+      continue
+    }
+    current += c
+    i++
+  }
+  parts.push(current)
+  return parts
 }
 
 /**
@@ -161,14 +319,14 @@ function scopeSelector(selector: string, scope: string): string | null {
 }
 
 /**
- * Scope every selector in a comma-separated group. A group survives with only
- * its scopable members if at least one exists; a group that is ENTIRELY
- * frame-owned selectors (e.g. `html, body { ... }`) drops the whole rule,
- * since there is nothing left to say.
+ * Scope every selector in a comma-separated group, splitting on top-level
+ * commas only (splitSelectorsTopLevel — Findings 2 and 4). A group survives
+ * with only its scopable members if at least one exists; a group that is
+ * ENTIRELY frame-owned selectors (e.g. `html, body { ... }`) drops the whole
+ * rule, since there is nothing left to say.
  */
 function scopeSelectorGroup(prelude: string, scope: string): string | null {
-  const scoped = prelude
-    .split(',')
+  const scoped = splitSelectorsTopLevel(prelude)
     .map((s) => scopeSelector(s, scope))
     .filter((s): s is string => s !== null)
   return scoped.length > 0 ? scoped.join(', ') : null
@@ -181,31 +339,56 @@ function scopeSelectorGroup(prelude: string, scope: string): string | null {
  * `@keyframes`, `@supports`, anything else — is DROPPED rather than passed
  * through unscoped: this function's job is a safety net, and a rule it does
  * not understand is exactly the one it must not guess about.
+ *
+ * Returns null — rather than whatever it managed to accumulate — when it hits
+ * input it cannot make structural sense of (an unterminated string or
+ * comment, or brace nesting that never balances). FIX FOR FINDING 1, PART B:
+ * this used to `break` at the desync point and return the partial `out`
+ * accumulated so far, silently dropping every rule after it — legal CSS
+ * (`[data-x="{"] { color: red } .after { color: blue }`) could wipe an
+ * unrelated sibling rule with no signal to anyone. Failure is now
+ * ALL-OR-NOTHING per block: if this function cannot fully parse a `<style>`
+ * block's contents, scopeFragmentStyles drops the whole block rather than
+ * emit an arbitrary, unpredictable prefix of it. This degrades gracefully
+ * BECAUSE the frame publishes default styles (MOCKUP_SHELL_CLASSES / NUDGE):
+ * a fragment that loses its bespoke CSS to a parse failure still renders
+ * plain-but-presentable, not broken — the nudge is a floor, not just a
+ * suggestion.
+ *
+ * A rule dropped by explicit design (an unhandled at-rule, a frame-owned bare
+ * selector) is NOT a parse failure and does not trigger this — this function
+ * understood that rule's boundaries and chose not to emit it. Only a genuine
+ * "I cannot tell where this ends" is.
  */
-function scopeCss(css: string, scope: string): string {
+function scopeCss(css: string, scope: string): string | null {
   let out = ''
   let i = 0
   const n = css.length
 
-  while (i < n) {
-    while (i < n && /\s/.test(css[i]!)) i++
-    if (i >= n) break
+  for (;;) {
+    const start = skipInsignificant(css, i)
+    if (start === -1) return null // unterminated trailing comment
+    if (start >= n) break
+    i = start
 
     if (css.slice(i, i + 7).toLowerCase() === '@import') {
-      const semi = css.indexOf(';', i)
-      i = semi === -1 ? n : semi + 1
+      const semi = indexOfOutsideStrings(css, ';', i)
+      if (semi === -1) return null // unterminated @import statement
+      i = semi + 1
       continue
     }
 
-    const braceIdx = css.indexOf('{', i)
-    if (braceIdx === -1) break // trailing junk after the last rule — drop it
+    const braceIdx = indexOfOutsideStrings(css, '{', i)
+    if (braceIdx === -1) return null // no rule body follows — can't parse the rest
     const prelude = css.slice(i, braceIdx).trim()
     const closeIdx = matchingBrace(css, braceIdx)
-    if (closeIdx === -1) break // unbalanced — drop the remainder rather than guess
+    if (closeIdx === -1) return null // desynced — do not guess, do not emit a prefix
     const body = css.slice(braceIdx + 1, closeIdx)
 
     if (prelude.toLowerCase().startsWith('@media')) {
-      out += `${prelude} { ${scopeCss(body, scope)} }\n`
+      const scopedBody = scopeCss(body, scope)
+      if (scopedBody === null) return null // a nested block that can't parse fails the whole block
+      out += `${prelude} { ${scopedBody} }\n`
     } else if (!prelude.startsWith('@')) {
       const scopedSelector = scopeSelectorGroup(prelude, scope)
       if (scopedSelector) out += `${scopedSelector} { ${body} }\n`
@@ -230,18 +413,23 @@ function scopeCss(css: string, scope: string): string {
  * touched. A rule the model must remember is a rule that eventually is not.
  *
  * Bounded on purpose. It handles the shapes a preview actually uses — plain
- * selectors, comma-separated groups, and `@media` blocks — and DROPS anything
- * it cannot scope safely (`@import`, and bare `html`/`body`/`:root` selectors,
- * which are the frame's to own). Dropping beats passing through: an unscopable
- * rule is exactly the one that would leak. It does NOT handle `@keyframes`,
- * `@font-face`, `@supports`, CSS nesting, or malformed/unbalanced CSS beyond
- * surviving it without throwing — those are dropped too, silently, which is
- * the same bound applied uniformly rather than special-cased.
+ * selectors, comma-separated groups (including commas nested inside `(...)`
+ * or a quoted attribute value), and `@media` blocks — and DROPS anything it
+ * cannot scope safely: `@import`, bare `html`/`body`/`:root` selectors (the
+ * frame's to own), and a `<style>` block it cannot fully parse (an
+ * unterminated string/comment, or unbalanced braces) — dropped WHOLE, per
+ * scopeCss's contract, rather than truncated. Dropping beats passing through
+ * or truncating: an unscopable rule is exactly the one that would leak, and a
+ * silent partial block is exactly the one that would look complete while
+ * missing content. It does NOT handle `@keyframes`, `@font-face`,
+ * `@supports`, or CSS nesting (`&`) — those are dropped too, silently, which
+ * is the same bound applied uniformly rather than special-cased.
  */
 function scopeFragmentStyles(html: string, screenId: string): string {
   const scope = `#screen-${screenId}`
   return html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_full, css: string) => {
-    return `<style>${scopeCss(css, scope)}</style>`
+    const scoped = scopeCss(css, scope)
+    return `<style>${scoped ?? ''}</style>`
   })
 }
 
