@@ -14,6 +14,9 @@
 // file that produced a partial announcement would be permanent —
 // lib/chat/opening.ts refuses for exactly the same reason.
 
+import { existsSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+
 export class BuildNotesError extends Error {
   constructor(message: string) {
     super(`build notes: ${message}`)
@@ -139,4 +142,53 @@ export function parseBuildNotes(text: string): BuildNotes {
  */
 export function friendFacing(notes: BuildNotes): FriendFacingNotes {
   return { what_shipped: notes.what_shipped, built_differently: notes.built_differently }
+}
+
+/**
+ * Absent notes are their OWN error class, not a BuildNotesError.
+ *
+ * scripts/announce-deploy.ts distinguishes them: a missing file means "write
+ * the notes, then run this again", a malformed one means "fix the file". The
+ * two need different sentences at the moment Nico is standing at a terminal
+ * after a deploy.
+ */
+export class NotesMissingError extends Error {
+  constructor(public readonly path: string) {
+    super(`build notes: no file at ${path} — write it before announcing`)
+    this.name = 'NotesMissingError'
+  }
+}
+
+/**
+ * USERS_DIR, matching the rest of the repo — it exists so tests can point at a
+ * temp tree, and its default IS the correct production value, which is why
+ * deploy/required-env deliberately does not list it.
+ */
+function usersRoot(override?: string): string {
+  return override ?? process.env.USERS_DIR ?? resolve(process.cwd(), 'users')
+}
+
+export function notesPath(slug: string, version: number, usersDir?: string): string {
+  return join(usersRoot(usersDir), slug, 'notes', `v${version}.md`)
+}
+
+/**
+ * Read the notes for one built version.
+ *
+ * The frontmatter is checked AGAINST the path it was found at. A notes file is
+ * the most copy-pasteable artifact in the build — the previous version's file
+ * with two words changed — and a stale `version:` would make the announcement
+ * describe the wrong build, permanently.
+ */
+export function readBuildNotes(slug: string, version: number, usersDir?: string): BuildNotes {
+  const path = notesPath(slug, version, usersDir)
+  if (!existsSync(path)) throw new NotesMissingError(path)
+
+  const notes = parseBuildNotes(readFileSync(path, 'utf8'))
+  if (notes.slug !== slug || notes.version !== version) {
+    throw new BuildNotesError(
+      `frontmatter says ${notes.slug} v${notes.version} but the file is ${path}`,
+    )
+  }
+  return notes
 }
