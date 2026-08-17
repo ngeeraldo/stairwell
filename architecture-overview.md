@@ -179,6 +179,16 @@ Server (single VPS)
   whole surface — the stored version row is whole-surface JSON either way,
   so nothing downstream (preview, diff, admin pane) needs to know which path
   produced it.
+- **The preview is proportional to the change, not to the dashboard.** The ops
+  say exactly which screens a patch touched, so the mockup call draws only
+  those, and the friend's card shows only those — a one-word relabel no longer
+  asks someone to re-review a five-screen dashboard to confirm it. Per-screen
+  fragments live in their own table (`spec_screen_mockups`), because
+  `specs.mockup_html` remains one opaque, composed document and stays the
+  build contract read unscoped everywhere else (`pull-spec.sh`, the admin
+  Mockup tab, the builder). The shared stylesheet lives outside any one
+  fragment, since fragments composed into one document may be drawn weeks
+  apart by separate calls and have to agree with each other.
 - Response expectation: small changes within a few hours; consistency over speed.
 - **Live-build + notify:** a request comes in, you build live via Claude Code against the newly confirmed version, and when the deploy lands the agent posts in chat ("your eating-out panel is live"). No scheduled studio sessions — the chat is the whole loop.
 - **The confirmed version *is* the approval gate, and it is never optional.** No version deploys unconfirmed, regardless of how trivial the change looks. This replaces an earlier, deferred idea of a separate message-mirror → headless-build → diff-summary-and-screenshot approval step: the preview card already leads with what changed, and the confirm button already is that gate, so there is nothing further to build.

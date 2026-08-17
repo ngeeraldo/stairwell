@@ -129,6 +129,28 @@ architectural changes; do not relitigate decided items).
   Three paths author, not two: `patch` against a current-shape base; `whole`
   for a first version, which has no base to patch; `whole` for a legacy base,
   which carries no ids for an op to name and can never gain any.
+- The ops name exactly which screens a patch touched
+  (`lib/spec/mockupCompose.ts`'s `affectedScreens`), and the mockup call draws
+  only those screens' fragments, carrying every other screen's fragment
+  forward from `spec_screen_mockups` unchanged. **`specs.mockup_html` is still
+  the whole composed document, and it is still the build contract** —
+  `pull-spec.sh`, `users/<slug>/mockup.html`, the admin Mockup tab, and
+  `dashboard.tsx`'s build target all read it unscoped, because a builder needs
+  every screen, touched or not. What is scoped is the FRIEND'S CARD: it renders
+  `Proposal.preview_html`, composed from only the affected screens, so
+  confirming a one-word relabel does not ask someone to re-review a dashboard
+  they already approved. For a first version (or a legacy base's one-time
+  whole-surface fallback) every screen is affected, so the two documents are
+  equal — not because scoping is skipped, but because "everything" is what
+  scoping degenerates to. **The stylesheet lives in `lib/spec/mockupCompose.ts`,
+  never in a fragment or a prompt, because fragments drawn weeks apart, by
+  separate model calls, have to match** when composed into one document — a
+  stylesheet re-emitted per fragment could disagree with itself screen to
+  screen, and the unchanged screens would visibly shift every time a neighbour
+  was edited. A fragment may carry its own `<style>` block on top; `composeMockup`
+  scopes it to that screen automatically (prefixing selectors under
+  `#screen-<id>`) so a rule meant for today's edit cannot restyle a screen
+  nobody touched.
 - `specs` rejects UPDATE, so a row written before the unified proposal loop
   can never be rewritten into the current shape — it is read as legacy
   forever. Read every stored spec payload through `lib/spec/stored.ts`, the
@@ -429,6 +451,19 @@ architectural changes; do not relitigate decided items).
 ## Sacred data
 - Metrics log and chat transcripts are append-only. Never migrate, rewrite,
   or "clean up" these files.
+- `spec_screen_mockups` (platform database) is append-only too, same trigger
+  pair as `specs`. It holds one row per `(spec_id, screen_id)` — the per-screen
+  mockup fragment a version's screen was drawn with. **A table, not more JSON
+  in `payload`, for two separate reasons:** `specs.payload` is read on every
+  proposal to build the writer's current-version block, and putting rendered
+  HTML in it would feed the mockup back into the model's own input; and
+  `specs.mockup_html` is one opaque composed document — splicing a screen back
+  out of it would mean asking the model to emit stable per-screen markers to
+  splice on, which makes a guarantee depend on model compliance with a
+  formatting rule (exactly what unified-loop ledger D19 says not to do).
+  `lib/db/screenMockups.ts`
+  appends and reads; `lib/spec/mockupCompose.ts` is the only place that
+  composes fragments into a document.
 - **TWO metric events are load-bearing for correctness rather than purely
   observational, and neither is disposable telemetry.**
   - `deploy_announced` — `announceTarget` (`lib/chat/announce.ts`, called from
