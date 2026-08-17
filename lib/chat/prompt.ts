@@ -50,6 +50,16 @@ export const SPEC_PROMPT = 'spec-v2.md'
  */
 export const MOCKUP_PROMPT = 'mockup-v3.md'
 
+/**
+ * The deploy-announcement prompt. Turns one build's friend-facing notes into
+ * the sentence that lands in their chat.
+ *
+ * A drafted announcement is the first GENERATED text this system writes into
+ * an append-only transcript, which is why scripts/announce-deploy.ts drafts by
+ * default and only sends on --send.
+ */
+export const ANNOUNCE_PROMPT = 'announce-v1.md'
+
 export type LoadedPrompt = { text: string; sha: string }
 
 /**

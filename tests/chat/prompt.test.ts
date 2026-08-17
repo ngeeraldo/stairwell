@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   AGENT_PROMPT,
+  ANNOUNCE_PROMPT,
   MOCKUP_PROMPT,
   SPEC_PROMPT,
   loadPrompt,
@@ -116,6 +117,12 @@ describe('loadPrompt', () => {
 
   it('defaults to the agent prompt when given no name', () => {
     expect(loadPrompt().sha).toBe(loadPrompt(AGENT_PROMPT).sha)
+  })
+
+  it('loads the announce prompt and hashes it', () => {
+    const loaded = loadPrompt(ANNOUNCE_PROMPT)
+    expect(loaded.text).toContain('Saying nothing extra is a complete answer')
+    expect(loaded.sha).toHaveLength(12)
   })
 
   it('gives every shipped prompt a distinct sha', () => {
