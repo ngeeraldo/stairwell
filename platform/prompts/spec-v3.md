@@ -30,8 +30,9 @@ Your patch is a `change_summary`, the current `data_requirements` and
   `null` for any of the three that is unchanged. Only emit this op at all if
   one of them genuinely changed.
 - **`add_screen`** — a whole new screen with its panels.
-- **`update_screen`** — a screen's `title` and `order`. Both are required; give
-  the current value for the one that did not change.
+- **`update_screen`** — a screen's `id`, `title` and `order`. All three are
+  required; give the current value for whichever of `title` or `order` did not
+  change.
 - **`remove_screen`** — by id. Its panels go with it.
 - **`add_panel`** — a whole new panel, and the `screen_id` it goes on.
 - **`replace_panel`** — a whole panel, replacing the one with the same id. This
@@ -91,11 +92,9 @@ via `set_meta` only when it genuinely changed.
 **change_summary** — what changed against the version you were given, in
 plain language, leading with the change itself. This is the line the friend
 reads first, in the preview card and later in the deploy announcement, so
-open with the news rather than a recap of the whole dashboard. For a first
-version, with no prior version to compare against, describe the whole
-dashboard briefly instead. Any panel, screen, or value you dropped from the
-prior version must be named here — that is the only place a deletion is
-recorded.
+open with the news rather than a recap of the whole dashboard. Any panel,
+screen, or value you dropped from the prior version must be named here — that
+is the only place a deletion is recorded.
 
 **screens** — at least one, across the dashboard as a whole. A screen carries
 an `id`, a `title`, an `order` (an integer placing it among the others), and
