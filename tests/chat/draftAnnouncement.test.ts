@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { draftAnnouncement, MAX_ANNOUNCEMENT_CHARS } from '@/lib/chat/draftAnnouncement'
 import type { ChatClient } from '@/lib/chat/client'
+import { friendFacing, parseBuildNotes } from '@/lib/build/notes'
 
 const NOTES = {
   what_shipped: 'The takeaway panel now shows a weekly total.',
@@ -37,12 +38,53 @@ describe('draftAnnouncement', () => {
 
   // The structural bound from lib/build/notes.ts, asserted at the boundary
   // that actually sends bytes to a model.
+  //
+  // The fixture is a REAL BuildNotes, parsed by the actual parser, with a
+  // sentinel in EACH builder-only section — not a bare FriendFacingNotes
+  // literal that never carried builder-only content to begin with. An
+  // earlier version of this test used such a literal and could not fail: the
+  // string "Monday" it checked for was never present anywhere in the input,
+  // so the assertion was vacuously true and would have stayed green even if
+  // draftAnnouncement forwarded the WHOLE BuildNotes object, "## Open" and
+  // "## Notes for the next build" included. This version passes the parsed
+  // notes through friendFacing() — the same call a real caller makes — so
+  // the sentinels genuinely exist in the source and genuinely must not
+  // survive the trip. This is the assertion standing between a builder's
+  // private note and a friend's permanent transcript.
   it('sends only the friend-facing notes', async () => {
+    const rawNotes = parseBuildNotes(
+      [
+        '---',
+        'slug: testfriend',
+        'version: 1',
+        'built_at: 2026-08-17',
+        '---',
+        '',
+        '## What shipped',
+        '',
+        'The takeaway panel now shows a weekly total.',
+        '',
+        '## Built differently',
+        '',
+        'Weekly rather than daily.',
+        '',
+        '## Open',
+        '',
+        'SENTINEL_OPEN_MUST_NOT_LEAK',
+        '',
+        '## Notes for the next build',
+        '',
+        'SENTINEL_NEXT_BUILD_MUST_NOT_LEAK',
+        '',
+      ].join('\n'),
+    )
+
     const client = clientReturning({ message: 'ok' })
-    await draftAnnouncement({ client }, INPUT)
+    await draftAnnouncement({ client }, { ...INPUT, notes: friendFacing(rawNotes) })
     const sent = JSON.stringify((client.propose as ReturnType<typeof vi.fn>).mock.calls[0]![0])
     expect(sent).toContain('weekly total')
-    expect(sent).not.toContain('Monday')
+    expect(sent).not.toContain('SENTINEL_OPEN_MUST_NOT_LEAK')
+    expect(sent).not.toContain('SENTINEL_NEXT_BUILD_MUST_NOT_LEAK')
   })
 
   it('throws on an empty message rather than returning a blank body', async () => {
