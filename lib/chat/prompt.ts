@@ -29,6 +29,13 @@ export const AGENT_PROMPT = 'agent-v5.md'
 export const SPEC_PROMPT = 'spec-v2.md'
 
 /**
+ * The PATCH-authoring prompt, used when there is a current confirmed version in
+ * the current shape to change. v1 and a legacy base still go through
+ * SPEC_PROMPT and emit the whole surface — see lib/spec/author.ts.
+ */
+export const SPEC_PATCH_PROMPT = 'spec-v3.md'
+
+/**
  * The mockup-rendering prompt. Takes a validated spec version as JSON and
  * emits the self-contained HTML preview — split out from SPEC_PROMPT so a
  * spec can be authored and validated without also generating and discarding

@@ -6,6 +6,7 @@ import {
   AGENT_PROMPT,
   ANNOUNCE_PROMPT,
   MOCKUP_PROMPT,
+  SPEC_PATCH_PROMPT,
   SPEC_PROMPT,
   loadPrompt,
   loadPromptAtPath,
@@ -136,6 +137,12 @@ describe('loadPrompt', () => {
     expect(loaded.sha).toMatch(/^[0-9a-f]{12}$/)
   })
 
+  it('loads the patch prompt and hashes it', () => {
+    const loaded = loadPrompt(SPEC_PATCH_PROMPT)
+    expect(loaded.text).toContain('A PATCH: only what changes')
+    expect(loaded.sha).not.toBe(loadPrompt(SPEC_PROMPT).sha)
+  })
+
   it('gives every shipped prompt a distinct sha', () => {
     // The whole point of a per-file content hash: two prompts that share a
     // sha would be indistinguishable in the transcript and metrics rows.
@@ -169,7 +176,7 @@ describe('loadPrompt', () => {
   // discovered list proves the sweep found the actual platform/prompts
   // directory and the files that actually ship, not merely some files.
   it('discovers every exported prompt constant, not just some files', () => {
-    for (const name of [AGENT_PROMPT, SPEC_PROMPT, MOCKUP_PROMPT, ANNOUNCE_PROMPT]) {
+    for (const name of [AGENT_PROMPT, SPEC_PROMPT, SPEC_PATCH_PROMPT, MOCKUP_PROMPT, ANNOUNCE_PROMPT]) {
       expect(ALL_SHIPPED_PROMPTS, name).toContain(name)
     }
   })
@@ -258,7 +265,7 @@ describe('loadPrompt', () => {
   })
 
   it('names prompt files that exist on disk', () => {
-    for (const name of [AGENT_PROMPT, SPEC_PROMPT, MOCKUP_PROMPT, ANNOUNCE_PROMPT]) {
+    for (const name of [AGENT_PROMPT, SPEC_PROMPT, SPEC_PATCH_PROMPT, MOCKUP_PROMPT, ANNOUNCE_PROMPT]) {
       expect(existsSync(promptPath(name))).toBe(true)
     }
   })
