@@ -387,6 +387,17 @@ finds. A friend who logs anything needs their own route alongside
 `app/api/users/[user]/walk/route.ts`; it is not a refactor of that one, and it
 is where the four ordered auth checks live.
 
+### Write the build notes
+
+Before you ship, write `users/$FRIEND/notes/v$V.md`. `notes/README.md` in their
+folder holds the template and says which sections the friend sees.
+
+It is the only record of what actually shipped and why — `spec.md` is
+overwritten by the next pull and records what was *asked for*. Step 9 speaks
+from this file and refuses without it.
+
+Never put their data in it. It is committed to the repo.
+
 ---
 
 ## Step 8 — Ship it
@@ -441,12 +452,35 @@ views you have.
 ## Step 9 — Tell them it landed
 
 ```bash
+# 1. Draft it and read it. Writes nothing.
 ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND"
+
+# 2. Happy with it? Send it.
+ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND --send"
 ```
 
-Posts the confirmed version's change summary into **that one account's** chat,
-**once per confirmed spec version**. Safe to re-run: an already-announced
-version is reported, not repeated.
+The draft is written from `notes/v$V.md` — what shipped, plus any in-spirit
+adjustment worth mentioning — and from what they have already been told, so it
+does not repeat the preview back at them. **Read it before sending.**
+`transcripts` rejects DELETE; this is the first generated sentence this system
+puts in there, and a bad one is permanent.
+
+It refuses, loudly and with exit 1, if `notes/v$V.md` is missing or malformed.
+If it warns that `## Open` is non-empty, the announcement is still correct —
+but you owe them a chat about the part that did not land, via
+`scripts/ask-user.ts` (step 4) or a new proposal.
+
+If the API is down and the announcement has to go out now:
+
+```bash
+ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND --send --plain"
+```
+
+`--plain` sends the old fixed sentence and makes no model call. It is the only
+sanctioned way to announce without reading the notes.
+
+Posts into **that one account's** chat, **once per confirmed spec version**.
+Safe to re-run: an already-announced version is reported, not repeated.
 
 Run it by hand, per friend, and keep it that way. `deploy.sh` deploys the whole
 service, so calling the announcer from it would post "your dashboard is live"
@@ -489,6 +523,8 @@ is here because getting it wrong is expensive and quiet.
 | Ship every shape change as a new numbered migration — `002_…`, then `003_…` | A friend's database records only which NUMBER it reached, so editing an applied file silently changes what that number means. The manifest's checksum refuses the session rather than letting it through. |
 | Add a new prompt version — `agent-v3.md` | `prompt_sha` is stamped on transcript and spec rows that already exist, so editing `agent-v2.md` changes what an already-written hash points at. Prompts are added, and that is a data-safety property. |
 | Run `announce-deploy.ts` by hand, once per friend, at step 9 | `deploy.sh` deploys the whole service. Calling the announcer from it would post "your dashboard is live" into every account's chat on every push — a permanent line in an append-only transcript. |
+| Write `notes/v<n>.md` before announcing, and never edit one afterwards | It is the only record of what shipped, and step 9 speaks from it. An edited note changes what an already-sent, permanent announcement was based on. |
+| Read the drafted announcement before `--send` | `transcripts` rejects DELETE. It is the first generated sentence this system writes into it. |
 | Leave every `deploy_announced` and `first_session_start` metric row in place | Both are read for correctness, not observed. Losing one makes a weeks-old build re-announce itself, or a months-old account report a first session again. They look like telemetry and are not. |
 | Build locally with `scripts/create-local-account.ts` + `npm run dev` | `npm start` sets `NODE_ENV=production`, the only switch `lib/db/userData.ts` has, so a login there takes the production branch and `lib/db/migrate.ts` writes a real `users/<slug>/<slug>.db` onto your laptop. Gate F blocks your next commit until it is removed. |
 | Ship every droplet change through `git push` and `deploy/deploy.sh` | `deploy.sh` runs `git pull --ff-only`, so a hand-edit there is clobbered by the next deploy and is invisible on the laptop where the dashboard is actually built. |

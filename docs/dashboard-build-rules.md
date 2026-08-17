@@ -57,6 +57,9 @@ Five entries, swept by `tests/users/conventions.test.ts:45`:
   (`app/[user]/page.tsx:76`).
 - Scaffold with `./scripts/new-dashboard.sh <slug>`; do not copy by hand —
   CLAUDE.md.
+- Every built version gets `users/<slug>/notes/v<n>.md`, added never edited;
+  two of its four sections never reach the friend — CLAUDE.md > Dashboard
+  folder conventions; `docs/runbook.md` step 7.
 
 ---
 

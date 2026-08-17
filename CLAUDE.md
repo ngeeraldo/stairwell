@@ -76,7 +76,7 @@ architectural changes; do not relitigate decided items).
   build — this section, the step-5 design, the step-6a and friend-timezone
   ledgers — with a citation on each line. It is an index, not a second copy:
   where it disagrees with a source, the source wins.
-- A user dashboard lives entirely in `users/<slug>/`. Five entries are
+- A user dashboard lives entirely in `users/<slug>/`. Six entries are
   required; `tests/users/conventions.test.ts` sweeps every folder and fails
   if one is missing:
   - `migrations/` — `001_initial.sql`, `002_*.sql`, … plus `manifest.json`.
@@ -94,6 +94,17 @@ architectural changes; do not relitigate decided items).
   - `queries.ts` — every SQL statement, as pure functions taking a `UserDb`
   - `dashboard.tsx` — default-export server component, **no SQL**
   - `tests/` — at least one `*.test.ts`
+  - `notes/` — `README.md`, plus `v<n>.md` for every confirmed version that was
+    BUILT. **Added, never edited**, for the same reason prompts are:
+    `scripts/announce-deploy.ts` speaks from this file, so an edit changes what
+    an already-sent, permanently-stored announcement was based on. Four fixed
+    sections; `lib/build/notes.ts` parses them and **two of the four never
+    reach the friend** — `## Open` and `## Notes for the next build` are
+    builder-only, enforced by the parser rather than by prompt wording.
+    `tests/users/conventions.test.ts` checks the folder's SHAPE (no strays,
+    every note parses) and deliberately not its presence: the sweep cannot know
+    which versions were built. Presence is enforced by `announce-deploy.ts`,
+    which refuses to announce v`n` without `notes/v<n>.md`.
 - `spec.md` and `mockup.html` are written by `./scripts/pull-spec.sh <slug>`
   and are absent until a spec is confirmed. `synthetic.db` is generated and
   gitignored. `<slug>.db` arrived in step 6a and is described next.
@@ -157,6 +168,10 @@ architectural changes; do not relitigate decided items).
   like `divorce_lawyer_fund` is derived from what the friend asked for, which
   is why `lib/spec/author.ts` strips quoted ids out of `spec_error` messages
   too. The content of what changed stays in `specs`, never in `metrics`.
+- **Build notes never carry user values either.** `users/<slug>/notes/v<n>.md`
+  is committed to the repo and describes the SHAPE of what was built — a table,
+  a panel, a computation — never a row, a value, or a merchant. Same bound as
+  `metrics`, applied to a second artifact.
 - A dashboard renders only if it is registered in `lib/dashboard/registry.ts`.
   One line: `<slug>: () => import('@/users/<slug>/dashboard'),`. A folder with
   no registry line fails `tests/dashboard/registry.test.ts`.
@@ -267,6 +282,12 @@ architectural changes; do not relitigate decided items).
   `screenshots/screens.ts` says what each one has to look like. It is a review
   gate, not a test — no pixel diffing — and it has caught things no test in
   this repo can see (onboarding ledger D16).
+- **A build that could not deliver something goes back to the chat, never into
+  the announcement.** The announcement is an update, not a disclosure: what
+  shipped, and any in-spirit adjustment that makes it work better. Anything in
+  the confirmed spec that did NOT land goes in `## Open`, which the friend
+  never sees, and routes back through `scripts/ask-user.ts` or a new proposal.
+  `announce-deploy.ts` warns when that section is non-empty.
 
 ## Build contract
 - spec.md + mockup.html in the user's folder are the build contract for
