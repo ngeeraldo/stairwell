@@ -266,6 +266,9 @@ export function parseSpecDraft(raw: unknown): SpecDraft {
   if ('based_on_version' in src) {
     throw new SpecShapeError('based_on_version is supplied by the server and must not be authored')
   }
+  if ('ops' in src) {
+    throw new SpecShapeError('ops is supplied by the server and must not be authored')
+  }
   return draftFrom(src)
 }
 

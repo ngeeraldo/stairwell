@@ -14,12 +14,7 @@ const BASE: SpecVersion = {
     { id: 'morning', title: 'Morning', order: 1, panels: [panel('eating_out'), panel('walks')] },
     { id: 'money', title: 'Money', order: 2, panels: [panel('balance')] },
   ],
-  // NOTE: `ops` is not on SpecVersion yet — that lands in Task 11. Task 9's
-  // "Interfaces from Task 9" note flags this explicitly: adding it here would
-  // be a spread of scope this task should not take. The brief's BASE literal
-  // included `ops: null`, which does not typecheck against the current
-  // SpecVersion type; that field is omitted here rather than guessed at.
-  data_requirements: [], open_questions: [], based_on_version: null,
+  data_requirements: [], open_questions: [], based_on_version: null, ops: null,
 }
 
 const patch = (ops: unknown[]) => ({

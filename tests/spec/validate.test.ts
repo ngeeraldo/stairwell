@@ -155,14 +155,14 @@ describe('parseSpecDraft', () => {
 
 describe('sealVersion', () => {
   it('attaches the server-supplied lineage pointer', () => {
-    expect(sealVersion(parseSpecDraft(draft()), 4).based_on_version).toBe(4)
-    expect(sealVersion(parseSpecDraft(draft()), null).based_on_version).toBeNull()
+    expect(sealVersion(parseSpecDraft(draft()), 4, null).based_on_version).toBe(4)
+    expect(sealVersion(parseSpecDraft(draft()), null, null).based_on_version).toBeNull()
   })
 })
 
 describe('parseSpecVersion', () => {
   it('round-trips a sealed version', () => {
-    const sealed = sealVersion(parseSpecDraft(draft()), 2)
+    const sealed = sealVersion(parseSpecDraft(draft()), 2, null)
     expect(parseSpecVersion(JSON.stringify(sealed)).based_on_version).toBe(2)
   })
 
@@ -182,6 +182,36 @@ describe('parseSpecVersion', () => {
     // gate.
     const sealed = { ...draft(), based_on_version: 1, data_requirements: null }
     expect(() => parseSpecVersion(JSON.stringify(sealed))).toThrow(/data_requirements/)
+  })
+})
+
+describe('ops on a stored version', () => {
+  it('round-trips through parseSpecVersion', () => {
+    const sealed = sealVersion(parseSpecDraft(draft()), 3, [{ op: 'remove_panel', id: 'walks' }])
+    const read = parseSpecVersion(JSON.stringify(sealed))
+    expect(read.ops).toEqual([{ op: 'remove_panel', id: 'walks' }])
+  })
+
+  // Null means "authored whole-surface". An empty array would claim it was
+  // produced by a patch that changed nothing, which is a different and
+  // impossible thing.
+  it('is null, not [], for a whole-surface version', () => {
+    const read = parseSpecVersion(JSON.stringify(sealVersion(parseSpecDraft(draft()), null, null)))
+    expect(read.ops).toBeNull()
+  })
+
+  it('reads a pre-patch stored row, which has no ops key, as null', () => {
+    const { ops, ...withoutOps } = sealVersion(parseSpecDraft(draft()), 1, null)
+    expect(parseSpecVersion(JSON.stringify(withoutOps)).ops).toBeNull()
+  })
+
+  it('rejects a model-authored ops key on the whole-surface path', () => {
+    expect(() => parseSpecDraft(draft({ ops: [] }))).toThrow(/ops/)
+  })
+
+  it('throws on a stored ops value that is not an array or null', () => {
+    const bad = JSON.stringify({ ...sealVersion(parseSpecDraft(draft()), 1, null), ops: 'nope' })
+    expect(() => parseSpecVersion(bad)).toThrow(SpecShapeError)
   })
 })
 

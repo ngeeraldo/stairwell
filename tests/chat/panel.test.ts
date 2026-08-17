@@ -172,6 +172,7 @@ const VERSION: SpecVersion = {
   background: 'Pivoted from weather TEST.',
   change_summary: 'Added a streak.',
   based_on_version: 1,
+  ops: null,
   screens: [{ id: 'today', title: 'Today', order: 1, panels: [walkedTodayPanel()] }],
   data_requirements: [],
   open_questions: [],

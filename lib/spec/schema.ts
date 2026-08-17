@@ -15,6 +15,10 @@
 // title/summary/background are RETAINED from the pre-unification shape: each
 // has live consumers (spec.md's H1, the preview card, the admin pane) and the
 // spec doc is silent about them, so existing conventions stand. See ledger D1.
+//
+// `import type` only: patch.ts imports from this file (schema.ts -> patch.ts
+// would be the cycle). Erased at compile time, so it creates no runtime edge.
+import type { SpecPatchOp } from './patch'
 
 export const VALUE_KINDS = ['synced', 'entered', 'derived'] as const
 export type ValueKind = (typeof VALUE_KINDS)[number]
@@ -76,8 +80,24 @@ export type SpecDraft = {
   open_questions: string[]
 }
 
-/** What gets stored: the draft plus the server-supplied lineage pointer. */
-export type SpecVersion = SpecDraft & { based_on_version: number | null }
+/**
+ * What gets stored: the draft, the server-supplied lineage pointer, and the
+ * ops that produced it.
+ *
+ * `ops` is NULL for a version authored whole-surface (v1, and the one-time
+ * fallback for a legacy base). Null says "this version was not produced by a
+ * patch"; an empty array would say "it was produced by a patch that changed
+ * nothing", which is a different and impossible claim.
+ *
+ * It rides INSIDE payload, flat beside the version's own fields, because
+ * readStoredSpec discriminates on a top-level `screens` array and draftFrom
+ * picks named keys. A `{ patch, version }` wrapper would break the
+ * discriminator and every consumer with it. No new column on `specs`.
+ */
+export type SpecVersion = SpecDraft & {
+  based_on_version: number | null
+  ops: SpecPatchOp[] | null
+}
 
 export class SpecShapeError extends Error {
   constructor(message: string) {

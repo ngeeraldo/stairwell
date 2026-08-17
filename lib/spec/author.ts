@@ -553,7 +553,9 @@ export async function authorSpec(
     // version would supersede when confirmed — which is the record at write
     // time. That the writer was shown an older version is a separate fact, and
     // it is one the transcript and the prompt already carry.
-    const sealed = sealVersion(draft, currentSpec(db, input.accountId)?.version ?? null)
+    // ops: null for now — this is the whole-surface authoring path. Task 13
+    // supplies the real value for the patch path.
+    const sealed = sealVersion(draft, currentSpec(db, input.accountId)?.version ?? null, null)
 
     // Read ONCE and used for both the row and the proposal that describes it.
     // Two calls to now() would put the card at a different moment from the row

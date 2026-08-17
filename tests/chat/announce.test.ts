@@ -34,6 +34,7 @@ function currentPayload(overrides: Partial<SpecVersion> = {}): SpecVersion {
     background: 'Pivoted from weather TEST.',
     change_summary: 'Added a streak panel TEST.',
     based_on_version: null,
+    ops: null,
     screens: [
       {
         id: 'today',

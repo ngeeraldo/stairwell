@@ -313,7 +313,7 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
         accountId: account.id,
         conversationId: 'shots-conversation',
         promptSha: 'shots-fixture',
-        payload: sealVersion(draft, null),
+        payload: sealVersion(draft, null, null),
         mockupHtml:
           '<!doctype html><html><body style="font-family:system-ui;padding:24px">' +
           '<h1 style="margin:0 0 8px">COFFEE PALACE TEST tracker</h1>' +

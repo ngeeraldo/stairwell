@@ -9,12 +9,18 @@
 // emitted or stored document.
 import { SpecShapeError, type SpecDraft, type SpecVersion } from './schema'
 import { draftFrom, record, text } from './fields'
+import { parseOp, type SpecPatchOp } from './patch'
 
 export { parseSpecDraft } from './fields'
 
-/** Attach the lineage pointer. The only place a SpecVersion is constructed. */
-export function sealVersion(draft: SpecDraft, basedOnVersion: number | null): SpecVersion {
-  return { ...draft, based_on_version: basedOnVersion }
+/** Attach the lineage pointer and the ops that produced this version. The
+ * only place a SpecVersion is constructed. */
+export function sealVersion(
+  draft: SpecDraft,
+  basedOnVersion: number | null,
+  ops: SpecPatchOp[] | null,
+): SpecVersion {
+  return { ...draft, based_on_version: basedOnVersion, ops }
 }
 
 /** Re-validate a stored payload on the way out of the database. */
@@ -30,7 +36,16 @@ export function parseSpecVersion(json: string): SpecVersion {
   if (based !== null && (typeof based !== 'number' || !Number.isInteger(based))) {
     throw new SpecShapeError('based_on_version is neither an integer nor null')
   }
-  return sealVersion(draftFrom(src), based)
+  const rawOps = src.ops
+  // Absent reads as null, not as an error: every spec row written before this
+  // existed has no `ops` key, and `specs` rejects UPDATE so none can ever
+  // gain one.
+  let ops: SpecPatchOp[] | null = null
+  if (rawOps !== undefined && rawOps !== null) {
+    if (!Array.isArray(rawOps)) throw new SpecShapeError('ops is neither an array nor null')
+    ops = rawOps.map((o, i) => parseOp(o, `ops[${i}]`))
+  }
+  return sealVersion(draftFrom(src), based, ops)
 }
 
 export function parseMockupInput(raw: unknown): string {

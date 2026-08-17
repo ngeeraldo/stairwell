@@ -175,7 +175,7 @@ function optText(src: Record<string, unknown>, key: string, at: string): string 
   return reqText(src, key, at)
 }
 
-function parseOp(raw: unknown, at: string): SpecPatchOp {
+export function parseOp(raw: unknown, at: string): SpecPatchOp {
   const src = obj(raw, at)
   const op = reqText(src, 'op', at)
   switch (op) {

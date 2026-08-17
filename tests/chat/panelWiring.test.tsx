@@ -54,6 +54,7 @@ const SPEC = {
     change_summary: 'Added a streak panel.',
     background: '',
     based_on_version: null,
+    ops: null,
     open_questions: [],
     data_requirements: [],
     screens: [

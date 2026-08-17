@@ -37,7 +37,7 @@ function draft(over: Record<string, unknown> = {}): unknown {
 
 // Goes through the real validator/sealer rather than being cast, so v1 is a
 // genuine SpecVersion and not just an object that happens to typecheck as one.
-const v1: SpecVersion = sealVersion(parseSpecDraft(draft()), null)
+const v1: SpecVersion = sealVersion(parseSpecDraft(draft()), null, null)
 
 /** Renames one panel's title in place. Everything else — id, screen, values,
  * entry — is untouched, isolating "title changed" as the only edit. */

@@ -294,7 +294,7 @@ function draft(over: Record<string, unknown> = {}): unknown {
 // carries a distinctive id/title ("walked_today" / "Walked today?") on
 // purpose: the no-content test below needs a fixture that COULD leak a
 // title, or its assertion proves nothing.
-const v1: SpecVersion = sealVersion(parseSpecDraft(draft()), null)
+const v1: SpecVersion = sealVersion(parseSpecDraft(draft()), null, null)
 const v1Screen = v1.screens[0]
 if (!v1Screen) throw new Error('fixture: v1 has no screens')
 const v2: SpecVersion = {
