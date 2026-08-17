@@ -154,7 +154,7 @@ const ENTRY_SCHEMA = {
   required: ['description', 'fields', 'annotates'],
 } as const
 
-const PANEL_SCHEMA = {
+export const PANEL_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -169,6 +169,20 @@ const PANEL_SCHEMA = {
   required: ['id', 'title', 'intent', 'display', 'context_of_use', 'values', 'entry'],
 } as const
 
+/** One declaration, two consumers: SPEC_JSON_SCHEMA below and PATCH_JSON_SCHEMA
+ * (lib/spec/patch.ts) for its add_screen op. */
+export const SCREEN_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: str,
+    title: str,
+    order: { type: 'integer' },
+    panels: { type: 'array', items: PANEL_SCHEMA },
+  },
+  required: ['id', 'title', 'order', 'panels'],
+} as const
+
 export const SPEC_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -177,20 +191,7 @@ export const SPEC_JSON_SCHEMA = {
     summary: str,
     background: str,
     change_summary: str,
-    screens: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          id: str,
-          title: str,
-          order: { type: 'integer' },
-          panels: { type: 'array', items: PANEL_SCHEMA },
-        },
-        required: ['id', 'title', 'order', 'panels'],
-      },
-    },
+    screens: { type: 'array', items: SCREEN_SCHEMA },
     data_requirements: {
       type: 'array',
       items: {
