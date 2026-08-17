@@ -2861,12 +2861,28 @@ git commit -m "Document patch authoring and the invariants it preserves"
 # PART C — PROPORTIONAL PREVIEW
 
 > **Read before starting.** This part changes the mockup's output contract: the
-> model stops emitting a whole HTML document and starts emitting one fragment
-> per screen against a fixed class list, with the document shell and stylesheet
-> moving into `lib/spec/mockupCompose.ts`. That move is not optional — fragments
-> drawn in different versions must share a stylesheet or a composed document
-> looks broken. `lib/spec/banner.ts` still injects the banner into the composed
-> document and is unaffected.
+> model stops emitting a whole HTML document and starts emitting one `<section>`
+> per screen, with the document frame moving into `lib/spec/mockupCompose.ts`.
+> `lib/spec/banner.ts` still injects the banner into the composed document and
+> is unaffected.
+>
+> **The frame is platform-wide and plain; the screens inside it stay fully
+> bespoke — Nico's direction, 2026-08-17.** The frame owns only what has to be
+> shared: doctype, reset, the `body` background and type that match the app
+> chrome, and a container. It does NOT own how a screen looks. The default
+> classes ship inside the frame and the prompt offers them **as a nudge** — a
+> styled starting point a model may use or ignore — never as a vocabulary it is
+> confined to. Each friend's dashboard is a bespoke personal app; a fixed class
+> list would have made every one of them look the same, which is the opposite of
+> the product.
+>
+> **A fragment may therefore bring its own `<style>`, and `composeMockup` scopes
+> it automatically** by prefixing every selector with that screen's container
+> id. Fragments drawn weeks apart are composed into one document, so an unscoped
+> `.panel { }` in a screen edited today would silently restyle a screen nobody
+> touched. Scoping at compose time rather than asking the model to scope its own
+> selectors is the same call `lib/spec/banner.ts` made (ledger D19): a guarantee
+> the model cannot forget beats a rule it is asked to remember.
 
 ### Task 15: The fragment table
 
@@ -3106,6 +3122,41 @@ describe('composeMockup', () => {
     expect(html).not.toContain('<section>£')
   })
 
+  // The case a friend hits when one request touches two screens at once — a
+  // panel moved between them, or two panels edited on different screens. Both
+  // must appear, in order, and an untouched third must not.
+  it('composes EVERY named screen when several are affected, in order', () => {
+    const three = [...SCREENS, { ...SCREENS[0]!, id: 'gym', title: 'Gym', order: 3 }]
+    const fragments = new Map([...FRAGMENTS, ['gym', '<section>G</section>']])
+    const html = composeMockup(three, fragments, ['morning', 'money'])
+    expect(html).toContain('<section>M')
+    expect(html).toContain('<section>£')
+    expect(html).not.toContain('<section>G')
+    expect(html.indexOf('<section>M')).toBeLessThan(html.indexOf('<section>£'))
+  })
+
+  it('scopes a fragment\'s own <style> to its screen, so it cannot reach a neighbour', () => {
+    const fragments = new Map([
+      ['morning', '<section><style>.tile { color: red }</style>M</section>'],
+      ['money', '<section>£</section>'],
+    ])
+    const html = composeMockup(SCREENS, fragments)
+    // Prefixed, not passed through: an unscoped .tile would restyle `money`
+    // too — and `money` may have been drawn weeks earlier by another call.
+    expect(html).not.toMatch(/(^|\})\s*\.tile\s*\{/)
+    expect(html).toMatch(/#screen-morning[^{]*\.tile\s*\{/)
+  })
+
+  it('scopes every selector in a comma-separated group, not just the first', () => {
+    const fragments = new Map([
+      ['morning', '<section><style>.a, .b { color: red }</style>M</section>'],
+      ['money', '<section>£</section>'],
+    ])
+    const html = composeMockup(SCREENS, fragments)
+    expect(html).toMatch(/#screen-morning[^{]*\.a/)
+    expect(html).toMatch(/#screen-morning[^{]*\.b/)
+  })
+
   it('throws when a screen has no fragment rather than composing a gap', () => {
     expect(() => composeMockup(SCREENS, new Map([['morning', 'x']]))).toThrow(/money/)
   })
@@ -3140,8 +3191,13 @@ Expected: FAIL — module not found.
 import type { Screen } from './schema'
 import type { SpecPatchOp } from './patch'
 
-/** The class names mockup-v4.md is allowed to use. Kept beside the stylesheet
- * that defines them, so the two cannot drift. */
+/**
+ * The classes the frame styles for you. A NUDGE, not a vocabulary — a model may
+ * use them, extend them, or ignore them entirely and bring its own `<style>`.
+ * Kept beside the stylesheet that defines them so the prompt and the CSS cannot
+ * drift. Each friend's dashboard is a bespoke personal app; confining every one
+ * of them to six class names would make them all look the same.
+ */
 export const MOCKUP_SHELL_CLASSES = ['screen', 'screen-title', 'panel', 'panel-title', 'figure', 'note'] as const
 
 /**
@@ -3217,10 +3273,27 @@ export function affectedScreens(
   return order.filter((id) => touched.has(id))
 }
 
-const STYLESHEET = `
+/**
+ * The frame, in two halves, and the split is the design.
+ *
+ * FRAME owns only what must be shared for fragments drawn at different times to
+ * sit in one document without fighting: the reset, the page background and type
+ * that match the app chrome, and the container width. Nothing here decides how
+ * a panel looks.
+ *
+ * NUDGE is the published default styling for MOCKUP_SHELL_CLASSES. It is a
+ * starting point, deliberately plain, and a fragment is free to override any of
+ * it or ignore it entirely — which is why it is defined BEFORE any fragment's
+ * own scoped rules are appended, so a fragment always wins on specificity.
+ */
+const FRAME = `
+  *, *::before, *::after { box-sizing: border-box; }
   :root { color-scheme: light dark; }
   body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: Canvas; color: CanvasText; }
-  .screen { max-width: 60rem; margin: 0 auto; padding: 1.5rem 1rem; }
+  .frame { max-width: 60rem; margin: 0 auto; padding: 1.5rem 1rem; }
+`
+
+const NUDGE = `
   .screen-title { font-size: 1.1rem; font-weight: 600; margin: 0 0 1rem; opacity: 0.7; }
   .panel { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
            border-radius: 0.75rem; padding: 1rem; margin: 0 0 1rem; }
@@ -3228,6 +3301,23 @@ const STYLESHEET = `
   .figure { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; }
   .note { font-size: 0.85rem; opacity: 0.65; }
 `
+
+/**
+ * Lift a fragment's own `<style>` out and rewrite every selector under
+ * `#screen-<id>`, so bespoke styling cannot escape the screen that authored it.
+ *
+ * Done HERE rather than asked of the model, for the reason lib/spec/banner.ts
+ * gives (ledger D19): a composed document holds fragments drawn weeks apart by
+ * separate calls, and one unscoped `.panel { }` would restyle a screen nobody
+ * touched. A rule the model must remember is a rule that eventually is not.
+ *
+ * Bounded on purpose. It handles the shapes a preview actually uses — plain
+ * selectors, comma-separated groups, and `@media` blocks — and DROPS anything
+ * it cannot scope safely (`@import`, and bare `html`/`body`/`:root` selectors,
+ * which are the frame's to own). Dropping beats passing through: an unscopable
+ * rule is exactly the one that would leak.
+ */
+function scopeFragmentStyles(html: string, screenId: string): string { /* … */ }
 
 /**
  * One document from per-screen fragments.
@@ -3248,13 +3338,16 @@ export function composeMockup(
   const wanted = only ? screens.filter((s) => only.includes(s.id)) : screens
   const ordered = [...wanted].sort((a, b) => a.order - b.order)
 
+  // Each fragment goes inside its own #screen-<id> wrapper, which is both the
+  // scoping anchor for its styles and the boundary that keeps two screens'
+  // markup from running together.
   const body = ordered
     .map((screen) => {
       const html = fragments.get(screen.id)
       if (html === undefined) {
         throw new Error(`composeMockup: no fragment for screen "${screen.id}"`)
       }
-      return html
+      return `<div id="screen-${screen.id}">${scopeFragmentStyles(html, screen.id)}</div>`
     })
     .join('\n')
 
@@ -3263,10 +3356,12 @@ export function composeMockup(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>${STYLESHEET}</style>
+<style>${FRAME}${NUDGE}</style>
 </head>
 <body>
+<div class="frame">
 ${body}
+</div>
 </body>
 </html>`
 }
