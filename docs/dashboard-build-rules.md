@@ -250,25 +250,34 @@ Sacred data.
 
 ---
 
-## 11. Packages — undecided
+## 11. Packages
 
-**No document in this repo says how to decide on a dependency.** That is a gap,
-recorded here rather than filled with a rule nobody agreed.
+**A dependency is judged by what it touches, not by how many friends want it** —
+CLAUDE.md > Build contract. One friend's panel justifies a repo-wide package at
+pilot scale, because Next code-splits per route and the registry's dynamic
+`import()` keeps a library out of every bundle except the dashboard that imports
+it. Three charting libraries across four friends is an accepted outcome, not
+drift.
 
-What is established:
+- **Render-only** — charts, formatting, display. Add it — CLAUDE.md.
+- **Server-touching** — reads env, the filesystem, or the network. Prefer
+  writing the call ourselves: every dependency shares a process with the keymap
+  holding every unlocked friend's database key, which is as true at two users as
+  at fifty — CLAUDE.md.
+- **Brings its own environment variable** — a `deploy/required-env` decision
+  before it is a package decision, "including variables read by dependencies
+  rather than by our own code" — CLAUDE.md.
+
+Also established:
 
 - `package-lock.json` must be committed: `deploy/deploy.sh` runs `npm ci`.
 - Gate D runs `next build` on every push, so a dependency that breaks the build
   is caught before it ships — CLAUDE.md.
-- A package that reads its own environment variable means adding that name to
-  `deploy/required-env`, "including variables read by dependencies rather than by
-  our own code" — CLAUDE.md.
+- The cost that scales is `npm ci` and Gate D on every push, paid by everyone —
+  CLAUDE.md.
 - `components/ui/*` is vendored shadcn source, written by `npx shadcn@latest
   add`, never hand-edited. Anything we write ourselves goes in `lib/ui/` or
   beside the page that uses it — CLAUDE.md.
-
-What is **not** established: whether one friend's panel justifies a repo-wide
-dependency. Decide it with Nico before adding one.
 
 ---
 

@@ -196,6 +196,21 @@ architectural changes; do not relitigate decided items).
   route, which writes rows into the shape it finds. A third is a change to the
   2026-08-15 migrations design, not a refactor. Every write goes through a
   platform route, which is the only place the four ordered checks live.
+- **Nothing writes to a friend's database except from their own session.**
+  Their data key exists only in the in-process keymap while they are unlocked,
+  so no scheduled job can open their database at all — the same constraint that
+  makes migrations run at unlock or not at all. V1 therefore has exactly two
+  triggers: **a control the friend presses, and a one-time action at login.**
+  This bounds the friend's database only; the platform database is unencrypted,
+  so scheduled work against it (caching a public forecast, say) is a separate
+  question and is not foreclosed here. **Login-triggered work never refuses the
+  session** — that is reserved for `lib/db/migrate.ts`, where serving a
+  half-migrated shape is worse than not serving. A sync whose upstream is down
+  must still let the friend in. Say the consequence out loud rather than
+  rediscover it: nothing can reach a friend who is not in the app, so no alert
+  or notification may be promised to one. A background Plaid sync in step 6b
+  would need the access token readable without them, which is an amendment to
+  this rule, not an exception to it.
 - A dashboard may **render** an entry widget — a form for hand-logging or
   annotating data — but the widget POSTs to a platform route, same as the
   walk route above. The read-only-handle rule above is unchanged and
@@ -277,6 +292,21 @@ architectural changes; do not relitigate decided items).
   throws. Values live only in `.env` files, which the guard hook denies
   reading. Adding a variable means adding it to that list — including
   variables read by dependencies rather than by our own code.
+- **A dependency is judged by what it touches, not by how many friends want
+  it.** At pilot scale one friend's panel justifies a repo-wide package: Next
+  code-splits per route and `lib/dashboard/registry.ts` loads each dashboard
+  through a dynamic `import()`, so a charting library only `run4` imports ships
+  in `run4`'s chunk and nobody else's page carries it. Three charting libraries
+  across four friends is an accepted outcome, not drift.
+  **Render-only** (charts, formatting, display) — add it.
+  **Server-touching** (reads env, the filesystem, or the network) — prefer
+  writing the call ourselves; every dependency runs in the same process as the
+  keymap holding every unlocked friend's database key, which is as true at two
+  users as at fifty, so scale is not the argument there.
+  **Brings its own environment variable** — that is a `deploy/required-env`
+  decision before it is a package decision, per the bullet above.
+  The cost that *does* scale is `npm ci` and Gate D's `next build` on every
+  push, paid by everyone; revisit when a push starts feeling slow.
 - The app runs behind a reverse proxy, so `request.url` is NOT the URL the
   browser asked for. Redirects use lib/http/redirect.ts: host-relative in route
   handlers, absolute in middleware (Next rejects a relative Location there).
@@ -330,9 +360,20 @@ architectural changes; do not relitigate decided items).
 - `platform/prompts/*` is runtime prose, not documentation and not logic. It
   is exempt from Gate B by an explicit arm in `.githooks/pre-commit`. Test the
   loader and the `prompt_sha` stamping, never the wording.
-- Chat tests never call the live Anthropic API. `lib/chat/turn.ts` takes its
-  client as a parameter; tests pass a fake. A test that needs a real key is a
-  test that is wrong.
+- **Every third-party client is injected, and no test in the default suite
+  reaches the network.** `lib/chat/turn.ts` takes its Anthropic client as a
+  parameter; `lib/alerts/ntfy.ts` takes `fetch`. A test that needs a real key is
+  a test that is wrong. Integrations live in `modules/` or `lib/`, never in
+  `users/<slug>/` — a dashboard never knows a network exists.
+- **Live shape tests are opt-in.** None exist yet; the first one adds the
+  `*.live.test.ts` exclusion to `vitest.config.ts` and the `test:live` script
+  together. They never run in Gate E or a deploy — an upstream outage must not
+  block shipping. They assert shape, never values, and share their assertion
+  with the fixture test, so a fixture that has drifted from reality is caught
+  instead of quietly becoming fiction. Absent a key they skip and are listed, so
+  a fresh clone is never red.
+- **A fixture is never recorded from a real person's data** — a zip's forecast
+  is public and about a place; a friend's transactions are not.
 
 ## Local dev
 - Running the app, the dev account credentials, and how to reset the local

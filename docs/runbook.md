@@ -508,15 +508,20 @@ gives you the true first-ever experience.
 
 ```bash
 FRIEND=walk1                        # a throwaway, NOT the real slug — no ssh here at all
-npm run build && npm start          # production mode — see docs/local-dev.md on why
+npm run dev                         # NOT npm start — see docs/local-dev.md > Run it
 
 INVITE_ORIGIN=http://localhost:3000 npx tsx scripts/create-invite.ts "$FRIEND"
 # open the printed link, press "Sounds good →", set a 10+ char password
 
 sqlite3 platform/dev/synthetic.db \
   "SELECT slug, used_at IS NOT NULL AS used, revoked_at IS NOT NULL AS revoked FROM invites;"
-ls -la "users/$FRIEND/"
+ls -la "users/$FRIEND/"              # NO <slug>.db here — that is the pass condition
 ```
+
+`npm run dev` is what makes this rehearsal consequence-free. Under `npm start`
+the same click creates a real `users/walk1/walk1.db`, and Gate F then blocks
+your next commit until you remove it. If a cold route makes the login look like
+it did not stick, request the page again — `docs/local-dev.md` explains why.
 
 Every command here runs on the laptop against synthetic data, so `$DROPLET` and
 `$STAIRWELL` play no part. **Reset `FRIEND` to the real slug before going back
