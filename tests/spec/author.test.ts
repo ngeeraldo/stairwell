@@ -1060,6 +1060,29 @@ describe('authorSpec', () => {
       expect(row.data.authoring_mode).toBe('whole')
     })
 
+    it('carries authoring_mode on a spec_aborted row too, not just spec_proposed', async () => {
+      // The field is only worth having if EVERY row this function writes
+      // carries it — a spec_aborted row with no mode would be a hole in the
+      // series `metrics` can never backfill. `mode` is decided before the
+      // attempt loop runs, so it is known by the time an abort can fire.
+      const controller = new AbortController()
+      const aborting = fake({
+        drafts: [Object.assign(new Error('aborted'), { name: 'AbortError' })],
+        onCall: () => controller.abort(),
+      })
+      const outcome = await authorSpec(deps(aborting.client), {
+        ...INPUT,
+        signal: controller.signal,
+      })
+
+      expect(outcome).toBeUndefined()
+      const [row] = metrics()
+      expect(row!.event).toBe('spec_aborted')
+      expect(row!.data.authoring_mode).toBe('whole')
+      // No patch was ever parsed on this path — null, not 0.
+      expect(row!.data.ops_count).toBeNull()
+    })
+
     it('authors a PATCH against a current base', async () => {
       confirmed(TWO_PANEL_CURRENT)
       const client = fake({ drafts: [REMOVE_WALKS_PATCH] })

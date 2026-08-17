@@ -324,6 +324,21 @@ export async function authorSpec(
   // only rows that can carry it are the outer catch's, for a failure that
   // struck before the loop.
   let attempt = 0
+  // WHICH SHAPE THE WRITER WAS ASKED FOR, and read by the outer catch too —
+  // same reason as promptSha. null is a real, meaningful third value here,
+  // not a missing one: it means the call failed BEFORE mode was decided
+  // (currentSpec or readStoredSpec threw), which is exactly the case where
+  // no prompt was chosen either — see the prompt_sha comment on the outer
+  // catch below. Do not default this to 'whole'; that would assert a mode
+  // was chosen when none was, in a row that can never be corrected.
+  let mode: 'patch' | 'whole' | null = null
+  // The ops as PARSED on a patch attempt, undefined on a whole-surface
+  // attempt or before any attempt has parsed successfully. Read by every
+  // metrics site in this function, including the outer catch, for the same
+  // reason mode is: an op count on an error row is what lets a query group
+  // ANY row — success or failure — by how expensive patch authoring turned
+  // out to be.
+  let patch: SpecPatch | undefined
 
   try {
     // What the writer is SHOWN as the current confirmed version. Read here
@@ -353,7 +368,7 @@ export async function authorSpec(
       storedCurrent !== undefined && storedCurrent.kind === 'version'
         ? storedCurrent.version
         : undefined
-    const mode: 'patch' | 'whole' = base === undefined ? 'whole' : 'patch'
+    mode = base === undefined ? 'whole' : 'patch'
 
     const loaded = loadPrompt(mode === 'patch' ? SPEC_PATCH_PROMPT : SPEC_PROMPT)
     promptSha = loaded.sha
@@ -388,11 +403,6 @@ export async function authorSpec(
 
     let draft: SpecDraft | undefined
     let feedback: string | undefined
-    // The ops as PARSED on a patch attempt, undefined on a whole-surface
-    // attempt or before any attempt has parsed successfully. Read at the seal
-    // below and on every metrics row from here down, so a query can group any
-    // of them by how many ops the writer actually proposed.
-    let patch: SpecPatch | undefined
 
     while (attempt < MAX_SPEC_ATTEMPTS) {
       attempt += 1
@@ -415,7 +425,14 @@ export async function authorSpec(
             accountId: input.accountId,
             event: 'spec_aborted',
             at: now(),
-            data: { ...NO_USAGE, ...metricBase, ...NO_SERVED, attempt },
+            data: {
+              ...NO_USAGE,
+              ...metricBase,
+              ...NO_SERVED,
+              attempt,
+              authoring_mode: mode,
+              ops_count: patch?.ops.length ?? null,
+            },
           })
           return undefined
         }
@@ -702,6 +719,17 @@ export async function authorSpec(
     // miss: currentVersionBlock reads the CURRENT spec, so a stored row that
     // no longer validates throws a SpecShapeError quoting ids out of THAT
     // spec, and it lands right here.
+    //
+    // `prompt_sha: null` paired with `authoring_mode: null` is not a gap —
+    // it is the honest value for a call that failed before any prompt was
+    // chosen. Mode selection now reads the account's current spec (to decide
+    // patch vs whole) BEFORE loadPrompt runs, so a stored current-version row
+    // that no longer validates — the same failure the paragraph above
+    // describes — throws here with no mode ever decided and no prompt ever
+    // loaded. Stamping SPEC_PROMPT's hash on that row would claim a prompt
+    // was involved when none was, in a table that can never be corrected.
+    // Null is the honest answer to "which prompt", the same way it is the
+    // honest answer to "which mode".
     appendMetric(db, {
       accountId: input.accountId,
       event: 'spec_error',
@@ -718,6 +746,8 @@ export async function authorSpec(
         type: null,
         attempt,
         message: metricMessage(error),
+        authoring_mode: mode,
+        ops_count: patch?.ops.length ?? null,
         ...mockupFields(mockupResult?.usage, mockupPromptSha),
       },
     })
