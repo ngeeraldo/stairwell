@@ -22,7 +22,8 @@ import {
   type Panel,
   type Screen,
 } from './schema'
-import { integer, parsePanel, parseScreen, textList } from './fields'
+import { integer, parsePanel, parseScreen, parseSpecDraft, textList } from './fields'
+import type { SpecDraft, SpecVersion } from './schema'
 
 /**
  * Extends SpecShapeError deliberately, and it buys two things for free:
@@ -257,4 +258,131 @@ export function parsePatch(raw: unknown): SpecPatch {
     open_questions: textList(src, 'open_questions', 'patch'),
     ops: ops.map((o, i) => parseOp(o, `patch.ops[${i}]`)),
   }
+}
+
+type Working = { title: string; summary: string; background: string; screens: Screen[] }
+
+function findScreen(work: Working, id: string, op: string): Screen {
+  const screen = work.screens.find((s) => s.id === id)
+  if (!screen) throw new SpecPatchError(`${op} names screen "${id}", which does not exist`)
+  return screen
+}
+
+function findPanel(work: Working, id: string, op: string): { screen: Screen; index: number } {
+  for (const screen of work.screens) {
+    const index = screen.panels.findIndex((p) => p.id === id)
+    if (index !== -1) return { screen, index }
+  }
+  throw new SpecPatchError(`${op} names panel "${id}", which does not exist`)
+}
+
+function panelExists(work: Working, id: string): boolean {
+  return work.screens.some((s) => s.panels.some((p) => p.id === id))
+}
+
+/**
+ * Apply a patch to the current confirmed version and return the WHOLE next
+ * draft.
+ *
+ * Pure: no database, no clock, no model, no mutation of `base`. That is what
+ * makes the untouched panels a COPY rather than a regeneration, which is the
+ * drift half of why this exists.
+ *
+ * The result is handed to parseSpecDraft — the SAME validator the whole-surface
+ * path uses. Every cross-field invariant (unique ids, derived inputs resolve,
+ * annotates points at a synced value, no empty screen) is therefore checked
+ * exactly once, in one place, with error messages that are already good retry
+ * feedback. Nothing here re-implements any of it.
+ *
+ * The draft is built by NAMING its seven fields, never by spreading `base`:
+ * a spread would carry `based_on_version` (and, from Task 11, `ops`) into an
+ * object parseSpecDraft rejects outright, and would silently pick up any
+ * field a future SpecVersion gains.
+ */
+export function applyPatch(base: SpecVersion, patch: SpecPatch): SpecDraft {
+  const work: Working = {
+    title: base.title,
+    summary: base.summary,
+    background: base.background,
+    // structuredClone, so nothing downstream can reach back into the stored
+    // version through a shared array or object reference.
+    screens: structuredClone(base.screens),
+  }
+
+  for (const op of patch.ops) {
+    switch (op.op) {
+      case 'set_meta':
+        if (op.title !== null) work.title = op.title
+        if (op.summary !== null) work.summary = op.summary
+        if (op.background !== null) work.background = op.background
+        break
+
+      case 'add_screen':
+        if (work.screens.some((s) => s.id === op.screen.id)) {
+          throw new SpecPatchError(`add_screen names screen "${op.screen.id}", which already exists`)
+        }
+        for (const p of op.screen.panels) {
+          if (panelExists(work, p.id)) {
+            throw new SpecPatchError(`add_screen carries panel "${p.id}", which already exists`)
+          }
+        }
+        work.screens.push(structuredClone(op.screen))
+        break
+
+      case 'update_screen': {
+        const screen = findScreen(work, op.id, 'update_screen')
+        screen.title = op.title
+        screen.order = op.order
+        break
+      }
+
+      case 'remove_screen': {
+        findScreen(work, op.id, 'remove_screen')
+        work.screens = work.screens.filter((s) => s.id !== op.id)
+        break
+      }
+
+      case 'add_panel': {
+        const screen = findScreen(work, op.screen_id, 'add_panel')
+        if (panelExists(work, op.panel.id)) {
+          throw new SpecPatchError(`add_panel names panel "${op.panel.id}", which already exists`)
+        }
+        screen.panels.push(structuredClone(op.panel))
+        break
+      }
+
+      case 'replace_panel': {
+        // In place, keeping its position: a replace is a relabel or a reshape,
+        // never a reorder, and a panel that silently jumped to the end of its
+        // screen would register in the diff as a change nobody asked for.
+        const { screen, index } = findPanel(work, op.panel.id, 'replace_panel')
+        screen.panels[index] = structuredClone(op.panel)
+        break
+      }
+
+      case 'move_panel': {
+        const target = findScreen(work, op.screen_id, 'move_panel')
+        const { screen, index } = findPanel(work, op.panel_id, 'move_panel')
+        const [moved] = screen.panels.splice(index, 1)
+        target.panels.push(moved!)
+        break
+      }
+
+      case 'remove_panel': {
+        const { screen, index } = findPanel(work, op.id, 'remove_panel')
+        screen.panels.splice(index, 1)
+        break
+      }
+    }
+  }
+
+  return parseSpecDraft({
+    title: work.title,
+    summary: work.summary,
+    background: work.background,
+    change_summary: patch.change_summary,
+    screens: work.screens,
+    data_requirements: patch.data_requirements,
+    open_questions: patch.open_questions,
+  })
 }
