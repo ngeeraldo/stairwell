@@ -37,7 +37,9 @@ Your patch is a `change_summary`, the current `data_requirements` and
 - **`replace_panel`** — a whole panel, replacing the one with the same id. This
   is how you relabel, reshape, or re-source an existing panel. It keeps its
   position on its screen.
-- **`move_panel`** — a panel to a different screen, unchanged otherwise.
+- **`move_panel`** — a panel to a different screen, unchanged otherwise. Naming
+  the screen it is already on is not a no-op: it puts the panel last on that
+  screen, and that is how you express a reorder — the only op that can.
 - **`remove_panel`** — by id.
 
 Ops apply in the order you give them, so a later op may rely on an earlier one
