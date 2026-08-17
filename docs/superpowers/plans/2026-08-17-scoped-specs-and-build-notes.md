@@ -3589,6 +3589,46 @@ describe('scoped mockup', () => {
     expect(proposal!.preview_html).toContain('money')
   })
 
+  // The case a friend hits when ONE request touches two screens — the thing to
+  // prove end to end, not just in composeMockup's unit tests. Both must be
+  // drawn, both must reach the card, and an untouched third must do neither.
+  it('draws and previews EVERY screen a single patch touched', async () => {
+    confirmCurrentSpec(db, accountId, THREE_SCREEN_BASE) // morning, money, gym
+    clientReturnsPatch([
+      { op: 'replace_panel', panel: panel('eating_out') }, // on `morning`
+      { op: 'replace_panel', panel: panel('balance') },    // on `money`
+    ])
+    const proposal = await authorSpec(deps, input)
+
+    // The model was asked for both, and only both.
+    const asked = JSON.stringify(client.propose.mock.calls[1]![0].messages)
+    expect(asked).toContain('morning')
+    expect(asked).toContain('money')
+    expect(asked).not.toContain('gym')
+
+    // Both reach the card; the untouched one does not.
+    expect(proposal!.preview_html).toContain('morning')
+    expect(proposal!.preview_html).toContain('money')
+    expect(proposal!.preview_html).not.toContain('gym')
+
+    // And the STORED document is still the whole surface, gym included —
+    // the card is scoped, the build contract never is.
+    expect(specById(db, proposal!.id).mockup_html).toContain('gym')
+  })
+
+  // A move is the one op that touches two screens without naming two panels.
+  it('redraws BOTH ends of a move, so the screen a panel left loses it', async () => {
+    confirmCurrentSpec(db, accountId, TWO_SCREEN_BASE)
+    clientReturnsPatch([{ op: 'move_panel', panel_id: 'eating_out', screen_id: 'money' }])
+    const proposal = await authorSpec(deps, input)
+    const asked = JSON.stringify(client.propose.mock.calls[1]![0].messages)
+    // Without the source end, `morning` would keep a carried-forward fragment
+    // still showing the panel that just left it.
+    expect(asked).toContain('morning')
+    expect(asked).toContain('money')
+    expect(proposal!.preview_html).toContain('morning')
+  })
+
   it('writes no spec row when a fragment is missing for an unchanged screen', async () => {
     confirmCurrentSpecWithoutFragments(db, accountId, TWO_SCREEN_BASE)
     clientReturnsPatch([{ op: 'replace_panel', panel: panel('eating_out') }])
