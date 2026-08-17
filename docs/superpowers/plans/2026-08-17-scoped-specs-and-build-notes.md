@@ -3408,9 +3408,18 @@ document and its stylesheet are added around your sections afterwards, and a
 second stylesheet inside one of them would make that screen disagree with the
 ones drawn beside it.
 
-## The classes you have
+## The frame around you
 
-Use these and only these. They are already styled:
+Your section is placed inside a plain page frame that is the same for
+everybody: a reset, the page background and type, and a centred column. It
+matches the app this person actually uses, so what you draw sits in the right
+context without you having to build one.
+
+The frame does not decide how your screen looks. That is yours.
+
+## A starting point, not a vocabulary
+
+These classes are already styled for you, so a plain panel needs no CSS at all:
 
 - `screen` — on your one outer `<section>`.
 - `screen-title` — the screen's own heading.
@@ -3419,9 +3428,23 @@ Use these and only these. They are already styled:
 - `figure` — a large number, the thing the eye lands on.
 - `note` — small secondary text under a figure.
 
-Anything you need beyond these, express with the elements themselves —
-`<ul>`, `<table>`, `<p>` — never with a class name that does not exist or an
-inline `style` attribute. An unstyled class silently renders as nothing.
+**Use them, extend them, or ignore them.** This is one person's own app, not a
+template — if their screen wants a table, a two-column split, a progress bar, a
+colour that means something to them, draw that. A dashboard that looks like
+everyone else's has missed the point.
+
+To style your own way, include ONE `<style>` block inside your section and
+write ordinary CSS. Your rules are automatically confined to your own screen
+before the page is assembled, so you cannot affect anybody else's and nobody
+else can affect yours — write selectors as if your screen were the whole
+document.
+
+Two things to avoid, because they cannot be confined and will be dropped:
+`@import`, and rules targeting `html`, `body` or `:root` — the frame owns
+those. Everything else is yours.
+
+Still no `<!doctype>`, no `<html>`, no `<head>`: you are writing one section,
+not a page.
 ```
 
 - [ ] **Step 2: Add the schema and parser**
