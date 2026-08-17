@@ -683,8 +683,19 @@ describe('conversation-start alerting', () => {
       at: 900,
     })
     const { deps, calls } = alerted()
-    await runTurn(deps, input())
+    const outcome = await runTurn(deps, input())
     expect(calls).toEqual([])
+    // Positive check, added deliberately: `calls` staying empty is also what
+    // an early-failing runTurn (thrown before the alert gate, say) would
+    // produce, which would satisfy the assertion above having exercised
+    // nothing. Pinning that the turn actually completed and logged its
+    // chat_turn metric — same shape as "logs one chat_turn metric carrying
+    // all four counters" above — is what makes the absence mean something.
+    // The other absence-only alert test below ("does not alert on the
+    // confirmation turn itself") carries the identical risk for the same
+    // reason.
+    expect(outcome.kind).toBe('completed')
+    expect(metrics().map((m) => m.event)).toContain('chat_turn')
   })
 
   it('alerts BEFORE the model is called, not after the reply', async () => {
@@ -802,8 +813,12 @@ describe('conversation-start alerting', () => {
     // every product-initiated turn: nobody typed, so nobody showed up. The
     // confirm route has already sent its own spec_confirmed alert.
     const { deps, calls } = alerted({ now: () => 1_000 })
-    await runTurn(deps, input({ body: null }))
+    const outcome = await runTurn(deps, input({ body: null }))
     expect(calls).toEqual([])
+    // See the comment on "does not alert on a continuation of an existing
+    // conversation" above: same vacuous-pass risk, same fix.
+    expect(outcome.kind).toBe('completed')
+    expect(metrics().map((m) => m.event)).toContain('chat_turn')
   })
 
   it('still alerts when the turn errors', async () => {
@@ -973,6 +988,11 @@ describe('the completion rule with propose_spec', () => {
       { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
     )
     const [event] = metrics().map((r) => r.event)
+    // Positive first: an early-failing runTurn writes no metric row at all,
+    // which would leave `event` undefined and satisfy both `.not.toBe` checks
+    // below for free. Pinning the actual name (same value the sibling test
+    // above checks with `.toEqual`) is what makes those checks mean anything.
+    expect(event).toBe('chat_proposed_no_reply')
     expect(event).not.toBe('chat_turn')
     expect(event).not.toBe('chat_empty_reply')
   })
