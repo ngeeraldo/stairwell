@@ -9,10 +9,13 @@ import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { readDeviceClass, readTimeZone } from '@/lib/metrics/deviceClass'
 import { dayKey } from '@/lib/time/dayKey'
-import { hasConfirmedSpecBelow, newestSpec, readConfirmations } from '@/lib/db/specs'
+import { hasConfirmedSpecBelow, newestSpec, readConfirmations, type SpecRecord } from '@/lib/db/specs'
 import { SpecShapeError } from '@/lib/spec/schema'
-import { readStoredSpec } from '@/lib/spec/stored'
+import { readStoredSpec, type StoredSpec } from '@/lib/spec/stored'
+import { affectedScreens, composeMockup } from '@/lib/spec/mockupCompose'
+import { readScreenMockups } from '@/lib/db/screenMockups'
 import type { Proposal } from '@/lib/spec/author'
+import type { PlatformDb } from '@/lib/db/platform'
 import type { UserDb } from '@/lib/db/userDb'
 import type { DeviceClass } from '@/lib/metrics/deviceClass'
 import { WrongKeyError } from '@/lib/db/encryptedUserDb'
@@ -56,6 +59,43 @@ import { Shell } from './Shell'
  */
 function dashboardErrorKind(error: unknown): 'wrong_key' | 'error' {
   return error instanceof WrongKeyError ? 'wrong_key' : 'error'
+}
+
+/**
+ * The scoped preview for the PAGE-LOAD card, mirroring what lib/spec/author.ts
+ * computes at authoring time — same two ingredients (affectedScreens,
+ * composeMockup), from the STORED record instead of a fresh model call.
+ *
+ * `base` is passed as null rather than fetched from `based_on_version`: this
+ * means a remove_panel or move_panel op's SOURCE screen (only findable via the
+ * base version's screens — see affectedScreens's own doc) is not marked
+ * affected on a RELOAD the way it was on the live card that streamed in
+ * through the `proposal` NDJSON line at authoring time. That is a narrower
+ * preview than the friend originally saw, never a wrong one — every
+ * DESTINATION screen an op names is still exactly right — and it is a far
+ * smaller hazard than the one this task exists to close (a friend reviewing
+ * their whole dashboard for a one-word relabel). Revisit only if a reload
+ * showing a narrower scope than the live card turns out to matter in
+ * practice.
+ *
+ * A MISSING FRAGMENT THROWS inside composeMockup, by design — right for
+ * authoring (ledger D7: a mockup call that returned but left a hole must not
+ * silently become a complete-looking document) and WRONG for a render: a
+ * version confirmed before this branch existed has no `spec_screen_mockups`
+ * rows at all, and a page render must not fail over a preview. Any failure
+ * here — that throw, or anything else — degrades to `mockup_html`, the same
+ * whole document `dashboard.tsx`'s build contract already renders correctly.
+ */
+function pageLoadPreview(db: PlatformDb, newest: SpecRecord, stored: StoredSpec): string {
+  if (stored.kind !== 'version') return newest.mockup_html
+  try {
+    const affected = affectedScreens(null, stored.version.screens, stored.version.ops)
+    if (affected.length === 0) return newest.mockup_html
+    const fragments = readScreenMockups(db, newest.id)
+    return composeMockup(stored.version.screens, fragments, affected)
+  } catch {
+    return newest.mockup_html
+  }
 }
 
 async function dashboardRegion(
@@ -267,6 +307,11 @@ export default async function UserSpace({
   let proposal: (Proposal & { confirmed: boolean }) | undefined
   if (newest) {
     try {
+      // readStoredSpec, not either parser directly: it is the one place
+      // that decides which shape a row is, and the card renders whichever
+      // arm comes back. A row written before the unified loop can never be
+      // rewritten (specs rejects UPDATE), so both arms are permanent.
+      const stored = readStoredSpec(newest.payload)
       proposal = {
         id: newest.id,
         version: newest.version,
@@ -277,15 +322,12 @@ export default async function UserSpace({
         // re-render behind it (see Proposal.first). The prop stays as the
         // fallback for a streamed card that somehow carries none.
         first,
-        // readStoredSpec, not either parser directly: it is the one place
-        // that decides which shape a row is, and the card renders whichever
-        // arm comes back. A row written before the unified loop can never be
-        // rewritten (specs rejects UPDATE), so both arms are permanent.
-        spec: readStoredSpec(newest.payload),
+        spec: stored,
         mockup_html: newest.mockup_html,
-        // No scoped preview to show here — page load has no patch in flight,
-        // just the stored row's whole document, so the two fields agree.
-        preview_html: newest.mockup_html,
+        // The scoped preview for THIS card — see pageLoadPreview. Degrades to
+        // mockup_html (the whole document) for a legacy row and for any
+        // version with no stored fragments, rather than ever throwing here.
+        preview_html: pageLoadPreview(getDb(), newest, stored),
         confirmed: newest.confirmed_at !== null,
       }
     } catch (error) {

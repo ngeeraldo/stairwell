@@ -886,6 +886,121 @@ describe('a card that arrives mid-session carries its own delivery promise', () 
   })
 })
 
+describe('the card previews only the affected surface', () => {
+  it('renders the scoped preview, not the whole dashboard', () => {
+    // Markers coined for this test, not the words "morning"/"money" the brief
+    // sketch uses — PROPOSAL's own summary ("So mornings stop being a
+    // surprise.") contains "morning" as a substring, which made an earlier
+    // draft of this test pass vacuously against the OLD `src="/mockup/…"`
+    // iframe that never embeds either field's content at all.
+    const json = JSON.stringify(
+      SpecCard({
+        proposal: {
+          ...PROPOSAL,
+          preview_html: '<section>affectedscreenmarker</section>',
+          mockup_html:
+            '<section>affectedscreenmarker</section><section>untouchedscreenmarker</section>',
+        },
+        live: true,
+        busy: false,
+        first: true,
+        onConfirm: noop,
+      }),
+    )
+    expect(json).toContain('affectedscreenmarker')
+    expect(json).not.toContain('untouchedscreenmarker')
+  })
+
+  it('falls back to the whole mockup for a card with no scoped preview', () => {
+    // A pre-task-19 shape: the streamed line (or a stale client bundle) can
+    // in principle carry no preview_html at all. Undefined is falsy, so this
+    // is the same hazard as the `first` fallback just above, on the field
+    // this task adds — a card with this screen's content must still show it
+    // rather than rendering blank or throwing.
+    const { preview_html: _unused, ...legacy } = {
+      ...PROPOSAL,
+      mockup_html: '<section>wholedashboardmarker</section>',
+    }
+    const json = JSON.stringify(
+      SpecCard({
+        proposal: legacy as CardProposal,
+        live: true,
+        busy: false,
+        first: true,
+        onConfirm: noop,
+      }),
+    )
+    expect(json).toContain('wholedashboardmarker')
+  })
+
+  // The same defect shape as ledger D9's: a value computed once per page load
+  // and applied to cards that stream in later. `preview_html` has to ride on
+  // the proposal itself for exactly the reason `first` does — a card proposed
+  // mid-conversation arrives through the `proposal` NDJSON line with no page
+  // re-render behind it, so anything computed once at page load cannot
+  // describe it.
+  it("uses each card's own preview when one streams in mid-conversation", () => {
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('call it eating out', 1000) }
+    const state = applyTurn(seeded, [
+      { authoring: true },
+      {
+        proposal: {
+          ...VERSION_PROPOSAL,
+          id: 99,
+          preview_html: '<section>onlythemoneyscreen</section>',
+          mockup_html: '<section>onlythemoneyscreen</section><section>untouchedgymscreen</section>',
+        },
+      },
+      { done: true },
+    ])
+
+    const html = renderToStaticMarkup(
+      cards({
+        authoring: state.authoring,
+        proposalError: state.proposalError,
+        proposals: state.proposals,
+        confirming: false,
+        confirmError: false,
+        first: true,
+        onConfirm: noop,
+      }),
+    )
+    expect(html).toContain('onlythemoneyscreen')
+    expect(html).not.toContain('untouchedgymscreen')
+  })
+
+  it('falls back to the page-load mockup for a streamed card with no preview of its own', () => {
+    // Mirrors the `first` fallback test above (the same D9 shape), driven
+    // through the real streaming path this time rather than SpecCard
+    // directly — proving applyTurn/Timeline carry a preview-less proposal
+    // through without ever substituting some OTHER card's value onto it.
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: pendingTurns('call it eating out', 1000) }
+    const { preview_html: _unused, ...streamedProposal } = {
+      ...VERSION_PROPOSAL,
+      id: 99,
+      mockup_html: '<section>wholedashboardfallback</section>',
+    }
+    const state = applyTurn(seeded, [
+      { authoring: true },
+      { proposal: streamedProposal },
+      { done: true },
+    ])
+
+    const html = renderToStaticMarkup(
+      cards({
+        authoring: state.authoring,
+        proposalError: state.proposalError,
+        proposals: state.proposals,
+        confirming: false,
+        confirmError: false,
+        first: true,
+        onConfirm: noop,
+      }),
+    )
+    expect(html).toContain('wholedashboardfallback')
+  })
+})
+
 describe('scrollToNewest', () => {
   it('puts the bottom of the list in view', () => {
     // Found by the screenshot review, not by this suite: the friend's chat

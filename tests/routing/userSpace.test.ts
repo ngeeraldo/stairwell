@@ -250,6 +250,60 @@ describe('admin authorization', () => {
 // graph (vi.resetModules), matching tests/routing/middleware.test.ts's
 // `requireState` group, so getDb()'s process-wide singleton never falls
 // back to platform/dev/synthetic.db in the repo working tree.
+/**
+ * Two screens, current shape, with `ops` naming only `money` as touched —
+ * the fixture both new preview_html tests below build on. Kept as one
+ * constant rather than inlined twice: the two tests differ only in whether
+ * `insertScreenMockups` is ever called for the resulting spec row, and a
+ * screens/panels payload duplicated by hand is exactly the kind of drift
+ * this file's own existing fixtures (SPEC, TWO_SCREEN_PROPOSAL in
+ * tests/chat/panel.test.ts) avoid by being declared once.
+ */
+const TWO_SCREEN_VERSION_PAYLOAD = {
+  title: 'Money and mornings',
+  summary: 'Two screens.',
+  background: 'Checks the banking app most days.',
+  change_summary: 'Updated the money screen.',
+  based_on_version: null,
+  ops: [{ op: 'update_screen', id: 'money', title: 'Money', order: 2 }],
+  screens: [
+    {
+      id: 'morning',
+      title: 'Morning',
+      order: 1,
+      panels: [
+        {
+          id: 'walked_today',
+          title: 'Walked today?',
+          intent: 'Did I walk the dog?',
+          display: 'Yes/no with a tap.',
+          context_of_use: null,
+          values: [{ kind: 'entered', id: 'walk_flag', description: 'One tap per day.' }],
+          entry: null,
+        },
+      ],
+    },
+    {
+      id: 'money',
+      title: 'Money',
+      order: 2,
+      panels: [
+        {
+          id: 'balance',
+          title: 'Balance',
+          intent: 'See the current balance',
+          display: 'A number',
+          context_of_use: null,
+          values: [{ kind: 'entered', id: 'balance_val', description: 'Manually entered.' }],
+          entry: null,
+        },
+      ],
+    },
+  ],
+  data_requirements: [],
+  open_questions: [],
+}
+
 describe('app/[user]/page.tsx (UserSpace)', () => {
   let pageDir: string
   let handle: PlatformDb | undefined
@@ -649,6 +703,103 @@ describe('app/[user]/page.tsx (UserSpace)', () => {
     // for itself; the page-load card is the one this component builds.
     const card = findChatPanelProps(tweaked)?.proposal as { first?: boolean } | undefined
     expect(card?.first).toBe(false)
+  })
+
+  it("computes the page-load card's scoped preview from this version's own stored fragments", async () => {
+    // Mirrors what lib/spec/author.ts computes at authoring time, but from
+    // the RECORD on a page load rather than a fresh model call — the same
+    // relationship `first` already has to hasConfirmedSpecBelow just above.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    const { insertSpec } = await import('@/lib/db/specs')
+    const { insertScreenMockups } = await import('@/lib/db/screenMockups')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    putK(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+
+    const specId = insertSpec(handle, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: TWO_SCREEN_VERSION_PAYLOAD,
+      mockupHtml: '<html><body>morninguntouched moneytouched</body></html>',
+      at: 1_000,
+    })
+    // Both screens' fragments stored, as author.ts always writes one per
+    // screen — carried forward or freshly drawn. Only `money` is named by
+    // the payload's `ops` above.
+    insertScreenMockups(
+      handle,
+      specId,
+      [
+        { screenId: 'morning', html: '<p>morninguntouched</p>' },
+        { screenId: 'money', html: '<p>moneytouched</p>' },
+      ],
+      1_000,
+    )
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+    const proposal = findChatPanelProps(element)?.proposal as
+      | { preview_html?: string; mockup_html?: string }
+      | undefined
+
+    // The scoped preview shows only what the ops touched.
+    expect(proposal?.preview_html).toContain('moneytouched')
+    expect(proposal?.preview_html).not.toContain('morninguntouched')
+    // The WHOLE stored document is untouched by any of this — it is what
+    // specs.mockup_html always was, the build contract, never scoped.
+    expect(proposal?.mockup_html).toContain('morninguntouched')
+    expect(proposal?.mockup_html).toContain('moneytouched')
+  })
+
+  it('falls back to the whole mockup when a version has no stored fragments, rather than throwing', async () => {
+    // What every version confirmed before this branch shipped looks like:
+    // screens and ops, but no spec_screen_mockups rows at all, because
+    // insertScreenMockups did not exist yet. composeMockup THROWS on a
+    // missing fragment by design (right for authoring) — a page render must
+    // not fail over a preview, so this must degrade instead of 500ing.
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    const { putKey: putK } = await import('@/lib/session/keymap')
+    const { insertSpec } = await import('@/lib/db/specs')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    const sid = createSess(handle, id)
+    putK(sid, Buffer.alloc(32, 1))
+    cookieSlot.value = { value: sid }
+
+    insertSpec(handle, {
+      accountId: id,
+      conversationId: 'conv-1',
+      promptSha: 'deadbeef',
+      payload: TWO_SCREEN_VERSION_PAYLOAD,
+      mockupHtml: '<html><body>wholedocumentfallback</body></html>',
+      at: 1_000,
+    })
+    // Deliberately no insertScreenMockups call.
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    const element = await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+
+    // No 500: the render completed and produced a real card.
+    expect(notFoundMock).not.toHaveBeenCalled()
+    const proposal = findChatPanelProps(element)?.proposal as
+      | { preview_html?: string; mockup_html?: string }
+      | undefined
+    expect(proposal?.preview_html).toBe(proposal?.mockup_html)
+    expect(proposal?.preview_html).toContain('wholedocumentfallback')
   })
 
   it('degrades a corrupt stored proposal to no card, not a 500', async () => {

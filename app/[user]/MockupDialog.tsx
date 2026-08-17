@@ -23,10 +23,14 @@ import {
  * Stretched with className rather than by editing components/ui/dialog.tsx:
  * that file is what the CLI wrote and stays that way (onboarding ledger D1).
  *
- * THE SAME `src` AS THE PREVIEW BESIDE IT, and the same empty sandbox. One
- * serving route means the thing a friend inspects at full size is
- * byte-identical to the thing they were shown — a second source would be a
- * promise made on their behalf that nobody checked.
+ * THE SAME SESSION-AUTHED ROUTE the card used to load from, and the same
+ * empty sandbox. That is no longer "the same thing the card just showed" —
+ * SpecCard's own scaled preview switched to `srcDoc` with a SCOPED document
+ * (only the screens a patch touched; see Proposal.preview_html,
+ * lib/spec/author.ts) once that stopped being merely a display of what
+ * `mockup_html` already held. This dialog is deliberately unchanged: opening
+ * it is asking to see everything, and `mockup_html` — the whole composed
+ * document, the build contract — is what it shows.
  *
  * `src` is a prop rather than a version number because the ADMIN PORTAL uses
  * this same component against its own serving route

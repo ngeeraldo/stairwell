@@ -232,15 +232,26 @@ describe('ChatPanel wiring', () => {
     await unmount()
   })
 
-  it('previews the mockup from the serving route, sealed off', async () => {
-    // onboarding ledger D14. One route for the card and the dialog, so what a
-    // friend inspects at full size is byte-identical to what they were shown.
+  it('previews the scoped document inline, sealed off — no round trip to the serving route', async () => {
+    // CHANGED from onboarding ledger D14's "one route for the card and the
+    // dialog, so what a friend inspects at full size is byte-identical to
+    // what they were shown". That held while the small preview showed the
+    // same whole document the route serves. Once it needed to show only the
+    // AFFECTED screens (task 19, Proposal.preview_html), a route keyed on
+    // version number alone had no way to hand back anything narrower — so the
+    // card now embeds those bytes directly via `srcDoc`. The full-screen
+    // dialog below is UNCHANGED and still reads the route: opening it is
+    // asking to see the whole dashboard, which is what the route serves.
     const { container, unmount } = await mount(
       <ChatPanel initial={[]} proposal={{ ...PROPOSAL, confirmed: false }} first={true} />,
     )
 
     const frame = container.querySelector('iframe')!
-    expect(frame.getAttribute('src')).toBe('/mockup/1')
+    expect(frame.getAttribute('src')).toBeNull()
+    // withBanner (lib/spec/banner.ts) applied at the new boundary: this card
+    // no longer reads from the route that used to guarantee it.
+    expect(frame.srcdoc).toContain('MOCKUP')
+    expect(frame.srcdoc).toContain('x') // PROPOSAL.preview_html: '<p>x</p>'
     expect(frame.getAttribute('sandbox')).toBe('')
 
     await unmount()

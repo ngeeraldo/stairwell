@@ -8,6 +8,11 @@ import { useEffect, useRef, useState } from 'react'
 // client bundle — a value import here would.
 import type { Proposal } from '@/lib/spec/author'
 import type { StoredSpec } from '@/lib/spec/stored'
+// A VALUE import, not type-only: withBanner runs in the browser now (see the
+// srcDoc comment on SpecCard below), and this module is safe to bundle
+// client-side — pure string handling, no server-only dependency, unlike
+// lib/spec/author.ts and lib/spec/stored.ts above.
+import { withBanner } from '@/lib/spec/banner'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { buildTimeline } from '@/lib/chat/timeline'
@@ -515,6 +520,20 @@ export function SpecCard({
   // One expression, read twice below, so the confirmed and unconfirmed halves
   // of this card cannot disagree about what was promised.
   const delivery = (proposal.first ?? first) ? DELIVERY_FIRST : DELIVERY_CHANGE
+  /**
+   * The scoped document this card's small preview draws — see
+   * Proposal.preview_html (lib/spec/author.ts) for what "scoped" means.
+   *
+   * `?? proposal.mockup_html` is the SAME defect shape as `first` just above,
+   * ledger D9: `preview_html` is REQUIRED on the server's `Proposal` but
+   * OPTIONAL on `CardProposal` (see its own doc comment), because a card that
+   * streamed in through the `proposal` NDJSON line is JSON.parse output cast
+   * to that type and nothing validates it. TypeScript does not object to a
+   * possibly-undefined value in a string position the way it does in a
+   * boolean one — an edit that dropped this fallback would compile clean.
+   * tests/chat/panel.test.ts is what actually catches its removal.
+   */
+  const previewHtml = withBanner(proposal.preview_html ?? proposal.mockup_html)
   return (
     /*
       CARD ANATOMY, top to bottom, exactly as onboarding-ux-spec.md lists it:
@@ -553,16 +572,29 @@ export function SpecCard({
       {/* Scaled to the column, and non-interactive at card size — which the
           spec explicitly allows, and `pointer-events-none` implements without
           a second mechanism.
-          
-          `src`, not `srcDoc`: one serving route for the card and the dialog
-          (onboarding ledger D14), so what a friend inspects at full size is
-          byte-identical to what they were shown here.
-          
+
+          `srcDoc`, not `src`, as of this card's scoped preview. It used to be
+          `src="/mockup/<version>"`, the same session-authed route the
+          full-screen dialog below still uses (onboarding ledger D14) — one
+          route meant the two were byte-identical. That stopped being true the
+          moment the small preview needed to show only the AFFECTED screens:
+          the route serves `mockup_html`, the whole stored document, which is
+          right for the dialog (a friend asked to see everything) and wrong
+          here (see previewHtml above). The dialog is unchanged and still
+          shows the complete dashboard on purpose — this scaled preview is the
+          one place a friend reviews just what they asked for.
+
           Sealed off either way. An empty sandbox grants nothing — no scripts,
           no same-origin, no forms, no top-level navigation — so model-authored
           markup can never run code in a friend's session, and the preview
           stays a LAYOUT promise rather than a behaviour promise somebody then
-          has to build. tests/spec/sandbox.test.ts pins this. */}
+          has to build. tests/spec/sandbox.test.ts pins this — on `sandbox=""`
+          itself, which this change leaves untouched.
+
+          The MOCKUP banner used to be guaranteed by that route (withBanner,
+          applied at serve time — lib/spec/banner.ts). srcDoc bypasses it
+          entirely, so previewHtml applies it here instead: same rule, moved
+          to the new boundary, not dropped. */}
       {/*
         SCALED DOWN, not cropped. The iframe is laid out at twice the column's
         width and half scale, so the preview shows the mockup as a small whole
@@ -580,7 +612,7 @@ export function SpecCard({
       <div className="h-64 w-full overflow-hidden rounded-md border bg-background">
         <iframe
           title={`Preview of ${title}`}
-          src={`/mockup/${proposal.version}`}
+          srcDoc={previewHtml}
           sandbox=""
           className="pointer-events-none h-[32rem] w-[200%] origin-top-left scale-50 border-0"
         />

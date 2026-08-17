@@ -9,10 +9,14 @@
 // removes the only signal that they are invented. A banner replaces it.
 //
 // A banner the MODEL is asked to add is not a guarantee; it is a hope with
-// good odds. This one is applied at serve time, to every mockup, on the single
-// route both the card preview and the full-screen view read from. The model
-// cannot forget it, an older stored mockup cannot lack it, and a future prompt
-// version cannot quietly drop it.
+// good odds. This one is applied at the BOUNDARY, every time model-authored
+// HTML reaches a screen: the session-authed /mockup/<version> route the
+// full-screen dialog reads from, and — since the small preview card started
+// showing a SCOPED document via `srcDoc` instead of that route
+// (app/[user]/ChatPanel.tsx, Proposal.preview_html) — the render site that
+// sets `srcDoc` too. Two call sites now, not one, and each is the honest
+// place: the model cannot forget it, an older stored mockup cannot lack it,
+// and a future prompt version cannot quietly drop it.
 //
 // INJECTED RATHER THAN REFUSED, deliberately. Refusing to serve a mockup with
 // no banner would turn a model slip into a blank preview at the exact moment a
