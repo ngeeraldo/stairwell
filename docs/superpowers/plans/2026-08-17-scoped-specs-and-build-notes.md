@@ -3894,3 +3894,143 @@ git commit -m "Record the scoped-specs live checkpoint"
 **2. Inline Execution** — execute tasks in this session using executing-plans, batch execution with checkpoints.
 
 **Which approach?**
+
+---
+
+# PART D — SCREENS BECOME PLACES
+
+Added 2026-08-17 at Nico's direction, after checking why no dashboard renders a
+screen. **A screen is fully defined in the spec and completely undefined in the
+build.** `Screen { id, title, order, panels }` exists in the schema, `spec-v3.md`
+tells the model a screen is "a place in the app", and `ChatPanel`/`app/admin`
+iterate `version.screens` — but only to render the SPEC TEXT. No
+`users/*/dashboard.tsx` has any notion of one; all four render a flat list of
+panels. Nothing in CLAUDE.md, `dashboard-build-rules.md`, the runbook or the
+scaffold says what a screen becomes in code.
+
+Nobody has hit it because **both current-shape specs declare exactly one
+screen.** The first friend to confirm two gets a spec promising two places and a
+dashboard that is one scrolling page.
+
+**Why now rather than a later branch.** Dashboard rule 3 forbids the obvious
+implementation: `app/[user]/page.tsx` CALLS `Dashboard(...)` rather than
+returning `<Dashboard />`, so its body runs inside a try/catch — a nested
+function component's body defers to Next's render pass, outside that catch, and
+a throw there 500s the page after `dashboard_open` is already written. So a
+`<Tabs>` inside `dashboard.tsx` is not allowed. Deferring this guarantees the
+first two-screen build reaches for exactly that and either violates the rule or
+discovers it the hard way mid-build. Part C also makes the screen the unit of
+PREVIEW, so leaving it undefined in the build means previewing a boundary the
+friend's app does not have.
+
+**The shape.** Server-rendered tab links on a search param — `/<slug>?screen=money`.
+No client component, no route segment, no middleware: this stays out of the
+four-ordered-checks neighbourhood entirely, and rule 3 survives untouched because
+the platform owns the chrome while dashboards stay host-elements-only.
+
+**Two rulings already made:** one screen renders NO tab chrome (visually a no-op
+for all four existing dashboards, so adopting this costs nothing today); and tab
+labels and order come from the spec's screen `title`/`order`, never a second
+source that could drift.
+
+### Task 22: The contract and the tab chrome
+
+**Files:** Modify `lib/dashboard/contract.ts`, `app/[user]/page.tsx`. Test: `tests/dashboard/contract.test.ts` (new), `tests/routing/userPage.test.tsx`.
+
+**Interfaces produced:**
+```ts
+// lib/dashboard/contract.ts
+export type DashboardScreen = { id: string; title: string; order: number }
+export type DashboardProps = { /* …existing… */ screen: string }
+export type DashboardModule = { default: DashboardComponent; screens: DashboardScreen[] }
+export function activeScreen(screens: DashboardScreen[], requested: string | undefined): DashboardScreen
+```
+
+- [ ] **Step 1: Write the failing tests for `activeScreen`**
+
+```ts
+const SCREENS = [
+  { id: 'money', title: 'Money', order: 2 },
+  { id: 'morning', title: 'Morning', order: 1 },
+]
+it('defaults to the lowest-order screen, not the first in the array', () => {
+  expect(activeScreen(SCREENS, undefined).id).toBe('morning')
+})
+it('honours a requested screen', () => {
+  expect(activeScreen(SCREENS, 'money').id).toBe('money')
+})
+// A URL is user input. An unknown ?screen= must not 404 or throw — it lands on
+// the morning surface, which is the same place a bare /<slug> lands.
+it('falls back to the default for an unknown screen rather than throwing', () => {
+  expect(activeScreen(SCREENS, 'nope').id).toBe('morning')
+})
+it('throws on an empty screen list — a registered dashboard must declare one', () => {
+  expect(() => activeScreen([], undefined)).toThrow()
+})
+```
+
+- [ ] **Step 2: Run it, watch it fail, implement `activeScreen`** in `lib/dashboard/contract.ts`, sorting by `order` and falling back rather than throwing on an unknown id. Comment WHY the fallback exists: a `?screen=` is user input and a typo must not be a dead end.
+
+- [ ] **Step 3: Wire `app/[user]/page.tsx`**
+
+Read `searchParams`, resolve the active screen through `activeScreen`, pass `screen: active.id` into the existing `Dashboard({ … })` call, and render the tab strip **above** the dashboard. The strip is plain server-rendered anchors (`<a href="?screen=…">`) — no client component, so rule 3 is untouched.
+
+**Render NO strip at all when `screens.length === 1`.** A single tab is chrome that explains nothing.
+
+- [ ] **Step 4: Test the page**
+
+Assert: two screens render two links with the spec's titles; the active one is marked; one screen renders no strip; an unknown `?screen=` renders the default screen rather than 500ing.
+
+- [ ] **Step 5: Run and commit**
+
+```bash
+npx vitest run && npx tsc --noEmit
+git add lib/dashboard/contract.ts app/[user]/page.tsx tests
+git commit -m "Give a dashboard screens, and the platform a tab strip"
+```
+
+### Task 23: Every dashboard declares its screens
+
+**Files:** Modify `users/{devone,devtwo,run3,run4}/dashboard.tsx`, `platform/templates/dashboard/dashboard.tsx.tmpl`. Test: each folder's `tests/dashboard.test.ts`.
+
+- [ ] **Step 1:** Add `export const screens = [{ id: '…', title: '…', order: 1 }]` to each of the four dashboards, taking each id and title from that folder's `spec.md` where one exists (`run3`, `run4`), and choosing an honest one where none does (`devone`, `devtwo` are hand-written and pre-spec — use `morning`).
+
+- [ ] **Step 2:** Add the same to the scaffold template, with a comment explaining that the platform renders the tab strip and the dashboard switches on `props.screen`, and that a single screen renders no strip.
+
+- [ ] **Step 3:** Each dashboard now takes `screen` in props. With one screen each, none needs to branch yet — but the template must SHOW the branch so the first two-screen build has a pattern to copy.
+
+- [ ] **Step 4:** Run `npx vitest run users && npx tsc --noEmit`, then commit.
+
+### Task 24: The sweep and the registry
+
+**Files:** Modify `tests/users/conventions.test.ts`, `tests/dashboard/registry.test.ts`.
+
+- [ ] **Step 1:** Sweep every built folder for a non-empty `screens` export whose ids match `SLUG_PATTERN`-style slugs, whose `order` values are integers, and whose ids are unique within the folder.
+
+- [ ] **Step 2:** Assert every registered dashboard module exposes `screens` — a module missing it would fail at render, and the registry test is where a missing line is already caught.
+
+- [ ] **Step 3:** Run and commit.
+
+### Task 25: Harden the mockup routes against external fetches
+
+**Files:** Modify `app/mockup/[version]/route.ts`, `app/admin/mockup/[user]/[version]/route.ts`, `app/[user]/MockupDialog.tsx`. Test: `tests/routing/mockup.test.ts`.
+
+Raised by Task 17's review. `mockup-v4.md` now tells the model to use no external stylesheets, fonts or image URLs — but that is **a rule a model can forget**, and this repo's own D19 says a guarantee beats a rule. `scopeCss` rewrites selectors only, never declaration values or raw HTML, and the current bare `sandbox` CSP restricts scripts, forms and navigation, not passive GET requests. A friend opening their own preview can currently cause a real outbound request to a third party.
+
+- [ ] **Step 1:** Write a failing test asserting each mockup response carries a CSP that forbids external fetches — `default-src 'none'` with `style-src 'unsafe-inline'` and `img-src data:` so inline styles and data URIs still work.
+
+- [ ] **Step 2:** Add the header to both routes and the dialog's iframe, keeping the existing `sandbox` directive rather than replacing it.
+
+- [ ] **Step 3:** Confirm a mockup still renders — take a screenshot, since a CSP that blocks too much produces a blank preview that no test would notice.
+
+- [ ] **Step 4:** Run and commit.
+
+### Task 26: Document Part D
+
+**Files:** Modify `CLAUDE.md`, `docs/dashboard-build-rules.md`, `docs/runbook.md`, `architecture-overview.md`.
+
+- [ ] **Step 1:** CLAUDE.md — a screen is a place, the platform renders the tab strip, a dashboard declares `screens` and switches on `props.screen`, one screen renders no chrome, and **rule 3 is why the strip is not a dashboard's job**.
+- [ ] **Step 2:** `dashboard-build-rules.md` — one index line with its citation.
+- [ ] **Step 3:** runbook step 7 — building a multi-screen dashboard.
+- [ ] **Step 4:** `architecture-overview.md` — screens as places in the product section.
+- [ ] **Step 5:** Commit.
