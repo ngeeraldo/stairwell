@@ -2715,13 +2715,30 @@ Replace the `client.propose({ … schema: SPEC_JSON_SCHEMA })` argument with `sc
 Replace the `draft = parseSpecDraft(proposed.input); break` block with:
 
 ```ts
+      // WHICH PHASE FAILED IS THE CLASSIFICATION — not which error class was
+      // thrown. Ruled at Task 9's re-review, and it is the whole reason the
+      // metrics kinds can be trusted.
+      //
+      // The tempting version discriminates on `error instanceof SpecPatchError`.
+      // That silently misclassifies, because the shape checks inside a patch are
+      // shared with the whole-surface path: a malformed `order` in an
+      // update_screen op, a non-string in `open_questions`, and any bad nested
+      // panel all reach `fields.ts` helpers that throw the BASE class. Those
+      // rows would land in an append-only log as `malformed_spec` forever, and
+      // `metrics` rejects UPDATE.
+      //
+      // Phase cannot be got wrong, because it is not inferred: parsing failed,
+      // or applying failed, and the code knows which one it was standing in.
+      // The meanings come out clean too — `malformed_spec` is "the model
+      // returned the wrong shape", `patch_failed` is "the shape was right and
+      // it would not apply to this base", which is the genuinely new failure
+      // mode worth watching.
+      let phase: 'malformed_spec' | 'patch_failed' = 'malformed_spec'
       try {
-        if (mode === 'patch') {
-          // Two gates, both of which throw SpecShapeError subclasses and so
-          // both of which the retry below already handles: the patch's own
-          // shape, then the whole-surface validator on the applied result.
+        if (mode === 'patch' && base !== undefined) {
           patch = parsePatch(proposed.input)
-          draft = applyPatch(base!, patch)
+          phase = 'patch_failed'
+          draft = applyPatch(base, patch)
         } else {
           draft = parseSpecDraft(proposed.input)
         }
@@ -2729,16 +2746,18 @@ Replace the `draft = parseSpecDraft(proposed.input); break` block with:
       } catch (error) {
 ```
 
-and inside that catch, replace the hard-coded `kind: 'malformed_spec'` with:
+and inside that catch, replace the hard-coded `kind: 'malformed_spec'` with the
+phase the failure actually happened in:
 
 ```ts
-            // patch_failed and malformed_spec are separate kinds because they
-            // fail for different reasons and want different answers: a patch
-            // that does not apply usually named a stale id, a malformed spec
-            // got the shape wrong. Grouping the log by kind must be able to
-            // tell them apart.
-            kind: error instanceof SpecPatchError ? 'patch_failed' : 'malformed_spec',
+            // Set above, before the call that can fail. See the phase comment.
+            kind: phase,
 ```
+
+`SpecPatchError` keeps extending `SpecShapeError` regardless — that is what makes
+the retry loop treat it as its one retryable failure and what makes
+`metricMessage()` redact its quoted ids before they reach the metrics log. It is
+just no longer what decides the metric's `kind`.
 
 Declare `let patch: SpecPatch | undefined` beside `let draft`.
 
