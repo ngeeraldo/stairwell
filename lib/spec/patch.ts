@@ -318,6 +318,13 @@ export function applyPatch(base: SpecVersion, patch: SpecPatch): SpecDraft {
         break
 
       case 'add_screen':
+        // Deliberately redundant with checkInvariants (via parseSpecDraft
+        // below), which would catch the same duplicate id as "duplicate
+        // screen id \"x\"" / "duplicate panel id \"x\"". Kept anyway: these
+        // messages name the op that caused it, which is better retry
+        // feedback for a model, and they throw SpecPatchError specifically
+        // (tested), which checkInvariants's SpecShapeError does not. Do not
+        // remove this as drift.
         if (work.screens.some((s) => s.id === op.screen.id)) {
           throw new SpecPatchError(`add_screen names screen "${op.screen.id}", which already exists`)
         }
@@ -344,6 +351,9 @@ export function applyPatch(base: SpecVersion, patch: SpecPatch): SpecDraft {
 
       case 'add_panel': {
         const screen = findScreen(work, op.screen_id, 'add_panel')
+        // Same deliberate redundancy with checkInvariants as add_screen
+        // above — kept for the op-named SpecPatchError message. Do not
+        // remove this as drift.
         if (panelExists(work, op.panel.id)) {
           throw new SpecPatchError(`add_panel names panel "${op.panel.id}", which already exists`)
         }
@@ -361,6 +371,11 @@ export function applyPatch(base: SpecVersion, patch: SpecPatch): SpecDraft {
       }
 
       case 'move_panel': {
+        // DEFINED BEHAVIOUR: moving a panel to the screen it is already on
+        // is not a no-op — it splices the panel out and pushes it back at
+        // the end of that same screen. move_panel is the only op that can
+        // reorder panels within a screen, so "move to the end of your own
+        // screen" is how that reorder is expressed. Pinned by a test.
         const target = findScreen(work, op.screen_id, 'move_panel')
         const { screen, index } = findPanel(work, op.panel_id, 'move_panel')
         const [moved] = screen.panels.splice(index, 1)

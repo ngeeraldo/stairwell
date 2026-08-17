@@ -100,6 +100,57 @@ describe('applyPatch', () => {
     ).toThrow(/"ghost"/)
   })
 
+  it('throws when move_panel names a panel that does not exist', () => {
+    expect(() =>
+      applyPatch(BASE, patch([{ op: 'move_panel', panel_id: 'ghost', screen_id: 'money' }])),
+    ).toThrow(/"ghost"/)
+  })
+
+  it('move_panel to the screen a panel is already on reorders it to the end — defined behaviour', () => {
+    // 'eating_out' starts at index 0 of 'morning'; moving it to 'morning'
+    // (its own screen) is the only way to express a reorder, and should
+    // push it to the end rather than being a no-op.
+    const next = applyPatch(BASE, patch([{ op: 'move_panel', panel_id: 'eating_out', screen_id: 'morning' }]))
+    expect(next.screens[0]!.panels.map((p) => p.id)).toEqual(['walks', 'eating_out'])
+  })
+
+  it('update_screen changes title and order, leaving its panels untouched', () => {
+    const next = applyPatch(BASE, patch([{ op: 'update_screen', id: 'money', title: 'Finances', order: 9 }]))
+    const screen = next.screens.find((s) => s.id === 'money')!
+    expect(screen.title).toBe('Finances')
+    expect(screen.order).toBe(9)
+    expect(screen.panels.map((p) => p.id)).toEqual(['balance'])
+    // The other screen is untouched.
+    expect(next.screens.find((s) => s.id === 'morning')!.title).toBe('Morning')
+  })
+
+  it('throws when update_screen names a screen that does not exist', () => {
+    expect(() =>
+      applyPatch(BASE, patch([{ op: 'update_screen', id: 'ghost', title: 'X', order: 1 }])),
+    ).toThrow(/"ghost"/)
+  })
+
+  it('remove_screen removes the screen and every panel that lived on it', () => {
+    const next = applyPatch(BASE, patch([{ op: 'remove_screen', id: 'morning' }]))
+    expect(next.screens.map((s) => s.id)).toEqual(['money'])
+    // Not just "the screen is gone" — its panels must be gone from the
+    // WHOLE version, not merely absent from a screen that still lists them.
+    const allPanelIds = next.screens.flatMap((s) => s.panels.map((p) => p.id))
+    expect(allPanelIds).not.toContain('eating_out')
+    expect(allPanelIds).not.toContain('walks')
+    expect(allPanelIds).toEqual(['balance'])
+  })
+
+  it('throws when remove_screen names a screen that does not exist', () => {
+    expect(() => applyPatch(BASE, patch([{ op: 'remove_screen', id: 'ghost' }]))).toThrow(/"ghost"/)
+  })
+
+  it('throws when add_panel targets a screen that does not exist', () => {
+    expect(() =>
+      applyPatch(BASE, patch([{ op: 'add_panel', screen_id: 'ghost', panel: panel('new_thing') }])),
+    ).toThrow(/"ghost"/)
+  })
+
   // Emptying a screen is caught by the WHOLE-SURFACE validator, not by a
   // special case here — and its message is already good retry feedback.
   it('rejects a patch that empties a screen, via the existing validator', () => {
