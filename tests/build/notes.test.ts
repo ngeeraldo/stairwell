@@ -1,7 +1,7 @@
 // tests/build/notes.test.ts
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
   BuildNotesError,
@@ -134,7 +134,39 @@ describe('readBuildNotes', () => {
     expect(() => readBuildNotes('kim', 9, root)).toThrow(/frontmatter/)
   })
 
+  // Hermetic against an ambient USERS_DIR: several other test files in this
+  // suite (tests/auth/routes.test.ts, tests/db/migrate.test.ts,
+  // tests/db/userDb.test.ts, tests/invite/register.test.ts) set and `delete`
+  // process.env.USERS_DIR with no try/finally, so a throw between the two
+  // leaks it for the rest of that worker. A suffix-only regex match
+  // (`/users\/sam\/notes\/v9\.md$/`) would still pass against a leaked value
+  // ending in `/users`, so this asserts exact equality against the one true
+  // default AND saves/restores the ambient var around the assertion.
   it('builds the path from USERS_DIR when no root is passed', () => {
-    expect(notesPath('sam', 9)).toMatch(/users[/\\]sam[/\\]notes[/\\]v9\.md$/)
+    const ambient = process.env.USERS_DIR
+    delete process.env.USERS_DIR
+    try {
+      expect(notesPath('sam', 9)).toBe(
+        join(resolve(process.cwd(), 'users'), 'sam', 'notes', 'v9.md'),
+      )
+    } finally {
+      if (ambient === undefined) delete process.env.USERS_DIR
+      else process.env.USERS_DIR = ambient
+    }
+  })
+
+  // The other half of the same contract: an ambient USERS_DIR, when actually
+  // set, IS honoured — nothing before this proved that direction either.
+  it('honours an ambient USERS_DIR when one is set', () => {
+    const ambient = process.env.USERS_DIR
+    const root = mkdtempSync(join(tmpdir(), 'stairwell-notes-env-'))
+    temps.push(root)
+    process.env.USERS_DIR = root
+    try {
+      expect(notesPath('sam', 9)).toBe(join(root, 'sam', 'notes', 'v9.md'))
+    } finally {
+      if (ambient === undefined) delete process.env.USERS_DIR
+      else process.env.USERS_DIR = ambient
+    }
   })
 })

@@ -163,6 +163,14 @@ export class NotesMissingError extends Error {
  * USERS_DIR, matching the rest of the repo — it exists so tests can point at a
  * temp tree, and its default IS the correct production value, which is why
  * deploy/required-env deliberately does not list it.
+ *
+ * This duplicates the one-line fallback lib/db/userDb.ts already exports
+ * rather than importing it. That file pulls in
+ * better-sqlite3-multiple-ciphers (a native SQLite binding) at module top, and
+ * this module is pure text parsing — importing from userDb.ts would drag that
+ * native binding into every downstream consumer of lib/build/notes.ts,
+ * including an operator CLI that has no business opening a database. A
+ * duplicated one-liner is much cheaper than that coupling.
  */
 function usersRoot(override?: string): string {
   return override ?? process.env.USERS_DIR ?? resolve(process.cwd(), 'users')
