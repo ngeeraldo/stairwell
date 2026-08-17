@@ -9,7 +9,12 @@ import {
   type SpecRecord,
 } from '@/lib/db/specs'
 import { toMessages } from '@/lib/chat/history'
-import { MOCKUP_PROMPT, SPEC_PATCH_PROMPT, SPEC_PROMPT, loadPrompt } from '@/lib/chat/prompt'
+import {
+  MOCKUP_SCREENS_PROMPT,
+  SPEC_PATCH_PROMPT,
+  SPEC_PROMPT,
+  loadPrompt,
+} from '@/lib/chat/prompt'
 import type { ChatContext } from '@/lib/chat/context'
 import {
   CHAT_EFFORT,
@@ -22,15 +27,17 @@ import {
   type Usage,
 } from '@/lib/chat/client'
 import {
-  MOCKUP_JSON_SCHEMA,
+  SCREEN_MOCKUP_JSON_SCHEMA,
   SPEC_JSON_SCHEMA,
   SpecShapeError,
   type SpecDraft,
 } from './schema'
-import { parseMockupInput, parseSpecDraft, sealVersion } from './validate'
+import { parseScreenMockups, parseSpecDraft, sealVersion } from './validate'
 import { renderLegacyMarkdown } from './render'
 import { readStoredSpec, type StoredSpec } from './stored'
 import { applyPatch, parsePatch, PATCH_JSON_SCHEMA, type SpecPatch } from './patch'
+import { affectedScreens, composeMockup } from './mockupCompose'
+import { insertScreenMockups, readScreenMockups } from '@/lib/db/screenMockups'
 
 /**
  * One proposal, as it reaches the card — whichever way it got there.
@@ -60,6 +67,21 @@ export type Proposal = {
   at: number
   spec: StoredSpec
   mockup_html: string
+  /**
+   * The scoped preview: only the screens THIS patch touched, carried-forward
+   * screens omitted. This is what the friend's card renders while it is being
+   * proposed.
+   *
+   * `mockup_html` above is the OTHER one — the whole composed document, which
+   * is what `specs.mockup_html` stores and what pull-spec.sh, mockup.html and
+   * the admin pane read. That one must never be scoped: it is the build
+   * contract, and a builder reading it needs every screen, touched or not.
+   * For a first version (or a legacy base's one-time whole-surface fallback)
+   * every screen IS affected, so the two happen to be equal — not because
+   * this field is skipped, but because scoping to "everything" degenerates to
+   * the whole document.
+   */
+  preview_html: string
   /**
    * Whether THIS card is the account's first dashboard, and therefore which
    * delivery promise it makes (ledger D9). Server-computed, per card, and
@@ -598,6 +620,8 @@ export async function authorSpec(
     if (draft === undefined || result === undefined) return undefined
 
     let mockupHtml: string
+    let previewHtml: string
+    let fragments: Map<string, string>
     try {
       // Both halves of the loaded prompt are kept: the text goes to the model
       // and the sha onto every row below, so the preview this call produces
@@ -606,18 +630,71 @@ export async function authorSpec(
       // happening NOW, and this call is the long one.
       input.onStage?.('mockup')
 
-      const mockupPrompt = loadPrompt(MOCKUP_PROMPT)
-      mockupPromptSha = mockupPrompt.sha
-      mockupResult = await client.propose({
-        system: mockupPrompt.text,
-        // The VALIDATED draft, not the raw reply: a mockup generated from
-        // anything else could show a panel the spec does not contain, which
-        // is a promise made on the friend's behalf (ledger D7).
-        messages: [{ role: 'user', content: JSON.stringify(draft) }],
-        signal: input.signal,
-        schema: MOCKUP_JSON_SCHEMA,
-      })
-      mockupHtml = parseMockupInput(mockupResult.input)
+      // Which screens THIS patch touched, in draft.screens order. `base` is
+      // the SpecVersion the patch was applied to (undefined on both
+      // whole-surface paths, where `ops` is null too and affectedScreens
+      // treats that as "everything is affected"). affectedScreens needs the
+      // screens array, not the whole version.
+      const affected = affectedScreens(base?.screens ?? null, draft.screens, patch?.ops ?? null)
+
+      // Fragments this version keeps unchanged, taken from the version the
+      // patch was applied to. A version confirmed BEFORE this existed has
+      // none — its next patch has nothing to carry forward, and the
+      // composeMockup call below throws on the resulting gap. That surfaces
+      // as an ordinary mockup_failed with no row written, exactly like any
+      // other mockup failure, rather than a composed document with a hole in
+      // it.
+      const carried =
+        current === undefined ? new Map<string, string>() : readScreenMockups(db, current.id)
+      fragments = new Map(carried)
+
+      // NO AFFECTED SCREENS MEANS NO CALL. A meta-only patch changes the spec
+      // and no pixel, so every fragment carries forward untouched and there is
+      // nothing to draw. Skipping is not an optimisation here — asking for a
+      // mockup of zero screens would send an empty list and get back
+      // something that could only be wrong. mockupResult stays undefined, and
+      // the metrics helper already reports null for a call that never
+      // happened.
+      if (affected.length > 0) {
+        const mockupPrompt = loadPrompt(MOCKUP_SCREENS_PROMPT)
+        mockupPromptSha = mockupPrompt.sha
+        mockupResult = await client.propose({
+          system: mockupPrompt.text,
+          // Only the affected screens, from the VALIDATED draft (ledger D7) —
+          // a mockup generated from anything else could show a panel the spec
+          // does not contain, which is a promise made on the friend's behalf.
+          messages: [
+            {
+              role: 'user',
+              content: JSON.stringify({
+                title: draft.title,
+                screens: draft.screens.filter((s) => affected.includes(s.id)),
+              }),
+            },
+          ],
+          signal: input.signal,
+          schema: SCREEN_MOCKUP_JSON_SCHEMA,
+        })
+
+        for (const f of parseScreenMockups(mockupResult.input, affected)) {
+          fragments.set(f.screenId, f.html)
+        }
+      }
+
+      // The WHOLE document: this is specs.mockup_html, the build contract on
+      // disk and what the admin pane renders. Throws if any screen has no
+      // fragment — see the `carried` comment above for the one case that
+      // happens in practice.
+      mockupHtml = composeMockup(draft.screens, fragments)
+      // The friend's card: only what changed. For v1 (and the legacy
+      // one-time whole-surface fallback), affected IS every screen, so this
+      // degenerates to the whole dashboard — correct, because on a first
+      // version everything is new. An EMPTY affected list falls back to the
+      // whole dashboard too: a meta-only change has no screen to point at,
+      // and a blank card is worse than a redundant one at the moment someone
+      // is deciding whether to confirm.
+      previewHtml =
+        affected.length > 0 ? composeMockup(draft.screens, fragments, affected) : mockupHtml
     } catch (error) {
       // mockup_html is NOT NULL, and a spec row with no preview is a card the
       // friend cannot read. Both calls land or neither does.
@@ -700,6 +777,19 @@ export async function authorSpec(
       mockupHtml,
       at,
     })
+    // The fragments belong to THIS version. Written after the spec row
+    // exists because they key on its id, and before the proposal returns so
+    // the next patch can carry them forward. All of a version's fragments
+    // land or none do (insertScreenMockups' own transaction) — `fragments`
+    // holds one entry per screen in `draft.screens` by construction: every
+    // screen is either carried from `current` or freshly drawn above, and
+    // composeMockup already threw if either source left a gap.
+    insertScreenMockups(
+      db,
+      id,
+      draft.screens.map((s) => ({ screenId: s.id, html: fragments.get(s.id)! })),
+      at,
+    )
     // Read back rather than counting: version is derived from position, and
     // this is the one place that must agree with what the admin pane
     // renders. No non-null assertion: a miss here is exactly the kind of
@@ -721,11 +811,16 @@ export async function authorSpec(
         version,
         attempt,
         ...modeFields(mode, patch),
-        // Both calls returned and both were billed. Without these the
-        // success path would be the one path where a returning model call's
-        // usage reaches no metrics row at all — and the one stored
-        // mockup_html nobody could tie back to its prompt.
-        ...mockupFields(mockupResult.usage, mockupPromptSha),
+        // Both calls returned and both were billed — usually. `mockupResult`
+        // is undefined on the one legitimate exception: an affected list of
+        // zero screens skips the mockup call entirely (a meta-only patch),
+        // and `mockupFields` already reports null rather than fabricating
+        // usage for a call that never happened. On every other path both
+        // calls returned, and without this the success path would be the one
+        // where a returning model call's usage reaches no metrics row at all
+        // — and the one stored mockup_html nobody could tie back to its
+        // prompt.
+        ...mockupFields(mockupResult?.usage, mockupPromptSha),
       },
     })
 
@@ -739,6 +834,7 @@ export async function authorSpec(
       // about the payload.
       spec: { kind: 'version', version: sealed },
       mockup_html: mockupHtml,
+      preview_html: previewHtml,
       // Asked of the record, for THIS version, at the moment the row exists —
       // the same question app/[user]/page.tsx asks of the page-load card, and
       // the same helper, so the two answers cannot drift. Bounded by `version`

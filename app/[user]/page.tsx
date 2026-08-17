@@ -283,6 +283,9 @@ export default async function UserSpace({
         // rewritten (specs rejects UPDATE), so both arms are permanent.
         spec: readStoredSpec(newest.payload),
         mockup_html: newest.mockup_html,
+        // No scoped preview to show here — page load has no patch in flight,
+        // just the stored row's whole document, so the two fields agree.
+        preview_html: newest.mockup_html,
         confirmed: newest.confirmed_at !== null,
       }
     } catch (error) {

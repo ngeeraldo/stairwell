@@ -7,10 +7,11 @@ import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { appendTranscript } from '@/lib/db/appendOnly'
 import { confirmSpec, insertSpec, readSpecs } from '@/lib/db/specs'
 import { CHAT_MODEL, ChatStreamError, type ChatClient, type Usage } from '@/lib/chat/client'
-import { MOCKUP_JSON_SCHEMA } from '@/lib/spec/schema'
+import { SCREEN_MOCKUP_JSON_SCHEMA, type Panel } from '@/lib/spec/schema'
 import { PATCH_JSON_SCHEMA } from '@/lib/spec/patch'
 import { readStoredSpec } from '@/lib/spec/stored'
 import { authorSpec } from '@/lib/spec/author'
+import { insertScreenMockups, readScreenMockups } from '@/lib/db/screenMockups'
 
 let dir: string
 let db: PlatformDb
@@ -77,8 +78,16 @@ const IDENTIFYING_DRAFT = {
   ],
 }
 
-const GOOD_MOCKUP = {
-  mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+/**
+ * The default per-screen mockup fragment, used when a test does not care what
+ * the drawing call returned — only that authoring succeeded and that the
+ * composed document is recognisable. Kept as a function, not a constant,
+ * because the default has to answer for WHATEVER screen it is asked about
+ * (task 18: one call draws every affected screen, and the fake must not know
+ * in advance which ids that will be).
+ */
+function drawnFragment(screenId: string): string {
+  return `<section class="screen">COFFEE PALACE TEST (${screenId})</section>`
 }
 
 /**
@@ -106,7 +115,13 @@ type Call = { system: string; messages: { role: string; content: string }[]; sch
 type FakeOptions = {
   /** One entry per SPEC call, in order. An Error is thrown instead. */
   drafts?: unknown[]
-  /** The MOCKUP call's parsed input, or an Error to throw. */
+  /**
+   * The per-screen MOCKUP call's parsed input, or an Error to throw. Left
+   * undefined, the fake reads which screen ids were actually requested (task
+   * 18's call asks for exactly the affected screens) and synthesises one
+   * drawnFragment() per id — so a test that only cares about SUCCEEDING does
+   * not have to know which screens will be asked for.
+   */
   mockup?: unknown
   mockupUsage?: Usage
   /** Fires on every propose() call, before it returns — used to abort mid-flight. */
@@ -130,11 +145,25 @@ function fake(options: FakeOptions = {}) {
       calls.push({ system, messages: [...messages], schema })
       options.onCall?.()
 
-      if (schema === MOCKUP_JSON_SCHEMA) {
-        const mockup = options.mockup ?? GOOD_MOCKUP
-        if (mockup instanceof Error) throw mockup
+      if (schema === SCREEN_MOCKUP_JSON_SCHEMA) {
+        if (options.mockup !== undefined) {
+          if (options.mockup instanceof Error) throw options.mockup
+          return {
+            input: options.mockup,
+            usage: options.mockupUsage ?? MOCKUP_USAGE,
+            stop_reason: 'end_turn',
+            served: SERVED,
+          }
+        }
+        // No override: draw exactly the screens the call asked for, from the
+        // request's own content — the same request lib/spec/author.ts builds
+        // (`{ title, screens }`), so this works regardless of which screens
+        // ended up affected.
+        const requested = (
+          JSON.parse(messages[0]!.content as string) as { screens: { id: string }[] }
+        ).screens.map((s) => s.id)
         return {
-          input: mockup,
+          input: { screens: requested.map((id) => ({ id, html: drawnFragment(id) })) },
           usage: options.mockupUsage ?? MOCKUP_USAGE,
           stop_reason: 'end_turn',
           served: SERVED,
@@ -158,10 +187,10 @@ function fake(options: FakeOptions = {}) {
   return {
     client,
     calls,
-    // MOCKUP_JSON_SCHEMA is the one call this is never asked about — every
-    // other schema (whole-surface SPEC_JSON_SCHEMA or PATCH_JSON_SCHEMA) is a
-    // "spec call" as far as a caller of this helper is concerned.
-    specCalls: () => calls.filter((c) => c.schema !== MOCKUP_JSON_SCHEMA),
+    // SCREEN_MOCKUP_JSON_SCHEMA is the one call this is never asked about —
+    // every other schema (whole-surface SPEC_JSON_SCHEMA or PATCH_JSON_SCHEMA)
+    // is a "spec call" as far as a caller of this helper is concerned.
+    specCalls: () => calls.filter((c) => c.schema !== SCREEN_MOCKUP_JSON_SCHEMA),
   }
 }
 
@@ -187,7 +216,20 @@ function metrics(): { event: string; data: Record<string, unknown> }[] {
   ).map((r) => ({ event: r.event, data: JSON.parse(r.data) }))
 }
 
-/** A confirmed spec for account 1, so currentSpec() has something to return. */
+/**
+ * A confirmed spec for account 1, so currentSpec() has something to return.
+ *
+ * Also stores a per-screen fragment for every screen the payload has — a
+ * confirmed spec written since Task 18 shipped always has one, because
+ * insertScreenMockups runs unconditionally after insertSpec on the success
+ * path (lib/spec/author.ts). Skipped when the payload has no `screens` array
+ * (a legacy payload, whose shape is entirely different) — legacy authors
+ * whole-surface unconditionally, so it never reads a carried fragment anyway.
+ * A test that wants to simulate the OTHER case — a current-shape row
+ * confirmed BEFORE this branch existed, with no fragments at all — uses
+ * confirmCurrentSpecWithoutFragments in the 'scoped mockup' describe block
+ * below instead of this helper.
+ */
 function confirmed(payload: unknown): number {
   const id = insertSpec(db, {
     accountId: 1,
@@ -198,6 +240,15 @@ function confirmed(payload: unknown): number {
     at: 1,
   })
   confirmSpec(db, { specId: id, accountId: 1, at: 2 })
+  const screens = (payload as { screens?: { id: string }[] }).screens
+  if (screens) {
+    insertScreenMockups(
+      db,
+      id,
+      screens.map((s) => ({ screenId: s.id, html: `<p>OLD FRAGMENT (${s.id})</p>` })),
+      1,
+    )
+  }
   return id
 }
 
@@ -675,7 +726,8 @@ describe('authorSpec', () => {
 
       expect(client.calls).toHaveLength(2)
       const mockupCall = client.calls[1]!
-      expect(mockupCall.schema).toBe(MOCKUP_JSON_SCHEMA)
+      // Task 18: a per-screen call, not the whole-document one.
+      expect(mockupCall.schema).toBe(SCREEN_MOCKUP_JSON_SCHEMA)
       expect(JSON.stringify(mockupCall.messages)).toContain('walked_today')
     })
 
@@ -1176,6 +1228,278 @@ describe('authorSpec', () => {
 
       const retryMessages = client.specCalls()[1]!.messages
       expect(JSON.stringify(retryMessages)).toContain('ghost')
+    })
+  })
+
+  /**
+   * Task 18: draw only the screens a patch touched, carry the rest forward.
+   *
+   * `TWO_SCREEN_BASE` gives `morning` TWO panels (not one) specifically so
+   * `move_panel` can take one away without leaving the screen empty —
+   * `parseSpecDraft` (via `applyPatch`) rejects an empty screen, and a
+   * fixture with only one panel per screen would make the move test fail for
+   * a reason that has nothing to do with scoped drawing.
+   */
+  describe('scoped mockup', () => {
+    /** A panel builder parameterised on id, in the same shape the 'authoring
+     * mode' describe block's PANEL_WALKS/PANEL_EATING already use. */
+    function panel(id: string): Panel {
+      return {
+        ...PANEL,
+        id,
+        values: [{ kind: 'entered', id: `${id}_flag`, description: 'One tap per day.' }],
+      }
+    }
+
+    const PANEL_WAKE_UP = panel('wake_up')
+    const PANEL_EATING_OUT = panel('eating_out')
+    const PANEL_BALANCE = panel('balance')
+    const PANEL_WORKOUT = panel('workout')
+
+    /** Two screens: `morning` (two panels, so removing/moving one still
+     * leaves it non-empty) and `money` (one). */
+    const TWO_SCREEN_BASE = {
+      ...GOOD_DRAFT,
+      based_on_version: null,
+      screens: [
+        { id: 'morning', title: 'Morning', order: 1, panels: [PANEL_WAKE_UP, PANEL_EATING_OUT] },
+        { id: 'money', title: 'Money', order: 2, panels: [PANEL_BALANCE] },
+      ],
+    }
+
+    /** The same two screens plus an untouched third. The third is what makes
+     * "draws and previews EVERY screen a single patch touched" a real test of
+     * SCOPING rather than one that would pass just as well if every screen
+     * were affected. */
+    const THREE_SCREEN_BASE = {
+      ...GOOD_DRAFT,
+      based_on_version: null,
+      screens: [
+        { id: 'morning', title: 'Morning', order: 1, panels: [PANEL_WAKE_UP, PANEL_EATING_OUT] },
+        { id: 'money', title: 'Money', order: 2, panels: [PANEL_BALANCE] },
+        { id: 'gym', title: 'Gym', order: 3, panels: [PANEL_WORKOUT] },
+      ],
+    }
+
+    /** A whole-surface DRAFT — no based_on_version, no ops — for the v1
+     * "previews the whole dashboard" case, where the model itself is the one
+     * emitting it. */
+    const TWO_SCREEN_DRAFT = {
+      ...GOOD_DRAFT,
+      screens: [
+        { id: 'morning', title: 'Morning', order: 1, panels: [PANEL_WAKE_UP] },
+        { id: 'money', title: 'Money', order: 2, panels: [PANEL_BALANCE] },
+      ],
+    }
+
+    /** The fragment a screen's BASE version was drawn with — distinct from
+     * fake()'s own drawnFragment(), so "carried forward unchanged" and
+     * "freshly redrawn" can never be confused with each other. */
+    function baseFragment(screenId: string): string {
+      return `<p>BASE FRAGMENT (${screenId})</p>`
+    }
+
+    /**
+     * Simulates a confirmed spec WITH its fragments stored — the state every
+     * confirmation reaches from Task 18 onward, since insertScreenMockups
+     * runs unconditionally after insertSpec on the success path.
+     * `withFragments: false` simulates the other, load-bearing case: a
+     * current-shape version confirmed BEFORE this branch shipped, which has
+     * none at all.
+     */
+    function confirmCurrentSpec(base: unknown, opts: { withFragments?: boolean } = {}): number {
+      const id = insertSpec(db, {
+        accountId: 1,
+        conversationId: 'conv-0',
+        promptSha: 'abc123abc123',
+        payload: base,
+        mockupHtml: '<!doctype html><html><body>OLD WHOLE DOCUMENT</body></html>',
+        at: 1,
+      })
+      confirmSpec(db, { specId: id, accountId: 1, at: 2 })
+      if (opts.withFragments !== false) {
+        insertScreenMockups(
+          db,
+          id,
+          (base as { screens: { id: string }[] }).screens.map((s) => ({
+            screenId: s.id,
+            html: baseFragment(s.id),
+          })),
+          1,
+        )
+      }
+      return id
+    }
+
+    function confirmCurrentSpecWithoutFragments(base: unknown): number {
+      return confirmCurrentSpec(base, { withFragments: false })
+    }
+
+    /** The spec row BY ID, for account 1 — version() is derived from
+     * position so a lookup has to go through readSpecs, same as
+     * specByVersion does. */
+    function specById(id: number) {
+      return readSpecs(db, 1).find((s) => s.id === id)!
+    }
+
+    /** The most recent metrics row of a given event, as its `data` object —
+     * matching the shape every assertion in this file already reads off
+     * `metrics()[i]!.data`. */
+    function lastMetric(event: string): Record<string, unknown> {
+      return metrics().filter((r) => r.event === event).at(-1)!.data
+    }
+
+    const REPLACE_EATING_OUT_PATCH = {
+      change_summary: 'Reworded eating out.',
+      data_requirements: [],
+      open_questions: [],
+      ops: [{ op: 'replace_panel', panel: panel('eating_out') }],
+    }
+
+    it('asks the model only for the affected screens', async () => {
+      confirmCurrentSpec(TWO_SCREEN_BASE)
+      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
+      await authorSpec(deps(client.client), INPUT)
+
+      const mockupCall = client.calls[1]!
+      expect(JSON.stringify(mockupCall.messages)).toContain('morning')
+      expect(JSON.stringify(mockupCall.messages)).not.toContain('money')
+    })
+
+    it("carries the unchanged screen's fragment forward from the base version", async () => {
+      confirmCurrentSpec(TWO_SCREEN_BASE) // fragments already stored
+      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      const fragments = readScreenMockups(db, proposal!.id)
+      expect(fragments.get('money')).toBe(baseFragment('money'))
+      expect(fragments.get('morning')).not.toBe(baseFragment('morning'))
+    })
+
+    it('stores the WHOLE composed document as mockup_html — the build contract', async () => {
+      confirmCurrentSpec(TWO_SCREEN_BASE)
+      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      const stored = specById(proposal!.id).mockup_html
+      expect(stored).toContain('morning')
+      expect(stored).toContain('money')
+    })
+
+    it('previews ONLY the affected screen', async () => {
+      confirmCurrentSpec(TWO_SCREEN_BASE)
+      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      expect(proposal!.preview_html).toContain('morning')
+      expect(proposal!.preview_html).not.toContain('money')
+    })
+
+    it('previews the whole dashboard for a first version', async () => {
+      const client = fake({ drafts: [TWO_SCREEN_DRAFT] })
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      expect(proposal!.preview_html).toContain('money')
+    })
+
+    // The case a friend hits when ONE request touches two screens — the thing
+    // to prove end to end, not just in composeMockup's own unit tests. Both
+    // must be drawn, both must reach the card, and an untouched third must do
+    // neither.
+    it('draws and previews EVERY screen a single patch touched', async () => {
+      confirmCurrentSpec(THREE_SCREEN_BASE) // morning, money, gym
+      const client = fake({
+        drafts: [
+          {
+            change_summary: 'Two small changes.',
+            data_requirements: [],
+            open_questions: [],
+            ops: [
+              { op: 'replace_panel', panel: panel('eating_out') }, // on `morning`
+              { op: 'replace_panel', panel: panel('balance') }, // on `money`
+            ],
+          },
+        ],
+      })
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      // The model was asked for both, and only both.
+      const asked = JSON.stringify(client.calls[1]!.messages)
+      expect(asked).toContain('morning')
+      expect(asked).toContain('money')
+      expect(asked).not.toContain('gym')
+
+      // Both reach the card; the untouched one does not.
+      expect(proposal!.preview_html).toContain('morning')
+      expect(proposal!.preview_html).toContain('money')
+      expect(proposal!.preview_html).not.toContain('gym')
+
+      // And the STORED document is still the whole surface, gym included —
+      // the card is scoped, the build contract never is.
+      expect(specById(proposal!.id).mockup_html).toContain('gym')
+    })
+
+    // A move is the one op that touches two screens without naming two panels.
+    it('redraws BOTH ends of a move, so the screen a panel left loses it', async () => {
+      confirmCurrentSpec(TWO_SCREEN_BASE)
+      const client = fake({
+        drafts: [
+          {
+            change_summary: 'Moved eating out into money.',
+            data_requirements: [],
+            open_questions: [],
+            ops: [{ op: 'move_panel', panel_id: 'eating_out', screen_id: 'money' }],
+          },
+        ],
+      })
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      const asked = JSON.stringify(client.calls[1]!.messages)
+      // Without the source end, `morning` would keep a carried-forward
+      // fragment still showing the panel that just left it.
+      expect(asked).toContain('morning')
+      expect(asked).toContain('money')
+      expect(proposal!.preview_html).toContain('morning')
+    })
+
+    it('writes no spec row when a fragment is missing for an unchanged screen', async () => {
+      confirmCurrentSpecWithoutFragments(TWO_SCREEN_BASE)
+      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
+
+      expect(await authorSpec(deps(client.client), INPUT)).toBeUndefined()
+      expect(lastMetric('spec_error').kind).toBe('mockup_failed')
+    })
+
+    it('makes no mockup call at all for a meta-only patch, and carries every fragment forward', async () => {
+      confirmCurrentSpec(TWO_SCREEN_BASE)
+      const client = fake({
+        drafts: [
+          {
+            change_summary: 'Renamed the dashboard.',
+            data_requirements: [],
+            open_questions: [],
+            ops: [{ op: 'set_meta', title: 'New title', summary: null, background: null }],
+          },
+        ],
+      })
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      expect(proposal).toBeDefined()
+      // Only the spec call happened — no second propose() call at all.
+      expect(client.calls).toHaveLength(1)
+
+      // mockupFields reports null rather than fabricating usage for a call
+      // that never happened (ledger D15's rule, extended to "zero calls").
+      const row = metrics().find((r) => r.event === 'spec_proposed')!
+      expect(row.data.mockup_input).toBeNull()
+      expect(row.data.mockup_prompt_sha).toBeNull()
+
+      // Both screens carried forward untouched, and the card falls back to
+      // the whole (unchanged-looking) dashboard rather than showing nothing.
+      const fragments = readScreenMockups(db, proposal!.id)
+      expect(fragments.get('morning')).toBe(baseFragment('morning'))
+      expect(fragments.get('money')).toBe(baseFragment('money'))
+      expect(proposal!.preview_html).toBe(proposal!.mockup_html)
     })
   })
 })

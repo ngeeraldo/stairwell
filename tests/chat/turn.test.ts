@@ -879,6 +879,7 @@ describe('the completion rule with propose_spec', () => {
       },
     },
     mockup_html: '<!doctype html>',
+    preview_html: '<!doctype html>',
     // Every proposal carries its own delivery promise, computed from the
     // record for THAT card — see Proposal.first. runTurn only ever passes it
     // through, so its value is immaterial here; its presence is not.

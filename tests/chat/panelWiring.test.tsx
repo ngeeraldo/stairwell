@@ -78,7 +78,15 @@ const SPEC = {
   },
 }
 
-const PROPOSAL = { id: 7, version: 1, at: 1_000_000, spec: SPEC, mockup_html: '<p>x</p>', first: true }
+const PROPOSAL = {
+  id: 7,
+  version: 1,
+  at: 1_000_000,
+  spec: SPEC,
+  mockup_html: '<p>x</p>',
+  preview_html: '<p>x</p>',
+  first: true,
+}
 
 function buttonLabelled(container: HTMLElement, label: string): HTMLButtonElement | undefined {
   return Array.from(container.querySelectorAll('button')).find((b) => b.textContent === label)

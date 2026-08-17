@@ -106,6 +106,7 @@ const PROPOSAL: CardProposal = {
     },
   },
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+  preview_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
 
 /**
@@ -131,6 +132,7 @@ const LEGACY_PROPOSAL: CardProposal = {
     },
   },
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+  preview_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
 
 function walkedTodayPanel() {
@@ -184,6 +186,7 @@ const VERSION_PROPOSAL: CardProposal = {
   at: 1_000_002,
   spec: { kind: 'version', version: VERSION },
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+  preview_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
 
 /**
@@ -209,6 +212,7 @@ const TWO_SCREEN_PROPOSAL: CardProposal = {
     },
   },
   mockup_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
+  preview_html: '<!doctype html><html><body>COFFEE PALACE TEST</body></html>',
 }
 
 const noop = () => {}
