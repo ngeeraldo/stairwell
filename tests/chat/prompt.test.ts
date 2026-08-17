@@ -150,6 +150,30 @@ describe('loadPrompt', () => {
     expect(new Set(shas).size).toBe(3)
   })
 
+  // A discovery-based sweep has a failure mode enumeration doesn't: it can
+  // find nothing and still pass. If PROMPT_DIR pointed at the wrong
+  // directory, the .md filter were tightened, or the files moved, the loop
+  // in the sweep below would simply not execute — a green suite that checked
+  // nothing. tests/users/conventions.test.ts hit this same genus for its own
+  // directory sweep ('finds at least one user folder to check' /
+  // 'sweeps at least one BUILT dashboard, not only pulled-but-unbuilt
+  // folders') and this pair follows that precedent rather than inventing a
+  // second pattern for the same problem.
+  it('finds at least one prompt file to sweep', () => {
+    expect(ALL_SHIPPED_PROMPTS.length).toBeGreaterThan(0)
+  })
+
+  // Non-empty alone is not enough: PROMPT_DIR could point at some OTHER
+  // directory that happens to contain .md files and this assertion would
+  // still pass. Requiring every exported prompt constant to appear in the
+  // discovered list proves the sweep found the actual platform/prompts
+  // directory and the files that actually ship, not merely some files.
+  it('discovers every exported prompt constant, not just some files', () => {
+    for (const name of [AGENT_PROMPT, SPEC_PROMPT, MOCKUP_PROMPT, ANNOUNCE_PROMPT]) {
+      expect(ALL_SHIPPED_PROMPTS, name).toContain(name)
+    }
+  })
+
   it('never mentions an un-enabled Plaid product without disclaiming it, in ANY prompt', () => {
     // architecture-overview.md section 3: Investments and Liabilities are NOT
     // enabled, and line 98 requires checking before promising a panel. "in ANY
