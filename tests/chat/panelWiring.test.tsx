@@ -465,7 +465,10 @@ describe('ChatPanel wiring', () => {
 
     fetchMock.mockClear()
     const retries = Array.from(container.querySelectorAll('button')).filter(
-      (b) => b.textContent === 'retry',
+      // 'Retry' capitalised, matching every other button in the app ('Send',
+      // 'Build this'). It stopped being lowercase inline text when it stopped
+      // LOOKING like inline text.
+      (b) => b.textContent === 'Retry',
     )
     expect(retries).toHaveLength(2)
 

@@ -1061,9 +1061,19 @@ export function TurnRow({
               interrupted exchange was already written and cannot be
               amended, so the transcript honestly shows the message twice.
               Design spec section 6.1. */}
-          <button type="button" disabled={busy} onClick={() => onRetry(turn.source ?? '')}>
-            retry
-          </button>
+          {/* The vendored Button, not a bare <button>: Tailwind's preflight
+              strips native button chrome, so an unstyled one rendered as
+              plain text indistinguishable from the marker beside it — a
+              control nobody could tell was clickable. */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => onRetry(turn.source ?? '')}
+          >
+            Retry
+          </Button>
         </p>
       )}
     </li>
