@@ -489,6 +489,28 @@ describe('composeMockup', () => {
         const html = composeMockup(SCREENS, fragments)
         expect(html).toContain('<meta name="description" content="a panel">')
       })
+
+      // Fix round 3 (reviewer-found). A `>` INSIDE a quoted attribute value is
+      // legal HTML and does not end the tag — `content="0;url=http://evil>x"`
+      // is one attribute value, not a value followed by stray text. The round
+      // 2 implementation used `/<meta\b[^>]*>/gi`, which stops at the FIRST
+      // `>` regardless of quoting, so it matched only
+      // `<meta content="0;url=http://evil>` — never saw `http-equiv` at all
+      // (it comes after) — and left the entire real tag, including its
+      // http-equiv="refresh", completely untouched.
+      it('strips a meta refresh whose content= value carries a literal ">" before the real tag close', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><meta content="0;url=http://cdn.example.test/leak>x" http-equiv="refresh">M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html.toLowerCase()).not.toContain('refresh')
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).toContain('M</section>')
+      })
     })
   })
 })

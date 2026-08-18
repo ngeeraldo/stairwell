@@ -620,34 +620,113 @@ function scopeFragmentStyles(html: string, screenId: string): string {
 }
 
 /**
- * Task 25, fix round 2: drop any `<meta http-equiv="refresh">` tag entirely —
- * not just its `content=` target, the whole tag. This closes the ONE channel
- * fix round 1's own bound comment named and left open: a meta refresh is a
- * NAVIGATION, and CSP's fetch directives (`default-src`, `img-src`, …) do
- * not govern navigations — the meta CSP added in fix round 1 does nothing
- * against it. An empty `sandbox=""` restricts a sandboxed frame from
- * navigating the TOP browsing context, not from navigating ITSELF, so
- * neither of this file's two guards reaches it. Closed the same way
- * `scopeCss` already closes what it cannot make safe: dropped whole, not
- * rewritten or validated. A mockup has no legitimate use for a
- * self-navigating preview — it is a static picture of a dashboard screen —
- * so there is nothing here to preserve, unlike `src`/`href`/`url()` where a
- * safe form (a `data:` URI, a relative path) has to survive.
+ * Task 25, fix round 3. Find the `>` that actually closes a tag opened at
+ * `start` (which must point at its `<`), treating a quoted attribute value as
+ * an opaque span the way findStringEnd already does for CSS strings — a `>`
+ * inside `content="0;url=http://evil>x"` is DATA, not the tag's end.
  *
- * THE BOUND: textual, matching `<meta ...>` tags with a non-greedy scan to
- * the first `>` — the same posture as every other regex in this file, and
- * the same caveat: a `>` inside a quoted attribute value would end the match
- * early. Matched case-insensitively and tolerant of attribute order,
- * whitespace, and all three HTML attribute-value quoting forms for
- * `http-equiv`'s value, so `<META HTTP-EQUIV = "REFRESH" content="…">` and
- * `<meta content="…" http-equiv='refresh'>` are both caught.
+ * Deliberately does NOT reuse indexOfOutsideStrings even though it solves the
+ * identical shape of problem for CSS: that function also treats `/* … *\/` as
+ * an opaque comment span, which is a CSS rule with no HTML analogue, and
+ * importing it here would risk swallowing real tag content after an
+ * unrelated `/` immediately followed by `*` inside an unquoted attribute
+ * value (a URL's `://` does not trigger it, but a contrived value could).
+ * findStringEnd itself carries no such CSS-specific assumption — it only
+ * knows quotes and backslash-escapes — so it is the piece worth sharing, not
+ * indexOfOutsideStrings as a whole.
+ *
+ * Returns -1 if the tag never closes (an unterminated quote) — the caller
+ * does not guess where it would have ended.
+ */
+function findTagEnd(html: string, start: number): number {
+  let i = start
+  const n = html.length
+  while (i < n) {
+    const c = html[i]!
+    if (c === '"' || c === "'") {
+      const end = findStringEnd(html, i, c)
+      if (end === -1) return -1
+      i = end + 1
+      continue
+    }
+    if (c === '>') return i
+    i++
+  }
+  return -1
+}
+
+/**
+ * Task 25, fix round 2 (fixed in round 3): drop any `<meta
+ * http-equiv="refresh">` tag entirely — not just its `content=` target, the
+ * whole tag. A mockup has no legitimate use for a self-navigating preview —
+ * it is a static picture of a dashboard screen — so there is nothing here to
+ * preserve, unlike `src`/`href`/`url()` where a safe form (a `data:` URI, a
+ * relative path) has to survive.
+ *
+ * WHY STRIP IT AT ALL, given every current consumer independently sandboxes
+ * the document and a sandboxed frame without `allow-scripts` refuses a meta
+ * refresh outright (verified in Chromium: "Refused to execute the redirect…
+ * document is sandboxed, and the 'allow-scripts' keyword is not set"). Round
+ * 2's original reasoning here was WRONG about the mechanism — it claimed an
+ * empty `sandbox=""` blocks a frame from navigating some OTHER browsing
+ * context but not itself, and for a meta refresh specifically that is
+ * backwards: a meta refresh counts as an "automatic feature," which an empty
+ * sandbox blocks outright, full stop. The reviewer caught this; recorded here
+ * so the wrong claim is not the one a future reader inherits. The fix is
+ * still right, for the reason that actually holds: a source-level strip does
+ * not depend on how the document is later rendered. `stripMetaRefresh`'s own
+ * contract says the tag is dropped unconditionally, and nothing stops a
+ * future caller rendering this composed HTML somewhere the sandbox attribute
+ * is absent, forgotten, or weakened — an "it's safe because something else
+ * happens to cover it" guard is the accidental-guard pattern this repo has a
+ * name for, and this function should do what its own contract says
+ * regardless of who else also happens to be doing the job today.
+ *
+ * THE BOUND: textual, using findTagEnd (round 3) rather than a `[^>]*` regex
+ * — round 2 shipped with the latter, which stops at the FIRST `>` including
+ * one inside a quoted attribute value, so `<meta content="0;url=http://evil>x"
+ * http-equiv="refresh">` matched only the substring up to that inner `>`,
+ * never saw `http-equiv` at all, and the reviewer confirmed the whole live
+ * tag survived byte-for-byte. findTagEnd is quote-aware, closing that.
+ * Matched case-insensitively and tolerant of attribute order, whitespace, and
+ * all three HTML attribute-value quoting forms for `http-equiv`'s value, so
+ * `<META HTTP-EQUIV = "REFRESH" content="…">` and `<meta content="…"
+ * http-equiv='refresh'>` are both caught.
  */
 function stripMetaRefresh(html: string): string {
-  return html.replace(/<meta\b[^>]*>/gi, (tag) => {
+  let out = ''
+  let i = 0
+  const n = html.length
+  const openTag = /<meta\b/gi
+
+  while (i < n) {
+    openTag.lastIndex = i
+    const open = openTag.exec(html)
+    if (!open) {
+      out += html.slice(i)
+      break
+    }
+    out += html.slice(i, open.index)
+
+    const closeIdx = findTagEnd(html, open.index)
+    if (closeIdx === -1) {
+      // Unterminated tag — an unclosed quote means this file cannot tell
+      // where it ends. Emit the rest verbatim rather than guessing: unlike
+      // scopeCss's all-or-nothing drop of a <style> BLOCK it owns entirely,
+      // this function has no floor to degrade to, and eating unrelated
+      // sibling markup because one tag failed to parse would be its own bug.
+      out += html.slice(open.index)
+      break
+    }
+
+    const tag = html.slice(open.index, closeIdx + 1)
     const m = /http-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag)
     const value = (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim().toLowerCase()
-    return value === 'refresh' ? '' : tag
-  })
+    if (value !== 'refresh') out += tag
+    i = closeIdx + 1
+  }
+
+  return out
 }
 
 /**
@@ -675,8 +754,10 @@ function stripMetaRefresh(html: string): string {
  *     `src=""`: an empty value on some elements re-requests the CURRENT
  *     document, which would defeat the point.
  *  3. Fix round 2: any `<meta http-equiv="refresh">` tag is dropped whole
- *     (stripMetaRefresh) — a navigation channel neither the meta CSP nor an
- *     empty sandbox reaches; see that function's own comment.
+ *     (stripMetaRefresh) — a navigation channel the meta CSP does not reach
+ *     (CSP's fetch directives do not govern navigations), stripped at the
+ *     source rather than relied on a sandbox attribute to block; see that
+ *     function's own comment for why.
  *
  * DEFENCE IN DEPTH, NOT THE ONLY LAYER. Fix round 1 (reviewer-found): a
  * string-match blocklist here lost to four encodings that spell a scheme
