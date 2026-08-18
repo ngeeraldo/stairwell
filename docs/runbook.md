@@ -378,16 +378,29 @@ been edited since. The command lives in their own migrations README:
 cat users/$FRIEND/migrations/README.md   # the node -e one-liner is in here
 ```
 
-Now add `seed.py`'s inserts — loudly fake values only, `COFFEE PALACE TEST` —
-and check both halves landed:
+Now add `seed.py`'s inserts — loudly fake values only, `COFFEE PALACE TEST`
+where the shape has free text to carry it (build-rules §6) — and check both
+halves landed:
 
 ```bash
 npm run synthetic                        # regenerates every users/*/synthetic.db
 npx vitest run "users/$FRIEND"
+npx vitest run tests/users/conventions.test.ts   # first run where the sweep
+                                                 # treats this folder as BUILT
 ```
 
-If `npm run synthetic` prints `<slug>: no shape yet, empty database`, the
-migration did not land, and the tests that just passed proved nothing.
+`npm run synthetic` prints each `seed.py`'s own line. **If `$FRIEND`'s says
+`no shape yet, empty database`, the migration did not land and the tests that
+just passed proved nothing** — they build their fixture from the migration
+files directly, never from `synthetic.db`, so they stay green while the file
+the dev server actually opens is empty. An empty database is a legitimate
+state (it is what a friend has on day one), so nothing else objects either.
+
+That check went two months unusable: the script captured every generator's
+stdout and dropped it, so the line named here reached no terminal. Fixed;
+`tests/scripts/regenSynthetic.test.ts` now spawns the CLI for real rather than
+asserting against a stubbed console, because "the string was logged" and "a
+human saw it" are different claims.
 
 ### 7.3 Build toward `mockup.html`
 

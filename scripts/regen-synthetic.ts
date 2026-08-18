@@ -48,12 +48,35 @@ export function userSlugsWithSeeds(usersDir: string): string[] {
 }
 
 /**
+ * What each seed.py printed, keyed by the target it wrote. Populated by
+ * regenerateAll and read by the CLI block below.
+ *
+ * Every seed.py ends with a line describing what it produced — "run8: 42
+ * synthetic taps across 42 days -> ..." — and the scaffold's prints "no shape
+ * yet, empty database". docs/runbook.md step 7.2 tells you to watch for that
+ * second one, because a migration that did not land leaves a database with no
+ * tables and nothing that errors: an empty database is a LEGITIMATE state
+ * (it is what a friend has on day one), so nothing else in the pipeline
+ * objects, and per-user tests would not catch it either — they build their
+ * fixture from the migration files directly (tests/support/userMigrations.ts),
+ * never from synthetic.db, so they can be green while the file the dev server
+ * opens is empty.
+ *
+ * That instruction has never been followable. execFileSync runs with
+ * stdio: 'pipe', which CAPTURES the child's stdout rather than inheriting it,
+ * so every one of those lines was written into a buffer this function threw
+ * away. The check existed in the runbook and did nothing at the terminal.
+ */
+const seedOutput = new Map<string, string>()
+
+/**
  * Run every generator. Returns the target paths written, in slug order.
  * Throws on the first failure, naming the slug — a deploy log that says
  * "regeneration failed" without saying whose is a log that sends the reader
  * to the wrong folder.
  */
 export function regenerateAll(usersDir: string): string[] {
+  seedOutput.clear()
   const written: string[] = []
   for (const slug of userSlugsWithSeeds(usersDir)) {
     const target = join(usersDir, slug, 'synthetic.db')
@@ -73,9 +96,16 @@ export function regenerateAll(usersDir: string): string[] {
       // last-good one in place. The still-running process keeps serving
       // reads from its already-open handle on the deleted inode in the
       // meantime, so there is no visible outage until the next restart.
-      execFileSync('python3', [join(usersDir, slug, 'seed.py'), target], {
+      // stdio stays 'pipe' rather than becoming 'inherit': the catch below
+      // reads the child's captured output to build a message naming the slug,
+      // and inheriting would hand that text straight to the terminal and leave
+      // the error with nothing to quote. Captured here, printed by the caller.
+      const printed = execFileSync('python3', [join(usersDir, slug, 'seed.py'), target], {
         stdio: 'pipe',
       })
+        .toString()
+        .trim()
+      if (printed) seedOutput.set(target, printed)
     } catch (error) {
       throw new Error(
         `users/${slug}/seed.py failed: ${
@@ -168,7 +198,12 @@ if (process.argv[1]?.endsWith('regen-synthetic.ts')) {
   if (written.length === 0) {
     console.log(`No user generators found under ${usersDir}.`)
   } else {
-    for (const path of written) console.log(`Regenerated ${path}`)
+    for (const path of written) {
+      // The seed's own line names its target and says what it produced, so it
+      // says everything "Regenerated <path>" would and more. The fallback
+      // covers --empty (no child at all) and a seed that prints nothing.
+      console.log(seedOutput.get(path) ?? `Regenerated ${path}`)
+    }
     // Said out loud, every time. An empty synthetic database looks identical
     // to a broken generator from the outside, and the whole point of this mode
     // is to sit and LOOK at a dashboard showing nothing — which is the state

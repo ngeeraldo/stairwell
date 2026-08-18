@@ -1,5 +1,6 @@
 // tests/scripts/regenSynthetic.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import Database from 'better-sqlite3-multiple-ciphers'
 import {
   existsSync,
@@ -277,6 +278,78 @@ function makeMigratedUser(slug: string, migrations: Record<string, string>) {
     ].join('\n'),
   )
 }
+
+describe('the CLI’s output', () => {
+  // Spawned for real, rather than by calling regenerateAll and spying on
+  // console.log. The defect these cover was NOT in the logic — regenerateAll
+  // did exactly what it was written to do — it was that execFileSync's
+  // stdio: 'pipe' captured each seed.py's stdout into a buffer nobody read, so
+  // the line docs/runbook.md step 7.2 tells you to watch for never reached a
+  // terminal. A test that stubs the console proves the string was passed to
+  // console.log; only running the process proves a human would see it.
+  function runCli(args: string[] = []): string {
+    return execFileSync('npx', ['tsx', 'scripts/regen-synthetic.ts', ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, USERS_DIR: root },
+    })
+  }
+
+  /** A seed.py that announces itself, the way every real one does. */
+  function makeTalkingUser(slug: string, line: string) {
+    const dir = join(root, slug)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'seed.py'),
+      [
+        'import sqlite3, sys',
+        'db = sqlite3.connect(sys.argv[1])',
+        'db.executescript("CREATE TABLE IF NOT EXISTS spend (merchant TEXT);")',
+        'db.commit()',
+        'db.close()',
+        `print(${JSON.stringify(line)})`,
+        '',
+      ].join('\n'),
+    )
+  }
+
+  it(
+    'shows what each seed.py printed',
+    () => {
+      // The real thing this protects: a scaffolded folder whose migration has
+      // not landed prints exactly this, and an empty database is otherwise a
+      // legitimate state that nothing else in the pipeline objects to.
+      makeTalkingUser('devone', 'devone: no shape yet, empty database -> x.db')
+
+      expect(runCli()).toContain('devone: no shape yet, empty database')
+    },
+    SUBPROCESS_TIMEOUT_MS,
+  )
+
+  it(
+    'falls back to naming the file when a seed prints nothing',
+    () => {
+      makeUser('devone')
+
+      expect(runCli()).toContain(`Regenerated ${join(root, 'devone', 'synthetic.db')}`)
+    },
+    SUBPROCESS_TIMEOUT_MS,
+  )
+
+  it(
+    'names the file in --empty, where there is no seed to speak for it',
+    () => {
+      makeTalkingUser('devone', 'devone: 5 rows')
+      const out = runCli(['--empty'])
+
+      expect(out).toContain(`Regenerated ${join(root, 'devone', 'synthetic.db')}`)
+      // The seed did not run at all, so its line must not appear — printing it
+      // would claim rows exist in a database built to have none.
+      expect(out).not.toContain('devone: 5 rows')
+      expect(out).toContain('EMPTY: shape only, no rows')
+    },
+    SUBPROCESS_TIMEOUT_MS,
+  )
+})
 
 describe('regenerateAllEmpty', () => {
   it('applies the shape and writes no rows', () => {
