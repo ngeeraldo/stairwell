@@ -339,6 +339,58 @@ npx vitest run "users/$FRIEND"
 Build toward `mockup.html`. Take feasibility doubts back to the friend via
 `ask-user.ts` (step 4) and build on their answer.
 
+### If the spec has more than one screen
+
+Take `id`/`title`/`order` for each screen straight from `spec.md`'s own
+`## Screens` section — never invent a second source that could drift from
+what the spec promised (`lib/dashboard/contract.ts`'s `DashboardScreen`
+mirrors `lib/spec/schema.ts`'s `Screen` type exactly):
+
+```ts
+export const screens: DashboardScreen[] = [
+  { id: 'morning', title: 'Morning', order: 1 },
+  { id: 'evening', title: 'Evening', order: 2 },
+]
+
+export default function Dashboard({ slug, screen }: DashboardProps) {
+  if (screen === 'evening') {
+    return (
+      <section>
+        <h2>Evening</h2>
+      </section>
+    )
+  }
+  return (
+    <section>
+      <h2>Morning</h2>
+    </section>
+  )
+}
+```
+
+**Never render your own tab strip.** `app/[user]/page.tsx` draws it — plain
+server-rendered `<a href="?screen=...">` anchors on the search param, above
+whatever this component returns — reading this exported `screens` array. It
+does that by CALLING this component (`Dashboard(...)`, not `<Dashboard />`),
+so the whole render runs inside the page's own `try`/`catch`; a `<Tabs>`
+component returned from here would be a nested function component, whose body
+React defers to its own render pass, OUTSIDE that catch — a throw there 500s
+the page after the `dashboard_open` metric row has already been written. See
+CLAUDE.md > Dashboard folder conventions for the full reasoning.
+
+`screens` is REQUIRED — an empty array throws at render (`activeScreen`,
+caught into `dashboard_error` rather than a 500) — and it is checked by the
+same sweep as everything else in the folder:
+
+```bash
+npx vitest run tests/users/conventions.test.ts
+```
+
+That sweep proves shape only (ids unique, orders are integers, the array is
+non-empty), never that a screen's own content is right, or that the tabs read
+well next to each other. Click through every screen once against `npm run dev`
+before shipping — see "See it on a screen" below.
+
 ### See it on a screen
 
 No test tells you whether it matches the mockup. Look at it.
@@ -375,6 +427,10 @@ that same file, so the loop is honest — type a value, save, see it. Keep
 A freshly scaffolded folder has no migrations, so its `synthetic.db` is
 **empty** and the banner sits above a dashboard with no numbers under it. That
 is expected until you write `001_initial.sql` and re-run `npm run synthetic`.
+
+**More than one screen?** The tab strip only appears once `screens` has two or
+more entries — click each tab, or go straight to `/<slug>?screen=<id>` for the
+one you are iterating on.
 
 If a login under `npm run dev` looks like it did not stick, reload — it is the
 cold-route artifact described in `docs/local-dev.md`, not your code.

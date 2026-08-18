@@ -151,6 +151,25 @@ architectural changes; do not relitigate decided items).
   scopes it to that screen automatically (prefixing selectors under
   `#screen-<id>`) so a rule meant for today's edit cannot restyle a screen
   nobody touched.
+- **The mockup CSP is a privacy-promise guard, not a styling rule.** Mockup
+  HTML is generated from interview content, so any external fetch it makes is
+  a channel that can leak transcript-derived content to a third party the
+  moment a friend opens their own preview. Two layers, because a header
+  cannot reach every surface that serves this content: `app/mockup/[version]/route.ts`
+  and `app/admin/mockup/[user]/[version]/route.ts` set a
+  `content-security-policy` header (`sandbox; default-src 'none'; style-src
+  'unsafe-inline'; img-src data:` — no font-src, since a mockup matches the
+  app's own system font stack) — but `app/[user]/ChatPanel.tsx` renders a
+  friend's own scoped preview card with `srcDoc`, not `src`, which no route
+  ever serves and therefore carries no header at all. `lib/spec/mockupCompose.ts`'s
+  `composeMockup` writes the SAME policy as a `<meta
+  http-equiv="Content-Security-Policy">` inside the composed document's own
+  `<head>` instead, so the guarantee travels WITH the document into `srcDoc`.
+  Plus a source-level strip (`stripExternalReferences` in the same file) that
+  drops any `src=`/`href=`/`url(...)` reference it cannot prove is safe, and
+  drops every `<meta>` tag out of a fragment outright — a `<meta
+  http-equiv="refresh">` redirect is a NAVIGATION, which CSP's fetch
+  directives do not govern, so nothing else in this stack closes it.
 - `specs` rejects UPDATE, so a row written before the unified proposal loop
   can never be rewritten into the current shape — it is read as legacy
   forever. Read every stored spec payload through `lib/spec/stored.ts`, the
@@ -211,6 +230,10 @@ architectural changes; do not relitigate decided items).
   (the parsed op count; `null` on every whole-surface row, and on a patch
   attempt whose ops never parsed). A mode name and a count, never an op and
   never a panel id.
+  `dashboard_open` follows the same bound: it carries `screen_order`, the
+  active screen's integer position, and never the screen's `id` — a
+  spec-authored identifier under the same slug rule as a panel id. See
+  Dashboard folder conventions for the full mechanism.
 - **Build notes never carry user values either.** `users/<slug>/notes/v<n>.md`
   is committed to the repo and describes the SHAPE of what was built — a table,
   a panel, a computation — never a row, a value, or a merchant. Same bound as
@@ -226,8 +249,9 @@ architectural changes; do not relitigate decided items).
   ```
 - `users/devone/` is the worked reference implementation. It is hand-written,
   not agent output — see its README.
-- A dashboard is handed `{ slug, db, today, timeZone }` and never resolves any
-  of them itself. **It never derives a day from a clock.** `today` is
+- A dashboard is handed `{ slug, db, today, timeZone, screen }` and never
+  resolves any of them itself — `screen` is described below. **It never
+  derives a day from a clock.** `today` is
   `YYYY-MM-DD` in the friend's zone, resolved once per request by
   `app/[user]/page.tsx` from the `stairwell_tz` cookie the root layout writes;
   `timeZone` is the IANA name, or `undefined` on the first render of a session,
@@ -254,6 +278,52 @@ architectural changes; do not relitigate decided items).
   route, which writes rows into the shape it finds. A third is a change to the
   2026-08-15 migrations design, not a refactor. Every write goes through a
   platform route, which is the only place the four ordered checks live.
+- **A screen is a place in the app, and the platform draws the tab strip —
+  never the dashboard.** `DashboardModule.screens: DashboardScreen[]`
+  (`lib/dashboard/contract.ts`) is REQUIRED on every dashboard registered in
+  `lib/dashboard/registry.ts`; `DashboardScreen`'s `id`/`title`/`order` mirror
+  `lib/spec/schema.ts`'s `Screen` exactly — never a second source that could
+  drift from what the spec promised. `DashboardProps.screen` stays OPTIONAL —
+  not for the sequencing reason that made it optional to begin with (no
+  dashboard exported `screens` yet), which is gone now that all four do, but
+  because every one of the four dashboards on this branch has exactly one
+  screen and none of them branches on it, and every one of their own tests
+  calls the component with a hand-built props object that would otherwise
+  need to name a field it never reads for no type-safety gain. `?screen=` is
+  resolved against a dashboard's own declared list by `activeScreen`
+  (`lib/dashboard/contract.ts`) BEFORE a dashboard ever sees it: an unknown or
+  absent value falls back to the lowest-`order` screen rather than erroring —
+  it is ordinary user input (typed, bookmarked, a stale link from a dashboard
+  that dropped a tab) — while a REGISTERED dashboard declaring zero screens is
+  a contract violation instead, and throws, caught by the same
+  `dashboard_error` path that already catches a throwing `Dashboard()` call.
+
+  **Why the platform owns the tabs — the single rule to know before writing a
+  second screen.** `app/[user]/page.tsx` CALLS the dashboard (`Dashboard(...)`),
+  never returns it as `<Dashboard />`, specifically so its body runs inside
+  the page's own `try`/`catch`. A nested function component — a dashboard
+  returning `<Foo />` where `Foo` is itself a function component — has its
+  body deferred to React's OWN render pass, which runs after the calling
+  function has already returned and is therefore OUTSIDE that catch: a throw
+  there 500s the page AFTER the `dashboard_open` metric row has already been
+  written. Tabs drawn by the dashboard itself would be exactly that shape, so
+  `tabStrip` lives in `app/[user]/page.tsx` instead — plain server-rendered
+  `<a href="?screen=...">` anchors on a search param, no client component, no
+  route segment, no middleware — reading the dashboard's own `screens` export
+  and drawing nothing at all for one screen (or fewer): a single tab is
+  chrome that explains nothing.
+- **`dashboard_open` writes one row per render, every render, with NO
+  write-path dedup** — a tab switch re-runs the page and writes another row,
+  by design. "An open" is a definition applied when the log is READ (e.g. the
+  first render in a window), never decided at write time. It carries
+  `screen_order` — the active screen's integer `order`, omitted entirely (not
+  `0`) when a dashboard has not declared `screens` yet, since there is no tab
+  to name a position for — and never the screen's `id`: an `id` is
+  spec-authored, following the same underscore-slug rule as a panel `id`
+  (this section's own `divorce_lawyer_fund` example, above), and writing one into
+  `metrics` would be the first friend-derived identifier ever written to that
+  unencrypted table, which the metrics bound above ("Metrics never carry user
+  values") forbids.
 - **Nothing writes to a friend's database except from their own session.**
   Their data key exists only in the in-process keymap while they are unlocked,
   so no scheduled job can open their database at all — the same constraint that

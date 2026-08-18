@@ -314,6 +314,121 @@ call rather than checking this ruling is the failure mode this exists to
 name: the field it silently omits will look like every other row in a query,
 until someone needs precisely the row where it is missing.
 
+### D13. `dashboard_open` carries `screen_order`, an integer position, never the screen's `id` — the metrics-bound collision Part D's tab strip created
+
+Part D (Task 22) needed `dashboard_open` to distinguish which screen a render
+showed, now that a dashboard can have more than one. Nico's ruling on
+resuming (progress ledger, "NICO'S DECISIONS AND CHECKS"): keep the existing
+shape exactly — one row per render, no write-path dedup, "an open" is a
+definition applied when the log is READ (e.g. the first render in a
+time window), never decided at write time. Extending that shape to name
+*which* screen raised a genuine collision, flagged rather than resolved
+silently, as instructed.
+
+The only candidate for "which screen" is `DashboardScreen.id`
+(`lib/dashboard/contract.ts`) — a spec-authored identifier following the same
+underscore-slug rule as a panel id, CLAUDE.md's own worked example of the
+shape being `divorce_lawyer_fund`. CLAUDE.md's own metrics bound ("Metrics
+never carry user values", Dashboard folder conventions) forbids exactly that
+shape of id in `metrics`, an unencrypted table — the same bound
+that made `lib/spec/author.ts` strip quoted ids out of `spec_error` messages
+(D12 above) and that keeps `dashboard_write` writing a *hardcoded* literal
+(`panel: 'walked_today'`, a string chosen by the route's own author, not
+derived from the friend's spec) rather than a real panel id. Writing a raw
+screen id into `dashboard_open` would be the first friend-derived identifier
+ever written into `metrics`.
+
+**Ruling: `screen_order` — the active screen's integer `order` field —
+carries the distinguishing signal instead of `id`**
+(`app/[user]/page.tsx`'s `renderDashboard`, the `dashboard_open`
+`appendMetric` call). It is omitted entirely, not `0`, when a dashboard has
+not declared `screens` yet, since there is no tab to name a position for.
+Intent is fully preserved: one row per render, no dedup, "an open" defined at
+read time, tab switches distinguishable from each other in a query. Only the
+*encoding* of "which screen" changes — an order names a position, nothing
+about what a friend called it or asked for. Nico was offered the alternative
+(take the id, amend the metrics bound instead) and chose not to take it.
+
+*Cost if wrong:* a metrics column that names a position in a list rather than
+a screen, which a future analysis has to join back against a stored spec
+version to interpret — annoying, not a leak.
+
+### D14. Four bypasses, one root cause: why the mockup meta-tag guard ends up stripping the whole element type, and the CSS-scanner-reuse bug that produced one of them
+
+Task 25 built the CSP hardening for mockup documents that the "Deferred,
+accepted" section below had scheduled (itself invoking unified-loop ledger
+D19: a guarantee beats a rule a model must remember). Two layers, per Nico's
+DECISION 2 (progress ledger): a `<meta http-equiv="Content-Security-Policy">`
+inside the composed document's own `<head>`, and a source-level strip in
+`lib/spec/mockupCompose.ts`. The `<meta>` CSP is the layer that matters most —
+`app/[user]/ChatPanel.tsx` renders a friend's own scoped preview with
+`srcDoc`, which no route response header ever reaches — but a CSP's fetch
+directives (`default-src`, `img-src`, …) do not govern *navigation*, so a
+`<meta http-equiv="refresh" content="0;url=http://…">` inside a fragment is a
+channel the CSP layer cannot close. Only the source-level strip can.
+
+Getting that strip right took five fix rounds. Four of them shipped a
+genuinely different, independently reproduced bypass, because each round
+tried to answer "is this particular `<meta>` tag the dangerous kind" by
+parsing HTML attributes out of a text string, and each attempt was defeated
+by a differently-shaped decoy:
+
+- **Round 2:** a `[^>]*` tag-boundary regex stopped at the first literal
+  `>`, including one inside a quoted attribute value, so a crafted `content=`
+  hid the real `http-equiv="refresh"` outside the matched substring entirely.
+- **Round 3** fixed the tag boundary (`findTagEnd`) but reused
+  `findStringEnd` — this file's own CSS `<string-token>` scanner, where a
+  backslash escapes the next character — to find where an HTML attribute's
+  quote closes. **HTML attribute values have no escape mechanism at all**; a
+  real browser closes a double-quoted value at the very next literal quote,
+  full stop. `content="0;url=http://evil\" http-equiv="refresh">` therefore
+  parses as two clean attributes to a browser, and as one long unterminated
+  value to the CSS-shaped scanner — which ran off the end and, under that
+  round's fail-open fallback, leaked the tag and everything after it
+  verbatim, in both attribute orderings. **This bug was the controller's, not
+  the implementer's:** the fix-round instruction explicitly told the
+  implementer to reuse `findStringEnd` for the HTML case, on the unchecked
+  assumption that "where does a quoted value end" was one question with one
+  right scanner. It is not one question — CSS strings escape with a
+  backslash, HTML attribute values do not — and sharing a scanner between two
+  grammars that happen to both use quote characters is a correctness claim
+  about both of them, made here without checking either.
+- **Round 4** built an HTML-specific quote scanner (`findHtmlAttrValueEnd`,
+  deliberately NOT merged with `findStringEnd` — its own comment says why) and
+  changed the fallback to fail closed, fixing round 3's exact bug — and the
+  reviewer still found a live exploit, at a different site: the `http-equiv`
+  *value-extraction* regex re-scanned the correctly-bounded tag's raw text for
+  the first textual `http-equiv=`, so a decoy attribute placed earlier in the
+  tag (`<meta data-note='http-equiv="x"' http-equiv="refresh" content=…>`)
+  matched first, and the real refresh directive shipped untouched.
+- **Round 5 stopped discriminating.** `stripMetaTags` now drops **every**
+  `<meta>` tag found in a fragment, unconditionally, with no inspection of its
+  attributes at all — renamed from `stripMetaRefresh`, because that name
+  promised a discrimination the function no longer makes. A fragment is a
+  `<section>` destined for the document `<body>`; it has no legitimate use for
+  any `<meta>` tag, since charset, viewport and the CSP are all supplied once
+  by the frame in `composeMockup`. Removing the decision removes the bug
+  class: three straight rounds each answered the same question — "which
+  attribute is this text actually inside of" — with a regex re-scan, a
+  question only a real tokenizer can answer reliably. Verified against 16
+  attack/edge shapes run through the real `composeMockup()`, including all
+  three earlier bypasses, an uppercase `<META>`, a tag split across a
+  fragment boundary, and ordinary text containing `> " ' \` and the word
+  "meta" surviving byte-for-byte.
+
+The lesson, stated in `stripMetaTags`'s own comment so nobody re-adds the
+discrimination as an optimisation later: matching text without
+attribute-boundary context is the bug, independent of which specific regex is
+used: the fix is to stop needing the boundary at all, not to compute it more
+carefully. This is the same posture `scopeCss` already takes toward a
+`<style>` block it cannot fully parse (drop the whole block rather than trust
+a partial understanding of it), applied here to an entire element type rather
+than to a single parse failure.
+
+*Cost if wrong:* a mockup fragment loses a `<meta>` tag that would have done
+nothing in a document body anyway — never a leak, and the one case that would
+have mattered (`http-equiv="refresh"`) is exactly the shape this removes.
+
 ---
 
 ## Two lessons, not decisions
@@ -394,15 +509,25 @@ anything but test temp files.
   `app/[user]/MockupDialog.tsx` — is deliberately scheduled as Part D Task 25
   rather than folded into Task 17's diff. Not yet built as of this ledger entry.
 
+  **SHIPPED, Task 25 (commits 8d4f931..8f9fb87).** `MockupDialog.tsx` needed no
+  change of its own in the end — it loads the friend's mockup by `src`, so it
+  is covered by the route header the moment the route sends one; the header
+  went on both routes as planned, and the stronger, srcDoc-reaching layer (a
+  `<meta http-equiv="Content-Security-Policy">` inside the composed document
+  itself, plus a source-level strip) landed in `lib/spec/mockupCompose.ts`.
+  See D14 above for the strip's own five-round history. Residual risk 1 below
+  is closed by this.
+
 ---
 
 ## Residual risks
 
-1. **The mockup-route CSP hardening above (Deferred, accepted) has not
-   shipped.** Until Part D Task 25 lands, a friend opening their own preview
-   relies on the prompt instruction alone to stop an outbound request to a
-   third party — a real channel for leaking interview-derived content, in a
-   product whose pitch is that nobody else sees a friend's data.
+1. **CLOSED, Task 25.** The mockup-route CSP hardening (Deferred, accepted,
+   above) has shipped: both routes send the header, and `composeMockup` emits
+   the same policy as a `<meta>` tag inside the document itself, which is the
+   layer that reaches `ChatPanel.tsx`'s `srcDoc` card — the one surface no
+   route header can. A friend opening their own preview no longer relies on
+   the prompt instruction alone.
 
 2. **Unified-loop residual 3 (the announce transaction's atomicity is proven
    by inspection, not by a test) is still open, and this branch adds a second

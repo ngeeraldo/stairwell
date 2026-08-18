@@ -148,6 +148,18 @@ Server (single VPS)
 - **Goals are optional and emergent, never demanded.** "What are your goals?" is a hostile opening for non-introspective people — the exact self-knowledge this product exists to not require. Some users just want their finances visible a certain way; some have deep goals they can't articulate yet. The agent meets them at the monitoring level and lets goals surface over weeks of conversation.
 - Iteration is **user-initiated**: what they care about evolves, they say so in chat, a new spec version follows. No autonomous watcher reading their data — cut from scope. Side effect: no component reads real data unattended; the only unattended real-data touch is the Plaid sync pipe.
 - **Product-identity convention: every app has a morning surface.** Each user's product is a bespoke personal app, and its screens may serve any rhythm — glanced at over coffee, or opened in the moment before and after a practice session. One invariant holds regardless of what else the app does: a glanceable daily front door, designed for every user, because it is the retention instrument the hypothesis at the top of this document measures.
+- **A screen is a place in the app, not a section of one page.** A dashboard
+  with more than one declares each as `{ id, title, order }`
+  (`lib/dashboard/contract.ts`'s `DashboardScreen`, mirroring the spec's own
+  `Screen` type exactly), and the platform — never the dashboard itself —
+  draws a plain tab strip above whatever the dashboard renders, from that
+  array. One screen renders no tab chrome at all: a single tab explains
+  nothing, which is why all four dashboards on this branch are visually
+  unchanged by this feature today. `dashboard_open` records which screen was
+  open as `screen_order`, an integer position, never the screen's id — see
+  CLAUDE.md > Dashboard folder conventions ("Metrics never carry user
+  values") — one row per render, with no attempt to collapse a run of tab
+  switches into one "session."
 
 ### 6. The proposal loop
 - **There is exactly one loop.** Every request — the first-ever interview, a brand-new screen, a one-word relabel — travels it, through the same **in-app chat window**. They differ only in the size of the diff between spec versions and in how much discovery precedes the proposal:

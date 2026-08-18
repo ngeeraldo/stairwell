@@ -65,8 +65,8 @@ Five entries, swept by `tests/users/conventions.test.ts:45`:
 
 ## 3. What a dashboard is handed, and what it may not do
 
-A dashboard is handed `{ slug, db, today, timeZone }` and **never resolves any
-of them itself** — CLAUDE.md.
+A dashboard is handed `{ slug, db, today, timeZone, screen }` and **never
+resolves any of them itself** — CLAUDE.md.
 
 - **It never derives a day from a clock.** `tests/users/noLocalDay.test.ts:23-27`
   forbids three things in every `users/*/dashboard.tsx` and `users/*/queries.ts`,
@@ -91,6 +91,12 @@ of them itself** — CLAUDE.md.
   Next's render pass, outside the page's try/catch, so a throw there 500s the
   page after `dashboard_open` was already written —
   `platform/templates/dashboard/dashboard.tsx.tmpl`.
+- **Screens are declared, and the platform draws the tabs — never the
+  dashboard.** `DashboardModule.screens` is required, its `id`/`title`/`order`
+  mirror the spec's own `Screen` type, `?screen=` resolves against it before a
+  dashboard ever sees it, and this is exactly why the point above (no nested
+  function component) matters: a dashboard's own `<Tabs>` would be one —
+  CLAUDE.md > Dashboard folder conventions, `lib/dashboard/contract.ts`.
 
 ---
 
