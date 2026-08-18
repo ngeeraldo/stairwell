@@ -27,6 +27,7 @@ type Behaviour =
   | 'propose-fail'
   | 'propose-staged'
   | 'propose-slow'
+  | 'stream-error'
 const behaviour: { value: Behaviour } = { value: 'ok' }
 
 vi.mock('@/lib/chat/client', async (importOriginal) => {
@@ -46,6 +47,15 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
             fallback_fired: false,
           }
           const usage = { input: 5, output: 2, cache_read: 0, cache_creation: 0 }
+          if (behaviour.value === 'stream-error') {
+            // What Anthropic returned three times in a row on 2026-08-18.
+            // Thrown on every attempt, so the retry in lib/chat/turn.ts is
+            // exhausted and the turn really does fail.
+            throw new actual.ChatStreamError(
+              { kind: 'api_error', status: null, type: 'overloaded_error' },
+              'Overloaded',
+            )
+          }
           if (behaviour.value === 'refusal') {
             // HTTP 200, nothing delivered — see runTurn's empty-reply path.
             return { usage, stop_reason: 'refusal', served, tools_called: [] }
@@ -423,6 +433,23 @@ describe('POST /api/chat', () => {
     const handed = authoringSignals.at(-1)!
     expect(handed.aborted).toBe(false)
     expect(handed).not.toBe(aborter.signal)
+  })
+
+  it('tells the browser the TURN failed, rather than leaving it to guess', async () => {
+    // Without this line the panel can only fall back to "interrupted — not
+    // saved", which points at the connection. On 2026-08-18 that made three
+    // Anthropic Overloaded responses read to a friend as a broken laptop.
+    await signIn(false)
+    behaviour.value = 'stream-error'
+
+    const res = await post({ body: 'hi' })
+    expect(res.status).toBe(200)
+    const seen = await lines(res)
+
+    expect(seen).toContainEqual({ turn_failed: true })
+    // No done, because nothing was saved — and no `saved` either.
+    expect(seen.some((l) => (l as { done?: boolean }).done)).toBe(false)
+    expect(seen.some((l) => (l as { saved?: boolean }).saved)).toBe(false)
   })
 
   it('sends NDJSON, not JSON', async () => {

@@ -220,6 +220,16 @@ export async function POST(request: Request) {
         }
       }
 
+      // THE TURN ITSELF FAILED, upstream, and the friend needs to be told which
+      // kind of nothing they got. Without this line the panel could only fall
+      // back to "interrupted — not saved", which points at the connection —
+      // so on 2026-08-18, when Anthropic returned Overloaded three times in a
+      // row, a friend read three connection errors for an outage that had
+      // nothing to do with their network.
+      if (outcome.kind === 'error' && !request.signal.aborted) {
+        controller.enqueue(line({ turn_failed: true }))
+      }
+
       // The terminal line is what tells the browser the reply is complete and
       // therefore saved. Its ABSENCE is the interrupted case — see the panel.
       // Gated on 'completed' specifically, not on "not an error": 'empty' is

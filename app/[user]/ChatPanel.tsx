@@ -54,6 +54,14 @@ type Turn = {
    */
   saved?: boolean
   /**
+   * True when the TURN failed upstream — the model call errored, so there is no
+   * reply and nothing was written. Distinct from a plain `interrupted`, which
+   * says the stream stopped and points at the CONNECTION: this one is our end.
+   * Telling a friend their network dropped when Anthropic was overloaded sends
+   * them to restart a router that is working fine.
+   */
+  failed?: boolean
+  /**
    * The message that produced this turn, carried so its own retry button
    * re-sends it. See pendingTurns.
    */
@@ -230,12 +238,23 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
     proposal?: CardProposal
     proposal_error?: boolean
     saved?: boolean
+    turn_failed?: boolean
   }
   if (typeof message.t === 'string') {
     const chunk = message.t
     return {
       ...state,
       turns: updateLastTurn(state.turns, (last) => ({ ...last, body: last.body + chunk })),
+    }
+  }
+  if (message.turn_failed) {
+    // Clears any wait too: the turn is over, and a spinner left running under
+    // a failure message is a second lie on the same screen.
+    return {
+      ...state,
+      authoring: false,
+      authoringStage: null,
+      turns: updateLastTurn(state.turns, (last) => ({ ...last, failed: true })),
     }
   }
   if (message.saved) {
@@ -1091,7 +1110,26 @@ export function TurnRow({
           "not saved" about a reply that was already in an append-only
           table. */}
       {turn.interrupted &&
-        (turn.saved ? (
+        (turn.failed ? (
+          <p>
+            {/* OURS, NOT THEIRS. An upstream failure said "interrupted" until
+                2026-08-18, which reads as a network problem — which is why
+                three Anthropic Overloaded responses in a row looked to a
+                friend like a broken laptop. Retry IS the right control here:
+                nothing was written, so re-sending is correct rather than a
+                duplicate. */}
+            <em>something went wrong on my end — nothing was saved</em>{' '}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => onRetry(turn.source ?? '')}
+            >
+              Retry
+            </Button>
+          </p>
+        ) : turn.saved ? (
           <p>
             <em>saved — the connection dropped, and the preview may still be on its way</em>{' '}
             {/* Reload, not Retry. The message is already in `transcripts` and

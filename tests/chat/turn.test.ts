@@ -190,6 +190,20 @@ function divergingUsageClient(): ChatClient {
   }
 }
 
+/**
+ * The one row with this event. Used by every failing-client test, because a
+ * transient failure now writes a chat_stream_retry row FIRST (the stream is
+ * retried once when nothing has been delivered yet), so `metrics()[0]` is no
+ * longer the row those tests mean.
+ */
+function metricOf(event: string) {
+  const found = metrics().filter((m) => m.event === event)
+  if (found.length !== 1) {
+    throw new Error(`expected exactly one ${event} row, found ${found.length}`)
+  }
+  return found[0]!
+}
+
 function metrics() {
   return (
     db.prepare('SELECT event, data FROM metrics ORDER BY id').all() as {
@@ -334,15 +348,109 @@ describe('runTurn — abort', () => {
 })
 
 describe('runTurn — API error', () => {
+  it('retries a transient stream failure and delivers the reply', async () => {
+    // 2026-08-18, hours after the mockup call got this: Anthropic returned
+    // Overloaded on three consecutive chat calls and a friend saw three
+    // "interrupted — not saved" markers and no reply. Same error class, and
+    // the stream had no retry because the earlier fix only covered the mockup.
+    let attempts = 0
+    const client: ChatClient = {
+      async stream({ onText, onUsage, onServed }) {
+        attempts += 1
+        if (attempts === 1) {
+          throw new ChatStreamError(
+            { kind: 'api_error', status: null, type: 'overloaded_error' },
+            'Overloaded',
+          )
+        }
+        onUsage({ input: 10, output: 3, cache_read: 0, cache_creation: 0 })
+        onServed({ model_served: CHAT_MODEL })
+        onText('here you go')
+        return {
+          usage: { input: 10, output: 3, cache_read: 0, cache_creation: 0 },
+          stop_reason: 'end_turn',
+          served: { model_served: CHAT_MODEL, fallback_fired: false },
+          tools_called: [],
+        }
+      },
+      async propose() {
+        throw new Error('unused')
+      },
+    }
+
+    const outcome = await runTurn(
+      { db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec },
+      input(),
+    )
+
+    expect(attempts).toBe(2)
+    expect(outcome.kind).toBe('completed')
+    expect(readTranscript(db, 1).map((r) => r.role)).toEqual(['user', 'assistant'])
+    // The ridden-through outage is visible, and as its OWN event: a chat_error
+    // row here would make an outage we survived look like one that reached the
+    // friend.
+    expect(metricOf('chat_stream_retry').data).toMatchObject({
+      kind: 'api_error',
+      type: 'overloaded_error',
+    })
+    expect(metrics().filter((m) => m.event === 'chat_error')).toHaveLength(0)
+  })
+
+  it('does NOT retry once text has already reached the screen', async () => {
+    // The guard that matters. onText has already pushed every chunk to the
+    // browser, and the panel APPENDS chunks — so a retry after even one chunk
+    // replays the reply from the top and the friend reads it twice.
+    const client = failingClient(529, 'overloaded_error', { after: 'half an ans' })
+    let calls = 0
+    const counting: ChatClient = {
+      async stream(args) {
+        calls += 1
+        return client.stream(args)
+      },
+      async propose() {
+        throw new Error('unused')
+      },
+    }
+
+    await runTurn(
+      { db, client: counting, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec },
+      input(),
+    )
+
+    expect(calls).toBe(1)
+    expect(metrics().filter((m) => m.event === 'chat_stream_retry')).toHaveLength(0)
+  })
+
+  it('does not retry a stream failure another attempt cannot fix', async () => {
+    const client = failingClient(400, 'invalid_request_error')
+    let calls = 0
+    const counting: ChatClient = {
+      async stream(args) {
+        calls += 1
+        return client.stream(args)
+      },
+      async propose() {
+        throw new Error('unused')
+      },
+    }
+
+    await runTurn(
+      { db, client: counting, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec },
+      input(),
+    )
+
+    expect(calls).toBe(1)
+    expect(metricOf('chat_error').data.kind).toBe('bad_request')
+  })
+
   it('appends no assistant row and logs chat_error, not stream_aborted', async () => {
     const deps = { db, client: failingClient(429, 'rate_limit_error'), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     const outcome = await runTurn(deps, input())
 
     expect(outcome.kind).toBe('error')
     expect(readTranscript(db, 1)).toHaveLength(1)
-    const [m] = metrics()
-    expect(m!.event).toBe('chat_error')
-    expect(m!.data).toMatchObject({ context: 'interview' })
+    const m = metricOf('chat_error')
+    expect(m.data).toMatchObject({ context: 'interview' })
   })
 
   it('records a kind that is not the constant "Error", plus status and type', async () => {
@@ -352,8 +460,8 @@ describe('runTurn — API error', () => {
     const deps = { db, client: failingClient(429, 'rate_limit_error'), now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec}
     await runTurn(deps, input())
 
-    const [m] = metrics()
-    expect(m!.data.kind).not.toBe('Error')
+    const m = metricOf('chat_error')
+    expect(m.data.kind).not.toBe('Error')
     expect(m!.data).toMatchObject({
       kind: 'rate_limit',
       status: 429,
@@ -373,7 +481,13 @@ describe('runTurn — API error', () => {
       input(),
     )
 
-    const kinds = metrics().map((m) => m.data.kind)
+    // chat_error rows only: each of these failures is transient, so each turn
+    // also wrote a chat_stream_retry carrying the SAME kind. Filtering keeps
+    // this test about what it was written to check — that the field
+    // distinguishes two SDK classes — rather than about retry bookkeeping.
+    const kinds = metrics()
+      .filter((m) => m.event === 'chat_error')
+      .map((m) => m.data.kind)
     expect(kinds).toEqual(['rate_limit', 'internal_server'])
     expect(new Set(kinds).size).toBe(2)
   })
@@ -626,9 +740,8 @@ describe('runTurn — served model and fallback', () => {
 
     await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
 
-    const [m] = metrics()
-    expect(m!.event).toBe('chat_error')
-    expect(m!.data).toMatchObject({
+    const m = metricOf('chat_error')
+    expect(m.data).toMatchObject({
       model_served: 'claude-opus-4-8',
       fallback_fired: true,
     })
@@ -649,8 +762,8 @@ describe('runTurn — served model and fallback', () => {
 
     await runTurn({ db, client, now: () => 1_000, context: 'interview' as const, alert: noAlert, authorSpec: fakeAuthorSpec }, input())
 
-    const [m] = metrics()
-    expect(m!.data).toMatchObject({
+    const m = metricOf('chat_error')
+    expect(m.data).toMatchObject({
       model_served: CHAT_MODEL,
       fallback_fired: false,
     })

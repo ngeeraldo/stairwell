@@ -1063,6 +1063,40 @@ describe('TurnRow', () => {
     expect(findButtons(row)).toHaveLength(1)
   })
 
+  it('blames our end, not the connection, when the turn failed upstream', () => {
+    const row = TurnRow({
+      turn: { role: 'assistant', body: '', at: 1000, interrupted: true, failed: true, source: 'hi' },
+      busy: false,
+      onRetry: () => {},
+    })
+    const json = JSON.stringify(row)
+
+    expect(json).toContain('something went wrong on my end')
+    // Not the connection wording — that is what sent a friend to check their
+    // wifi while Anthropic was overloaded. The data-interrupted ATTRIBUTE is
+    // still true and still useful (the stream really did stop); it is the
+    // sentence a person reads that must not blame their network.
+    expect(json).not.toContain('interrupted — not saved')
+    // Retry, not Reload: nothing was written, so re-sending is correct here.
+    expect(json).toContain('Retry')
+    expect(json).not.toContain('Reload')
+  })
+
+  it('applyLine marks the turn failed and clears any wait', () => {
+    // A spinner left running under a failure message is a second lie on the
+    // same screen.
+    const waiting: PanelState = {
+      ...EMPTY_PANEL,
+      turns: [{ role: 'assistant', body: '', at: 1000 }],
+      authoring: true,
+      authoringStage: 'spec',
+    }
+    const failed = applyLine(waiting, { turn_failed: true })
+    expect(failed.turns[0]?.failed).toBe(true)
+    expect(failed.authoring).toBe(false)
+    expect(failed.authoringStage).toBeNull()
+  })
+
   it('tells a SAVED interrupted turn apart from a lost one', () => {
     // THE LIE THIS FIXES. On 2026-08-18 a friend was told "interrupted — not
     // saved" about transcripts row 150, which was committed and is still

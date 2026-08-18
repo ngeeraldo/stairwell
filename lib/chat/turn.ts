@@ -14,6 +14,7 @@ import {
   ChatStreamError,
   PROPOSE_TOOL_NAME,
   UNKNOWN_ERROR,
+  isTransient,
   type ChatClient,
   type Served,
   type StreamResult,
@@ -113,6 +114,58 @@ export type TurnInput = {
    * saved.
    */
   onSaved?: () => void
+}
+
+/**
+ * How many times the CHAT STREAM may run for one turn.
+ *
+ * The mockup call got this on 2026-08-18 and the chat stream did not, which was
+ * half a fix: hours later Anthropic returned `Overloaded` on three consecutive
+ * chat calls and a friend saw three "interrupted — not saved" markers and no
+ * reply, for an error that had nothing to do with their connection and
+ * everything to do with upstream capacity. Same error class, same remedy.
+ */
+export const MAX_STREAM_ATTEMPTS = 2
+
+/**
+ * The stream call, retried when a transient failure arrived before any text did.
+ *
+ * `deliveredSoFar` IS THE LOAD-BEARING GUARD, not a nicety. onText has already
+ * pushed every chunk to the browser by the time an error can arrive, and the
+ * panel appends chunks to the visible turn — so retrying after even one chunk
+ * would replay the reply from the top and leave the friend reading a sentence
+ * twice. A retry is only safe while the screen is still empty, which is exactly
+ * the case observed in production (`delivered_chars: 0`).
+ *
+ * Rethrows the final error untouched, so runTurn's own catch — which owns the
+ * chat_error/stream_aborted distinction and the billed-counter accounting —
+ * is unchanged and still sees the real failure.
+ */
+async function streamWithRetry(
+  client: ChatClient,
+  args: Parameters<ChatClient['stream']>[0],
+  deliveredSoFar: () => string,
+  signal: AbortSignal,
+  onRetry: (shape: { kind: string; status: number | null; type: string | null }) => void,
+): Promise<StreamResult> {
+  let attempt = 0
+  for (;;) {
+    attempt += 1
+    try {
+      return await client.stream(args)
+    } catch (error) {
+      const shape = error instanceof ChatStreamError ? error.shape : UNKNOWN_ERROR
+      if (
+        attempt >= MAX_STREAM_ATTEMPTS ||
+        deliveredSoFar() !== '' ||
+        signal.aborted ||
+        !isTransient(shape)
+      ) {
+        throw error
+      }
+      onRetry(shape)
+    }
+  }
 }
 
 export type TurnOutcome = {
@@ -242,23 +295,41 @@ export async function runTurn(
 
   let final: StreamResult
   try {
-    final = await client.stream({
-      // merged.system, not `system`: on a model without mid-conversation
-      // system messages the note rides here instead of in the message list.
-      system: merged.system,
-      messages,
-      signal: input.signal,
-      onText: (text) => {
-        delivered += text
-        input.onText(text)
+    final = await streamWithRetry(
+      client,
+      {
+        // merged.system, not `system`: on a model without mid-conversation
+        // system messages the note rides here instead of in the message list.
+        system: merged.system,
+        messages,
+        signal: input.signal,
+        onText: (text) => {
+          delivered += text
+          input.onText(text)
+        },
+        onUsage: (partial) => {
+          usage = { ...usage, ...partial }
+        },
+        onServed: (partial) => {
+          served = { ...served, ...partial }
+        },
       },
-      onUsage: (partial) => {
-        usage = { ...usage, ...partial }
+      () => delivered,
+      input.signal,
+      (shape) => {
+        // Its own event, not a chat_error: this attempt failed and the turn did
+        // NOT. A chat_error row here would make an outage that we rode through
+        // look identical to one that reached the friend. Counters are the
+        // shape's only — a retried attempt that billed nothing is the normal
+        // case (`delivered_chars: 0` implies no output tokens).
+        appendMetric(db, {
+          accountId: input.accountId,
+          event: 'chat_stream_retry',
+          at: now(),
+          data: { ...base, kind: shape.kind, status: shape.status, type: shape.type },
+        })
       },
-      onServed: (partial) => {
-        served = { ...served, ...partial }
-      },
-    })
+    )
   } catch (error) {
     // No assistant row on either branch. The two events are kept apart
     // because they are different facts: an abort stopped a working stream, an
