@@ -9,10 +9,19 @@ import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { readDeviceClass, readTimeZone } from '@/lib/metrics/deviceClass'
 import { dayKey } from '@/lib/time/dayKey'
-import { hasConfirmedSpecBelow, newestSpec, readConfirmations } from '@/lib/db/specs'
-import { SpecShapeError } from '@/lib/spec/schema'
-import { readStoredSpec } from '@/lib/spec/stored'
+import {
+  hasConfirmedSpecBelow,
+  newestSpec,
+  readConfirmations,
+  specByVersion,
+  type SpecRecord,
+} from '@/lib/db/specs'
+import { SpecShapeError, type Screen } from '@/lib/spec/schema'
+import { readStoredSpec, type StoredSpec } from '@/lib/spec/stored'
+import { affectedScreens, composeMockup } from '@/lib/spec/mockupCompose'
+import { readScreenMockups } from '@/lib/db/screenMockups'
 import type { Proposal } from '@/lib/spec/author'
+import type { PlatformDb } from '@/lib/db/platform'
 import type { UserDb } from '@/lib/db/userDb'
 import type { DeviceClass } from '@/lib/metrics/deviceClass'
 import { WrongKeyError } from '@/lib/db/encryptedUserDb'
@@ -20,6 +29,7 @@ import { isDevData, openUserDataForRead } from '@/lib/db/userData'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getKey } from '@/lib/session/keymap'
 import { dashboardLoaderFor, hasDashboard } from '@/lib/dashboard/registry'
+import { activeScreen, type DashboardModule, type DashboardScreen } from '@/lib/dashboard/contract'
 import { ensureOpeningMessage } from '@/lib/chat/opening'
 import { hasMetric } from '@/lib/db/appendOnly'
 import ChatPanel from './ChatPanel'
@@ -58,12 +68,71 @@ function dashboardErrorKind(error: unknown): 'wrong_key' | 'error' {
   return error instanceof WrongKeyError ? 'wrong_key' : 'error'
 }
 
+/**
+ * The base version's own screens, for affectedScreens's `base` argument — or
+ * null when there genuinely is none (a v1 card, where `based_on_version` is
+ * null and every screen is affected anyway) or the base row cannot be read as
+ * the current shape (a legacy base, which carries no ids to resolve against —
+ * see currentVersionBlock in lib/spec/author.ts for the same distinction made
+ * at authoring time).
+ *
+ * FIX ROUND 1, FINDING 1: this used to be skipped (base passed as `null`
+ * unconditionally) on the reasoning that the result was "narrower, never
+ * wrong". That reasoning missed `remove_panel`: its ONLY possible
+ * contribution to `affectedScreens` is the screen the panel was removed FROM
+ * (`was(op.id)` in mockupCompose.ts), which needs `base` to resolve at all.
+ * With `base` null, a patch made only of `remove_panel` ops produced an EMPTY
+ * `affected` list — which falls through to the WHOLE `mockup_html`, not a
+ * narrower document. That is wider than what the live card showed, on the one
+ * surface where the friend is deciding, and the exact D9 genus this task
+ * exists to close: the same card answering differently depending on when it
+ * is read.
+ */
+function baseScreensFor(db: PlatformDb, accountId: number, basedOnVersion: number | null): Screen[] | null {
+  if (basedOnVersion === null) return null
+  const baseRecord = specByVersion(db, accountId, basedOnVersion)
+  if (!baseRecord) return null
+  const baseStored = readStoredSpec(baseRecord.payload)
+  return baseStored.kind === 'version' ? baseStored.version.screens : null
+}
+
+/**
+ * The scoped preview for the PAGE-LOAD card, mirroring what lib/spec/author.ts
+ * computes at authoring time — same two ingredients (affectedScreens,
+ * composeMockup), from the STORED record instead of a fresh model call, and
+ * now the same THREE ingredients: `base` is fetched via `based_on_version`
+ * (baseScreensFor above), exactly as author.ts fetches it via `currentSpec` at
+ * authoring time, so a reload cannot disagree with what the live card showed.
+ *
+ * A MISSING FRAGMENT THROWS inside composeMockup, by design — right for
+ * authoring (ledger D7: a mockup call that returned but left a hole must not
+ * silently become a complete-looking document) and WRONG for a render: a
+ * version confirmed before this branch existed has no `spec_screen_mockups`
+ * rows at all, and a page render must not fail over a preview. Any failure
+ * here — that throw, or anything else, including a corrupt or unreadable base
+ * row — degrades to `mockup_html`, the same whole document `dashboard.tsx`'s
+ * build contract already renders correctly.
+ */
+function pageLoadPreview(db: PlatformDb, accountId: number, newest: SpecRecord, stored: StoredSpec): string {
+  if (stored.kind !== 'version') return newest.mockup_html
+  try {
+    const base = baseScreensFor(db, accountId, stored.version.based_on_version)
+    const affected = affectedScreens(base, stored.version.screens, stored.version.ops)
+    if (affected.length === 0) return newest.mockup_html
+    const fragments = readScreenMockups(db, newest.id)
+    return composeMockup(stored.version.screens, fragments, affected)
+  } catch {
+    return newest.mockup_html
+  }
+}
+
 async function dashboardRegion(
   slug: string,
   accountId: number,
   sessionId: string,
   device_class: DeviceClass,
   day: { today: string; timeZone: string | undefined },
+  requestedScreen: string | undefined,
 ) {
   const loader = dashboardLoaderFor(slug)
   // The placeholder card, not a sentence. onboarding-ux-spec.md S3: it is what
@@ -113,6 +182,7 @@ async function dashboardRegion(
       isDevData() ? 'synthetic' : 'real',
       device_class,
       day,
+      requestedScreen,
     )
   } catch (error) {
     logDbFailure('dashboard_error', slug, error)
@@ -132,35 +202,110 @@ async function dashboardRegion(
   }
 }
 
+/**
+ * The tab strip: plain server-rendered `<a href="?screen=...">` anchors on a
+ * search param — no client component, no route segment, no middleware. This
+ * is PLATFORM chrome, called as a plain function the same way dashboardRegion
+ * and renderDashboard already are, never returned as a JSX element for React
+ * to render later — it lives entirely inside renderDashboard's own try/catch.
+ *
+ * Renders NOTHING for one screen (or fewer): a single tab is chrome that
+ * explains nothing, and all four dashboards on this branch are one screen
+ * today, so this is a visual no-op for every one of them right now.
+ *
+ * Labels and order come from the dashboard's OWN declared `screens` — never
+ * a second source that could drift from what the confirmed spec promised.
+ */
+function tabStrip(screens: DashboardScreen[], activeId: string) {
+  if (screens.length <= 1) return null
+  const sorted = [...screens].sort((a, b) => a.order - b.order)
+  return (
+    <nav aria-label="Dashboard screens" className="flex gap-4 border-b pb-2 text-sm">
+      {sorted.map((s) => {
+        const current = s.id === activeId
+        return (
+          <a
+            key={s.id}
+            href={`?screen=${encodeURIComponent(s.id)}`}
+            aria-current={current ? 'page' : undefined}
+            className={
+              current
+                ? 'font-medium underline underline-offset-4'
+                : 'text-muted-foreground'
+            }
+          >
+            {s.title}
+          </a>
+        )
+      })}
+    </nav>
+  )
+}
+
 async function renderDashboard(
-  loader: () => Promise<{
-    default: (p: {
-      slug: string
-      db: UserDb
-      today: string
-      timeZone: string | undefined
-    }) => unknown
-  }>,
+  loader: () => Promise<DashboardModule>,
   slug: string,
   db: UserDb,
   accountId: number,
   source: 'synthetic' | 'real',
   device_class: DeviceClass,
   day: { today: string; timeZone: string | undefined },
+  requestedScreen: string | undefined,
 ) {
   try {
-    const { default: Dashboard } = await loader()
+    const { default: Dashboard, screens } = await loader()
+    // CORRECTED 2026-08-17 (final review, Minor 5): this used to say
+    // `screens` is undefined for every dashboard registered on this branch —
+    // true only through task 22. As of task 23, `DashboardModule.screens` is
+    // REQUIRED (lib/dashboard/contract.ts) and all four registered
+    // dashboards declare it, so `screens === undefined` cannot happen through
+    // any real registry entry today. The `undefined` branch below stays as
+    // defense in depth, not a live case: a `Promise<DashboardModule>`
+    // resolved dynamically at runtime is not proven by the type system
+    // alone, so a module that lies about its own declared shape still
+    // degrades to a single implicit screen and no tab chrome, rather than
+    // calling activeScreen with an undefined list. A dashboard that HAS
+    // registered and explicitly exports `screens: []` has opted into the
+    // contract and gotten it wrong — THAT goes through activeScreen
+    // normally, which throws (see contract.ts), and is caught by this
+    // function's own try/catch below exactly like a throwing Dashboard()
+    // call, turning it into `dashboard_error` rather than a 500.
+    const active = screens === undefined ? undefined : activeScreen(screens, requestedScreen)
     // CALLED, not returned as <Dashboard />: an element would defer execution
     // to React's render, outside this try, and the catch is the whole point.
-    const rendered = await Dashboard({ slug, db, today: day.today, timeZone: day.timeZone })
+    const rendered = await Dashboard({
+      slug,
+      db,
+      today: day.today,
+      timeZone: day.timeZone,
+      screen: active?.id,
+    })
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_open',
-      data: { slug, source, device_class },
+      // `screen_order` is the integer POSITION, never the screen id: an id
+      // is friend-derived (the same slug rule as a panel id) and CLAUDE.md's
+      // metrics bound forbids that in this unencrypted table. An order names
+      // nothing. Omitted entirely (not 0) when this dashboard hasn't
+      // declared screens yet — there is no tab to name a position for.
+      //
+      // ONE ROW PER RENDER, EVERY RENDER, NO DEDUP. Nico's ruling: the log
+      // stays raw and append-only; "an open" is a definition applied when
+      // the log is READ (first render in a window), never a write-time
+      // decision. A tab switch re-running this function and writing another
+      // row is the cost of that, accepted deliberately — see this task's
+      // brief.
+      data: {
+        slug,
+        source,
+        device_class,
+        ...(active !== undefined ? { screen_order: active.order } : {}),
+      },
       at: Date.now(),
     })
     return (
       <>
+        {screens !== undefined && active !== undefined && tabStrip(screens, active.id)}
         {source === 'synthetic' && (
           /*
             PLATFORM CHROME, and it has to look like it.
@@ -211,10 +356,25 @@ async function renderDashboard(
 
 export default async function UserSpace({
   params,
+  searchParams,
 }: {
   params: Promise<{ user: string }>
+  /**
+   * OPTIONAL, unlike `params`: every real request Next serves supplies both,
+   * but tests/routing/dashboardRegion.test.ts and userSpace.test.ts call this
+   * function directly with an object literal that predates this field, and
+   * there is no reason to touch every one of those call sites for a param
+   * only the dashboard-screens path reads. `?screen=` is the only key read
+   * from it — see requestedScreen below.
+   */
+  searchParams?: Promise<{ screen?: string | string[] }>
 }) {
   const { user } = await params
+  const sp = (await searchParams) ?? {}
+  // A URL is user input: an array (repeated `?screen=a&screen=b`) or an
+  // absent key both fall through to `undefined`, which activeScreen already
+  // treats as "use the default" rather than as an error.
+  const requestedScreen = typeof sp.screen === 'string' ? sp.screen : undefined
 
   // Still enforced: anonymous goes to /login. A locked session now passes
   // through to the page — the lock is applied to the data region below.
@@ -267,6 +427,11 @@ export default async function UserSpace({
   let proposal: (Proposal & { confirmed: boolean }) | undefined
   if (newest) {
     try {
+      // readStoredSpec, not either parser directly: it is the one place
+      // that decides which shape a row is, and the card renders whichever
+      // arm comes back. A row written before the unified loop can never be
+      // rewritten (specs rejects UPDATE), so both arms are permanent.
+      const stored = readStoredSpec(newest.payload)
       proposal = {
         id: newest.id,
         version: newest.version,
@@ -277,12 +442,12 @@ export default async function UserSpace({
         // re-render behind it (see Proposal.first). The prop stays as the
         // fallback for a streamed card that somehow carries none.
         first,
-        // readStoredSpec, not either parser directly: it is the one place
-        // that decides which shape a row is, and the card renders whichever
-        // arm comes back. A row written before the unified loop can never be
-        // rewritten (specs rejects UPDATE), so both arms are permanent.
-        spec: readStoredSpec(newest.payload),
+        spec: stored,
         mockup_html: newest.mockup_html,
+        // The scoped preview for THIS card — see pageLoadPreview. Degrades to
+        // mockup_html (the whole document) for a legacy row and for any
+        // version with no stored fragments, rather than ever throwing here.
+        preview_html: pageLoadPreview(getDb(), accountId, newest, stored),
         confirmed: newest.confirmed_at !== null,
       }
     } catch (error) {
@@ -372,7 +537,7 @@ export default async function UserSpace({
       content={
         <div className="space-y-8">
           {unlocked ? (
-            await dashboardRegion(user, accountId, sessionId!, device_class, day)
+            await dashboardRegion(user, accountId, sessionId!, device_class, day, requestedScreen)
           ) : (
             <p className="text-sm text-muted-foreground">
               Locked.{' '}

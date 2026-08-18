@@ -313,7 +313,7 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
         accountId: account.id,
         conversationId: 'shots-conversation',
         promptSha: 'shots-fixture',
-        payload: sealVersion(draft, null),
+        payload: sealVersion(draft, null, null),
         mockupHtml:
           '<!doctype html><html><body style="font-family:system-ui;padding:24px">' +
           '<h1 style="margin:0 0 8px">COFFEE PALACE TEST tracker</h1>' +
@@ -326,6 +326,168 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
       })
 
       return { slug: 'newfriendtest', password }
+    } finally {
+      db.close()
+    }
+  },
+
+  /**
+   * A friend with an already-CONFIRMED two-screen dashboard, plus a NEW
+   * unconfirmed proposal that renames one panel on just one of those screens —
+   * task 19's fixture, for card-proposal-scoped.
+   *
+   * Built through parseSpecDraft + sealVersion, same as friend-new above, so a
+   * malformed fixture throws in the harness instead of silently degrading to
+   * no card. Two spec rows and two insertScreenMockups calls, mirroring what
+   * authorSpec actually writes (lib/spec/author.ts): v1 whole-surface and
+   * confirmed, v2 a patch that only touches `money`, carrying `home`'s
+   * fragment forward unchanged. This is the ONLY fixture in this file that
+   * calls insertScreenMockups — every other one predates the scoped preview
+   * and is a legitimate no-fragments row.
+   */
+  'friend-tweak': async (dbPath) => {
+    const { openPlatformDb } = await import('../lib/db/platform')
+    const { createAccount } = await import('../lib/auth/accounts')
+    const { insertSpec, confirmSpec } = await import('../lib/db/specs')
+    const { insertScreenMockups } = await import('../lib/db/screenMockups')
+    const { parseSpecDraft, sealVersion } = await import('../lib/spec/validate')
+    const { appendTranscript } = await import('../lib/db/appendOnly')
+    const db = openPlatformDb(dbPath)
+    try {
+      const password = 'TEST-SHOTS-NOT-A-REAL-PASSWORD'
+      const accountId = await createAccount(db, { slug: 'tweaktest', role: 'user', password })
+
+      const base = Date.now() - 120_000
+      const say = (role: 'user' | 'assistant', body: string, at: number) =>
+        appendTranscript(db, {
+          accountId,
+          sessionId: 'shots-session',
+          conversationId: 'shots-conversation',
+          promptSha: 'shots-fixture',
+          role,
+          body,
+          at,
+        })
+      say('user', 'Can you relabel "Eating out" to "Dining"? TEST', base)
+      say('assistant', 'Done — here is the updated Money screen. TEST', base + 1000)
+
+      const draft = parseSpecDraft({
+        title: 'COFFEE PALACE TEST tracker',
+        summary: 'A daily walk streak plus the eating-out total.',
+        change_summary: 'First version.',
+        background: 'Walks the dog every morning TEST.',
+        open_questions: [],
+        data_requirements: [],
+        screens: [
+          {
+            id: 'home',
+            title: 'Home',
+            order: 1,
+            panels: [
+              {
+                id: 'streak',
+                title: 'Streak',
+                intent: 'So the run is visible at a glance.',
+                display: 'Days in a row you walked.',
+                context_of_use: null,
+                values: [
+                  { kind: 'entered', id: 'walk_flag', description: 'Whether the walk happened today.' },
+                ],
+                entry: null,
+              },
+            ],
+          },
+          {
+            id: 'money',
+            title: 'Money',
+            order: 2,
+            panels: [
+              {
+                id: 'eating_out',
+                title: 'Eating out',
+                intent: 'Watch the spend without opening the banking app.',
+                display: 'This month against last.',
+                context_of_use: null,
+                values: [
+                  { kind: 'derived', id: 'eating_out_total', description: 'Sum this month.', inputs: [] },
+                ],
+                entry: null,
+              },
+            ],
+          },
+        ],
+      })
+
+      // Distinct fragment strings per screen per version, so the shot can be
+      // read at a glance: `home` is IDENTICAL in both versions (carried
+      // forward, not redrawn) and `money`'s panel title is the only thing
+      // that changes.
+      const homeFragment =
+        '<div class="screen-title">Home</div><div class="panel"><div class="panel-title">Streak</div><div class="figure">7 days</div></div>'
+      const moneyFragmentV1 =
+        '<div class="screen-title">Money</div><div class="panel"><div class="panel-title">Eating out</div><div class="figure">£45.00</div></div>'
+      const moneyFragmentV2 =
+        '<div class="screen-title">Money</div><div class="panel"><div class="panel-title">Dining</div><div class="figure">£45.00</div></div>'
+
+      const v1 = sealVersion(draft, null, null)
+      const v1Id = insertSpec(db, {
+        accountId,
+        conversationId: 'shots-conversation',
+        promptSha: 'shots-fixture',
+        payload: v1,
+        mockupHtml: `<!doctype html><html><body>${homeFragment}${moneyFragmentV1}</body></html>`,
+        at: base + 2000,
+      })
+      insertScreenMockups(
+        db,
+        v1Id,
+        [
+          { screenId: 'home', html: homeFragment },
+          { screenId: 'money', html: moneyFragmentV1 },
+        ],
+        base + 2000,
+      )
+      confirmSpec(db, { specId: v1Id, accountId, at: base + 3000 })
+
+      // Final review, Minor 9: this used to model the rename as an
+      // `update_screen` op naming the SCREEN ('money') with its title and
+      // order both unchanged — a no-op shape that authorSpec never actually
+      // produces for a panel-title rename. A rename to a panel's own title
+      // is what `replace_panel` is for (lib/spec/patch.ts): the full updated
+      // panel, matching id, is what `authorSpec` writes. Corrected to match
+      // what this fixture claims to mirror.
+      const renamedPanel = { ...draft.screens[1]!.panels[0]!, title: 'Dining' }
+      const v2Draft = {
+        ...draft,
+        change_summary: 'Renamed "Eating out" to "Dining".',
+        screens: [
+          draft.screens[0]!,
+          {
+            ...draft.screens[1]!,
+            panels: [renamedPanel],
+          },
+        ],
+      }
+      const v2 = sealVersion(v2Draft, 1, [{ op: 'replace_panel', panel: renamedPanel }])
+      const v2Id = insertSpec(db, {
+        accountId,
+        conversationId: 'shots-conversation',
+        promptSha: 'shots-fixture',
+        payload: v2,
+        mockupHtml: `<!doctype html><html><body>${homeFragment}${moneyFragmentV2}</body></html>`,
+        at: base + 4000,
+      })
+      insertScreenMockups(
+        db,
+        v2Id,
+        [
+          { screenId: 'home', html: homeFragment }, // carried forward, untouched
+          { screenId: 'money', html: moneyFragmentV2 }, // freshly drawn
+        ],
+        base + 4000,
+      )
+
+      return { slug: 'tweaktest', password }
     } finally {
       db.close()
     }

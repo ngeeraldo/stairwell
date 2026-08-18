@@ -76,7 +76,7 @@ architectural changes; do not relitigate decided items).
   build — this section, the step-5 design, the step-6a and friend-timezone
   ledgers — with a citation on each line. It is an index, not a second copy:
   where it disagrees with a source, the source wins.
-- A user dashboard lives entirely in `users/<slug>/`. Five entries are
+- A user dashboard lives entirely in `users/<slug>/`. Six entries are
   required; `tests/users/conventions.test.ts` sweeps every folder and fails
   if one is missing:
   - `migrations/` — `001_initial.sql`, `002_*.sql`, … plus `manifest.json`.
@@ -94,6 +94,17 @@ architectural changes; do not relitigate decided items).
   - `queries.ts` — every SQL statement, as pure functions taking a `UserDb`
   - `dashboard.tsx` — default-export server component, **no SQL**
   - `tests/` — at least one `*.test.ts`
+  - `notes/` — `README.md`, plus `v<n>.md` for every confirmed version that was
+    BUILT. **Added, never edited**, for the same reason prompts are:
+    `scripts/announce-deploy.ts` speaks from this file, so an edit changes what
+    an already-sent, permanently-stored announcement was based on. Four fixed
+    sections; `lib/build/notes.ts` parses them and **two of the four never
+    reach the friend** — `## Open` and `## Notes for the next build` are
+    builder-only, enforced by the parser rather than by prompt wording.
+    `tests/users/conventions.test.ts` checks the folder's SHAPE (no strays,
+    every note parses) and deliberately not its presence: the sweep cannot know
+    which versions were built. Presence is enforced by `announce-deploy.ts`,
+    which refuses to announce v`n` without `notes/v<n>.md`.
 - `spec.md` and `mockup.html` are written by `./scripts/pull-spec.sh <slug>`
   and are absent until a spec is confirmed. `synthetic.db` is generated and
   gitignored. `<slug>.db` arrived in step 6a and is described next.
@@ -104,6 +115,61 @@ architectural changes; do not relitigate decided items).
   is supplied by the server from the account's current confirmed version,
   never authored by the model — a model-authored lineage pointer would be a
   hallucination becoming a permanent row in an append-only table.
+  The MODEL is asked only for the change: against a current-shape base it
+  emits a PATCH (`lib/spec/patch.ts`, eight ops — `set_meta`, `add_screen`,
+  `update_screen`, `remove_screen`, `add_panel`, `replace_panel`,
+  `move_panel`, `remove_panel`) and `lib/spec/author.ts` applies it via
+  `applyPatch`, so an untouched panel is COPIED rather than regenerated. The
+  stored row is still the whole surface — `applyPatch` produces it and hands
+  it to `parseSpecDraft`, the same validator every version goes through — and
+  the ops ride flat inside `payload` beside it as `SpecVersion.ops`, `null`
+  when a version was authored whole-surface, **never `[]`**. A row stored
+  before `ops` existed has no `ops` key at all; `parseSpecVersion` reads that
+  the same as null, since `specs` rejects UPDATE and none can ever gain one.
+  Three paths author, not two: `patch` against a current-shape base; `whole`
+  for a first version, which has no base to patch; `whole` for a legacy base,
+  which carries no ids for an op to name and can never gain any.
+- The ops name exactly which screens a patch touched
+  (`lib/spec/mockupCompose.ts`'s `affectedScreens`), and the mockup call draws
+  only those screens' fragments, carrying every other screen's fragment
+  forward from `spec_screen_mockups` unchanged. **`specs.mockup_html` is still
+  the whole composed document, and it is still the build contract** —
+  `pull-spec.sh`, `users/<slug>/mockup.html`, the admin Mockup tab, and
+  `dashboard.tsx`'s build target all read it unscoped, because a builder needs
+  every screen, touched or not. What is scoped is the FRIEND'S CARD: it renders
+  `Proposal.preview_html`, composed from only the affected screens, so
+  confirming a one-word relabel does not ask someone to re-review a dashboard
+  they already approved. For a first version (or a legacy base's one-time
+  whole-surface fallback) every screen is affected, so the two documents are
+  equal — not because scoping is skipped, but because "everything" is what
+  scoping degenerates to. **The stylesheet lives in `lib/spec/mockupCompose.ts`,
+  never in a fragment or a prompt, because fragments drawn weeks apart, by
+  separate model calls, have to match** when composed into one document — a
+  stylesheet re-emitted per fragment could disagree with itself screen to
+  screen, and the unchanged screens would visibly shift every time a neighbour
+  was edited. A fragment may carry its own `<style>` block on top; `composeMockup`
+  scopes it to that screen automatically (prefixing selectors under
+  `#screen-<id>`) so a rule meant for today's edit cannot restyle a screen
+  nobody touched.
+- **The mockup CSP is a privacy-promise guard, not a styling rule.** Mockup
+  HTML is generated from interview content, so any external fetch it makes is
+  a channel that can leak transcript-derived content to a third party the
+  moment a friend opens their own preview. Two layers, because a header
+  cannot reach every surface that serves this content: `app/mockup/[version]/route.ts`
+  and `app/admin/mockup/[user]/[version]/route.ts` set a
+  `content-security-policy` header (`sandbox; default-src 'none'; style-src
+  'unsafe-inline'; img-src data:` — no font-src, since a mockup matches the
+  app's own system font stack) — but `app/[user]/ChatPanel.tsx` renders a
+  friend's own scoped preview card with `srcDoc`, not `src`, which no route
+  ever serves and therefore carries no header at all. `lib/spec/mockupCompose.ts`'s
+  `composeMockup` writes the SAME policy as a `<meta
+  http-equiv="Content-Security-Policy">` inside the composed document's own
+  `<head>` instead, so the guarantee travels WITH the document into `srcDoc`.
+  Plus a source-level strip (`stripExternalReferences` in the same file) that
+  drops any `src=`/`href=`/`url(...)` reference it cannot prove is safe, and
+  drops every `<meta>` tag out of a fragment outright — a `<meta
+  http-equiv="refresh">` redirect is a NAVIGATION, which CSP's fetch
+  directives do not govern, so nothing else in this stack closes it.
 - `specs` rejects UPDATE, so a row written before the unified proposal loop
   can never be rewritten into the current shape — it is read as legacy
   forever. Read every stored spec payload through `lib/spec/stored.ts`, the
@@ -157,6 +223,22 @@ architectural changes; do not relitigate decided items).
   like `divorce_lawyer_fund` is derived from what the friend asked for, which
   is why `lib/spec/author.ts` strips quoted ids out of `spec_error` messages
   too. The content of what changed stays in `specs`, never in `metrics`.
+  The same bound covers patch authoring: every metric row the authoring path
+  writes — `spec_proposed` and every `spec_error`/`spec_aborted` row too, not
+  `spec_proposed` alone — carries `authoring_mode` (`patch`, `whole`, or
+  `null` for a call that failed before a mode was chosen) and `ops_count`
+  (the parsed op count; `null` on every whole-surface row, and on a patch
+  attempt whose ops never parsed). A mode name and a count, never an op and
+  never a panel id.
+  `dashboard_open` follows the same bound: it carries `screen_order`, the
+  active screen's integer position, and never the screen's `id` — a
+  spec-authored identifier under the same slug rule as a panel id. See the
+  "`dashboard_open` writes one row per render" bullet below, further down
+  this section, for the full mechanism.
+- **Build notes never carry user values either.** `users/<slug>/notes/v<n>.md`
+  is committed to the repo and describes the SHAPE of what was built — a table,
+  a panel, a computation — never a row, a value, or a merchant. Same bound as
+  `metrics`, applied to a second artifact.
 - A dashboard renders only if it is registered in `lib/dashboard/registry.ts`.
   One line: `<slug>: () => import('@/users/<slug>/dashboard'),`. A folder with
   no registry line fails `tests/dashboard/registry.test.ts`.
@@ -168,8 +250,9 @@ architectural changes; do not relitigate decided items).
   ```
 - `users/devone/` is the worked reference implementation. It is hand-written,
   not agent output — see its README.
-- A dashboard is handed `{ slug, db, today, timeZone }` and never resolves any
-  of them itself. **It never derives a day from a clock.** `today` is
+- A dashboard is handed `{ slug, db, today, timeZone, screen }` and never
+  resolves any of them itself — `screen` is described below. **It never
+  derives a day from a clock.** `today` is
   `YYYY-MM-DD` in the friend's zone, resolved once per request by
   `app/[user]/page.tsx` from the `stairwell_tz` cookie the root layout writes;
   `timeZone` is the IANA name, or `undefined` on the first render of a session,
@@ -196,6 +279,52 @@ architectural changes; do not relitigate decided items).
   route, which writes rows into the shape it finds. A third is a change to the
   2026-08-15 migrations design, not a refactor. Every write goes through a
   platform route, which is the only place the four ordered checks live.
+- **A screen is a place in the app, and the platform draws the tab strip —
+  never the dashboard.** `DashboardModule.screens: DashboardScreen[]`
+  (`lib/dashboard/contract.ts`) is REQUIRED on every dashboard registered in
+  `lib/dashboard/registry.ts`; `DashboardScreen`'s `id`/`title`/`order` mirror
+  `lib/spec/schema.ts`'s `Screen` exactly — never a second source that could
+  drift from what the spec promised. `DashboardProps.screen` stays OPTIONAL —
+  not for the sequencing reason that made it optional to begin with (no
+  dashboard exported `screens` yet), which is gone now that all four do, but
+  because every one of the four dashboards on this branch has exactly one
+  screen and none of them branches on it, and every one of their own tests
+  calls the component with a hand-built props object that would otherwise
+  need to name a field it never reads for no type-safety gain. `?screen=` is
+  resolved against a dashboard's own declared list by `activeScreen`
+  (`lib/dashboard/contract.ts`) BEFORE a dashboard ever sees it: an unknown or
+  absent value falls back to the lowest-`order` screen rather than erroring —
+  it is ordinary user input (typed, bookmarked, a stale link from a dashboard
+  that dropped a tab) — while a REGISTERED dashboard declaring zero screens is
+  a contract violation instead, and throws, caught by the same
+  `dashboard_error` path that already catches a throwing `Dashboard()` call.
+
+  **Why the platform owns the tabs — the single rule to know before writing a
+  second screen.** `app/[user]/page.tsx` CALLS the dashboard (`Dashboard(...)`),
+  never returns it as `<Dashboard />`, specifically so its body runs inside
+  the page's own `try`/`catch`. A nested function component — a dashboard
+  returning `<Foo />` where `Foo` is itself a function component — has its
+  body deferred to React's OWN render pass, which runs after the calling
+  function has already returned and is therefore OUTSIDE that catch: a throw
+  there 500s the page AFTER the `dashboard_open` metric row has already been
+  written. Tabs drawn by the dashboard itself would be exactly that shape, so
+  `tabStrip` lives in `app/[user]/page.tsx` instead — plain server-rendered
+  `<a href="?screen=...">` anchors on a search param, no client component, no
+  route segment, no middleware — reading the dashboard's own `screens` export
+  and drawing nothing at all for one screen (or fewer): a single tab is
+  chrome that explains nothing.
+- **`dashboard_open` writes one row per render, every render, with NO
+  write-path dedup** — a tab switch re-runs the page and writes another row,
+  by design. "An open" is a definition applied when the log is READ (e.g. the
+  first render in a window), never decided at write time. It carries
+  `screen_order` — the active screen's integer `order`, omitted entirely (not
+  `0`) when a dashboard has not declared `screens` yet, since there is no tab
+  to name a position for — and never the screen's `id`: an `id` is
+  spec-authored, following the same underscore-slug rule as a panel `id`
+  (this section's own `divorce_lawyer_fund` example, above), and writing one into
+  `metrics` would be the first friend-derived identifier ever written to that
+  unencrypted table, which the metrics bound above ("Metrics never carry user
+  values") forbids.
 - **Nothing writes to a friend's database except from their own session.**
   Their data key exists only in the in-process keymap while they are unlocked,
   so no scheduled job can open their database at all — the same constraint that
@@ -267,6 +396,12 @@ architectural changes; do not relitigate decided items).
   `screenshots/screens.ts` says what each one has to look like. It is a review
   gate, not a test — no pixel diffing — and it has caught things no test in
   this repo can see (onboarding ledger D16).
+- **A build that could not deliver something goes back to the chat, never into
+  the announcement.** The announcement is an update, not a disclosure: what
+  shipped, and any in-spirit adjustment that makes it work better. Anything in
+  the confirmed spec that did NOT land goes in `## Open`, which the friend
+  never sees, and routes back through `scripts/ask-user.ts` or a new proposal.
+  `announce-deploy.ts` warns when that section is non-empty.
 
 ## Build contract
 - spec.md + mockup.html in the user's folder are the build contract for
@@ -387,12 +522,26 @@ architectural changes; do not relitigate decided items).
 ## Sacred data
 - Metrics log and chat transcripts are append-only. Never migrate, rewrite,
   or "clean up" these files.
+- `spec_screen_mockups` (platform database) is append-only too, same trigger
+  pair as `specs`. It holds one row per `(spec_id, screen_id)` — the per-screen
+  mockup fragment a version's screen was drawn with. **A table, not more JSON
+  in `payload`, for two separate reasons:** `specs.payload` is read on every
+  proposal to build the writer's current-version block, and putting rendered
+  HTML in it would feed the mockup back into the model's own input; and
+  `specs.mockup_html` is one opaque composed document — splicing a screen back
+  out of it would mean asking the model to emit stable per-screen markers to
+  splice on, which makes a guarantee depend on model compliance with a
+  formatting rule (exactly what unified-loop ledger D19 says not to do).
+  `lib/db/screenMockups.ts`
+  appends and reads; `lib/spec/mockupCompose.ts` is the only place that
+  composes fragments into a document.
 - **TWO metric events are load-bearing for correctness rather than purely
   observational, and neither is disposable telemetry.**
-  - `deploy_announced` — `announceDeploy` (`lib/chat/announce.ts`) reads it to
-    decide whether it has already spoken for a confirmed spec version, so
-    pruning or archiving one makes a weeks-old build announce itself again
-    into an append-only transcript (unified-loop ledger D16).
+  - `deploy_announced` — `announceTarget` (`lib/chat/announce.ts`, called from
+    `runAnnounce` in `scripts/announce-deploy.ts`) reads it to decide whether
+    it has already spoken for a confirmed spec version, so pruning or
+    archiving one makes a weeks-old build announce itself again into an
+    append-only transcript (unified-loop ledger D16).
   - `first_session_start` — `app/[user]/page.tsx` reads it to decide whether
     this account has ever reached the shell before. Pruning one makes a
     months-old account report a first session again, and nothing afterwards

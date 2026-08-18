@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MOCKUP_JSON_SCHEMA, SPEC_JSON_SCHEMA } from '@/lib/spec/schema'
+import { MOCKUP_JSON_SCHEMA, SCREEN_MOCKUP_JSON_SCHEMA, SPEC_JSON_SCHEMA } from '@/lib/spec/schema'
 
 /** Walk every object node in a JSON Schema, including inside anyOf. */
 function objectNodes(node: unknown, out: Record<string, unknown>[] = []) {
@@ -60,5 +60,33 @@ describe('MOCKUP_JSON_SCHEMA', () => {
   it('asks for one field and nothing else', () => {
     expect([...MOCKUP_JSON_SCHEMA.required]).toEqual(['mockup_html'])
     expect(MOCKUP_JSON_SCHEMA.additionalProperties).toBe(false)
+  })
+})
+
+describe('SCREEN_MOCKUP_JSON_SCHEMA', () => {
+  it('asks for one array field and nothing else', () => {
+    expect([...SCREEN_MOCKUP_JSON_SCHEMA.required]).toEqual(['screens'])
+    expect(SCREEN_MOCKUP_JSON_SCHEMA.additionalProperties).toBe(false)
+    expect(SCREEN_MOCKUP_JSON_SCHEMA.properties.screens.type).toBe('array')
+  })
+
+  it('requires exactly id and html on each screen entry, nothing else', () => {
+    const item = SCREEN_MOCKUP_JSON_SCHEMA.properties.screens.items
+    expect(item.additionalProperties).toBe(false)
+    expect([...item.required].sort()).toEqual(['html', 'id'])
+    expect(Object.keys(item.properties).sort()).toEqual([...item.required].sort())
+  })
+
+  it('sets additionalProperties false on every object node', () => {
+    const nodes = objectNodes(SCREEN_MOCKUP_JSON_SCHEMA)
+    expect(nodes.length).toBeGreaterThan(1)
+    for (const node of nodes) expect(node.additionalProperties).toBe(false)
+  })
+
+  it('has no minItems — zero affected screens is a legitimate call shape', () => {
+    // lib/spec/mockupCompose.ts: a meta-only patch touches no screen, and
+    // that empty result is legitimate (lib/spec/author.ts skips the call on
+    // it rather than the schema forbidding it).
+    expect(JSON.stringify(SCREEN_MOCKUP_JSON_SCHEMA)).not.toContain('minItems')
   })
 })

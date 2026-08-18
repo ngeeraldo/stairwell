@@ -56,8 +56,11 @@ export async function GET(
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
       // The same seal as the friend's own route: an admin opening this URL
-      // directly has no iframe around it either.
-      'content-security-policy': 'sandbox',
+      // directly has no iframe around it either. Task 25: same appended
+      // policy as app/mockup/[version]/route.ts, for the same reason — see
+      // that route's comment for the full rationale (no font-src, the
+      // srcDoc-cannot-be-headered bound, all of it applies here unchanged).
+      'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
       'x-content-type-options': 'nosniff',
     },
   })

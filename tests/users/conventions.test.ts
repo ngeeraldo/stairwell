@@ -14,8 +14,33 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3-multiple-ciphers'
 import { afterAll, describe, expect, it } from 'vitest'
 import { SLUG_PATTERN } from '@/lib/auth/slug'
+import type { DashboardScreen } from '@/lib/dashboard/contract'
 import { declaredObjects } from '@/tests/support/declaredObjects'
 import { verifyManifest } from '@/lib/db/migrationFiles'
+import { readBuildNotes } from '@/lib/build/notes'
+
+/**
+ * Governs a screen id — NOT lib/auth/slug.ts's SLUG_PATTERN, despite both
+ * living one import away. `DashboardScreen`'s id/title/order mirror
+ * lib/spec/schema.ts's `Screen` exactly (lib/dashboard/contract.ts says so),
+ * and a screen id is spec-authored: it comes from the same model output as
+ * `divorce_lawyer_fund`-shaped panel and value ids (CLAUDE.md, Dashboard
+ * folder conventions — "Metrics never carry user values"),
+ * which use underscores. SLUG_PATTERN (`^[a-z0-9-]{1,32}$`) allows hyphens
+ * and forbids underscores — the opposite of a spec id's actual shape — so it
+ * would reject a perfectly valid spec-derived screen id on the day one
+ * contains an underscore. Both id shapes ARE safe as a `?screen=<id>` query
+ * value and a `#screen-<id>` DOM id, so the deciding fact is provenance
+ * (spec-authored, not account-authored), not URL/DOM safety.
+ *
+ * Mirrors the unexported `ID` constant in lib/spec/fields.ts
+ * (`/^[a-z0-9]+(_[a-z0-9]+)*$/`) rather than importing it: this task's brief
+ * scopes changes to this file and tests/dashboard/registry.test.ts only, and
+ * `ID` is deliberately not part of that module's public surface. Kept in
+ * sync by inspection, same as the shape check below is a duplicate of
+ * fields.ts's own throw, not a delegation to it.
+ */
+const SCREEN_ID_PATTERN = /^[a-z0-9]+(_[a-z0-9]+)*$/
 
 /**
  * Every test in this file spawns python3 once per user folder. vitest's
@@ -47,6 +72,43 @@ const REQUIRED = ['migrations', 'seed.py', 'queries.ts', 'dashboard.tsx', 'tests
 
 const isBuilt = (slug: string) =>
   REQUIRED.every((entry) => existsSync(join(USERS, slug, entry)))
+
+/**
+ * A dashboard.tsx module has to actually be IMPORTED to check what its
+ * `screens` export holds at runtime — a type check already proves the export
+ * exists and shapes each entry as `{ id, title, order }` (task 23 made it
+ * required), but not that the array is non-empty, that its ids are unique,
+ * or that its `order`s are integers, all of which the type system cannot see.
+ * This file did not import any .tsx module before this sweep;
+ * tests/dashboard/contract.test.ts already proves a dynamic `import()` of a
+ * dashboard module works inside this suite (it does exactly this through
+ * `dashboardLoaderFor`), so the same dynamic import, run directly against the
+ * slug rather than through the registry, is used here too — this sweep must
+ * cover a complete-but-not-yet-registered folder (dashboard.tsx exists the
+ * moment a folder is `complete`, regardless of whether it has a migrations
+ * shape yet — see the `whenComplete` gate below), which the registry loader
+ * cannot reach at all.
+ *
+ * Cached per slug: several `whenComplete` checks below each need the same
+ * import, and re-importing per assertion would run the module's top-level
+ * code (and pay the transform cost) once per check for no reason.
+ */
+const screensCache = new Map<string, Promise<DashboardScreen[]>>()
+function loadScreens(slug: string): Promise<DashboardScreen[]> {
+  let cached = screensCache.get(slug)
+  if (!cached) {
+    // @vite-ignore — this path is fully dynamic (a variable slug, no file
+    // extension), so vite:dynamic-import-vars cannot glob it for code-split
+    // analysis and would otherwise only warn. vite-node (vitest's runtime)
+    // resolves it directly, the same way it resolves the real dashboard
+    // import inside dashboardLoaderFor for tests/dashboard/contract.test.ts.
+    cached = import(/* @vite-ignore */ `@/users/${slug}/dashboard`).then(
+      (mod) => (mod as { screens: DashboardScreen[] }).screens,
+    )
+    screensCache.set(slug, cached)
+  }
+  return cached
+}
 
 const temps: string[] = []
 afterAll(() => {
@@ -131,6 +193,39 @@ describe('users/ folder conventions', () => {
       // live.
       if (hasShape) return
       expect(existsSync(join(dir, 'migrations', 'README.md'))).toBe(true)
+    })
+
+    whenComplete('has a notes/ directory', () => {
+      // Required on every complete folder, including scaffolded ones — the
+      // directory is the convention, and it must exist before the first build
+      // finishes so there is somewhere obvious to write v1.md.
+      expect(existsSync(join(dir, 'notes'))).toBe(true)
+    })
+
+    whenComplete('has nothing in notes/ but README.md and v<n>.md files', () => {
+      // Shape, NOT presence. This sweep cannot know which versions were built —
+      // that lives in the platform database, not in this folder — so demanding
+      // "at least one note" would be a false failure on devone (hand-written,
+      // never had a spec) and on every folder built before this convention.
+      // Presence is enforced where the version number is actually known:
+      // scripts/announce-deploy.ts.
+      const strays = readdirSync(join(dir, 'notes')).filter(
+        (f) => f !== 'README.md' && !/^v\d+\.md$/.test(f),
+      )
+      expect(strays, `unexpected files in notes/: ${strays.join(', ')}`).toHaveLength(0)
+    })
+
+    whenComplete('every note in notes/ parses', () => {
+      // VACUOUS until the first real v<n>.md lands — no folder in this repo
+      // has one yet (final review, Minor 11), so this loop body has never
+      // actually run and this test's green means only "no v<n>.md files
+      // exist to fail on", not "readBuildNotes was exercised against a real
+      // one". Do not read this test passing as verification of
+      // readBuildNotes itself — that lives in tests/build/notes.test.ts.
+      for (const f of readdirSync(join(dir, 'notes')).filter((f) => /^v\d+\.md$/.test(f))) {
+        const version = Number(/^v(\d+)\.md$/.exec(f)![1])
+        expect(() => readBuildNotes(slug, version, USERS)).not.toThrow()
+      }
     })
 
     whenBuilt('has a manifest covering every migration it declares', () => {
@@ -251,5 +346,62 @@ describe('users/ folder conventions', () => {
       },
       SUBPROCESS_TIMEOUT_MS,
     )
+
+    // The four properties `screens: DashboardScreen[]` cannot express as a
+    // type, run over every COMPLETE folder — not `whenBuilt`. `screens`
+    // comes from dashboard.tsx, one of the five REQUIRED entries that make a
+    // folder `complete`; `whenBuilt` additionally requires `hasShape` (a real
+    // .sql migration file), which is about the DATA shape and has no
+    // relationship to a dashboard's screens. Gating on `whenBuilt` skipped
+    // these checks on run4, which has migrations but no numbered .sql file
+    // yet — and run4 is the one folder in the repo whose screens export
+    // (`walk_now`) actually distinguishes SCREEN_ID_PATTERN from
+    // SLUG_PATTERN; every other folder uses `morning`, which passes both.
+    // Fix round 1, finding 1: gating on whenBuilt made the sweep exercise
+    // zero cases where the id-pattern choice mattered.
+    //
+    // Safe on a freshly scaffolded folder: platform/templates ships
+    // `screens: [{ id: 'morning', title: 'Morning', order: 1 }]`, which
+    // trivially satisfies all four checks. No separate vacuity guard is
+    // needed either — the file's existing "sweeps at least one BUILT
+    // dashboard" guard already proves at least one COMPLETE folder exists
+    // (built implies complete).
+
+    whenComplete('screens is non-empty', async () => {
+      const screens = await loadScreens(slug)
+      // Empty is legal to the type system and fatal at render: activeScreen
+      // throws on it (lib/dashboard/contract.ts), turning the page into
+      // dashboard_error instead of showing anything. Better a red test here.
+      expect(screens.length).toBeGreaterThan(0)
+    })
+
+    whenComplete('every screen id matches the spec id shape', async () => {
+      const screens = await loadScreens(slug)
+      for (const screen of screens) {
+        expect(
+          SCREEN_ID_PATTERN.test(screen.id),
+          `screen id "${screen.id}" is not a valid spec-shaped id (lowercase letters, digits, single underscores)`,
+        ).toBe(true)
+      }
+    })
+
+    whenComplete('every screen order is an integer', async () => {
+      const screens = await loadScreens(slug)
+      for (const screen of screens) {
+        expect(
+          Number.isInteger(screen.order),
+          `screen "${screen.id}" has a non-integer order: ${JSON.stringify(screen.order)}`,
+        ).toBe(true)
+      }
+    })
+
+    whenComplete('screen ids are unique within the folder', async () => {
+      const screens = await loadScreens(slug)
+      const ids = screens.map((s) => s.id)
+      expect(
+        new Set(ids).size,
+        `duplicate screen id among: ${ids.join(', ')} — ?screen= would be ambiguous`,
+      ).toBe(ids.length)
+    })
   })
 })

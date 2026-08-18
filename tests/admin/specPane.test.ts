@@ -131,6 +131,7 @@ const CURRENT_V1: SpecVersion = {
   background: 'Pivoted from weather TEST.',
   change_summary: 'The first whole-surface version TEST.',
   based_on_version: null,
+  ops: null,
   screens: [{ id: 'today', title: 'Today TEST', order: 1, panels: [walkedTodayPanel()] }],
   data_requirements: [
     { table: 'walks', purpose: 'One row per walked day TEST.', status: 'new' },

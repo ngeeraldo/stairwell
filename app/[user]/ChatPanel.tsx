@@ -8,6 +8,12 @@ import { useEffect, useRef, useState } from 'react'
 // client bundle — a value import here would.
 import type { Proposal } from '@/lib/spec/author'
 import type { StoredSpec } from '@/lib/spec/stored'
+// A VALUE import, not type-only: withBanner (and withCsp, final review
+// Important 3) run in the browser now (see the srcDoc comment on SpecCard
+// below), and this module is safe to bundle client-side — pure string
+// handling, no server-only dependency, unlike lib/spec/author.ts and
+// lib/spec/stored.ts above.
+import { withBanner, withCsp } from '@/lib/spec/banner'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { buildTimeline } from '@/lib/chat/timeline'
@@ -515,6 +521,30 @@ export function SpecCard({
   // One expression, read twice below, so the confirmed and unconfirmed halves
   // of this card cannot disagree about what was promised.
   const delivery = (proposal.first ?? first) ? DELIVERY_FIRST : DELIVERY_CHANGE
+  /**
+   * The scoped document this card's small preview draws — see
+   * Proposal.preview_html (lib/spec/author.ts) for what "scoped" means.
+   *
+   * `?? proposal.mockup_html` is the SAME defect shape as `first` just above,
+   * ledger D9. FIX ROUND 1, FINDING 3: `preview_html` is required on
+   * `CardProposal` too — `Omit<Proposal, 'first'>` touches nothing but
+   * `first` (see CardProposal's own doc comment) — so this is not a type-
+   * level gap the way `first` is. The gap is at RUNTIME: a card that streamed
+   * in through the `proposal` NDJSON line is `JSON.parse` output cast to that
+   * type, and nothing validates it, so the field can be absent despite what
+   * the type claims. The compiler has no way to flag that — an edit that
+   * dropped this fallback would compile clean regardless.
+   * tests/chat/panel.test.ts is what actually catches its removal.
+   */
+  // withCsp added final review, Important 3: composeMockup (lib/spec/
+  // mockupCompose.ts) puts the fetch-blocking meta CSP into every document
+  // IT builds, but three fallbacks — pageLoadPreview's legacy/no-fragments/
+  // composition-failure arms and the `?? proposal.mockup_html` right here —
+  // can hand this boundary a document composeMockup never touched, drawn by
+  // a pre-branch prompt with no such guarantee. Same idempotent shape as
+  // withBanner, so a document that already carries the tag never gets a
+  // second.
+  const previewHtml = withCsp(withBanner(proposal.preview_html ?? proposal.mockup_html))
   return (
     /*
       CARD ANATOMY, top to bottom, exactly as onboarding-ux-spec.md lists it:
@@ -553,16 +583,34 @@ export function SpecCard({
       {/* Scaled to the column, and non-interactive at card size — which the
           spec explicitly allows, and `pointer-events-none` implements without
           a second mechanism.
-          
-          `src`, not `srcDoc`: one serving route for the card and the dialog
-          (onboarding ledger D14), so what a friend inspects at full size is
-          byte-identical to what they were shown here.
-          
+
+          `srcDoc`, not `src`, as of this card's scoped preview. It used to be
+          `src="/mockup/<version>"`, the same session-authed route the
+          full-screen dialog below still uses (onboarding ledger D14) — one
+          route meant the two were byte-identical. That stopped being true the
+          moment the small preview needed to show only the AFFECTED screens:
+          the route serves `mockup_html`, the whole stored document, which is
+          right for the dialog (a friend asked to see everything) and wrong
+          here (see previewHtml above). The dialog is unchanged and still
+          shows the complete dashboard on purpose — this scaled preview is the
+          one place a friend reviews just what they asked for.
+
           Sealed off either way. An empty sandbox grants nothing — no scripts,
           no same-origin, no forms, no top-level navigation — so model-authored
           markup can never run code in a friend's session, and the preview
           stays a LAYOUT promise rather than a behaviour promise somebody then
-          has to build. tests/spec/sandbox.test.ts pins this. */}
+          has to build. tests/spec/sandbox.test.ts pins this — on `sandbox=""`
+          itself, which this change leaves untouched.
+
+          The MOCKUP banner used to be guaranteed by that route (withBanner,
+          applied at serve time — lib/spec/banner.ts). srcDoc bypasses it
+          entirely, so previewHtml applies it here instead: same rule, moved
+          to the new boundary, not dropped. Final review, Important 3: the
+          meta CSP (withCsp, same file) moved here for the identical reason —
+          it is a document guarantee applied at serve time by the two mockup
+          routes' headers AND by composeMockup itself, and srcDoc bypasses
+          both, so previewHtml is where it has to be enforced for THIS
+          surface too. */}
       {/*
         SCALED DOWN, not cropped. The iframe is laid out at twice the column's
         width and half scale, so the preview shows the mockup as a small whole
@@ -577,12 +625,22 @@ export function SpecCard({
         fine" without a second mechanism; the full-screen dialog is where a
         friend actually looks.
       */}
-      <div className="h-64 w-full overflow-hidden rounded-md border bg-background">
+      {/* h-48/h-[24rem], not the h-64/h-[32rem] this shipped with (fix round
+          1, finding 2): that height was sized for a denser mockup, and it
+          left a single-screen preview roughly 60% empty box. This task makes
+          a short, single-screen preview the COMMON case rather than the
+          exception, so the box shrinks with it. Still CSS-only — no JS-
+          measured scale factor, which is the same rule the comment above
+          already states and which still stands — and a taller multi-screen
+          preview still clips under `overflow-hidden` exactly as it did
+          before; only the threshold moved, not the failure mode. "View full
+          screen" is the escape hatch either way. */}
+      <div className="h-48 w-full overflow-hidden rounded-md border bg-background">
         <iframe
           title={`Preview of ${title}`}
-          src={`/mockup/${proposal.version}`}
+          srcDoc={previewHtml}
           sandbox=""
-          className="pointer-events-none h-[32rem] w-[200%] origin-top-left scale-50 border-0"
+          className="pointer-events-none h-[24rem] w-[200%] origin-top-left scale-50 border-0"
         />
       </div>
 

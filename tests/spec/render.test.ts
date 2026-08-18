@@ -241,7 +241,7 @@ function draft(over: Record<string, unknown> = {}): unknown {
 /** Goes through the real validator/sealer rather than being cast, so `version`
  * is a genuine SpecVersion and not just an object that happens to typecheck
  * as one — same rationale tests/spec/diff.test.ts gives for its own `v1`. */
-const version: SpecVersion = sealVersion(parseSpecDraft(draft()), null)
+const version: SpecVersion = sealVersion(parseSpecDraft(draft()), null, null)
 
 /** A version whose only value anywhere is `synced`, so the derived "Entered
  * by hand" section has nothing to list. Isolates the empty-section case from
@@ -271,6 +271,7 @@ const allSyncedVersion: SpecVersion = sealVersion(
       ],
     }),
   ),
+  null,
   null,
 )
 
@@ -310,6 +311,7 @@ const outOfOrderVersion: SpecVersion = sealVersion(
     }),
   ),
   null,
+  null,
 )
 
 /** A version with every optional/list field populated (non-null
@@ -320,6 +322,7 @@ const outOfOrderVersion: SpecVersion = sealVersion(
  * many of the renderer's own fixed headings appear. */
 const RICH_VERSION: SpecVersion = sealVersion(
   parseSpecDraft(draft({ open_questions: ['Wants a Monzo pot balance — is that reachable?'] })),
+  null,
   null,
 )
 
@@ -411,6 +414,7 @@ const DANGEROUS_VERSION: SpecVersion = sealVersion(
     // Site: open_questions, via list() — inline ("- " + text).
     open_questions: ['Wants a Monzo pot balance — is that reachable?\n# Open question heading'],
   }),
+  null,
   null,
 )
 

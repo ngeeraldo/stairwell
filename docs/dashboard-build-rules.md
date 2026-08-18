@@ -29,9 +29,16 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 
 ## 2. The folder
 
-Five entries, swept by `tests/users/conventions.test.ts:45`:
+Six entries, per CLAUDE.md > Dashboard folder conventions, swept by
+`tests/users/conventions.test.ts`:
 
-`migrations/` · `seed.py` · `queries.ts` · `dashboard.tsx` · `tests/`
+`migrations/` · `seed.py` · `queries.ts` · `dashboard.tsx` · `tests/` · `notes/`
+
+CORRECTED (final review, Minor 7): this section used to say "Five entries"
+and omit `notes/` — true before `notes/` was added to CLAUDE.md's list, stale
+after. It also cited a line number (`:45`) that had already drifted 26 lines
+short of where the sweep's own logic lives; cited by name below instead, so
+this does not go stale again the next time a line moves.
 
 - `migrations/` holds `001_initial.sql`, `002_*.sql`, … and `manifest.json`.
   It is the only description of a dashboard's shape; `schema.sql` no longer
@@ -40,14 +47,28 @@ Five entries, swept by `tests/users/conventions.test.ts:45`:
   synthetic database is built by the same files a real one is — CLAUDE.md.
 - `queries.ts` holds **every** SQL statement, as pure functions taking a
   `UserDb`; `dashboard.tsx` holds **no SQL** — CLAUDE.md.
+- `notes/` holds `README.md` plus a `v<n>.md` per BUILT version, added never
+  edited — CLAUDE.md, `docs/runbook.md` step 7. Enforced differently from the
+  other five: `tests/users/conventions.test.ts`'s own `REQUIRED` constant
+  lists only the first five and decides the scaffolded/built/partial split
+  below from those alone; `notes/`'s PRESENCE is checked by a separate
+  `whenComplete` case in the same file ("has a notes/ directory") once a
+  folder is already built, and its CONTENTS by two more ("has nothing in
+  notes/ but README.md and v<n>.md files", "every note in notes/ parses").
+  Which specific `v<n>.md` files must exist is not swept at all — the sweep
+  cannot know which versions were built — and is enforced instead by
+  `scripts/announce-deploy.ts`, which refuses to announce a version with no
+  matching note.
 - A folder has four legitimate-or-not states, and only one is a defect
   (`tests/users/conventions.test.ts`):
   - **pulled** — `spec.md`/`mockup.html` only. Not started; allowed.
-  - **scaffolded** — all five entries, but `migrations/` holds no `.sql`.
-    `new-dashboard.sh` just ran and nobody has designed a shape. Allowed; the
-    dashboard says "Under construction" and the friend's database stays empty.
-  - **built** — all five entries AND a shape. Swept in full.
-  - **partial** — some of the five. A defect.
+  - **scaffolded** — all five `REQUIRED` entries, but `migrations/` holds no
+    `.sql`. `new-dashboard.sh` just ran and nobody has designed a shape.
+    Allowed; the dashboard says "Under construction" and the friend's
+    database stays empty.
+  - **built** — all five `REQUIRED` entries AND a shape AND a conforming
+    `notes/`. Swept in full.
+  - **partial** — some of the five `REQUIRED` entries. A defect.
 - A dashboard renders only if registered in `lib/dashboard/registry.ts`, one
   line: `<slug>: () => import('@/users/<slug>/dashboard'),`. A folder with no
   registry line fails `tests/dashboard/registry.test.ts` — CLAUDE.md.
@@ -62,8 +83,8 @@ Five entries, swept by `tests/users/conventions.test.ts:45`:
 
 ## 3. What a dashboard is handed, and what it may not do
 
-A dashboard is handed `{ slug, db, today, timeZone }` and **never resolves any
-of them itself** — CLAUDE.md.
+A dashboard is handed `{ slug, db, today, timeZone, screen }` and **never
+resolves any of them itself** — CLAUDE.md.
 
 - **It never derives a day from a clock.** `tests/users/noLocalDay.test.ts:23-27`
   forbids three things in every `users/*/dashboard.tsx` and `users/*/queries.ts`,
@@ -88,6 +109,12 @@ of them itself** — CLAUDE.md.
   Next's render pass, outside the page's try/catch, so a throw there 500s the
   page after `dashboard_open` was already written —
   `platform/templates/dashboard/dashboard.tsx.tmpl`.
+- **Screens are declared, and the platform draws the tabs — never the
+  dashboard.** `DashboardModule.screens` is required, its `id`/`title`/`order`
+  mirror the spec's own `Screen` type, `?screen=` resolves against it before a
+  dashboard ever sees it, and this is exactly why the point above (no nested
+  function component) matters: a dashboard's own `<Tabs>` would be one —
+  CLAUDE.md > Dashboard folder conventions, `lib/dashboard/contract.ts`.
 
 ---
 
@@ -201,6 +228,9 @@ Sacred data.
   these.
 - A confirmed spec version is **whole-surface** — it describes the friend's
   entire dashboard, not one conversation's worth of changes — CLAUDE.md.
+- The spec-writer emits a PATCH against a current-shape base; the stored row
+  is still the whole surface, so the build contract above is unchanged —
+  CLAUDE.md > Dashboard folder conventions.
 
 ---
 

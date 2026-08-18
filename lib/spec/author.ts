@@ -9,7 +9,12 @@ import {
   type SpecRecord,
 } from '@/lib/db/specs'
 import { toMessages } from '@/lib/chat/history'
-import { MOCKUP_PROMPT, SPEC_PROMPT, loadPrompt } from '@/lib/chat/prompt'
+import {
+  MOCKUP_SCREENS_PROMPT,
+  SPEC_PATCH_PROMPT,
+  SPEC_PROMPT,
+  loadPrompt,
+} from '@/lib/chat/prompt'
 import type { ChatContext } from '@/lib/chat/context'
 import {
   CHAT_EFFORT,
@@ -22,14 +27,17 @@ import {
   type Usage,
 } from '@/lib/chat/client'
 import {
-  MOCKUP_JSON_SCHEMA,
+  SCREEN_MOCKUP_JSON_SCHEMA,
   SPEC_JSON_SCHEMA,
   SpecShapeError,
   type SpecDraft,
 } from './schema'
-import { parseMockupInput, parseSpecDraft, sealVersion } from './validate'
+import { parseScreenMockups, parseSpecDraft, sealVersion } from './validate'
 import { renderLegacyMarkdown } from './render'
 import { readStoredSpec, type StoredSpec } from './stored'
+import { applyPatch, parsePatch, PATCH_JSON_SCHEMA, type SpecPatch } from './patch'
+import { affectedScreens, composeMockup } from './mockupCompose'
+import { insertScreenMockups, readScreenMockups } from '@/lib/db/screenMockups'
 
 /**
  * One proposal, as it reaches the card — whichever way it got there.
@@ -59,6 +67,21 @@ export type Proposal = {
   at: number
   spec: StoredSpec
   mockup_html: string
+  /**
+   * The scoped preview: only the screens THIS patch touched, carried-forward
+   * screens omitted. This is what the friend's card renders while it is being
+   * proposed.
+   *
+   * `mockup_html` above is the OTHER one — the whole composed document, which
+   * is what `specs.mockup_html` stores and what pull-spec.sh, mockup.html and
+   * the admin pane read. That one must never be scoped: it is the build
+   * contract, and a builder reading it needs every screen, touched or not.
+   * For a first version (or a legacy base's one-time whole-surface fallback)
+   * every screen IS affected, so the two happen to be equal — not because
+   * this field is skipped, but because scoping to "everything" degenerates to
+   * the whole document.
+   */
+  preview_html: string
   /**
    * Whether THIS card is the account's first dashboard, and therefore which
    * delivery promise it makes (ledger D9). Server-computed, per card, and
@@ -179,10 +202,23 @@ function mockupFields(
  * Redaction applies to `SpecShapeError` and nothing else, because the quoting
  * convention is that class's: every content interpolation in lib/spec/validate.ts
  * is double-quoted, and everything left unquoted there is structural (a path
- * like `screens[0].panels[1]`, or one of the fixed `kind`/`status` enums). Any
- * other error reaching here — SQLite, the SDK, a bug — carries infrastructure
- * text with no spec content in it, and mangling that would cost real debugging
- * information for nothing.
+ * like `screens[0].panels[1]`, or one of the fixed `kind`/`status` enums).
+ *
+ * CORRECTED 2026-08-17 (final review, Critical 1): this used to assert that
+ * any non-`SpecShapeError` reaching here "carries infrastructure text with no
+ * spec content in it". That was true when written and stopped being true the
+ * moment a second content-interpolating throw site existed outside
+ * validate.ts — lib/spec/mockupCompose.ts's "no fragment for screen" error
+ * quoted a friend-derived screen id and, as a plain `Error`, sailed through
+ * this function unredacted into the append-only `metrics` table. It is now a
+ * `SpecShapeError` for exactly this reason. The actual invariant is narrower
+ * and is on the WRITER, not the reader: every error that interpolates spec
+ * content into its message must be a `SpecShapeError`, so it gets quoted with
+ * double quotes (matching this function's redaction regex) and reaches this
+ * function through that class. Anything added later that builds a message out
+ * of a friend's own words — a screen id, a panel id, anything typed through
+ * the chat surface — must follow that same convention or it will leak here
+ * exactly as this one did.
  *
  * The retry path deliberately does NOT go through this: the model gets the
  * full message, quoted ids and all.
@@ -190,6 +226,36 @@ function mockupFields(
 function metricMessage(error: unknown): string {
   if (error instanceof SpecShapeError) return error.message.replace(/"[^"]*"/g, '"…"')
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * The one pair every metrics row this module writes carries: which shape the
+ * writer was asked for, and how many ops it proposed. Factored out narrowly —
+ * unified-loop ledger residual 10 predicted this file's five hand-built
+ * `appendMetric` sites would need a builder once a sixth arrived, and Task 13
+ * added a sixth. This pair is pure mechanical repetition with no per-site
+ * decision in it, so pulling it out costs nothing.
+ *
+ * Deliberately NOT a wrapper around appendMetric itself: `mockup_failed`
+ * reports the SPEC call's counters on purpose, `spec_aborted` reports honest
+ * zeros on purpose, `kind` is computed differently at every site, and
+ * `message` is present at some and absent at others. Residual 10's own
+ * reasoning is that factoring those would either push them back out to the
+ * call sites anyway, or quietly make one site's rule the default for all six
+ * — exactly the hiding of distinctions it was written to prevent. This
+ * helper stops at the one pair that has no such distinction to hide.
+ *
+ * `ops_count` is a COUNT, never the ops themselves: `metrics` is append-only
+ * and the standing bound is counts, never content — an op carries panel ids
+ * derived from what the friend asked for. `patch` must be THIS attempt's
+ * parse outcome, not a stale one — see the reset at the top of the attempt
+ * loop below.
+ */
+function modeFields(
+  mode: 'patch' | 'whole' | null,
+  patch: SpecPatch | undefined,
+): { authoring_mode: 'patch' | 'whole' | null; ops_count: number | null } {
+  return { authoring_mode: mode, ops_count: patch?.ops.length ?? null }
 }
 
 /**
@@ -323,24 +389,67 @@ export async function authorSpec(
   // only rows that can carry it are the outer catch's, for a failure that
   // struck before the loop.
   let attempt = 0
+  // WHICH SHAPE THE WRITER WAS ASKED FOR, and read by the outer catch too —
+  // same reason as promptSha. null is a real, meaningful third value here,
+  // not a missing one: it means the call failed BEFORE mode was decided
+  // (currentSpec or readStoredSpec threw), which is exactly the case where
+  // no prompt was chosen either — see the prompt_sha comment on the outer
+  // catch below. Do not default this to 'whole'; that would assert a mode
+  // was chosen when none was, in a row that can never be corrected.
+  let mode: 'patch' | 'whole' | null = null
+  // The ops as PARSED on a patch attempt, undefined on a whole-surface
+  // attempt or before any attempt has parsed successfully. Read by every
+  // metrics site in this function, including the outer catch, for the same
+  // reason mode is: an op count on an error row is what lets a query group
+  // ANY row — success or failure — by how expensive patch authoring turned
+  // out to be.
+  let patch: SpecPatch | undefined
 
   try {
-    const loaded = loadPrompt(SPEC_PROMPT)
-    promptSha = loaded.sha
-    const system = loaded.text
-
-    const base = {
-      model: CHAT_MODEL,
-      effort: CHAT_EFFORT,
-      prompt_sha: promptSha,
-      context,
-    }
-
     // What the writer is SHOWN as the current confirmed version. Read here
     // because that is when the prompt is built; the lineage pointer stored on
     // the row is read again at write time instead, and the two reads are
     // deliberately separate — see sealVersion below.
     const current = currentSpec(db, input.accountId)
+
+    /**
+     * WHICH SHAPE THE WRITER IS ASKED FOR — and it is decided in the same place
+     * that already decides what the writer is SHOWN (currentVersionBlock's three
+     * arms), so the two can never disagree about which era this account is in.
+     *
+     * `patch` only when there is a confirmed row AND it is in the current shape.
+     * Both other arms author the whole surface:
+     *
+     *   - v1 has no base to patch, and the first-ever conversation is the one
+     *     thing this may not change (unified-loop §7 R3). Same prompt, same
+     *     schema, same code as before this existed.
+     *   - a LEGACY row carries no ids, so there is nothing for an op to name.
+     *     `specs` rejects UPDATE, so it can never gain any. That account authors
+     *     whole-surface exactly once and is on the patch path from its next
+     *     version.
+     */
+    const storedCurrent = current === undefined ? undefined : readStoredSpec(current.payload)
+    const base =
+      storedCurrent !== undefined && storedCurrent.kind === 'version'
+        ? storedCurrent.version
+        : undefined
+    mode = base === undefined ? 'whole' : 'patch'
+
+    const loaded = loadPrompt(mode === 'patch' ? SPEC_PATCH_PROMPT : SPEC_PROMPT)
+    promptSha = loaded.sha
+    const system = loaded.text
+    const schema = mode === 'patch' ? PATCH_JSON_SCHEMA : SPEC_JSON_SCHEMA
+
+    // Named `metricBase`, not `base`: `base` above is the SpecVersion a patch
+    // applies against, and this is a different thing that happens to share
+    // the obvious name — the spread of fields every metrics row this
+    // function writes carries.
+    const metricBase = {
+      model: CHAT_MODEL,
+      effort: CHAT_EFFORT,
+      prompt_sha: promptSha,
+      context,
+    }
 
     const history = toMessages(readTranscript(db, input.accountId))
     const last = history[history.length - 1]
@@ -366,6 +475,17 @@ export async function authorSpec(
 
     while (attempt < MAX_SPEC_ATTEMPTS) {
       attempt += 1
+      // Reset per attempt, not just declared once: `patch` must reflect only
+      // THIS attempt's parse outcome. Without this reset an attempt that
+      // never reaches (or never completes) parsePatch — a network error, an
+      // abort, or a reply that fails to parse at all — would report
+      // ops_count from an EARLIER attempt's successfully-parsed-but-
+      // inapplicable patch onto a row that never held one. That is a
+      // permanently wrong row: `metrics` rejects UPDATE. The post-loop uses
+      // (sealVersion, spec_proposed, mockup_failed) are unaffected — they run
+      // only after the winning attempt reassigned `patch` in that same
+      // iteration.
+      patch = undefined
       const attemptMessages =
         feedback === undefined
           ? specMessages
@@ -377,7 +497,7 @@ export async function authorSpec(
           system,
           messages: attemptMessages,
           signal: input.signal,
-          schema: SPEC_JSON_SCHEMA,
+          schema,
         })
       } catch (error) {
         if (input.signal.aborted) {
@@ -385,7 +505,13 @@ export async function authorSpec(
             accountId: input.accountId,
             event: 'spec_aborted',
             at: now(),
-            data: { ...NO_USAGE, ...base, ...NO_SERVED, attempt },
+            data: {
+              ...NO_USAGE,
+              ...metricBase,
+              ...NO_SERVED,
+              attempt,
+              ...modeFields(mode, patch),
+            },
           })
           return undefined
         }
@@ -407,12 +533,13 @@ export async function authorSpec(
           at: now(),
           data: {
             ...(shape.usage ?? NO_USAGE),
-            ...base,
+            ...metricBase,
             ...(shape.served ?? NO_SERVED),
             kind: shape.kind,
             status: shape.status,
             type: shape.type,
             attempt,
+            ...modeFields(mode, patch),
           },
         })
         return undefined
@@ -420,8 +547,39 @@ export async function authorSpec(
       // Recorded for the outer catch as well — see the declaration above.
       result = proposed
 
+      // WHICH PHASE FAILED IS THE CLASSIFICATION — not which error class was
+      // thrown. Ruled at Task 9's re-review, and it is the whole reason the
+      // metrics kinds can be trusted.
+      //
+      // The tempting version discriminates on `error instanceof SpecPatchError`.
+      // That silently misclassifies, because the shape checks inside a patch are
+      // shared with the whole-surface path: a malformed `order` in an
+      // update_screen op, a non-string in `open_questions`, and any bad nested
+      // panel all reach `fields.ts` helpers that throw the BASE class. Those
+      // rows would land in an append-only log as `malformed_spec` forever, and
+      // `metrics` rejects UPDATE.
+      //
+      // Phase cannot be got wrong, because it is not inferred: parsing failed,
+      // or applying failed, and the code knows which one it was standing in.
+      // The meanings come out clean too — `malformed_spec` is "the model
+      // returned the wrong shape", `patch_failed` is "the shape was right and
+      // it would not apply to this base", which is the genuinely new failure
+      // mode worth watching.
+      let phase: 'malformed_spec' | 'patch_failed' = 'malformed_spec'
       try {
-        draft = parseSpecDraft(proposed.input)
+        // `base !== undefined` is the whole condition: `mode` is DERIVED from
+        // it above (`mode = base === undefined ? 'whole' : 'patch'`), so the
+        // two can never disagree — checking `mode === 'patch'` here too would
+        // be redundant. Kept as this narrowing form (not `mode === 'patch'`)
+        // because it is what lets the compiler prove `base` is a SpecVersion
+        // at the applyPatch call below, without a non-null assertion.
+        if (base !== undefined) {
+          patch = parsePatch(proposed.input)
+          phase = 'patch_failed'
+          draft = applyPatch(base, patch)
+        } else {
+          draft = parseSpecDraft(proposed.input)
+        }
         break
       } catch (error) {
         // A schema-constrained REQUEST is not a guarantee about the row that
@@ -447,13 +605,15 @@ export async function authorSpec(
           at: now(),
           data: {
             ...proposed.usage,
-            ...base,
+            ...metricBase,
             ...proposed.served,
-            kind: 'malformed_spec',
+            // Set above, before the call that can fail. See the phase comment.
+            kind: phase,
             status: null,
             type: null,
             attempt,
             message: metricMessage(error),
+            ...modeFields(mode, patch),
           },
         })
         // Checked BEFORE the retry, not after: the friend has walked away and
@@ -473,6 +633,8 @@ export async function authorSpec(
     if (draft === undefined || result === undefined) return undefined
 
     let mockupHtml: string
+    let previewHtml: string
+    let fragments: Map<string, string>
     try {
       // Both halves of the loaded prompt are kept: the text goes to the model
       // and the sha onto every row below, so the preview this call produces
@@ -481,18 +643,85 @@ export async function authorSpec(
       // happening NOW, and this call is the long one.
       input.onStage?.('mockup')
 
-      const mockupPrompt = loadPrompt(MOCKUP_PROMPT)
-      mockupPromptSha = mockupPrompt.sha
-      mockupResult = await client.propose({
-        system: mockupPrompt.text,
-        // The VALIDATED draft, not the raw reply: a mockup generated from
-        // anything else could show a panel the spec does not contain, which
-        // is a promise made on the friend's behalf (ledger D7).
-        messages: [{ role: 'user', content: JSON.stringify(draft) }],
-        signal: input.signal,
-        schema: MOCKUP_JSON_SCHEMA,
-      })
-      mockupHtml = parseMockupInput(mockupResult.input)
+      // Fragments this version keeps unchanged, taken from the version the
+      // patch was applied to. A version confirmed BEFORE this existed has
+      // none at all.
+      const carried =
+        current === undefined ? new Map<string, string>() : readScreenMockups(db, current.id)
+      fragments = new Map(carried)
+
+      // Which screens THIS patch touched, in draft.screens order. `base` is
+      // the SpecVersion the patch was applied to (undefined on both
+      // whole-surface paths, where `ops` is null too and affectedScreens
+      // treats that as "everything is affected"). affectedScreens needs the
+      // screens array, not the whole version.
+      //
+      // CORRECTED 2026-08-17 (final review, Important 2): unioned with every
+      // screen in draft.screens that `carried` has no fragment for. Without
+      // this, a version confirmed BEFORE spec_screen_mockups existed has no
+      // fragments at all, so a set_meta-only patch on one — affected.length
+      // === 0 from the ops alone — leaves `fragments` empty and
+      // composeMockup throws on EVERY attempt, forever: `specs` is
+      // append-only, so there is no backfill path for those pre-branch rows.
+      // Treating "no carried fragment" as "affected" makes the first patch
+      // after this deploy redraw what it lacks and the account heals itself.
+      // This does not compose around the hole (ledger D7 stands unchanged):
+      // nothing is left missing at compose time, it is drawn instead.
+      const patchAffected = affectedScreens(base?.screens ?? null, draft.screens, patch?.ops ?? null)
+      const missingCarried = draft.screens
+        .map((s) => s.id)
+        .filter((id) => !carried.has(id) && !patchAffected.includes(id))
+      const affected = [...patchAffected, ...missingCarried]
+
+      // NO AFFECTED SCREENS MEANS NO CALL. A meta-only patch changes the spec
+      // and no pixel, so every fragment carries forward untouched and there is
+      // nothing to draw. Skipping is not an optimisation here — asking for a
+      // mockup of zero screens would send an empty list and get back
+      // something that could only be wrong. mockupResult stays undefined, and
+      // the metrics helper already reports null for a call that never
+      // happened.
+      if (affected.length > 0) {
+        const mockupPrompt = loadPrompt(MOCKUP_SCREENS_PROMPT)
+        mockupPromptSha = mockupPrompt.sha
+        mockupResult = await client.propose({
+          system: mockupPrompt.text,
+          // Only the affected screens, from the VALIDATED draft (ledger D7) —
+          // a mockup generated from anything else could show a panel the spec
+          // does not contain, which is a promise made on the friend's behalf.
+          messages: [
+            {
+              role: 'user',
+              content: JSON.stringify({
+                title: draft.title,
+                screens: draft.screens.filter((s) => affected.includes(s.id)),
+              }),
+            },
+          ],
+          signal: input.signal,
+          schema: SCREEN_MOCKUP_JSON_SCHEMA,
+        })
+
+        for (const f of parseScreenMockups(mockupResult.input, affected)) {
+          fragments.set(f.screenId, f.html)
+        }
+      }
+
+      // The WHOLE document: this is specs.mockup_html, the build contract on
+      // disk and what the admin pane renders. Throws (as a SpecShapeError,
+      // so metricMessage redacts it) if any screen still has no fragment —
+      // in practice that means the model omitted a requested screen from its
+      // reply, since `affected` above now guarantees every carried-less
+      // screen was asked for.
+      mockupHtml = composeMockup(draft.screens, fragments)
+      // The friend's card: only what changed. For v1 (and the legacy
+      // one-time whole-surface fallback), affected IS every screen, so this
+      // degenerates to the whole dashboard — correct, because on a first
+      // version everything is new. An EMPTY affected list falls back to the
+      // whole dashboard too: a meta-only change has no screen to point at,
+      // and a blank card is worse than a redundant one at the moment someone
+      // is deciding whether to confirm.
+      previewHtml =
+        affected.length > 0 ? composeMockup(draft.screens, fragments, affected) : mockupHtml
     } catch (error) {
       // mockup_html is NOT NULL, and a spec row with no preview is a card the
       // friend cannot read. Both calls land or neither does.
@@ -517,13 +746,14 @@ export async function authorSpec(
         at: now(),
         data: {
           ...result.usage,
-          ...base,
+          ...metricBase,
           ...result.served,
           kind: 'mockup_failed',
           status: shape.status,
           type: shape.type,
           attempt,
           message: metricMessage(error),
+          ...modeFields(mode, patch),
           ...mockupFields(mockupResult?.usage ?? shape.usage, mockupPromptSha),
         },
       })
@@ -553,7 +783,14 @@ export async function authorSpec(
     // version would supersede when confirmed — which is the record at write
     // time. That the writer was shown an older version is a separate fact, and
     // it is one the transcript and the prompt already carry.
-    const sealed = sealVersion(draft, currentSpec(db, input.accountId)?.version ?? null)
+    const sealed = sealVersion(
+      draft,
+      currentSpec(db, input.accountId)?.version ?? null,
+      // The ops as PARSED, never as the model returned them: parsePatch is what
+      // turned a reply into a value, and the row must carry the thing the
+      // applier actually acted on.
+      patch?.ops ?? null,
+    )
 
     // Read ONCE and used for both the row and the proposal that describes it.
     // Two calls to now() would put the card at a different moment from the row
@@ -567,6 +804,19 @@ export async function authorSpec(
       mockupHtml,
       at,
     })
+    // The fragments belong to THIS version. Written after the spec row
+    // exists because they key on its id, and before the proposal returns so
+    // the next patch can carry them forward. All of a version's fragments
+    // land or none do (insertScreenMockups' own transaction) — `fragments`
+    // holds one entry per screen in `draft.screens` by construction: every
+    // screen is either carried from `current` or freshly drawn above, and
+    // composeMockup already threw if either source left a gap.
+    insertScreenMockups(
+      db,
+      id,
+      draft.screens.map((s) => ({ screenId: s.id, html: fragments.get(s.id)! })),
+      at,
+    )
     // Read back rather than counting: version is derived from position, and
     // this is the one place that must agree with what the admin pane
     // renders. No non-null assertion: a miss here is exactly the kind of
@@ -582,16 +832,22 @@ export async function authorSpec(
       at: now(),
       data: {
         ...result.usage,
-        ...base,
+        ...metricBase,
         ...result.served,
         spec_id: id,
         version,
         attempt,
-        // Both calls returned and both were billed. Without these the
-        // success path would be the one path where a returning model call's
-        // usage reaches no metrics row at all — and the one stored
-        // mockup_html nobody could tie back to its prompt.
-        ...mockupFields(mockupResult.usage, mockupPromptSha),
+        ...modeFields(mode, patch),
+        // Both calls returned and both were billed — usually. `mockupResult`
+        // is undefined on the one legitimate exception: an affected list of
+        // zero screens skips the mockup call entirely (a meta-only patch),
+        // and `mockupFields` already reports null rather than fabricating
+        // usage for a call that never happened. On every other path both
+        // calls returned, and without this the success path would be the one
+        // where a returning model call's usage reaches no metrics row at all
+        // — and the one stored mockup_html nobody could tie back to its
+        // prompt.
+        ...mockupFields(mockupResult?.usage, mockupPromptSha),
       },
     })
 
@@ -605,6 +861,7 @@ export async function authorSpec(
       // about the payload.
       spec: { kind: 'version', version: sealed },
       mockup_html: mockupHtml,
+      preview_html: previewHtml,
       // Asked of the record, for THIS version, at the moment the row exists —
       // the same question app/[user]/page.tsx asks of the page-load card, and
       // the same helper, so the two answers cannot drift. Bounded by `version`
@@ -628,6 +885,17 @@ export async function authorSpec(
     // miss: currentVersionBlock reads the CURRENT spec, so a stored row that
     // no longer validates throws a SpecShapeError quoting ids out of THAT
     // spec, and it lands right here.
+    //
+    // `prompt_sha: null` paired with `authoring_mode: null` is not a gap —
+    // it is the honest value for a call that failed before any prompt was
+    // chosen. Mode selection now reads the account's current spec (to decide
+    // patch vs whole) BEFORE loadPrompt runs, so a stored current-version row
+    // that no longer validates — the same failure the paragraph above
+    // describes — throws here with no mode ever decided and no prompt ever
+    // loaded. Stamping SPEC_PROMPT's hash on that row would claim a prompt
+    // was involved when none was, in a table that can never be corrected.
+    // Null is the honest answer to "which prompt", the same way it is the
+    // honest answer to "which mode".
     appendMetric(db, {
       accountId: input.accountId,
       event: 'spec_error',
@@ -644,6 +912,7 @@ export async function authorSpec(
         type: null,
         attempt,
         message: metricMessage(error),
+        ...modeFields(mode, patch),
         ...mockupFields(mockupResult?.usage, mockupPromptSha),
       },
     })

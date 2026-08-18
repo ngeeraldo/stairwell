@@ -15,6 +15,10 @@
 // title/summary/background are RETAINED from the pre-unification shape: each
 // has live consumers (spec.md's H1, the preview card, the admin pane) and the
 // spec doc is silent about them, so existing conventions stand. See ledger D1.
+//
+// `import type` only: patch.ts imports from this file (schema.ts -> patch.ts
+// would be the cycle). Erased at compile time, so it creates no runtime edge.
+import type { SpecPatchOp } from './patch'
 
 export const VALUE_KINDS = ['synced', 'entered', 'derived'] as const
 export type ValueKind = (typeof VALUE_KINDS)[number]
@@ -76,8 +80,24 @@ export type SpecDraft = {
   open_questions: string[]
 }
 
-/** What gets stored: the draft plus the server-supplied lineage pointer. */
-export type SpecVersion = SpecDraft & { based_on_version: number | null }
+/**
+ * What gets stored: the draft, the server-supplied lineage pointer, and the
+ * ops that produced it.
+ *
+ * `ops` is NULL for a version authored whole-surface (v1, and the one-time
+ * fallback for a legacy base). Null says "this version was not produced by a
+ * patch"; an empty array would say "it was produced by a patch that changed
+ * nothing", which is a different and impossible claim.
+ *
+ * It rides INSIDE payload, flat beside the version's own fields, because
+ * readStoredSpec discriminates on a top-level `screens` array and draftFrom
+ * picks named keys. A `{ patch, version }` wrapper would break the
+ * discriminator and every consumer with it. No new column on `specs`.
+ */
+export type SpecVersion = SpecDraft & {
+  based_on_version: number | null
+  ops: SpecPatchOp[] | null
+}
 
 export class SpecShapeError extends Error {
   constructor(message: string) {
@@ -154,7 +174,7 @@ const ENTRY_SCHEMA = {
   required: ['description', 'fields', 'annotates'],
 } as const
 
-const PANEL_SCHEMA = {
+export const PANEL_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -169,6 +189,20 @@ const PANEL_SCHEMA = {
   required: ['id', 'title', 'intent', 'display', 'context_of_use', 'values', 'entry'],
 } as const
 
+/** One declaration, two consumers: SPEC_JSON_SCHEMA below and PATCH_JSON_SCHEMA
+ * (lib/spec/patch.ts) for its add_screen op. */
+export const SCREEN_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: str,
+    title: str,
+    order: { type: 'integer' },
+    panels: { type: 'array', items: PANEL_SCHEMA },
+  },
+  required: ['id', 'title', 'order', 'panels'],
+} as const
+
 export const SPEC_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -177,20 +211,7 @@ export const SPEC_JSON_SCHEMA = {
     summary: str,
     background: str,
     change_summary: str,
-    screens: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          id: str,
-          title: str,
-          order: { type: 'integer' },
-          panels: { type: 'array', items: PANEL_SCHEMA },
-        },
-        required: ['id', 'title', 'order', 'panels'],
-      },
-    },
+    screens: { type: 'array', items: SCREEN_SCHEMA },
     data_requirements: {
       type: 'array',
       items: {
@@ -221,10 +242,40 @@ export const SPEC_JSON_SCHEMA = {
  * The mockup call's contract. One field, so the reply cannot arrive wrapped
  * in prose or a markdown fence — the friend's preview is an iframe srcDoc and
  * a stray ``` would render as text inside their dashboard.
+ *
+ * HISTORICAL as of Task 18 (final review, Minor 8): no production code calls
+ * this anymore — superseded by the scoped, per-screen call below
+ * (SCREEN_MOCKUP_JSON_SCHEMA) and lib/spec/mockupCompose.ts's composeMockup,
+ * which draws only the screens a patch touched instead of the whole document
+ * every time. Kept, not deleted, for the same reason lib/chat/prompt.ts's
+ * MOCKUP_PROMPT is: nothing may retroactively change what an already-stamped
+ * `mockup_prompt_sha` points at.
  */
 export const MOCKUP_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: { mockup_html: { type: 'string' } },
   required: ['mockup_html'],
+} as const
+
+/**
+ * The per-screen mockup call's contract. An ARRAY, so one call draws every
+ * affected screen — a call per screen would multiply latency by the number of
+ * screens for no gain, since they are drawn from one prompt anyway.
+ */
+export const SCREEN_MOCKUP_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    screens: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { id: { type: 'string' }, html: { type: 'string' } },
+        required: ['id', 'html'],
+      },
+    },
+  },
+  required: ['screens'],
 } as const

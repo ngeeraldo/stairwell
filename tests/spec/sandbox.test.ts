@@ -57,11 +57,38 @@ describe('mockup HTML is rendered sealed off', () => {
     // only thing left between model-authored markup and a same-origin
     // document — so it is asserted here, beside its sibling, rather than only
     // in the route's own tests.
+    //
+    // Task 25: `sandbox` grew three appended directives that block passive
+    // GET requests (an <img src>, a <link href>, a CSS url()), which the
+    // sandbox attribute alone never restricted. The literal changed shape —
+    // single quotes to double, because the value now embeds `'none'` — so
+    // this source-grep assertion is updated to match rather than left
+    // pinning the string that shipped before this task.
     const source = readFileSync(
       resolve(process.cwd(), 'app/mockup/[version]/route.ts'),
       'utf8',
     )
-    expect(source).toContain("'content-security-policy': 'sandbox'")
+    expect(source).toContain(
+      `'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"`,
+    )
+    expect(source).toContain("'x-content-type-options': 'nosniff'")
+  })
+
+  // Task 25: the admin route serves the same model-authored HTML to Nico,
+  // through the same MockupDialog iframe (src={`/admin/mockup/...`}), so it
+  // needs the identical seal — added here rather than folded into the test
+  // above because the two routes are deliberately separate files (see
+  // app/admin/mockup/[user]/[version]/route.ts's own comment on why) and a
+  // sweep test should name each site it covers rather than imply one covers
+  // both.
+  it('the admin serving route seals it off identically', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'app/admin/mockup/[user]/[version]/route.ts'),
+      'utf8',
+    )
+    expect(source).toContain(
+      `'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"`,
+    )
     expect(source).toContain("'x-content-type-options': 'nosniff'")
   })
 })

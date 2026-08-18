@@ -4,9 +4,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
-import { createAccount } from '@/lib/auth/accounts'
+import { createAccount, findAccountBySlug } from '@/lib/auth/accounts'
 import { readTranscript } from '@/lib/db/appendOnly'
-import { announce } from '@/lib/chat/announce'
+import { insertSpec, confirmSpec } from '@/lib/db/specs'
+import {
+  AlreadyAnnouncedError,
+  announce,
+  announceTarget,
+  commitAnnouncement,
+  plainBody,
+} from '@/lib/chat/announce'
+import type { SpecVersion } from '@/lib/spec/schema'
+import type { LegacySpecPayload } from '@/lib/spec/legacy'
 
 let dir: string
 let db: PlatformDb
@@ -21,6 +30,82 @@ beforeAll(async () => {
     password: 'TEST-DEV-TWO',
   })
 })
+
+const MOCKUP = '<!doctype html><html><body>COFFEE PALACE TEST</body></html>'
+
+function currentPayload(overrides: Partial<SpecVersion> = {}): SpecVersion {
+  return {
+    title: 'Did I walk the dog today? TEST',
+    summary: 'A one-tap tracker, COFFEE PALACE TEST.',
+    background: 'Pivoted from weather TEST.',
+    change_summary: 'Added a streak panel TEST.',
+    based_on_version: null,
+    ops: null,
+    screens: [
+      {
+        id: 'today',
+        title: 'Today TEST',
+        order: 1,
+        panels: [
+          {
+            id: 'walked_today',
+            title: 'Walked today? TEST',
+            intent: 'Did I walk the dog TEST?',
+            display: 'Yes/no with a tap TEST.',
+            context_of_use: null,
+            values: [{ kind: 'entered', id: 'walk_flag', description: 'One tap per day TEST.' }],
+            entry: null,
+          },
+        ],
+      },
+    ],
+    data_requirements: [],
+    open_questions: [],
+    ...overrides,
+  }
+}
+
+function legacyPayload(overrides: Partial<LegacySpecPayload> = {}): LegacySpecPayload {
+  return {
+    title: 'A legacy dashboard TEST',
+    summary: 'A summary, COFFEE PALACE TEST.',
+    background: 'Loudly-fake background, COFFEE PALACE TEST.',
+    panels: [
+      { name: 'Panel one', shows: 'Something', why: 'A reason', source: 'plaid' },
+    ],
+    manual_logging: [],
+    open_questions: [],
+    ...overrides,
+  }
+}
+
+let specSeq = 0
+
+/**
+ * Confirm a new spec version for an already-existing account — against this
+ * file's shared 'devtwo' fixture rather than minting a fresh account per
+ * scenario, since these tests share one account's spec history on purpose
+ * (each call adds the NEXT confirmed version, matching how a real account
+ * accumulates them).
+ */
+function confirmAVersion(
+  db: PlatformDb,
+  slug: string,
+  overrides: Partial<SpecVersion> = {},
+): void {
+  const account = findAccountBySlug(db, slug)
+  if (!account) throw new Error(`no account with slug '${slug}'`)
+  specSeq += 1
+  const specId = insertSpec(db, {
+    accountId: account.id,
+    conversationId: `conv-${slug}-${specSeq}`,
+    promptSha: `sha-${slug}-${specSeq}`,
+    payload: currentPayload(overrides),
+    mockupHtml: MOCKUP,
+    at: 1_000 + specSeq,
+  })
+  confirmSpec(db, { specId, accountId: account.id, at: 1_500 + specSeq })
+}
 
 afterAll(() => {
   db.close()
@@ -62,5 +147,191 @@ describe('announce', () => {
     const existingConversationId = readTranscript(db, accountId).at(-1)!.conversation_id
     announce(db, { accountId, body: 'Still the same conversation TEST.', at: 4 })
     expect(readTranscript(db, accountId).at(-1)!.conversation_id).toBe(existingConversationId)
+  })
+})
+
+describe('announceTarget', () => {
+  it('reports no_confirmed_spec when nothing is confirmed', () => {
+    // <db>, <slug> from this file's existing fixture helpers.
+    expect(announceTarget(db, 'devtwo')).toEqual({
+      ok: false,
+      reason: 'no_confirmed_spec',
+    })
+  })
+
+  it('returns the headline, version and first-ness of the confirmed spec', () => {
+    confirmAVersion(db, 'devtwo', { change_summary: 'Added a takeaway panel.' })
+    const target = announceTarget(db, 'devtwo')
+    expect(target.ok).toBe(true)
+    if (!target.ok) return
+    expect(target.headline).toBe('Added a takeaway panel.')
+    expect(target.version).toBe(1)
+    expect(target.first).toBe(true)
+  })
+
+  it('reports already_announced after a commit', () => {
+    confirmAVersion(db, 'devtwo', { change_summary: 'x' })
+    const target = announceTarget(db, 'devtwo')
+    if (!target.ok) throw new Error('expected a target')
+    commitAnnouncement(db, target, { body: 'hello', promptSha: 'abc123abc123', at: 5 })
+    expect(announceTarget(db, 'devtwo')).toEqual({
+      ok: false,
+      reason: 'already_announced',
+    })
+  })
+
+  // Own account, not the shared 'devtwo' fixture: a legacy row is a
+  // different SHAPE of confirmed spec, not just another version of the same
+  // account's history, and mixing it into devtwo's sequential version count
+  // would make this test's meaning depend on where in that sequence it ran.
+  it("falls back to a legacy spec's title as the headline — legacy rows can never be migrated to carry change_summary", async () => {
+    const legacyAccountId = await createAccount(db, {
+      slug: 'legacyannounce',
+      role: 'user',
+      password: 'TEST-legacyannounce',
+    })
+    const specId = insertSpec(db, {
+      accountId: legacyAccountId,
+      conversationId: 'conv-legacyannounce',
+      promptSha: 'sha-legacyannounce-0001',
+      payload: legacyPayload(),
+      mockupHtml: MOCKUP,
+      at: 1_000,
+    })
+    confirmSpec(db, { specId, accountId: legacyAccountId, at: 1_500 })
+
+    const target = announceTarget(db, 'legacyannounce')
+    expect(target.ok).toBe(true)
+    if (!target.ok) return
+    expect(target.headline).toBe('A legacy dashboard TEST')
+  })
+
+  // Ledger D9: a promise made to a person, gotten wrong twice already. A
+  // SECOND confirmed build for an account must not read as its first launch.
+  it('calls a second confirmed build a rebuild, not a first-time launch', async () => {
+    const rebuildAccountId = await createAccount(db, {
+      slug: 'rebuildannounce',
+      role: 'user',
+      password: 'TEST-rebuildannounce',
+    })
+    const firstSpecId = insertSpec(db, {
+      accountId: rebuildAccountId,
+      conversationId: 'conv-rebuildannounce',
+      promptSha: 'sha-rebuildannounce-0001',
+      payload: currentPayload({ change_summary: 'Added a streak panel TEST.' }),
+      mockupHtml: MOCKUP,
+      at: 1_000,
+    })
+    confirmSpec(db, { specId: firstSpecId, accountId: rebuildAccountId, at: 1_500 })
+
+    const secondSpecId = insertSpec(db, {
+      accountId: rebuildAccountId,
+      conversationId: 'conv-rebuildannounce',
+      promptSha: 'sha-rebuildannounce-0002',
+      payload: currentPayload({
+        change_summary: 'Renamed the eating-out panel TEST.',
+        based_on_version: 1,
+      }),
+      mockupHtml: MOCKUP,
+      at: 2_000,
+    })
+    confirmSpec(db, { specId: secondSpecId, accountId: rebuildAccountId, at: 2_500 })
+
+    const target = announceTarget(db, 'rebuildannounce')
+    expect(target.ok).toBe(true)
+    if (!target.ok) return
+    expect(target.first).toBe(false)
+    expect(plainBody(target.headline, target.first)).toBe(
+      'Your dashboard was just rebuilt: Renamed the eating-out panel TEST.',
+    )
+  })
+})
+
+describe('commitAnnouncement', () => {
+  it('stamps the drafting prompt sha, not the operator sentinel', () => {
+    confirmAVersion(db, 'devtwo', { change_summary: 'x' })
+    const target = announceTarget(db, 'devtwo')
+    if (!target.ok) throw new Error('expected a target')
+    commitAnnouncement(db, target, { body: 'hello', promptSha: 'deadbeef1234', at: 5 })
+    const row = db
+      .prepare(`SELECT prompt_sha, session_id FROM transcripts ORDER BY id DESC LIMIT 1`)
+      .get() as { prompt_sha: string; session_id: string }
+    // A drafted sentence was produced by a prompt, so the row names it.
+    expect(row.prompt_sha).toBe('deadbeef1234')
+    // There is still no session — that sentinel keeps meaning what it says.
+    expect(row.session_id).toBe('operator')
+  })
+
+  it('refuses a blank body, and writes neither half of the pair', () => {
+    confirmAVersion(db, 'devtwo', { change_summary: 'x' })
+    const target = announceTarget(db, 'devtwo')
+    if (!target.ok) throw new Error('expected a target')
+    const metricsBefore = (
+      db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
+        n: number
+      }
+    ).n
+    expect(() =>
+      commitAnnouncement(db, target, { body: '  ', promptSha: 'a'.repeat(12), at: 5 }),
+    ).toThrow()
+    // The transaction guarantee this task is about: announce() threw before
+    // appendMetric ever ran, so the rejected write must not have posted a
+    // deploy_announced row either — otherwise a later run would believe this
+    // spec was already announced when nothing was ever said.
+    expect(
+      (
+        db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
+          n: number
+        }
+      ).n,
+    ).toBe(metricsBefore)
+  })
+
+  // Final review, Important 4. Two concurrent `--send` runs both call
+  // announceTarget BEFORE either has written anything, so both resolve the
+  // SAME ConfirmedTarget with `ok: true` — announceTarget's own check cannot
+  // see a commit that has not happened yet. This test hands commitAnnouncement
+  // that same stale target twice, simulating exactly that race: the guard has
+  // to live inside commitAnnouncement's own transaction, not just in
+  // announceTarget's read, or both calls succeed and `deploy_announced` (a
+  // sacred, append-only metric per CLAUDE.md) gets a permanent duplicate.
+  it('refuses a second commit for the same target, even when both resolved the target before either wrote (the race)', () => {
+    confirmAVersion(db, 'devtwo', { change_summary: 'racy build' })
+    const target = announceTarget(db, 'devtwo')
+    if (!target.ok) throw new Error('expected a target')
+
+    const transcriptBefore = readTranscript(db, accountId).length
+    const metricsBefore = (
+      db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
+        n: number
+      }
+    ).n
+
+    commitAnnouncement(db, target, { body: 'first sender wins', promptSha: 'a'.repeat(12), at: 10 })
+
+    // The SAME target object — exactly what a second, concurrent process
+    // would be holding, since it read it before the first commit landed.
+    expect(() =>
+      commitAnnouncement(db, target, { body: 'second sender loses', promptSha: 'b'.repeat(12), at: 11 }),
+    ).toThrow(AlreadyAnnouncedError)
+
+    // Exactly one of each — the second call wrote NEITHER half of the pair,
+    // not a partial duplicate.
+    expect(readTranscript(db, accountId).length).toBe(transcriptBefore + 1)
+    expect(
+      (
+        db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
+          n: number
+        }
+      ).n,
+    ).toBe(metricsBefore + 1)
+    expect(readTranscript(db, accountId).at(-1)!.body).toBe('first sender wins')
+  })
+})
+
+describe('plainBody', () => {
+  it('keeps both fixed sentences verbatim', () => {
+    expect(plainBody('X', true)).toBe('Your dashboard is live: X')
+    expect(plainBody('X', false)).toBe('Your dashboard was just rebuilt: X')
   })
 })

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
-import Dashboard from '@/users/run3/dashboard'
+import Dashboard, { screens } from '@/users/run3/dashboard'
 import { recentTransactions } from '@/users/run3/queries'
 import { applyUserMigrations, emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
@@ -97,6 +97,14 @@ describe('users/run3', () => {
 // write path to cover — leave this block commented out rather than filling
 // it with a no-op test. See users/devtwo/tests/write.test.ts for a worked
 // example.
+
+it('declares the screen named in spec.md — `morning` — Morning', () => {
+  // Task 23: spec.md's `## Screens` section names this screen
+  // `### \`morning\` — Morning`. The id and title are the spec's own words,
+  // never a second source that could drift from what the confirmed spec
+  // promised.
+  expect(screens).toEqual([{ id: 'morning', title: 'Morning', order: 1 }])
+})
 
 it('renders on an EMPTY database without throwing', async () => {
   // There is no synthetic fallback any more: a friend's first session renders

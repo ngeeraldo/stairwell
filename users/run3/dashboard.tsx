@@ -20,8 +20,13 @@
 // is: the answer would be the droplet's day, the droplet is UTC, and the
 // friend is not. tests/users/noLocalDay.test.ts enforces this over every user
 // folder — including this template, so a scaffolded dashboard starts correct.
-import type { DashboardProps } from '@/lib/dashboard/contract'
+import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
 import { recentTransactions } from './queries'
+
+// From spec.md's `## Screens`: `### \`morning\` — Morning`. The id and title
+// are the spec's own words, never a second source that could drift from what
+// the confirmed spec promised.
+export const screens: DashboardScreen[] = [{ id: 'morning', title: 'Morning', order: 1 }]
 
 function money(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`

@@ -72,7 +72,27 @@ export async function GET(
       // who opens this URL directly has no iframe around it, and this is the
       // only thing left standing between model-authored markup and a
       // same-origin document.
-      'content-security-policy': 'sandbox',
+      //
+      // Task 25: `sandbox` restricts scripts/forms/navigation; it says
+      // nothing about a passive GET a browser makes on its own (an <img src>,
+      // a <link href>, a CSS url()). The three directives appended after it
+      // are Nico's pinned policy for that: `default-src 'none'` closes every
+      // fetch category by default, `style-src 'unsafe-inline'` re-opens only
+      // the inline <style> a mockup document is built from
+      // (lib/spec/mockupCompose.ts), and `img-src data:` re-opens only inline
+      // image data — no font-src, because mockups match the app chrome, which
+      // is the system font stack (FRAME in mockupCompose.ts), so nothing
+      // legitimate ever needs a font URL. This is a privacy-promise guard —
+      // any external fetch is a channel that could leak transcript-derived
+      // mockup content to a third party — not a styling rule, which is why it
+      // does not get to be "a rule the model follows" (mockup-v4.md already
+      // asks for exactly this and a model can forget). The STRONGER half of
+      // this guard is at compose time (stripExternalReferences in
+      // mockupCompose.ts): this header protects a friend who opens this URL
+      // directly, but ChatPanel.tsx's srcDoc card is never served by this
+      // route and gets no header at all — only the compose-time strip reaches
+      // that surface.
+      'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
       'x-content-type-options': 'nosniff',
     },
   })

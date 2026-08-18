@@ -29,6 +29,13 @@ export const AGENT_PROMPT = 'agent-v5.md'
 export const SPEC_PROMPT = 'spec-v2.md'
 
 /**
+ * The PATCH-authoring prompt, used when there is a current confirmed version in
+ * the current shape to change. v1 and a legacy base still go through
+ * SPEC_PROMPT and emit the whole surface — see lib/spec/author.ts.
+ */
+export const SPEC_PATCH_PROMPT = 'spec-v3.md'
+
+/**
  * The mockup-rendering prompt. Takes a validated spec version as JSON and
  * emits the self-contained HTML preview — split out from SPEC_PROMPT so a
  * spec can be authored and validated without also generating and discarding
@@ -47,8 +54,39 @@ export const SPEC_PROMPT = 'spec-v2.md'
  * floor), and tells the model NOT to add a banner. The honesty signal moved
  * from the numbers to a banner injected at serve time by lib/spec/banner.ts —
  * a guard the model cannot forget, which "£000.00" was not.
+ *
+ * HISTORICAL as of Task 18 (final review, Minor 8): no production code calls
+ * this anymore. The Task 18 cutover to a scoped, per-screen mockup call
+ * (MOCKUP_SCREENS_PROMPT below, SCREEN_MOCKUP_JSON_SCHEMA, `composeMockup`)
+ * superseded the whole-document call this prompt drove. Kept, not deleted:
+ * `mockup_prompt_sha` rows written before that cutover point at this file's
+ * hash, and prompts are added, never edited or removed (CLAUDE.md) — an
+ * already-written hash must keep resolving to real prompt text.
  */
 export const MOCKUP_PROMPT = 'mockup-v3.md'
+
+/**
+ * The per-screen mockup prompt. Not v4 of MOCKUP_PROMPT's call — a separate
+ * call with a separate schema (SCREEN_MOCKUP_JSON_SCHEMA), asking for one
+ * `<section class="screen">` fragment per affected screen rather than a whole
+ * self-contained document. lib/spec/mockupCompose.ts owns the document
+ * around the fragments: the frame, the published default styles (the
+ * "nudge"), and confining each fragment's own `<style>` block to the screen
+ * that authored it. This is what makes reuse possible at all — a screen a
+ * patch did not touch keeps its already-drawn fragment rather than being
+ * redrawn (and re-billed) alongside the ones that changed.
+ */
+export const MOCKUP_SCREENS_PROMPT = 'mockup-v4.md'
+
+/**
+ * The deploy-announcement prompt. Turns one build's friend-facing notes into
+ * the sentence that lands in their chat.
+ *
+ * A drafted announcement is the first GENERATED text this system writes into
+ * an append-only transcript, which is why scripts/announce-deploy.ts drafts by
+ * default and only sends on --send.
+ */
+export const ANNOUNCE_PROMPT = 'announce-v1.md'
 
 export type LoadedPrompt = { text: string; sha: string }
 

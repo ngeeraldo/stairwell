@@ -1,15 +1,21 @@
 // tests/scripts/announceDeploy.test.ts
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { confirmSpec, insertSpec } from '@/lib/db/specs'
-import { readTranscript } from '@/lib/db/appendOnly'
-import { announceDeploy, OPERATOR_SHA } from '@/lib/chat/announce'
+import { appendTranscript, readTranscript } from '@/lib/db/appendOnly'
+import type { ChatClient } from '@/lib/chat/client'
 import type { SpecVersion } from '@/lib/spec/schema'
-import type { LegacySpecPayload } from '@/lib/spec/legacy'
+import {
+  exitCodeFor,
+  resolveClient,
+  runAnnounce,
+  type AnnounceDeps,
+  type AnnounceOutcome,
+} from '@/scripts/announce-deploy'
 
 const MOCKUP = '<!doctype html><html><body>COFFEE PALACE TEST</body></html>'
 
@@ -18,8 +24,9 @@ function currentPayload(overrides: Partial<SpecVersion> = {}): SpecVersion {
     title: 'Did I walk the dog today? TEST',
     summary: 'A one-tap tracker, COFFEE PALACE TEST.',
     background: 'Pivoted from weather TEST.',
-    change_summary: 'Added a streak panel TEST.',
+    change_summary: 'Added a takeaway panel TEST.',
     based_on_version: null,
+    ops: null,
     screens: [
       {
         id: 'today',
@@ -44,189 +51,409 @@ function currentPayload(overrides: Partial<SpecVersion> = {}): SpecVersion {
   }
 }
 
-function legacyPayload(overrides: Partial<LegacySpecPayload> = {}): LegacySpecPayload {
+/** A client whose propose() resolves with a fixed drafted message. */
+function clientReturning(message: string): ChatClient {
   return {
-    title: 'A legacy dashboard TEST',
-    summary: 'A summary, COFFEE PALACE TEST.',
-    background: 'Loudly-fake background, COFFEE PALACE TEST.',
-    panels: [
-      { name: 'Panel one', shows: 'Something', why: 'A reason', source: 'plaid' },
-    ],
-    manual_logging: [],
-    open_questions: [],
-    ...overrides,
-  }
+    stream: vi.fn(),
+    propose: vi.fn(async () => ({
+      input: { message },
+      usage: { input: 10, output: 20, cache_read: 0, cache_creation: 0 },
+      stop_reason: 'end_turn',
+      served: { model_served: 'claude-opus-5', fallback_fired: false },
+    })),
+  } as unknown as ChatClient
+}
+
+/**
+ * A client whose propose() always rejects — used to prove both that
+ * runAnnounce REFUSES on a drafting failure rather than falling back, and
+ * (in the --plain tests) that it is never even called.
+ */
+function failingClient(): ChatClient {
+  return {
+    stream: vi.fn(),
+    propose: vi.fn(async () => {
+      throw new Error('model unreachable TEST')
+    }),
+  } as unknown as ChatClient
 }
 
 let dir: string
+let usersDir: string
 let db: PlatformDb
+let accountId: number
+let deps: AnnounceDeps
 
-/**
- * A fresh account with one confirmed, current-shape spec version. Each
- * scenario below gets its OWN account (a distinct slug) rather than sharing
- * one across `it`s — announceDeploy mutates the database (a transcript row
- * and a metric row per call), and a scenario that shares state with another
- * would make removing the idempotency guard fail whichever test happens to
- * run after the mutation, not just the test that means to exercise it.
- */
-async function confirmedAccount(
-  slug: string,
-  overrides: Partial<SpecVersion> = {},
-): Promise<number> {
-  const accountId = await createAccount(db, { slug, role: 'user', password: `TEST-${slug}` })
+/** users/sam/notes/v<version>.md, written fresh for each test that needs one. */
+function writeNotes(slug: string, version: number, opts: { open?: string } = {}): void {
+  mkdirSync(join(usersDir, slug, 'notes'), { recursive: true })
+  const text = [
+    '---',
+    `slug: ${slug}`,
+    `version: ${version}`,
+    'built_at: 2026-08-17',
+    '---',
+    '',
+    '## What shipped',
+    '',
+    'The takeaway panel now shows a weekly total TEST.',
+    '',
+    '## Built differently',
+    '',
+    '',
+    '## Open',
+    '',
+    opts.open ?? '',
+    '',
+    '## Notes for the next build',
+    '',
+    '',
+  ].join('\n')
+  writeFileSync(join(usersDir, slug, 'notes', `v${version}.md`), text)
+}
+
+function transcriptCount(database: PlatformDb): number {
+  return readTranscript(database, accountId).length
+}
+
+function metricCount(database: PlatformDb, event: string): number {
+  const row = database
+    .prepare('SELECT COUNT(*) AS n FROM metrics WHERE account_id = ? AND event = ?')
+    .get(accountId, event) as { n: number }
+  return row.n
+}
+
+function lastTranscriptBody(database: PlatformDb): string {
+  const rows = readTranscript(database, accountId)
+  return rows.at(-1)!.body
+}
+
+// Fresh platform db AND fresh USERS_DIR per test: a slug/version pair
+// ('sam' v1) is reused verbatim across scenarios, so scenarios cannot share
+// one database — the idempotency guard under test (already_announced) would
+// otherwise depend on test run order, exactly the trap the pre-existing
+// announceDeploy fixture comment (git history) warns about.
+beforeEach(async () => {
+  dir = mkdtempSync(join(tmpdir(), 'stairwell-announce-deploy-'))
+  usersDir = mkdtempSync(join(tmpdir(), 'stairwell-announce-deploy-notes-'))
+  db = openPlatformDb(join(dir, 'synthetic.db'))
+  accountId = await createAccount(db, { slug: 'sam', role: 'user', password: 'TEST-sam' })
   const specId = insertSpec(db, {
     accountId,
-    conversationId: `conv-${slug}`,
-    promptSha: `sha-${slug}-0001`,
-    payload: currentPayload(overrides),
+    conversationId: 'conv-sam',
+    promptSha: 'sha-sam-0001',
+    payload: currentPayload(),
     mockupHtml: MOCKUP,
     at: 1_000,
   })
   confirmSpec(db, { specId, accountId, at: 1_500 })
-  return accountId
-}
 
-beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'stairwell-announce-deploy-'))
-  db = openPlatformDb(join(dir, 'synthetic.db'))
+  deps = {
+    db,
+    client: clientReturning('Your takeaway total is up now.'),
+    now: () => 2_000,
+    usersDir,
+  }
 })
 
-afterAll(() => {
+afterEach(() => {
   db.close()
   rmSync(dir, { recursive: true, force: true })
+  rmSync(usersDir, { recursive: true, force: true })
 })
 
-describe('announceDeploy', () => {
-  it("posts the confirmed version's change summary", async () => {
-    const accountId = await confirmedAccount('changesummary')
-    const result = announceDeploy(db, 'changesummary', () => 2_000)
-    expect(result).toMatchObject({ announced: true })
-    expect(readTranscript(db, accountId).at(-1)!.body).toContain('Added a streak')
+describe('runAnnounce', () => {
+  it('refuses when the notes file is missing, naming the path', async () => {
+    const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
+    expect(out.kind).toBe('notes_missing')
+    expect(out.message).toMatch(/v1\.md/)
+    expect(transcriptCount(db)).toBe(0)
   })
 
-  it('refuses when the account has no confirmed spec', async () => {
-    // Never confirmed — a draft only, so currentSpec must find nothing.
-    const accountId = await createAccount(db, {
-      slug: 'noconfirmedspec',
+  it('drafts and prints without writing, by default', async () => {
+    writeNotes('sam', 1)
+    const out = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
+    expect(out.kind).toBe('drafted')
+    expect(out.body).toBe('Your takeaway total is up now.')
+    // The dry run must write NEITHER, or the real send becomes a no-op.
+    expect(transcriptCount(db)).toBe(0)
+    expect(metricCount(db, 'deploy_announced')).toBe(0)
+  })
+
+  it('sends on --send', async () => {
+    writeNotes('sam', 1)
+    const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
+    expect(out.kind).toBe('announced')
+    expect(transcriptCount(db)).toBe(1)
+  })
+
+  it('warns when ## Open is non-empty, and never sends it to the drafting call', async () => {
+    writeNotes('sam', 1, { open: 'The investment tile needs a connection.' })
+    const client = clientReturning('Your takeaway total is up now.')
+    const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: false })
+    expect(out.kind).toBe('announced')
+    expect(out.warnings.join(' ')).toMatch(/Open/)
+    // Builder-only: it warns Nico and never reaches the friend. Asserting on
+    // the transcript body ALONE would pass even if the raw notes — "## Open"
+    // included — were handed straight to draftAnnouncement, because this
+    // fixture's fake client ignores its input and always returns the same
+    // fixed string (the vacuous-assertion trap tests/chat/draftAnnouncement
+    // .test.ts's sentinel test guards against for the lower-level call). The
+    // real guarantee has to be checked at the boundary that actually sends
+    // bytes: what was passed to propose().
+    const sent = JSON.stringify((client.propose as ReturnType<typeof vi.fn>).mock.calls[0]![0])
+    expect(sent).not.toContain('investment')
+    expect(lastTranscriptBody(db)).not.toContain('investment')
+  })
+
+  it('--plain sends the fixed sentence and makes no model call', async () => {
+    writeNotes('sam', 1)
+    const client = failingClient()
+    const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: true })
+    expect(out.kind).toBe('announced')
+    expect(lastTranscriptBody(db)).toMatch(/^Your dashboard is live: /)
+    expect(client.propose).not.toHaveBeenCalled()
+  })
+
+  it('refuses rather than silently falling back when drafting fails', async () => {
+    writeNotes('sam', 1)
+    const out = await runAnnounce(
+      { ...deps, client: failingClient() },
+      { slug: 'sam', send: true, plain: false },
+    )
+    expect(out.kind).toBe('draft_failed')
+    expect(transcriptCount(db)).toBe(0)
+  })
+
+  it('reports already_announced without drafting again', async () => {
+    writeNotes('sam', 1)
+    await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
+    const client = failingClient()
+    const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: false })
+    expect(out.kind).toBe('already_announced')
+    expect(client.propose).not.toHaveBeenCalled()
+  })
+
+  // Final review, Important 4: --body-file sends Nico's own reviewed bytes
+  // verbatim, with no model call — the way to actually send what an earlier
+  // dry run showed, rather than a fresh independent sample.
+  describe('--body-file', () => {
+    function writeBody(text: string): string {
+      const path = join(dir, 'reviewed-body.txt')
+      writeFileSync(path, text)
+      return path
+    }
+
+    it('sends the file verbatim and makes no model call', async () => {
+      const path = writeBody('Exactly what Nico reviewed.')
+      const client = failingClient()
+      const out = await runAnnounce(
+        { ...deps, client },
+        { slug: 'sam', send: true, plain: false, bodyFile: path },
+      )
+      expect(out.kind).toBe('announced')
+      expect(lastTranscriptBody(db)).toBe('Exactly what Nico reviewed.')
+      expect(client.propose).not.toHaveBeenCalled()
+    })
+
+    it('reads the file fresh on a dry run too, and writes nothing', async () => {
+      const path = writeBody('Preview only.')
+      const out = await runAnnounce(deps, { slug: 'sam', send: false, plain: false, bodyFile: path })
+      expect(out.kind).toBe('drafted')
+      expect(out.body).toBe('Preview only.')
+      expect(transcriptCount(db)).toBe(0)
+    })
+
+    it('reports body_file_invalid, naming the path, when the file cannot be read', async () => {
+      const out = await runAnnounce(deps, {
+        slug: 'sam',
+        send: true,
+        plain: false,
+        bodyFile: join(dir, 'does-not-exist.txt'),
+      })
+      expect(out.kind).toBe('body_file_invalid')
+      expect(out.message).toContain('does-not-exist.txt')
+      expect(transcriptCount(db)).toBe(0)
+    })
+
+    it('refuses to combine with --plain, since both skip drafting differently', async () => {
+      const path = writeBody('irrelevant')
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: true, bodyFile: path })
+      expect(out.kind).toBe('draft_failed')
+      expect(transcriptCount(db)).toBe(0)
+    })
+  })
+
+  // Final review, Important 4: without --body-file, --send re-drafts — a
+  // fresh, independent model sample — so the operator gets told the text
+  // about to be written permanently may not match an earlier dry run.
+  describe('the re-draft warning', () => {
+    it('warns on --send when no --body-file was given', async () => {
+      writeNotes('sam', 1)
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
+      expect(out.kind).toBe('announced')
+      expect(out.warnings.join(' ')).toMatch(/fresh|new model sample/i)
+      expect(out.warnings.join(' ')).toMatch(/--body-file/)
+    })
+
+    it('does not warn on a dry run — nothing is written yet to disagree with', async () => {
+      writeNotes('sam', 1)
+      const out = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
+      expect(out.kind).toBe('drafted')
+      expect(out.warnings).toEqual([])
+    })
+
+    it('does not warn on --send --plain — the fixed sentence never varies', async () => {
+      writeNotes('sam', 1)
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: true })
+      expect(out.kind).toBe('announced')
+      expect(out.warnings).toEqual([])
+    })
+
+    it('does not warn on --send --body-file — nothing was redrafted', async () => {
+      const path = join(dir, 'reviewed.txt')
+      writeFileSync(path, 'Reviewed text.')
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false, bodyFile: path })
+      expect(out.kind).toBe('announced')
+      expect(out.warnings).toEqual([])
+    })
+  })
+
+  // D17 (unified-loop ledger), exercised end to end. Every test above seeds
+  // no transcript rows, so readTranscript returns [] and the trailing-user-
+  // turn branch in scripts/announce-deploy.ts never runs — this is the one
+  // test that actually puts an unanswered user turn on the account first.
+  it('never sends two consecutive user messages, even when the account’s last turn was an unanswered user message (D17)', async () => {
+    writeNotes('sam', 1)
+    // A real conversation: friend asks, agent replies, friend asks again and
+    // gets no reply before Nico runs this script — readTranscript makes no
+    // promise otherwise.
+    appendTranscript(db, {
+      accountId,
+      sessionId: 'sess-1',
+      conversationId: 'conv-1',
+      promptSha: 'sha-turn-1',
       role: 'user',
-      password: 'TEST-noconfirmedspec',
+      body: 'Can you add a total? TEST',
+      at: 100,
     })
-    insertSpec(db, {
+    appendTranscript(db, {
       accountId,
-      conversationId: 'conv-noconfirmedspec',
-      promptSha: 'sha-noconfirmedspec-0001',
-      payload: currentPayload({ title: 'A draft nobody confirmed TEST' }),
-      mockupHtml: MOCKUP,
-      at: 1_000,
+      sessionId: 'sess-1',
+      conversationId: 'conv-1',
+      promptSha: 'sha-turn-2',
+      role: 'assistant',
+      body: 'Working on it TEST.',
+      at: 200,
     })
-
-    expect(announceDeploy(db, 'noconfirmedspec', () => 2_000)).toMatchObject({
-      announced: false,
-      reason: 'no_confirmed_spec',
-    })
-    expect(readTranscript(db, accountId)).toHaveLength(0)
-  })
-
-  it('is idempotent per spec — a re-deploy does not say it twice', async () => {
-    // deploy.sh may run several times against the same confirmed version.
-    // transcripts is append-only, so a duplicate is permanent.
-    const accountId = await confirmedAccount('idempotent')
-    announceDeploy(db, 'idempotent', () => 2_000)
-    expect(announceDeploy(db, 'idempotent', () => 3_000)).toMatchObject({
-      announced: false,
-      reason: 'already_announced',
-    })
-    expect(
-      readTranscript(db, accountId).filter((r) => r.prompt_sha === OPERATOR_SHA),
-    ).toHaveLength(1)
-  })
-
-  it('announces again after a NEW version is confirmed', async () => {
-    const accountId = await confirmedAccount('newversion')
-    expect(announceDeploy(db, 'newversion', () => 2_000).announced).toBe(true)
-
-    const newSpecId = insertSpec(db, {
+    appendTranscript(db, {
       accountId,
-      conversationId: 'conv-newversion',
-      promptSha: 'sha-newversion-0002',
-      payload: currentPayload({
-        change_summary: 'Added an export button TEST.',
-        based_on_version: 1,
-      }),
-      mockupHtml: MOCKUP,
-      at: 4_000,
-    })
-    confirmSpec(db, { specId: newSpecId, accountId, at: 4_500 })
-
-    expect(announceDeploy(db, 'newversion', () => 5_000).announced).toBe(true)
-    expect(
-      readTranscript(db, accountId).filter((r) => r.prompt_sha === OPERATOR_SHA),
-    ).toHaveLength(2)
-    // Not just "announced again" — announced the NEW version's own summary.
-    // Without this, the assertion above would still pass if announceDeploy
-    // had a bug that re-announced the OLD version's change_summary a second
-    // time instead of the new one.
-    expect(readTranscript(db, accountId).at(-1)!.body).toContain('Added an export button')
-  })
-
-  it('does not claim a FIRST build was a rebuild', async () => {
-    // Nothing was rebuilt on the morning a first dashboard lands — there was
-    // nothing there before. This is the first thing the friend reads about
-    // the thing they were promised, so it has to describe what happened.
-    const accountId = await confirmedAccount('firstbuild')
-    expect(announceDeploy(db, 'firstbuild', () => 2_000).announced).toBe(true)
-
-    const body = readTranscript(db, accountId).at(-1)!.body
-    expect(body).not.toMatch(/rebuil/i)
-    expect(body).toContain('Added a streak')
-  })
-
-  it('does call a later build a rebuild', async () => {
-    // The other half: once something IS being built for this account, "just
-    // rebuilt" is the honest word, and a conditional that always took the
-    // first-build arm would be just as wrong.
-    const accountId = await confirmedAccount('rebuildlater')
-    announceDeploy(db, 'rebuildlater', () => 2_000)
-
-    const secondId = insertSpec(db, {
-      accountId,
-      conversationId: 'conv-rebuildlater',
-      promptSha: 'sha-rebuildlater-0002',
-      payload: currentPayload({
-        change_summary: 'Renamed the eating-out panel TEST.',
-        based_on_version: 1,
-      }),
-      mockupHtml: MOCKUP,
-      at: 4_000,
-    })
-    confirmSpec(db, { specId: secondId, accountId, at: 4_500 })
-
-    expect(announceDeploy(db, 'rebuildlater', () => 5_000).announced).toBe(true)
-    const body = readTranscript(db, accountId).at(-1)!.body
-    expect(body).toMatch(/rebuil/i)
-    expect(body).toContain('Renamed the eating-out panel')
-  })
-
-  it('announces a legacy confirmed spec using its title', async () => {
-    // A legacy row has no change_summary. Falling back to the title beats
-    // saying nothing on the one morning the promise is being kept.
-    const accountId = await createAccount(db, {
-      slug: 'legacyuser',
+      sessionId: 'sess-1',
+      conversationId: 'conv-1',
+      promptSha: 'sha-turn-3',
       role: 'user',
-      password: 'TEST-legacyuser',
+      body: 'Any update? TEST',
+      at: 300,
     })
-    const legacySpecId = insertSpec(db, {
-      accountId,
-      conversationId: 'conv-legacyuser',
-      promptSha: 'sha-legacyuser-0001',
-      payload: legacyPayload(),
-      mockupHtml: MOCKUP,
-      at: 1_000,
-    })
-    confirmSpec(db, { specId: legacySpecId, accountId, at: 1_500 })
 
-    const result = announceDeploy(db, 'legacyuser', () => 2_000)
-    expect(result.announced).toBe(true)
-    expect(readTranscript(db, accountId).at(-1)!.body).toContain('A legacy dashboard TEST')
+    const client = clientReturning('Your takeaway total is up now.')
+    await runAnnounce({ ...deps, client }, { slug: 'sam', send: false, plain: false })
+
+    const sent = (client.propose as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: { role: string; content: string }[]
+    }
+    const roles = sent.messages.map((m) => m.role)
+    expect(roles.length).toBeGreaterThan(1)
+    for (let i = 1; i < roles.length; i++) {
+      expect(roles[i]).not.toBe(roles[i - 1])
+    }
+    // And specifically: the trailing unanswered user turn was dropped rather
+    // than kept, so the request ends with draftAnnouncement's OWN appended
+    // user turn, not two of them back to back.
+    expect(roles.at(-1)).toBe('user')
+    expect(roles.at(-2)).toBe('assistant')
+  })
+})
+
+describe('resolveClient', () => {
+  // Final review, Important 4: --body-file must not require ANTHROPIC_API_KEY
+  // either — it makes no model call, the same situation --plain already
+  // covers, just from a file instead of a fixed sentence.
+  it('--body-file: returns the same never-called stub as --plain, needing no credential', async () => {
+    const original = process.env.ANTHROPIC_API_KEY
+    delete process.env.ANTHROPIC_API_KEY
+    try {
+      const client = resolveClient(false, '/some/path.txt')
+      await expect(
+        client.propose({
+          system: '',
+          messages: [],
+          signal: new AbortController().signal,
+          schema: {},
+        }),
+      ).rejects.toThrow()
+    } finally {
+      if (original !== undefined) process.env.ANTHROPIC_API_KEY = original
+    }
+  })
+
+  it('--plain: returns a stub that rejects if ever called, needing no credential', async () => {
+    const client = resolveClient(true)
+    await expect(
+      client.propose({
+        system: '',
+        messages: [],
+        signal: new AbortController().signal,
+        schema: {},
+      }),
+    ).rejects.toThrow()
+    await expect(
+      client.stream({
+        system: '',
+        messages: [],
+        signal: new AbortController().signal,
+        onText: () => {},
+        onUsage: () => {},
+        onServed: () => {},
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('not --plain: constructs a real client when a credential is present', () => {
+    const original = process.env.ANTHROPIC_API_KEY
+    process.env.ANTHROPIC_API_KEY = 'sk-test-FAKE-NEVER-SENT'
+    try {
+      const client = resolveClient(false)
+      expect(typeof client.propose).toBe('function')
+      expect(typeof client.stream).toBe('function')
+    } finally {
+      if (original === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = original
+    }
+  })
+
+  it('not --plain: throws (rather than silently degrading) when no credential is set', () => {
+    const original = process.env.ANTHROPIC_API_KEY
+    delete process.env.ANTHROPIC_API_KEY
+    try {
+      expect(() => resolveClient(false)).toThrow(/ANTHROPIC_API_KEY/)
+    } finally {
+      if (original !== undefined) process.env.ANTHROPIC_API_KEY = original
+    }
+  })
+})
+
+describe('exitCodeFor', () => {
+  it('is nonzero for every refusal kind, zero for everything else', () => {
+    const refusals: AnnounceOutcome['kind'][] = [
+      'notes_missing',
+      'notes_invalid',
+      'draft_failed',
+      'no_confirmed_spec',
+      'body_file_invalid',
+    ]
+    const ok: AnnounceOutcome['kind'][] = ['drafted', 'announced', 'already_announced']
+    for (const kind of refusals) expect(exitCodeFor(kind)).not.toBe(0)
+    for (const kind of ok) expect(exitCodeFor(kind)).toBe(0)
   })
 })

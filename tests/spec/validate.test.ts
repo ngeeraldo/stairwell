@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SpecShapeError } from '@/lib/spec/schema'
 import {
   parseMockupInput,
+  parseScreenMockups,
   parseSpecDraft,
   parseSpecVersion,
   sealVersion,
@@ -155,14 +156,14 @@ describe('parseSpecDraft', () => {
 
 describe('sealVersion', () => {
   it('attaches the server-supplied lineage pointer', () => {
-    expect(sealVersion(parseSpecDraft(draft()), 4).based_on_version).toBe(4)
-    expect(sealVersion(parseSpecDraft(draft()), null).based_on_version).toBeNull()
+    expect(sealVersion(parseSpecDraft(draft()), 4, null).based_on_version).toBe(4)
+    expect(sealVersion(parseSpecDraft(draft()), null, null).based_on_version).toBeNull()
   })
 })
 
 describe('parseSpecVersion', () => {
   it('round-trips a sealed version', () => {
-    const sealed = sealVersion(parseSpecDraft(draft()), 2)
+    const sealed = sealVersion(parseSpecDraft(draft()), 2, null)
     expect(parseSpecVersion(JSON.stringify(sealed)).based_on_version).toBe(2)
   })
 
@@ -185,6 +186,53 @@ describe('parseSpecVersion', () => {
   })
 })
 
+describe('ops on a stored version', () => {
+  it('round-trips through parseSpecVersion', () => {
+    const sealed = sealVersion(parseSpecDraft(draft()), 3, [{ op: 'remove_panel', id: 'walks' }])
+    const read = parseSpecVersion(JSON.stringify(sealed))
+    expect(read.ops).toEqual([{ op: 'remove_panel', id: 'walks' }])
+  })
+
+  // Null means "authored whole-surface". An empty array would claim it was
+  // produced by a patch that changed nothing, which is a different and
+  // impossible thing.
+  it('is null, not [], for a whole-surface version', () => {
+    const read = parseSpecVersion(JSON.stringify(sealVersion(parseSpecDraft(draft()), null, null)))
+    expect(read.ops).toBeNull()
+  })
+
+  it('reads a pre-patch stored row, which has no ops key, as null', () => {
+    const { ops, ...withoutOps } = sealVersion(parseSpecDraft(draft()), 1, null)
+    expect(parseSpecVersion(JSON.stringify(withoutOps)).ops).toBeNull()
+  })
+
+  it('rejects a model-authored ops key on the whole-surface path', () => {
+    expect(() => parseSpecDraft(draft({ ops: [] }))).toThrow(/ops/)
+  })
+
+  it('throws on a stored ops value that is not an array or null', () => {
+    const bad = JSON.stringify({ ...sealVersion(parseSpecDraft(draft()), 1, null), ops: 'nope' })
+    expect(() => parseSpecVersion(bad)).toThrow(SpecShapeError)
+  })
+
+  // Final review, Minor 10. The top-level "ops is not an array" case above
+  // was covered; the per-ELEMENT parseOp call (`rawOps.map((o, i) =>
+  // parseOp(o, ...))`) was only "correct by inspection" — untested on this
+  // read path. It matters specifically here because `specs` is append-only:
+  // a row with one malformed op, once written, can never be edited, only
+  // read forever after by exactly this function.
+  it('throws on a stored ops array containing one malformed element', () => {
+    const bad = JSON.stringify({
+      ...sealVersion(parseSpecDraft(draft()), 1, null),
+      ops: [{ op: 'remove_panel', id: 'walks' }, { op: 'not_a_real_op' }],
+    })
+    expect(() => parseSpecVersion(bad)).toThrow(SpecShapeError)
+    // Names WHICH element and why, the same diagnosability the top-level
+    // "not an array" case gets — not just "something in here is wrong".
+    expect(() => parseSpecVersion(bad)).toThrow(/ops\[1\]/)
+  })
+})
+
 describe('parseMockupInput', () => {
   it('returns the html', () => {
     expect(parseMockupInput({ mockup_html: '<!doctype html><p>COFFEE PALACE TEST</p>' })).toContain('TEST')
@@ -192,5 +240,50 @@ describe('parseMockupInput', () => {
 
   it('rejects an empty mockup', () => {
     expect(() => parseMockupInput({ mockup_html: '   ' })).toThrow(SpecShapeError)
+  })
+})
+
+describe('parseScreenMockups', () => {
+  it('accepts exactly the requested screens', () => {
+    expect(parseScreenMockups({ screens: [{ id: 'a', html: '<section/>' }] }, ['a'])).toHaveLength(1)
+  })
+
+  it('throws on a missing screen', () => {
+    expect(() => parseScreenMockups({ screens: [] }, ['a'])).toThrow(/missing screen "a"/)
+  })
+
+  it('throws on an unrequested screen', () => {
+    // The requested screen ('a') must also be present here — otherwise the
+    // missing-screen check above fires first and this never reaches the
+    // "not requested" branch it's meant to isolate.
+    expect(() =>
+      parseScreenMockups(
+        { screens: [{ id: 'a', html: 'x' }, { id: 'b', html: 'y' }] },
+        ['a'],
+      ),
+    ).toThrow(/not requested/)
+  })
+
+  it('accepts an empty call when nothing was requested', () => {
+    // A meta-only patch affects no screen; lib/spec/author.ts skips the call
+    // entirely in that case, but the parser itself must not treat "nothing
+    // requested, nothing returned" as an error.
+    expect(parseScreenMockups({ screens: [] }, [])).toEqual([])
+  })
+
+  it('returns screenId/html pairs, not the raw id/html keys', () => {
+    const [fragment] = parseScreenMockups(
+      { screens: [{ id: 'today', html: '<section class="screen">hi</section>' }] },
+      ['today'],
+    )
+    expect(fragment).toEqual({ screenId: 'today', html: '<section class="screen">hi</section>' })
+  })
+
+  it('rejects a non-array screens field', () => {
+    expect(() => parseScreenMockups({ screens: 'nope' }, ['a'])).toThrow(SpecShapeError)
+  })
+
+  it('rejects a screen entry missing html', () => {
+    expect(() => parseScreenMockups({ screens: [{ id: 'a' }] }, ['a'])).toThrow(SpecShapeError)
   })
 })

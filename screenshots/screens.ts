@@ -36,6 +36,7 @@ export type ScreenState =
   | 'invite-valid'
   | 'invite-used'
   | 'friend-new'
+  | 'friend-tweak'
   | 'friend-built'
   | 'friend-built-empty'
   | 'friend-locked'
@@ -237,6 +238,35 @@ export const SCREENS: Screen[] = [
       'The mockup preview renders actual content — not a blank white box, which is what a broken /mockup route looks like.',
       'The delivery line is present under the buttons.',
       'At 375 the preview scales to the column instead of overflowing it.',
+    ],
+  },
+  {
+    // Task 19: the card used to show the friend's ENTIRE dashboard to review a
+    // one-word relabel. This is the screen that proves the fix — a friend with
+    // an already-confirmed two-screen dashboard (Home, Money) asks for a
+    // one-word relabel on Money, and the card that streams back previews ONLY
+    // the Money screen, not Home too.
+    //
+    // WHAT THIS SHOT CANNOT TELL YOU, same caveat as mockup-document just
+    // below and for the same reason: the fragment HTML here is the SEED
+    // FIXTURE from scripts/shots.ts ('friend-tweak'), not model output — the
+    // harness never calls the live API (CLAUDE.md > Testing). This guards the
+    // scoping mechanism (composeMockup + affectedScreens, wired through
+    // ChatPanel's srcDoc) and the visual result of narrowing it; it cannot
+    // prove a real model call scopes correctly, only that a scoped document
+    // reaching this component renders as a scoped preview rather than a
+    // broken one.
+    id: 'card-proposal-scoped',
+    path: '/SLUG',
+    routeFile: 'app/[user]/ChatPanel.tsx',
+    state: 'friend-tweak',
+    live: true,
+    assertions: [
+      'The small preview shows ONLY the Money screen — one panel, "Dining". It does NOT also show the Home screen (the "Streak" panel), which is what the OLD unscoped card would have included.',
+      'The panel reads "Dining", not "Eating out" — the just-renamed label, proving this is the NEW version\'s preview and not a stale or cached one.',
+      'The card still reads as a complete, presentable mini dashboard on its own — not a cut-off fragment, not blank, not obviously missing something.',
+      'At 375 the scoped preview scales to the column the same as any other card (compare against card-proposal).',
+      'The "View full screen" control is still present — opening it is a SEPARATE screen (card-fullscreen) that intentionally shows the whole two-screen dashboard, not this scoped view.',
     ],
   },
   {

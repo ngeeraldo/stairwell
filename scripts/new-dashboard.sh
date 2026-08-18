@@ -83,7 +83,7 @@ main() {
     exit 2
   fi
 
-  mkdir -p "$dest/tests" "$dest/migrations"
+  mkdir -p "$dest/tests" "$dest/migrations" "$dest/notes"
   local f
   for f in seed.py queries.ts dashboard.tsx; do
     sed "s/__SLUG__/$slug/g" "$src/$f.tmpl" > "$dest/$f"
@@ -96,6 +96,8 @@ main() {
   # dashboard says so.
   sed "s/__SLUG__/$slug/g" "$src/migrations/README.md.tmpl" \
     > "$dest/migrations/README.md"
+  sed "s/__SLUG__/$slug/g" "$src/notes/README.md.tmpl" \
+    > "$dest/notes/README.md"
   sed "s/__SLUG__/$slug/g" "$src/tests/dashboard.test.ts.tmpl" \
     > "$dest/tests/dashboard.test.ts"
   chmod +x "$dest/seed.py"

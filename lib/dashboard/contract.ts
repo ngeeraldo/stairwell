@@ -41,10 +41,107 @@ export type DashboardProps = {
    * the browser has told the server anything; `dayKey` falls back to UTC.
    */
   timeZone: string | undefined
+  /**
+   * Which of the dashboard's own `screens` is active for this render — the
+   * id of one entry in the `screens` array the dashboard's own module
+   * exports, never a second source. app/[user]/page.tsx resolves this
+   * through `activeScreen` before calling the dashboard, so by the time a
+   * dashboard sees it, it is already validated against its own declared
+   * list — never an arbitrary `?screen=` value.
+   *
+   * STILL OPTIONAL as of task 23, deliberately, and for a different reason
+   * than task 22's original one (that reason — no dashboard declared
+   * `screens` yet — is gone now that all four do). `DashboardModule.screens`
+   * below was tightened to required because it has exactly one producer per
+   * dashboard (the module's own export) and zero legitimate readers who don't
+   * care about its value, so making it required costs nothing and buys real
+   * enforcement. `screen` is different: EVERY one of the four dashboards has
+   * exactly one screen and none branches on this prop, and every one of their
+   * own tests calls the component directly with a DashboardProps object built
+   * for readability, not completeness. Requiring it would force each of those
+   * call sites — dozens across four folders, plus every scaffold's tests
+   * hereafter — to name a field their dashboard does not read, for no
+   * type-safety gain: app/[user]/page.tsx's call site still writes
+   * `screen: active?.id`, not `active.id` — `active` is computed from a
+   * ternary that keeps a `DashboardScreen | undefined` shape on purpose (the
+   * `undefined` arm is defense in depth for a module that fails the
+   * now-required `screens` field some other way than the type system, see
+   * `DashboardModule` below), so the one real producer of this prop is
+   * itself written against the optional case, not a case that could drop the
+   * `?`. A component that starts branching on it gets full type coverage on
+   * that branch the moment it's written, optional or not. Revisit if a
+   * second screen ever needs page.tsx itself to prove it always passes one.
+   */
+  screen?: string
 }
 
 export type DashboardComponent = (
   props: DashboardProps,
 ) => ReactElement | Promise<ReactElement>
 
-export type DashboardModule = { default: DashboardComponent }
+/**
+ * A place in the app, per the spec prompt's own words. `id`/`title`/`order`
+ * mirror lib/spec/schema.ts's `Screen` fields exactly — never a second
+ * source that could drift from what the spec promised.
+ */
+export type DashboardScreen = { id: string; title: string; order: number }
+
+/**
+ * REQUIRED as of task 23: all four dashboards registered in
+ * lib/dashboard/registry.ts now export `screens`, so
+ * `Record<string, () => Promise<DashboardModule>>` enforces it at compile
+ * time for every one of them — and for anything registered from here on —
+ * rather than leaving it to a runtime sweep or Task 24 alone. It was
+ * OPTIONAL through task 22 for exactly the reason a required field would
+ * have broken: no dashboard exported it yet, and a required-but-missing
+ * field fails `npx tsc --noEmit`, not a test.
+ *
+ * A dashboard that gets it wrong (an explicit `screens: []`) still fails at
+ * RUNTIME, not compile time — TypeScript can enforce "an array exists", not
+ * "the array is non-empty". `activeScreen` still throws on that case (see
+ * below), and app/[user]/page.tsx's own `renderDashboard` still catches that
+ * throw the same way it catches a throwing `Dashboard()` call, turning it
+ * into `dashboard_error` rather than a 500. That `screens === undefined`
+ * branch in app/[user]/page.tsx's `renderDashboard` is now unreachable
+ * through the registry's real types — CORRECTED there final review, Minor 5,
+ * after this paragraph outlived being true — and is left as defense in
+ * depth rather than deleted, since the array is still supplied by a
+ * `Promise<DashboardModule>` resolved dynamically at runtime, not proven by
+ * the type system alone.
+ */
+export type DashboardModule = {
+  default: DashboardComponent
+  screens: DashboardScreen[]
+}
+
+/**
+ * Resolves the search param to one of the dashboard's own declared screens.
+ *
+ * Sorts by `order`, not array position — CLAUDE.md's screens carry an
+ * explicit order for exactly this reason, and an author is free to declare
+ * them out of sequence.
+ *
+ * Falls back to the lowest-order screen for anything that isn't a live id,
+ * rather than throwing: `?screen=` is user input (typed, bookmarked, or a
+ * stale link from a dashboard that dropped a tab), and a typo must not be a
+ * dead end — it lands on the same surface a bare `/<slug>` would.
+ *
+ * The empty-list case is different in kind, not degree: a REGISTERED
+ * dashboard declaring zero screens is not user input, it is the dashboard's
+ * own module violating its contract, and papering over it with a synthetic
+ * screen would hide that defect behind a page that quietly renders nothing
+ * useful. It throws, and the caller's existing dashboard_error path — the
+ * same one that already catches a throwing Dashboard() call — is what turns
+ * it into "This dashboard failed to load" instead of a 500.
+ */
+export function activeScreen(
+  screens: DashboardScreen[],
+  requested: string | undefined,
+): DashboardScreen {
+  if (screens.length === 0) {
+    throw new Error('activeScreen: a registered dashboard must declare at least one screen')
+  }
+  const sorted = [...screens].sort((a, b) => a.order - b.order)
+  const match = requested === undefined ? undefined : sorted.find((s) => s.id === requested)
+  return match ?? sorted[0]!
+}

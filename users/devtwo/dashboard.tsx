@@ -7,8 +7,13 @@
 // directly inside a try/catch; a nested React function component's body would
 // run later, during Next's render pass, outside that catch — turning a broken
 // panel into a 500 for the whole page instead of a degraded region.
-import type { DashboardProps } from '@/lib/dashboard/contract'
+import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
 import { currentStreak, last14, last30, walkedOn } from './queries'
+
+// devtwo predates the spec loop entirely — hand-written, with no spec.md to
+// pull an id/title from. One screen: today's walk status, the streak, the
+// 30-day rate, and the 14-day history — the whole daily walk check.
+export const screens: DashboardScreen[] = [{ id: 'morning', title: 'Daily walk', order: 1 }]
 
 export default function DevTwoDashboard({ slug, db, today }: DashboardProps) {
   // Handed down, never derived: the walk route files a tap under a day, and
