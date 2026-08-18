@@ -23,7 +23,7 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 | `docs/superpowers/ledgers/friend-timezone.md` | Why the day belongs to the friend, and what the bug cost. |
 | `users/devone/` | The worked reference. Its README: "Copy this folder's shape when building a real dashboard." |
 | `users/<slug>/spec.md` + `mockup.html` | The build contract for this friend. |
-| `docs/runbook.md` | The operator sequence around the build. |
+| `docs/runbook.md` | The operator sequence around the build — step 7 is the commands, in order. This file is why they are what they are; that one does not repeat it. |
 
 ---
 
@@ -59,6 +59,16 @@ this does not go stale again the next time a line moves.
   cannot know which versions were built — and is enforced instead by
   `scripts/announce-deploy.ts`, which refuses to announce a version with no
   matching note.
+- **A build note never carries the friend's data.** `notes/` is committed to the
+  repo, so a note describes the SHAPE of what was built — a table, a panel, a
+  computation — never a row, a value, or a merchant. The same bound `metrics`
+  carries (§7), applied to a second artifact — CLAUDE.md > Dashboard folder
+  conventions, `users/<slug>/notes/README.md`.
+- A note is the only record of what actually SHIPPED. `spec.md` is overwritten
+  by the next pull (§8) and records what was *asked for* — the two answer
+  different questions, and only one of them survives a pull —
+  `scripts/announce-deploy.ts`, which speaks from the note and refuses a version
+  that has none.
 - A folder has four legitimate-or-not states, and only one is a defect
   (`tests/users/conventions.test.ts`):
   - **pulled** — `spec.md`/`mockup.html` only. Not started; allowed.
@@ -72,10 +82,15 @@ this does not go stale again the next time a line moves.
 - A dashboard renders only if registered in `lib/dashboard/registry.ts`, one
   line: `<slug>: () => import('@/users/<slug>/dashboard'),`. A folder with no
   registry line fails `tests/dashboard/registry.test.ts` — CLAUDE.md.
-- `hasDashboard()` is also what decides whether their chat opens collapsed, so
-  the registry line is what "the dashboard shipped" means to the app —
-  `docs/runbook.md` step 7. With no loader, the page returns `PlaceholderCard`
-  (`app/[user]/page.tsx:76`).
+- `hasDashboard()` (`lib/dashboard/registry.ts`) is also what decides whether
+  their chat opens collapsed — `app/[user]/page.tsx`'s `chatOpenByDefault` — so
+  the registry line is what "the dashboard shipped" *means* to the app. With no
+  loader, that page returns `PlaceholderCard` instead.
+
+  CORRECTED (runbook split): this cited `docs/runbook.md` step 7, which no
+  longer carries the reasoning — the runbook keeps the line to paste, this file
+  keeps why it matters. The `app/[user]/page.tsx:76` it also cited had drifted
+  to 141; by name now, same lesson as Minor 7 above.
 - Scaffold with `./scripts/new-dashboard.sh <slug>`; do not copy by hand —
   CLAUDE.md.
 
@@ -116,6 +131,52 @@ resolves any of them itself** — CLAUDE.md.
   function component) matters: a dashboard's own `<Tabs>` would be one —
   CLAUDE.md > Dashboard folder conventions, `lib/dashboard/contract.ts`.
 
+### What that looks like
+
+Take `id`/`title`/`order` for each screen straight from `spec.md`'s own
+`## Screens` section — never a second source that could drift from what the
+spec promised:
+
+```ts
+export const screens: DashboardScreen[] = [
+  { id: 'morning', title: 'Morning', order: 1 },
+  { id: 'evening', title: 'Evening', order: 2 },
+]
+
+export default function Dashboard({ slug, screen }: DashboardProps) {
+  if (screen === 'evening') {
+    return (
+      <section>
+        <h2>Evening</h2>
+      </section>
+    )
+  }
+  return (
+    <section>
+      <h2>Morning</h2>
+    </section>
+  )
+}
+```
+
+Branch on `screen` and return host elements. **No tab strip of your own** —
+`app/[user]/page.tsx` draws it above whatever this returns, as plain
+server-rendered `<a href="?screen=...">` anchors reading this exported array,
+and it does that by CALLING this component (`Dashboard(...)`, not
+`<Dashboard />`) so the whole render sits inside the page's own `try`/`catch`.
+A `<Tabs>` component returned from here would be a nested function component,
+whose body React defers to its own render pass, OUTSIDE that catch — a throw
+there 500s the page after the `dashboard_open` metric row has already been
+written.
+
+`screens` is REQUIRED. An empty array throws at render (`activeScreen`, caught
+into `dashboard_error` rather than a 500). `tests/users/conventions.test.ts`
+proves shape only — ids unique, orders are integers, the array is non-empty —
+never that a screen's content is right or that the tabs read well next to each
+other. That is what §12 and the runbook's "See it on a screen" are for. The tab
+strip does not appear at all below two screens: a single tab is chrome that
+explains nothing.
+
 ---
 
 ## 4. Writes
@@ -132,8 +193,11 @@ resolves any of them itself** — CLAUDE.md.
   A third is a change to the 2026-08-15 migrations design, not a refactor.
 - Every write goes through a platform route, which is the only place the four
   ordered auth checks live — CLAUDE.md.
-- A friend who logs anything needs their own route alongside the walk route; it
-  is not a refactor of an existing one — `docs/runbook.md` step 7.
+- A friend who logs anything needs **their own route** alongside
+  `app/api/users/[user]/walk/route.ts` — the worked example, not a thing to
+  refactor into a shared one. Budget for it while you are reading the spec: a
+  dashboard with an entry widget is two pieces of work, and the route is where
+  the four ordered auth checks live — CLAUDE.md > Dashboard folder conventions.
 - Per-user `tests/` should cover write paths when the dashboard has one, not just
   rendering. `users/devtwo/tests/write.test.ts` is the worked example. This is a
   convention and a scaffold, not a sweep gate — CLAUDE.md.
