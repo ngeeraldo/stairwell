@@ -26,6 +26,7 @@ type Behaviour =
   | 'propose-ok'
   | 'propose-fail'
   | 'propose-staged'
+  | 'propose-slow'
 const behaviour: { value: Behaviour } = { value: 'ok' }
 
 vi.mock('@/lib/chat/client', async (importOriginal) => {
@@ -73,6 +74,9 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
 // authorSpec is a real dependency of the route (lib/spec/author.ts), not part
 // of the chat client. Mocked separately so tests can choose success/failure
 // without having to satisfy the real spec schema.
+/** Set by the 'propose-slow' double; called by a test to let authoring finish. */
+const slowAuthoring: { release?: () => void } = {}
+
 const PROPOSAL_FIXTURE = {
   id: 7,
   version: 1,
@@ -104,6 +108,14 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
         // What the real authorSpec does at the same point: the spec came back
         // and validated, and the slow call is starting.
         input.onStage?.('mockup')
+        return PROPOSAL_FIXTURE
+      }
+      if (behaviour.value === 'propose-slow') {
+        // An authoring call that does not return until the test says so —
+        // the 47-97 second window the heartbeat exists to keep warm.
+        await new Promise<void>((resolve) => {
+          slowAuthoring.release = resolve
+        })
         return PROPOSAL_FIXTURE
       }
       if (behaviour.value === 'propose-ok') return PROPOSAL_FIXTURE
@@ -142,6 +154,18 @@ async function post(body: unknown) {
       method: 'POST',
       body: JSON.stringify(body),
       headers: { 'content-type': 'application/json' },
+    }),
+  )
+}
+
+async function postWithSignal(body: unknown, signal: AbortSignal) {
+  const { POST } = await import('@/app/api/chat/route')
+  return POST(
+    new Request('http://localhost/api/chat', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'content-type': 'application/json' },
+      signal,
     }),
   )
 }
@@ -310,6 +334,56 @@ describe('POST /api/chat', () => {
 
     const { readTranscript } = await import('@/lib/db/appendOnly')
     expect(readTranscript(handle!, accountId)).toHaveLength(0)
+  })
+
+  it('beats while the authoring call is slow, so the connection never goes silent', async () => {
+    // The regression this exists for: between the reply finishing and the
+    // proposal coming back, the route used to send nothing for 47-97 seconds,
+    // and 5 of 12 authoring attempts died in that window with the client
+    // connection torn down (unified-loop ledger D13).
+    const { HEARTBEAT_MS } = await import('@/lib/chat/heartbeat')
+    await signIn(false)
+    behaviour.value = 'propose-slow'
+
+    vi.useFakeTimers()
+    try {
+      const res = await postWithSignal({ body: 'hi' }, new AbortController().signal)
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_MS * 3 + 10)
+      slowAuthoring.release!()
+      const got = await lines(res)
+
+      expect(got.filter((l) => (l as { hb?: number }).hb === 1)).toHaveLength(3)
+      // The beats did not displace anything: the real turn still completed.
+      expect(got.some((l) => (l as { proposal?: unknown }).proposal)).toBe(true)
+      expect(got.at(-1)).toEqual({ done: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops beating the moment the client goes away', async () => {
+    // enqueue() onto a controller whose consumer has disconnected throws, and
+    // this one fires on a timer with no request left to fail.
+    const { HEARTBEAT_MS } = await import('@/lib/chat/heartbeat')
+    await signIn(false)
+    behaviour.value = 'propose-slow'
+
+    vi.useFakeTimers()
+    try {
+      const aborter = new AbortController()
+      const res = await postWithSignal({ body: 'hi' }, aborter.signal)
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_MS + 10)
+      aborter.abort()
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_MS * 5)
+      slowAuthoring.release!()
+      const got = await lines(res)
+
+      expect(got.filter((l) => (l as { hb?: number }).hb === 1)).toHaveLength(1)
+      // And the abort still suppresses the terminal line, unchanged.
+      expect(got.some((l) => (l as { done?: boolean }).done)).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('sends NDJSON, not JSON', async () => {

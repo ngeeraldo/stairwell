@@ -623,12 +623,15 @@ block anything, and all are cheap:
     (step-3 residual 7, step-4 residual 8, unchanged). Should close before the first
     real user account exists.
 
-13. **OPEN, UNDIAGNOSED — a proposal intermittently dies with the friend told a lie.**
-    Seen twice in a row on the checkpoint run, then not on the third attempt, with
-    no code change in between. It is the most user-visible defect known about this
-    branch and it has no root cause. Everything below is fact, gathered before the
-    trail went cold; the theories that were *ruled out* are recorded because
-    re-deriving them costs an hour.
+13. **OPEN — a proposal intermittently dies with the friend told a lie.**
+    Five failures in twelve authoring attempts across four accounts and several
+    days, with no code change between a failure and a success. It is the most
+    user-visible defect known about this branch and it still has no root cause,
+    though the shape is now much better understood — see the duration table
+    below. UPDATED 2026-08-18 after a fourth and fifth occurrence: one theory
+    below is WITHDRAWN as a misreading, and a mitigation has shipped. The
+    theories that were *ruled out* are recorded because re-deriving them costs
+    an hour, and the withdrawn one is kept for exactly the same reason.
 
     **What the friend sees.** The agent replies, "Putting together a preview…"
     appears, and then the turn is marked **"interrupted — not saved"** with a retry
@@ -665,13 +668,48 @@ block anything, and all are cheap:
     context died while Caddy was reading from Next.js — the browser went away, not
     a proxy or server timeout.
 
-    **The unexplained part.** Those request windows do not contain the `chat_turn`
-    timestamps. The first `chat_turn` was written at `01:12:06.693`; the first
-    aborted request did not start until `~01:12:38.6`. So **there were more
-    `/api/chat` requests than messages the friend sent**, and the ones being
-    cancelled were short-lived. On the successful third attempt, DevTools showed
-    exactly one `/api/chat` request. Something occasionally fires extra POSTs and
-    abandons them; the mechanism is unknown and is client-side.
+    **The unexplained part — WITHDRAWN 2026-08-18, it was a misreading.** This
+    entry used to say: the aborted request windows do not contain the
+    `chat_turn` timestamps, therefore **there were more `/api/chat` requests
+    than messages the friend sent**, and something client-side fires extra POSTs
+    and abandons them. That inference was drawn by subtracting Caddy's
+    `duration` field from the warning's `ts` to get a request start time. It
+    does not survive a fourth occurrence:
+
+    - The `run5` abort (2026-08-18 15:13:57 UTC) has `duration: 3.41s`, implying
+      a start 36.5s AFTER the `chat_turn` it belongs to — the same arithmetic,
+      the same apparent phantom.
+    - But the aborted request carries `Content-Length: 81`, and the user message
+      committed at 15:13:14 is 69 chars: `{"body":"<69 chars>"}` is 80-81 bytes.
+      It is THAT message's request, not a second one.
+    - A second POST would have written its own user transcript row before the
+      model call (`lib/chat/turn.ts` appends the user row up front, so an
+      aborted turn leaves a user row with no assistant row). There is none. No
+      `stream_aborted` row either.
+
+    So there was one request, and `duration` on that warning is not the request's
+    wall-clock lifetime. The DevTools observation of exactly one request on the
+    successful attempt was never in tension with anything. **Do not re-derive
+    the phantom-POST theory** — and note the confirming evidence came from a
+    field (`Content-Length`) already present in the log the first time.
+
+    **What the pattern actually is.** Every authoring attempt in the platform's
+    history, timed from the preceding `chat_turn` to its outcome row:
+
+    | Outcome | Durations |
+    |---|---|
+    | `spec_aborted` | 8.0s, 17.3s, 18.2s, 36.5s, 40.0s |
+    | `spec_proposed` | 47.0s, 50.6s, 65.5s, 72.3s, 76.0s, 90.5s, 97.5s |
+
+    Five of twelve attempts died. Every abort landed EARLIER than the fastest
+    success, and at no repeating value — so it is not a deadline of ours
+    (`SPEC_TIMEOUT_MS` is 180s), not a proxy timeout (`deploy/Caddyfile`
+    configures none), and not a fixed timer anywhere. What the five share is a
+    connection that had carried no bytes for a while.
+
+    Also worth reading off that table: a successful proposal takes up to 97
+    seconds, while `platform/prompts/agent-v5.md` has the agent promise "about a
+    minute". The promise is already being overrun on the successes.
 
     **Ruled out, with reasons:**
     - *Compression buffering hiding the spinner.* The friend confirmed
@@ -681,15 +719,33 @@ block anything, and all are cheap:
       observed durations were 3–5s rather than a constant, and Caddy's own log
       attributes the cancellation to the client.
 
-    **The fix that is justified regardless of root cause**, and was not made because
-    the trail went cold rather than because it was judged unnecessary: the server
-    sends nothing for the entire authoring wait. A heartbeat line the panel ignores
-    would keep the connection non-idle and make the wait legible. Alongside it, two
-    design questions that are Nico's: whether the panel should distinguish
-    "preview failed" from "nothing saved" (it should), and whether `authorSpec`
-    should be tied to `request.signal` at all — today a friend closing a laptop
-    mid-preview cancels billed work and gets nothing, where the proposal could
-    instead be waiting when they come back.
+    **SHIPPED 2026-08-18: the heartbeat** (`lib/chat/heartbeat.ts`, wired in
+    `app/api/chat/route.ts`). A `{"hb":1}` line every 5 seconds for the whole
+    request — 5s because the shortest torn-down silent window measured was 8.0s.
+    The panel needs no branch for it: `applyLine` returns state untouched for a
+    line carrying none of the fields it dispatches on, which is now pinned by a
+    test rather than left as an accident.
+
+    **It ships as an experiment as much as a fix, and the next reader should
+    treat it that way.** Idleness is a HYPOTHESIS, not a diagnosis. If aborts
+    continue at the same rate with beats flowing, idleness was never the
+    mechanism and the cause is in the client's own environment (wifi roam, VPN
+    re-key, laptop idling) — lowering the interval would be the wrong response.
+    `deploy/Caddyfile` gained an access log in the same commit so the next
+    occurrence shows every request's start, duration and status instead of only
+    its corpse.
+
+    **Still open, and NOT addressed by the heartbeat:**
+    - The panel's marker still cannot distinguish "preview failed" from "nothing
+      saved". The `run5` turn was fully committed — both transcript rows, plus
+      `chat_turn` — and the screen said "not saved" and offered a retry that
+      writes a duplicate user row into an append-only table. This is the
+      most user-visible defect on this branch and it is independent of the
+      disconnect.
+    - Whether `authorSpec` should be tied to `request.signal` at all. Today a
+      friend closing a laptop mid-preview cancels billed work and gets nothing,
+      where the proposal could instead be waiting when they come back. Nico's
+      call.
 
 ## Deferred, accepted
 

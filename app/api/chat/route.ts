@@ -15,6 +15,7 @@ import { AGENT_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import { runTurn } from '@/lib/chat/turn'
 import { conversationAlerter } from '@/lib/alerts/ntfy'
 import { authorSpec as authorSpecImpl } from '@/lib/spec/author'
+import { HEARTBEAT_LINE, startHeartbeat } from '@/lib/chat/heartbeat'
 
 const encoder = new TextEncoder()
 const line = (value: unknown) => encoder.encode(`${JSON.stringify(value)}\n`)
@@ -123,6 +124,26 @@ export async function POST(request: Request) {
       // call's metrics should reflect the same "kind of run" for this
       // request, not two reads of a value that could change between them.
       const context = contextFor(db, session.account_id)
+
+      // NOTHING GOES DOWN THIS CONNECTION WHILE THE SLOW WORK RUNS.
+      //
+      // Between the reply finishing and the authored proposal coming back, the
+      // server sends no bytes for 47-97 seconds, and 5 of the platform's 12
+      // authoring attempts have died in that window with the client's
+      // connection torn down (unified-loop ledger D13). This keeps a byte on
+      // the wire throughout.
+      //
+      // Started HERE rather than inside the authorSpec callback below, which is
+      // where the authoring wait actually begins: the gap before the model's
+      // first token is the same hazard on a smaller scale, and one timer
+      // spanning the whole request covers both without a second mechanism.
+      // Heartbeats interleaving with `{t:...}` chunks is harmless — the panel
+      // ignores a line carrying no field it dispatches on.
+      const stopHeartbeat = startHeartbeat({
+        beat: () => controller.enqueue(line(HEARTBEAT_LINE)),
+        stopped: () => request.signal.aborted,
+      })
+
       const outcome = await runTurn(
         {
           db,
@@ -164,7 +185,7 @@ export async function POST(request: Request) {
             if (!request.signal.aborted) controller.enqueue(line({ t: text }))
           },
         },
-      )
+      ).finally(stopHeartbeat)
 
       // Only when a proposal was ATTEMPTED. An ordinary turn — the tool was
       // never called — emits neither line, distinct from an attempt that

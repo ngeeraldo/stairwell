@@ -24,6 +24,7 @@ import ChatPanel, {
 } from '@/app/[user]/ChatPanel'
 import type { SpecVersion } from '@/lib/spec/schema'
 import { CSP_META } from '@/lib/spec/banner'
+import { HEARTBEAT_LINE } from '@/lib/chat/heartbeat'
 
 // tsconfig.json sets "jsx": "preserve" for Next's own SWC compiler, which
 // auto-injects the JSX runtime import. vitest's esbuild transform instead
@@ -1124,6 +1125,48 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
     const failed = applyLine(waiting, { proposal_error: true })
     expect(failed.authoring).toBe(false)
     expect(failed.proposalError).toBe(true)
+  })
+
+  it('ignores a heartbeat line completely — it is not text, and it is not a state change', () => {
+    // The server now puts a byte on the wire every few seconds during the
+    // authoring wait (lib/chat/heartbeat.ts). It must be inert here: appended
+    // to no turn's body, and changing no field. A heartbeat that leaked into
+    // `t` would write "{}" into the friend's reply on screen.
+    const waiting = applyLine(EMPTY_PANEL, { authoring: true })
+    const beaten = applyLine(waiting, HEARTBEAT_LINE)
+    expect(beaten).toEqual(waiting)
+  })
+
+  it('a heartbeat is not mistaken for the terminal done line', () => {
+    // If it were, a stream that really did die mid-authoring would render as a
+    // completed turn — the exact opposite of the marker bug, and worse: it
+    // would claim a proposal was coming that never arrives.
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: [{ role: 'assistant', body: '', at: 1000 }] }
+    const state = applyTurn(seeded, [
+      { t: 'partial' },
+      { authoring: true },
+      HEARTBEAT_LINE,
+    ])
+    expect(state.turns.at(-1)?.interrupted).toBe(true)
+  })
+
+  it('a turn whose stream carried heartbeats still completes normally', () => {
+    // applyTurn folds the same primitives send()'s read loop calls, so this is
+    // the real per-line path with beats interleaved where they really land.
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: [{ role: 'assistant', body: '', at: 1000 }] }
+    const state = applyTurn(seeded, [
+      { t: 'Dropped. ' },
+      HEARTBEAT_LINE,
+      { authoring: true },
+      HEARTBEAT_LINE,
+      HEARTBEAT_LINE,
+      { proposal: PROPOSAL },
+      { done: true },
+    ])
+    expect(state.turns.at(-1)?.body).toBe('Dropped. ')
+    expect(state.turns.at(-1)?.interrupted).toBeUndefined()
+    expect(state.proposals).toEqual([PROPOSAL])
+    expect(state.authoring).toBe(false)
   })
 
   it('finishTurn marks the last turn interrupted only when done never arrived', () => {
