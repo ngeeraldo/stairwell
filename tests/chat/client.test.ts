@@ -322,3 +322,63 @@ describe('PROPOSE_TOOL', () => {
     expect(PROPOSE_TOOL.input_schema.properties).toEqual({})
   })
 })
+
+describe('isTransient — which failures another attempt could fix', () => {
+  const shape = (over: Partial<import('@/lib/chat/client').ErrorShape> = {}) => ({
+    kind: 'api_error',
+    status: null,
+    type: null,
+    ...over,
+  })
+
+  it('treats a mid-stream overloaded_error as transient', async () => {
+    // The exact failure that killed a proposal in production on 2026-08-18:
+    // the spec call had already succeeded and been billed 4704 output tokens,
+    // then the mockup call took `{"type":"error","error":{"type":
+    // "overloaded_error"}}` mid-stream and the whole proposal was discarded.
+    // status is null because it arrived as a stream EVENT, not an HTTP status,
+    // which is also why the SDK's own retry could not cover it.
+    const { isTransient } = await import('@/lib/chat/client')
+    expect(isTransient(shape({ type: 'overloaded_error' }))).toBe(true)
+  })
+
+  it('treats rate limits, 5xx and connection failures as transient', async () => {
+    const { isTransient } = await import('@/lib/chat/client')
+    expect(isTransient(shape({ kind: 'rate_limit', status: 429 }))).toBe(true)
+    expect(isTransient(shape({ kind: 'internal_server', status: 500 }))).toBe(true)
+    expect(isTransient(shape({ kind: 'api_error', status: 529 }))).toBe(true)
+    expect(isTransient(shape({ kind: 'connection' }))).toBe(true)
+    expect(isTransient(shape({ kind: 'connection_timeout' }))).toBe(true)
+  })
+
+  it('never treats an abort as transient', async () => {
+    // Retrying an abort spends the friend's money on work nobody is waiting
+    // for. This is the one entry that must never flip.
+    const { isTransient } = await import('@/lib/chat/client')
+    expect(isTransient(shape({ kind: 'aborted' }))).toBe(false)
+  })
+
+  it('does not retry a request that was wrong on its own terms', async () => {
+    const { isTransient } = await import('@/lib/chat/client')
+    for (const kind of [
+      'bad_request',
+      'authentication',
+      'permission_denied',
+      'not_found',
+      'unprocessable_entity',
+      'conflict',
+      'sdk_error',
+      'unknown_error',
+      'unknown',
+    ]) {
+      expect(isTransient(shape({ kind, status: 400 }))).toBe(false)
+    }
+  })
+
+  it('classifies the UNKNOWN_ERROR fallback as non-transient', async () => {
+    // What author.ts substitutes for anything that is not a ChatStreamError —
+    // a validator throw, a compose failure. Another sample fixes none of them.
+    const { isTransient, UNKNOWN_ERROR } = await import('@/lib/chat/client')
+    expect(isTransient(UNKNOWN_ERROR)).toBe(false)
+  })
+})

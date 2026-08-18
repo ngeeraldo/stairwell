@@ -21,6 +21,7 @@ import {
   CHAT_MODEL,
   ChatStreamError,
   UNKNOWN_ERROR,
+  isTransient,
   type ChatClient,
   type ProposeResult,
   type Served,
@@ -138,6 +139,28 @@ export type AuthorInput = {
  */
 export const MAX_SPEC_ATTEMPTS = 2
 
+/**
+ * How many times the MOCKUP call may run for one proposal.
+ *
+ * Two, and for a different reason than MAX_SPEC_ATTEMPTS above. That retry is
+ * for a draft the validator rejected, and it deliberately does not fire for
+ * API errors on the grounds that "another sample will not fix" them. That
+ * reasoning is right for a truncated or unparsable reply and WRONG for a
+ * capacity error, which is transient by definition — see `isTransient`.
+ *
+ * The asymmetry that justifies paying for a retry here: by the time the mockup
+ * call runs, the spec call has already returned a VALIDATED draft and been
+ * billed for it. Losing the mockup throws all of that away and gives the
+ * friend nothing, where a second attempt costs one more mockup call. On
+ * 2026-08-18 a proposal died exactly this way, discarding 4704 billed output
+ * tokens of good spec.
+ *
+ * Two and not more because the friend is watching a spinner the whole time and
+ * this is the slow call: a third attempt could push the wait past three
+ * minutes for a promise of "about a minute".
+ */
+export const MAX_MOCKUP_ATTEMPTS = 2
+
 /** Honest defaults for a call that failed before the API reported anything. */
 const NO_USAGE: Usage = { input: 0, output: 0, cache_read: 0, cache_creation: 0 }
 const NO_SERVED: Served = { model_served: CHAT_MODEL, fallback_fired: false }
@@ -168,12 +191,14 @@ const NO_SERVED: Served = { model_served: CHAT_MODEL, fallback_fired: false }
 function mockupFields(
   usage: Usage | undefined,
   promptSha: string | null,
+  attempt: number,
 ): {
   mockup_input: number | null
   mockup_output: number | null
   mockup_cache_read: number | null
   mockup_cache_creation: number | null
   mockup_prompt_sha: string | null
+  mockup_attempt: number
 } {
   return {
     mockup_input: usage?.input ?? null,
@@ -181,6 +206,12 @@ function mockupFields(
     mockup_cache_read: usage?.cache_read ?? null,
     mockup_cache_creation: usage?.cache_creation ?? null,
     mockup_prompt_sha: promptSha,
+    // WHICH mockup attempt produced this row, so a retry that saved a proposal
+    // is visible in the log rather than looking like a first-try success.
+    // Zero means the call never happened (a meta-only patch draws nothing) —
+    // distinct from one, which means it ran and did not need retrying. A count
+    // and nothing else: no screen id, no title (CLAUDE.md > metrics bound).
+    mockup_attempt: attempt,
   }
 }
 
@@ -383,6 +414,12 @@ export async function authorSpec(
   // mockup_html nobody can trace back to the text that produced it, in two
   // tables that can never be backfilled.
   let mockupPromptSha: string | null = null
+  // Which mockup attempt is running, and afterwards which one produced the
+  // outcome. Declared out here beside mockupPromptSha, and for the same
+  // reason: the outer catch reports it too, and a row claiming attempt 1 for a
+  // failure that had already burned its retry would understate what was spent.
+  // Stays 0 when the call never happens.
+  let mockupAttempt = 0
   // Which spec attempt produced the outcome. Every row this function writes
   // carries it, so the log distinguishes "the model got it right first time"
   // from "it took the retry". Zero means no spec call was made at all — the
@@ -683,23 +720,55 @@ export async function authorSpec(
       if (affected.length > 0) {
         const mockupPrompt = loadPrompt(MOCKUP_SCREENS_PROMPT)
         mockupPromptSha = mockupPrompt.sha
-        mockupResult = await client.propose({
-          system: mockupPrompt.text,
-          // Only the affected screens, from the VALIDATED draft (ledger D7) —
-          // a mockup generated from anything else could show a panel the spec
-          // does not contain, which is a promise made on the friend's behalf.
-          messages: [
-            {
-              role: 'user',
-              content: JSON.stringify({
-                title: draft.title,
-                screens: draft.screens.filter((s) => affected.includes(s.id)),
-              }),
-            },
-          ],
-          signal: input.signal,
-          schema: SCREEN_MOCKUP_JSON_SCHEMA,
-        })
+        // RETRIED ON A TRANSIENT FAILURE, unlike the spec call above.
+        //
+        // Only the model call is inside this loop. parseScreenMockups and
+        // composeMockup stay outside it deliberately: those failures mean the
+        // reply was complete and WRONG (a screen omitted, a fragment that will
+        // not compose), and re-rolling the same request is not a fix for
+        // either — it is the "another sample will not fix it" case, which here
+        // really does apply.
+        //
+        // `isTransient` decides, never a status code read inline: a mid-stream
+        // overloaded_error carries no status at all, which is precisely the
+        // failure this loop was added for.
+        while (true) {
+          mockupAttempt += 1
+          try {
+            mockupResult = await client.propose({
+              system: mockupPrompt.text,
+              // Only the affected screens, from the VALIDATED draft (ledger
+              // D7) — a mockup generated from anything else could show a panel
+              // the spec does not contain, which is a promise made on the
+              // friend's behalf.
+              messages: [
+                {
+                  role: 'user',
+                  content: JSON.stringify({
+                    title: draft.title,
+                    screens: draft.screens.filter((s) => affected.includes(s.id)),
+                  }),
+                },
+              ],
+              signal: input.signal,
+              schema: SCREEN_MOCKUP_JSON_SCHEMA,
+            })
+            break
+          } catch (error) {
+            const shape = error instanceof ChatStreamError ? error.shape : UNKNOWN_ERROR
+            // Three separate reasons to give up, and the abort check is not
+            // redundant with isTransient's own: the signal can have been
+            // aborted by the time we get here even when the throw itself was a
+            // capacity error, and nobody is waiting for the answer.
+            if (
+              mockupAttempt >= MAX_MOCKUP_ATTEMPTS ||
+              !isTransient(shape) ||
+              input.signal.aborted
+            ) {
+              throw error
+            }
+          }
+        }
 
         for (const f of parseScreenMockups(mockupResult.input, affected)) {
           fragments.set(f.screenId, f.html)
@@ -754,7 +823,7 @@ export async function authorSpec(
           attempt,
           message: metricMessage(error),
           ...modeFields(mode, patch),
-          ...mockupFields(mockupResult?.usage ?? shape.usage, mockupPromptSha),
+          ...mockupFields(mockupResult?.usage ?? shape.usage, mockupPromptSha, mockupAttempt),
         },
       })
       return undefined
@@ -847,7 +916,7 @@ export async function authorSpec(
         // where a returning model call's usage reaches no metrics row at all
         // — and the one stored mockup_html nobody could tie back to its
         // prompt.
-        ...mockupFields(mockupResult?.usage, mockupPromptSha),
+        ...mockupFields(mockupResult?.usage, mockupPromptSha, mockupAttempt),
       },
     })
 
@@ -913,7 +982,7 @@ export async function authorSpec(
         attempt,
         message: metricMessage(error),
         ...modeFields(mode, patch),
-        ...mockupFields(mockupResult?.usage, mockupPromptSha),
+        ...mockupFields(mockupResult?.usage, mockupPromptSha, mockupAttempt),
       },
     })
     return undefined

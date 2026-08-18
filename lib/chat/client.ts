@@ -263,6 +263,56 @@ function kindOf(error: unknown): string {
   return 'unknown'
 }
 
+/**
+ * Error kinds where a second attempt is a different roll of the dice rather
+ * than the same failure again.
+ *
+ * `api_error` is in here as the RESIDUAL APIError bucket, and that is
+ * deliberate: every failure that is wrong on its own terms — bad_request,
+ * authentication, permission_denied, not_found, unprocessable_entity,
+ * conflict — has its own kind above it in kindOf's ordered chain, so what
+ * reaches `api_error` is a server-side condition with no dedicated class.
+ * A 529 lands here.
+ *
+ * `aborted` is NOT in here and must never be: retrying an abort spends money
+ * on work nobody is waiting for.
+ */
+const TRANSIENT_KINDS = new Set([
+  'connection',
+  'connection_timeout',
+  'rate_limit',
+  'internal_server',
+  'api_error',
+])
+
+/**
+ * Whether another attempt at the same call could plausibly succeed.
+ *
+ * Written for the mockup call in `lib/spec/author.ts`, which was one-shot
+ * until 2026-08-18. On that day a proposal died with `mockup_failed` /
+ * `overloaded_error` AFTER the spec call had returned a valid draft and been
+ * billed 4704 output tokens — all of it discarded because the second of the
+ * two calls hit Anthropic capacity at the wrong instant.
+ *
+ * WHY THE SDK'S OWN RETRIES DO NOT COVER THIS. `propose` streams
+ * (`.stream(...).finalMessage()`), and the SDK can only retry a request that
+ * failed before a response began. An `overloaded_error` delivered as a stream
+ * EVENT arrives mid-response — which is exactly why the recorded shape carried
+ * `type: 'overloaded_error'` with `status: null`, a combination no HTTP-level
+ * retry policy can see.
+ *
+ * Checked on `type` and `status` BEFORE `kind`, because the informative field
+ * differs by transport: a mid-stream error event has a `type` and no status,
+ * while an HTTP failure has a status and may have neither a useful `type` nor
+ * a dedicated class.
+ */
+export function isTransient(shape: ErrorShape): boolean {
+  if (shape.kind === 'aborted') return false
+  if (shape.type === 'overloaded_error') return true
+  if (shape.status !== null && (shape.status === 429 || shape.status >= 500)) return true
+  return TRANSIENT_KINDS.has(shape.kind)
+}
+
 export function describeError(error: unknown): ErrorShape {
   return {
     kind: kindOf(error),

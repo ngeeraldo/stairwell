@@ -10,7 +10,7 @@ import { CHAT_MODEL, ChatStreamError, type ChatClient, type Usage } from '@/lib/
 import { SCREEN_MOCKUP_JSON_SCHEMA, type Panel } from '@/lib/spec/schema'
 import { PATCH_JSON_SCHEMA } from '@/lib/spec/patch'
 import { readStoredSpec } from '@/lib/spec/stored'
-import { authorSpec } from '@/lib/spec/author'
+import { authorSpec, MAX_MOCKUP_ATTEMPTS } from '@/lib/spec/author'
 import { insertScreenMockups, readScreenMockups } from '@/lib/db/screenMockups'
 
 let dir: string
@@ -123,6 +123,12 @@ type FakeOptions = {
    * not have to know which screens will be asked for.
    */
   mockup?: unknown
+  /**
+   * One outcome PER mockup call, for retry tests. An Error entry throws; `null`
+   * means "behave like the default and draw the requested screens". Takes
+   * precedence over `mockup` when both are set.
+   */
+  mockups?: unknown[]
   mockupUsage?: Usage
   /** Fires on every propose() call, before it returns — used to abort mid-flight. */
   onCall?: () => void
@@ -136,6 +142,7 @@ function fake(options: FakeOptions = {}) {
   // mentioning `drafts` should not have to know or care which shape the
   // writer was actually asked for.
   const drafts = options.drafts === undefined ? undefined : [...options.drafts]
+  const mockups = options.mockups === undefined ? undefined : [...options.mockups]
 
   const client = {
     async stream() {
@@ -146,7 +153,22 @@ function fake(options: FakeOptions = {}) {
       options.onCall?.()
 
       if (schema === SCREEN_MOCKUP_JSON_SCHEMA) {
-        if (options.mockup !== undefined) {
+        if (mockups !== undefined) {
+          const next = mockups.shift()
+          if (next === undefined) {
+            throw new Error('mockup propose() called more times than the test supplied outcomes')
+          }
+          if (next instanceof Error) throw next
+          if (next !== null) {
+            return {
+              input: next,
+              usage: options.mockupUsage ?? MOCKUP_USAGE,
+              stop_reason: 'end_turn',
+              served: SERVED,
+            }
+          }
+          // null: fall through to the default "draw what was asked for" path.
+        } else if (options.mockup !== undefined) {
           if (options.mockup instanceof Error) throw options.mockup
           return {
             input: options.mockup,
@@ -191,6 +213,7 @@ function fake(options: FakeOptions = {}) {
     // every other schema (whole-surface SPEC_JSON_SCHEMA or PATCH_JSON_SCHEMA)
     // is a "spec call" as far as a caller of this helper is concerned.
     specCalls: () => calls.filter((c) => c.schema !== SCREEN_MOCKUP_JSON_SCHEMA),
+    mockupCalls: () => calls.filter((c) => c.schema === SCREEN_MOCKUP_JSON_SCHEMA),
   }
 }
 
@@ -729,6 +752,83 @@ describe('authorSpec', () => {
       // Task 18: a per-screen call, not the whole-document one.
       expect(mockupCall.schema).toBe(SCREEN_MOCKUP_JSON_SCHEMA)
       expect(JSON.stringify(mockupCall.messages)).toContain('walked_today')
+    })
+
+    /**
+     * The production failure this retry was built for, reproduced exactly:
+     * an overloaded_error delivered as a STREAM EVENT, so it carries a `type`
+     * and no `status`. The SDK cannot retry it (the response had already
+     * begun) and a status-code check would not see it.
+     */
+    const OVERLOADED = () =>
+      new ChatStreamError(
+        { kind: 'api_error', status: null, type: 'overloaded_error' },
+        '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+      )
+
+    it('retries a transient mockup failure, and the proposal survives it', async () => {
+      // 2026-08-18: this exact failure discarded a validated spec that had
+      // already cost 4704 billed output tokens, and the friend got nothing.
+      const client = fake({ mockups: [OVERLOADED(), null] })
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      expect(proposal).toBeDefined()
+      expect(client.mockupCalls()).toHaveLength(2)
+      // One spec call, not two: the retry re-runs ONLY the mockup call, so the
+      // validated draft is not re-authored and not re-billed.
+      expect(client.specCalls()).toHaveLength(1)
+
+      const row = metrics().at(-1)!
+      expect(row.event).toBe('spec_proposed')
+      expect(row.data.mockup_attempt).toBe(2)
+      expect(readSpecs(db, 1)).toHaveLength(1)
+    })
+
+    it('gives up after MAX_MOCKUP_ATTEMPTS rather than retrying forever', async () => {
+      const client = fake({ mockups: [OVERLOADED(), OVERLOADED()] })
+      expect(await authorSpec(deps(client.client), INPUT)).toBeUndefined()
+
+      expect(client.mockupCalls()).toHaveLength(MAX_MOCKUP_ATTEMPTS)
+      const row = metrics().at(-1)!
+      expect(row.event).toBe('spec_error')
+      expect(row.data.kind).toBe('mockup_failed')
+      expect(row.data.mockup_attempt).toBe(MAX_MOCKUP_ATTEMPTS)
+    })
+
+    it('does not retry a mockup failure another sample cannot fix', async () => {
+      const client = fake({
+        mockups: [
+          new ChatStreamError(
+            { kind: 'bad_request', status: 400, type: 'invalid_request_error' },
+            'nope',
+          ),
+        ],
+      })
+      expect(await authorSpec(deps(client.client), INPUT)).toBeUndefined()
+
+      expect(client.mockupCalls()).toHaveLength(1)
+      expect(metrics().at(-1)!.data.mockup_attempt).toBe(1)
+    })
+
+    it('does not retry once the friend has gone, even on a transient failure', async () => {
+      // A retry here would spend real money drawing a preview for a closed
+      // tab. The abort check is separate from isTransient on purpose.
+      const aborter = new AbortController()
+      let seen = 0
+      const client = fake({
+        mockups: [OVERLOADED(), null],
+        // Call 1 is the spec call, call 2 the mockup call — abort as the
+        // mockup call starts, so the spec half still completes normally.
+        onCall: () => {
+          seen += 1
+          if (seen === 2) aborter.abort()
+        },
+      })
+
+      expect(
+        await authorSpec(deps(client.client), { ...INPUT, signal: aborter.signal }),
+      ).toBeUndefined()
+      expect(client.mockupCalls()).toHaveLength(1)
     })
 
     it('writes NO spec row when the mockup call fails', async () => {
