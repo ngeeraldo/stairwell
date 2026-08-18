@@ -49,15 +49,23 @@ export type DashboardProps = {
    * dashboard sees it, it is already validated against its own declared
    * list — never an arbitrary `?screen=` value.
    *
-   * OPTIONAL, not because a real render ever omits it — app/[user]/page.tsx
-   * always passes one — but because none of the four dashboards live on this
-   * branch today export a `screens` list yet (task 22 is the first task of
-   * Part D; migrating each dashboard onto declared screens is later work).
-   * Their own tests call the component directly with a DashboardProps object
-   * that has no reason to know this field exists. Required-but-unread would
-   * force every one of those call sites to change for a value nothing reads
-   * yet; optional keeps this task's blast radius at the two files it is
-   * actually about.
+   * STILL OPTIONAL as of task 23, deliberately, and for a different reason
+   * than task 22's original one (that reason — no dashboard declared
+   * `screens` yet — is gone now that all four do). `DashboardModule.screens`
+   * below was tightened to required because it has exactly one producer per
+   * dashboard (the module's own export) and zero legitimate readers who don't
+   * care about its value, so making it required costs nothing and buys real
+   * enforcement. `screen` is different: EVERY one of the four dashboards has
+   * exactly one screen and none branches on this prop, and every one of their
+   * own tests calls the component directly with a DashboardProps object built
+   * for readability, not completeness. Requiring it would force each of those
+   * call sites — dozens across four folders, plus every scaffold's tests
+   * hereafter — to name a field their dashboard does not read, for no
+   * type-safety gain: a real render can never omit it (page.tsx always
+   * supplies `active.id`), and a component that starts branching on it gets
+   * full type coverage on that branch the moment it's written, optional or
+   * not. Revisit if a second screen ever needs page.tsx itself to prove it
+   * always passes one.
    */
   screen?: string
 }
@@ -74,24 +82,30 @@ export type DashboardComponent = (
 export type DashboardScreen = { id: string; title: string; order: number }
 
 /**
- * `screens` is OPTIONAL on the module for the same migration-period reason
- * `DashboardProps.screen` is optional above: none of the four dashboards
- * registered on this branch export it yet, and lib/dashboard/registry.ts's
- * `Record<string, () => Promise<DashboardModule>>` type-checks every one of
- * them against this shape at compile time — a required field here does not
- * fail at runtime, it fails `npx tsc --noEmit` for every dashboard that
- * hasn't been migrated, which is all of them today.
+ * REQUIRED as of task 23: all four dashboards registered in
+ * lib/dashboard/registry.ts now export `screens`, so
+ * `Record<string, () => Promise<DashboardModule>>` enforces it at compile
+ * time for every one of them — and for anything registered from here on —
+ * rather than leaving it to a runtime sweep or Task 24 alone. It was
+ * OPTIONAL through task 22 for exactly the reason a required field would
+ * have broken: no dashboard exported it yet, and a required-but-missing
+ * field fails `npx tsc --noEmit`, not a test.
  *
- * app/[user]/page.tsx treats `undefined` and a declared `[]` differently on
- * purpose (see the comment above its screens-resolution call): `undefined`
- * is "not migrated yet", a known, harmless, present-day state that degrades
- * to no tab strip; a dashboard that explicitly exports `screens: []` has
- * opted into the contract and gotten it wrong, which is the real defect
- * `activeScreen`'s throw exists to surface.
+ * A dashboard that gets it wrong (an explicit `screens: []`) still fails at
+ * RUNTIME, not compile time — TypeScript can enforce "an array exists", not
+ * "the array is non-empty". `activeScreen` still throws on that case (see
+ * below), and app/[user]/page.tsx's own `renderDashboard` still catches that
+ * throw the same way it catches a throwing `Dashboard()` call, turning it
+ * into `dashboard_error` rather than a 500. That branch — and the comment on
+ * it in app/[user]/page.tsx describing `undefined` as "not migrated yet" —
+ * is now unreachable through the registry's real types; it is left as
+ * defense in depth rather than deleted, since the array is still supplied by
+ * a `Promise<DashboardModule>` resolved dynamically at runtime, not proven
+ * by the type system alone.
  */
 export type DashboardModule = {
   default: DashboardComponent
-  screens?: DashboardScreen[]
+  screens: DashboardScreen[]
 }
 
 /**

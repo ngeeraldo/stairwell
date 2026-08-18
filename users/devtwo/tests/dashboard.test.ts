@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
-import DevTwoDashboard from '@/users/devtwo/dashboard'
+import DevTwoDashboard, { screens } from '@/users/devtwo/dashboard'
 import { dayKey } from '@/lib/time/dayKey'
 import { applyUserMigrations, emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
@@ -145,6 +145,13 @@ describe('users/devtwo/dashboard.tsx', () => {
     expect(json).toContain('NOT YET')
     expect(json).toContain('[0,"%"]')
   })
+})
+
+it('declares exactly one honest screen — devtwo predates spec.md', () => {
+  // Task 23: devtwo is hand-written and pre-spec, so there is no spec.md to
+  // pull an id/title from — see the comment above `export const screens` in
+  // dashboard.tsx.
+  expect(screens).toEqual([{ id: 'morning', title: 'Daily walk', order: 1 }])
 })
 
 it('renders on an EMPTY database without throwing', async () => {

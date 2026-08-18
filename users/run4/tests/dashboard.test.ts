@@ -5,7 +5,7 @@
 // these as you build — but keep the empty-database one, whatever else changes.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as React from 'react'
-import Dashboard from '@/users/run4/dashboard'
+import Dashboard, { screens } from '@/users/run4/dashboard'
 import { emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
 // JSX compiles to React.createElement, which this component's module expects
@@ -30,6 +30,15 @@ describe('users/run4', () => {
     } finally {
       db.close()
     }
+  })
+
+  it('declares the screen named in spec.md — `walk_now` — Walk now?', () => {
+    // Task 23: spec.md's `## Screens` section names this screen
+    // `### \`walk_now\` — Walk now?`, even though the build itself is still
+    // the scaffold placeholder. The id and title are the spec's own words,
+    // never a second source that could drift from what the confirmed spec
+    // promised.
+    expect(screens).toEqual([{ id: 'walk_now', title: 'Walk now?', order: 1 }])
   })
 
   it('renders on an EMPTY database without throwing', () => {

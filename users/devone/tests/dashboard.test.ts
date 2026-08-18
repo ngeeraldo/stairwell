@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
-import DevOneDashboard from '@/users/devone/dashboard'
+import DevOneDashboard, { screens } from '@/users/devone/dashboard'
 import { applyUserMigrations, emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
 
@@ -115,6 +115,14 @@ describe('users/devone/dashboard.tsx', () => {
       ),
     ).toContain('$0.00')
   })
+})
+
+it('declares exactly one honest screen — devone predates spec.md', () => {
+  // Task 23: devone is hand-written and pre-spec, so there is no spec.md to
+  // pull an id/title from — see the comment above `export const screens` in
+  // dashboard.tsx. This pins the module's contract shape directly, the way
+  // tests/dashboard/contract.test.ts pins activeScreen's own fixtures.
+  expect(screens).toEqual([{ id: 'morning', title: 'Spending', order: 1 }])
 })
 
 it('renders on an EMPTY database without throwing', async () => {

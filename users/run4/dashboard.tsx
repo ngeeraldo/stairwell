@@ -34,7 +34,13 @@
 //
 // Register it in lib/dashboard/registry.ts or it will not render at all:
 //   run4: () => import('@/users/run4/dashboard'),
-import type { DashboardProps } from '@/lib/dashboard/contract'
+import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
+
+// From spec.md's `## Screens`: `### \`walk_now\` — Walk now?`. The id and
+// title are the spec's own words, never a second source that could drift
+// from what the confirmed spec promised — even though the build below is
+// still the scaffold placeholder.
+export const screens: DashboardScreen[] = [{ id: 'walk_now', title: 'Walk now?', order: 1 }]
 
 export default function Dashboard({ slug }: DashboardProps) {
   return (

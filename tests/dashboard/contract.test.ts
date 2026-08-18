@@ -6,6 +6,7 @@
 // given render.
 import { describe, expect, it } from 'vitest'
 import { activeScreen, type DashboardScreen } from '@/lib/dashboard/contract'
+import { dashboardLoaderFor, registeredSlugs } from '@/lib/dashboard/registry'
 
 // Deliberately out of order: 'money' is declared first but has the HIGHER
 // order, so a test that defaulted to array position instead of `order` would
@@ -32,5 +33,26 @@ describe('activeScreen', () => {
 
   it('throws on an empty screen list — a registered dashboard must declare one', () => {
     expect(() => activeScreen([], undefined)).toThrow()
+  })
+})
+
+// Task 23: `DashboardModule.screens` went from optional to required now that
+// every registered dashboard exports one — this proves it holds for real,
+// not just at the type level. `screens?: DashboardScreen[]` would still let a
+// module ship `screens: undefined` at runtime (a type is not a runtime
+// check); this iterates the actual registry, loads each real module, and
+// feeds its real `screens` through the real `activeScreen`, so a dashboard
+// that regressed to zero screens fails here the same way it would fail in
+// production — via activeScreen's own throw — rather than only via a
+// compiler that a `// @ts-expect-error` could silence.
+describe('every registered dashboard declares at least one screen', () => {
+  it.each(registeredSlugs())('%s', async (slug) => {
+    const loader = dashboardLoaderFor(slug)
+    expect(loader, `${slug} must be registered`).toBeDefined()
+    const { screens } = await loader!()
+    expect(screens.length).toBeGreaterThan(0)
+    // Resolves without throwing — the same call app/[user]/page.tsx makes
+    // for a real render.
+    expect(() => activeScreen(screens, undefined)).not.toThrow()
   })
 })

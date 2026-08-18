@@ -2,8 +2,15 @@
 //
 // devone's dashboard. A server component handed its own slug and an open
 // read-only handle on its own database — it never resolves either itself.
-import type { DashboardProps } from '@/lib/dashboard/contract'
+import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
 import { eatingOutThisMonthCents, recentTransactions } from './queries'
+
+// devone predates the spec loop entirely — hand-written, with no spec.md to
+// pull an id/title from (CLAUDE.md: "users/devone/ is the worked reference
+// implementation... hand-written, not agent output"). One screen, covering
+// both panels below: this month's eating-out total and the recent
+// transaction list, i.e. what got spent and on what.
+export const screens: DashboardScreen[] = [{ id: 'morning', title: 'Spending', order: 1 }]
 
 function money(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
