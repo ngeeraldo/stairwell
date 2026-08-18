@@ -315,6 +315,9 @@ describe('POST /api/chat', () => {
     expect(await lines(res)).toEqual([
       { t: 'hello ' },
       { t: 'friend' },
+      // Between the last chunk and `done`: the exchange is committed, and the
+      // browser is told so BEFORE authoring can drop the connection.
+      { saved: true },
       { done: true },
     ])
   })
@@ -461,6 +464,10 @@ describe('POST /api/chat — the proposal lines', () => {
     const seen = await lines(res)
     expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual([
       't',
+      // Ahead of `authoring`, and that order is load-bearing: authoring is the
+      // window where the connection dies, so the browser has to already know
+      // the reply was saved by the time it opens.
+      'saved',
       'authoring',
       'proposal',
       'done',
@@ -493,6 +500,7 @@ describe('POST /api/chat — the proposal lines', () => {
 
     expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual([
       't',
+      'saved',
       'authoring',
       'stage',
       'proposal',
@@ -598,6 +606,9 @@ describe('POST /api/chat — no credential', () => {
     expect(await lines(res)).toEqual([
       { t: 'hello ' },
       { t: 'friend' },
+      // Between the last chunk and `done`: the exchange is committed, and the
+      // browser is told so BEFORE authoring can drop the connection.
+      { saved: true },
       { done: true },
     ])
   })

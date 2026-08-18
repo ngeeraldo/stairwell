@@ -190,6 +190,14 @@ export async function POST(request: Request) {
           // A real transition, forwarded as it happens: the spec came back and
           // validated, and the slow half — drawing the preview — is starting.
           onStage: (stage) => controller.enqueue(line({ stage })),
+          // The exchange is committed. Sent before authoring begins, so a
+          // connection that dies during the preview still leaves the browser
+          // knowing the reply was saved — which is the difference between
+          // "your message is safe, the preview is late" and "nothing
+          // happened". Guarded like every other enqueue on this stream.
+          onSaved: () => {
+            if (!request.signal.aborted) controller.enqueue(line({ saved: true }))
+          },
           signal: request.signal,
           authoringSignal,
           onText: (text) => {

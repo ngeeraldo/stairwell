@@ -1063,6 +1063,57 @@ describe('TurnRow', () => {
     expect(findButtons(row)).toHaveLength(1)
   })
 
+  it('tells a SAVED interrupted turn apart from a lost one', () => {
+    // THE LIE THIS FIXES. On 2026-08-18 a friend was told "interrupted — not
+    // saved" about transcripts row 150, which was committed and is still
+    // there. `interrupted` means the stream stopped; only `saved` says whether
+    // anything survived.
+    const row = TurnRow({
+      turn: {
+        role: 'assistant',
+        body: 'Dropped. Give me about a minute to draw this up.',
+        at: 1000,
+        interrupted: true,
+        saved: true,
+        source: 'hi',
+      },
+      busy: false,
+      onRetry: () => {},
+    })
+    const json = JSON.stringify(row)
+
+    expect(json).not.toContain('not saved')
+    expect(json).toContain('the preview may still be on its way')
+    // Reload, never Retry: the message is already in an append-only table and
+    // the reply already exists, so re-sending duplicates a row for an answer
+    // that came back.
+    expect(json).toContain('Reload')
+    expect(json).not.toContain('Retry')
+  })
+
+  it('does not dim a saved turn\'s text', () => {
+    // Greying the body out says "this was never real". For a saved turn the
+    // body is in `transcripts`, and dimming it would contradict the line
+    // underneath saying so.
+    const saved = JSON.stringify(
+      TurnRow({
+        turn: { role: 'assistant', body: 'kept', at: 1000, interrupted: true, saved: true },
+        busy: false,
+        onRetry: () => {},
+      }),
+    )
+    const lost = JSON.stringify(
+      TurnRow({
+        turn: { role: 'assistant', body: 'kept', at: 1000, interrupted: true },
+        busy: false,
+        onRetry: () => {},
+      }),
+    )
+
+    expect(saved).not.toContain('opacity')
+    expect(lost).toContain('opacity')
+  })
+
   it('renders nothing extra for a turn that was not interrupted', () => {
     const row = TurnRow({ turn: { role: 'assistant', body: 'done', at: 1000 }, busy: false, onRetry: () => {} })
     expect(JSON.stringify(row)).not.toContain('interrupted')
@@ -1167,6 +1218,25 @@ describe('applyLine / finishTurn / applyTurn — panel state transitions', () =>
     expect(state.turns.at(-1)?.interrupted).toBeUndefined()
     expect(state.proposals).toEqual([PROPOSAL])
     expect(state.authoring).toBe(false)
+  })
+
+  it('a saved line marks the turn durable, and finishTurn keeps that through an interrupt', () => {
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: [{ role: 'assistant', body: 'hi', at: 1000 }] }
+    const saved = applyLine(seeded, { saved: true })
+    expect(saved.turns[0]?.saved).toBe(true)
+
+    // The connection then dies during authoring: interrupted AND saved, which
+    // is the combination the renderer reads to stop claiming nothing landed.
+    const dropped = finishTurn(saved, false)
+    expect(dropped.turns[0]?.interrupted).toBe(true)
+    expect(dropped.turns[0]?.saved).toBe(true)
+  })
+
+  it('leaves saved unset when no saved line ever arrived', () => {
+    const seeded: PanelState = { ...EMPTY_PANEL, turns: [{ role: 'assistant', body: '', at: 1000 }] }
+    const dropped = finishTurn(applyLine(seeded, { authoring: true }), false)
+    expect(dropped.turns[0]?.interrupted).toBe(true)
+    expect(dropped.turns[0]?.saved).toBeUndefined()
   })
 
   it('finishTurn marks the last turn interrupted only when done never arrived', () => {

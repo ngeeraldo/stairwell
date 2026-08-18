@@ -34,8 +34,25 @@ type Turn = {
    * later than anything already on screen.
    */
   at: number
-  /** True when the stream ended without a {done:true} line — nothing saved. */
+  /**
+   * True when the stream ended without a {done:true} line — the turn did not
+   * run to completion. On its own this says NOTHING about what was persisted;
+   * pair it with `saved` below to know which.
+   */
   interrupted?: boolean
+  /**
+   * True once the server has confirmed this exchange is committed — the
+   * `{saved:true}` line, sent the moment the assistant row and its chat_turn
+   * metric land and before authoring starts.
+   *
+   * `interrupted` without this means nothing was written and a retry is the
+   * right move. `interrupted` WITH this means the reply is durable and only the
+   * preview was lost — and since lib/chat/turn.ts no longer ties authoring to
+   * the connection, that preview is probably still being drawn. Retrying there
+   * would re-send a message that is already in an append-only table, for a
+   * reply that already exists.
+   */
+  saved?: boolean
   /**
    * The message that produced this turn, carried so its own retry button
    * re-sends it. See pendingTurns.
@@ -212,12 +229,22 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
     stage?: 'mockup'
     proposal?: CardProposal
     proposal_error?: boolean
+    saved?: boolean
   }
   if (typeof message.t === 'string') {
     const chunk = message.t
     return {
       ...state,
       turns: updateLastTurn(state.turns, (last) => ({ ...last, body: last.body + chunk })),
+    }
+  }
+  if (message.saved) {
+    // Recorded on the TURN, not on the panel: two interrupted turns can be on
+    // screen at once and they can disagree about whether they were saved — the
+    // same reason `source` lives here rather than in a component-level ref.
+    return {
+      ...state,
+      turns: updateLastTurn(state.turns, (last) => ({ ...last, saved: true })),
     }
   }
   if (message.stage === 'mockup') {
@@ -1050,32 +1077,59 @@ export function TurnRow({
             ? 'ml-auto w-fit max-w-[85%] rounded-2xl bg-chat-user px-4 py-2.5 whitespace-pre-wrap text-chat-user-foreground'
             : 'whitespace-pre-wrap'
         }
-        style={turn.interrupted ? { opacity: 0.5 } : undefined}
+        // Dimmed only when the text really was lost. A SAVED turn's body is
+        // sitting in `transcripts`, and greying it out would contradict the
+        // line below it saying so.
+        style={turn.interrupted && !turn.saved ? { opacity: 0.5 } : undefined}
       >
         {turn.body}
       </p>
-      {turn.interrupted && (
-        <p>
-          <em>interrupted — not saved</em>{' '}
-          {/* A retry is an ordinary new turn: the user row from the
-              interrupted exchange was already written and cannot be
-              amended, so the transcript honestly shows the message twice.
-              Design spec section 6.1. */}
-          {/* The vendored Button, not a bare <button>: Tailwind's preflight
-              strips native button chrome, so an unstyled one rendered as
-              plain text indistinguishable from the marker beside it — a
-              control nobody could tell was clickable. */}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => onRetry(turn.source ?? '')}
-          >
-            Retry
-          </Button>
-        </p>
-      )}
+      {/* TWO DIFFERENT FAILURES, and telling them apart is the whole point.
+          `interrupted` alone means the stream stopped; `saved` says whether
+          anything survived it. Before the server sent {saved:true} the panel
+          could only assume the worst, and on 2026-08-18 it told a friend
+          "not saved" about a reply that was already in an append-only
+          table. */}
+      {turn.interrupted &&
+        (turn.saved ? (
+          <p>
+            <em>saved — the connection dropped, and the preview may still be on its way</em>{' '}
+            {/* Reload, not Retry. The message is already in `transcripts` and
+                the reply already exists, so re-sending would duplicate a row
+                for an answer that came back. Authoring no longer dies with the
+                connection (RunTurnInput.authoringSignal), so the card is
+                plausibly waiting on the next render. */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => window.location.reload()}
+            >
+              Reload
+            </Button>
+          </p>
+        ) : (
+          <p>
+            <em>interrupted — not saved</em>{' '}
+            {/* A retry is an ordinary new turn: the user row from the
+                interrupted exchange was already written and cannot be
+                amended, so the transcript honestly shows the message twice.
+                Design spec section 6.1. */}
+            {/* The vendored Button, not a bare <button>: Tailwind's preflight
+                strips native button chrome, so an unstyled one rendered as
+                plain text indistinguishable from the marker beside it — a
+                control nobody could tell was clickable. */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => onRetry(turn.source ?? '')}
+            >
+              Retry
+            </Button>
+          </p>
+        ))}
     </li>
   )
 }

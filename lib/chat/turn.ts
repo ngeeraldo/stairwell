@@ -96,6 +96,23 @@ export type TurnInput = {
    * panel can say which half of the wait a friend is in. See AuthorInput.
    */
   onStage?: (stage: 'mockup') => void
+  /**
+   * Fires once the assistant row and its chat_turn metric are COMMITTED, before
+   * authoring starts.
+   *
+   * Exists so the panel can stop lying. `{done:true}` only arrives after the
+   * whole turn including authoring, so a connection that dropped during the
+   * preview looked identical to one that dropped before anything was written,
+   * and the panel said "interrupted - not saved" about a reply that was sitting
+   * in an append-only table. It said that in production on 2026-08-18 about
+   * transcripts row 150.
+   *
+   * Deliberately fires only on the `usable` path, where an assistant row really
+   * was appended. A turn that proposed without saying anything
+   * (chat_proposed_no_reply) writes no assistant row, so nothing is claimed
+   * saved.
+   */
+  onSaved?: () => void
 }
 
 export type TurnOutcome = {
@@ -334,6 +351,9 @@ export async function runTurn(
       at: now(),
       data: { ...final.usage, ...base, ...final.served },
     })
+    // AFTER both writes, never before: this tells the browser the exchange is
+    // durable, so it must not be sent while that is still a prediction.
+    input.onSaved?.()
   } else if (proposed) {
     // proposed && !usable: the agent raised its hand without delivering a
     // usable reply — either it said nothing before calling the tool, or the
