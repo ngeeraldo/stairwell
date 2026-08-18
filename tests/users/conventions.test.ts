@@ -216,6 +216,12 @@ describe('users/ folder conventions', () => {
     })
 
     whenComplete('every note in notes/ parses', () => {
+      // VACUOUS until the first real v<n>.md lands — no folder in this repo
+      // has one yet (final review, Minor 11), so this loop body has never
+      // actually run and this test's green means only "no v<n>.md files
+      // exist to fail on", not "readBuildNotes was exercised against a real
+      // one". Do not read this test passing as verification of
+      // readBuildNotes itself — that lives in tests/build/notes.test.ts.
       for (const f of readdirSync(join(dir, 'notes')).filter((f) => /^v\d+\.md$/.test(f))) {
         const version = Number(/^v(\d+)\.md$/.exec(f)![1])
         expect(() => readBuildNotes(slug, version, USERS)).not.toThrow()

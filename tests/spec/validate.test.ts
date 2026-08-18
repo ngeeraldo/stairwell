@@ -214,6 +214,23 @@ describe('ops on a stored version', () => {
     const bad = JSON.stringify({ ...sealVersion(parseSpecDraft(draft()), 1, null), ops: 'nope' })
     expect(() => parseSpecVersion(bad)).toThrow(SpecShapeError)
   })
+
+  // Final review, Minor 10. The top-level "ops is not an array" case above
+  // was covered; the per-ELEMENT parseOp call (`rawOps.map((o, i) =>
+  // parseOp(o, ...))`) was only "correct by inspection" — untested on this
+  // read path. It matters specifically here because `specs` is append-only:
+  // a row with one malformed op, once written, can never be edited, only
+  // read forever after by exactly this function.
+  it('throws on a stored ops array containing one malformed element', () => {
+    const bad = JSON.stringify({
+      ...sealVersion(parseSpecDraft(draft()), 1, null),
+      ops: [{ op: 'remove_panel', id: 'walks' }, { op: 'not_a_real_op' }],
+    })
+    expect(() => parseSpecVersion(bad)).toThrow(SpecShapeError)
+    // Names WHICH element and why, the same diagnosability the top-level
+    // "not an array" case gets — not just "something in here is wrong".
+    expect(() => parseSpecVersion(bad)).toThrow(/ops\[1\]/)
+  })
 })
 
 describe('parseMockupInput', () => {
