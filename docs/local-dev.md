@@ -236,6 +236,11 @@ database.
 npm run synthetic                   # regenerate every users/*/synthetic.db
 npx vitest run users/<slug>
 
+# Day one: every synthetic.db rebuilt from its migrations with NO rows, which
+# is what a friend's own database holds the morning their dashboard ships.
+# Reload the page, read it, then run `npm run synthetic` to get the data back.
+npm run synthetic -- --empty
+
 # A local account so you can log in as them at /login and look at the screen.
 # Writes account rows only — it creates no user database, and refuses to run
 # under NODE_ENV=production. The password is local and disposable.

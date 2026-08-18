@@ -12,7 +12,11 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { regenerateAll, userSlugsWithSeeds } from '@/scripts/regen-synthetic'
+import {
+  regenerateAll,
+  regenerateAllEmpty,
+  userSlugsWithSeeds,
+} from '@/scripts/regen-synthetic'
 
 // Wraps the real readdirSync so one test (below) can override a single call
 // with vi.mocked(readdirSync).mockReturnValueOnce(...). Every other call —
@@ -239,4 +243,143 @@ describe('regenerateAll', () => {
     },
     SUBPROCESS_TIMEOUT_MS,
   )
+})
+
+/**
+ * A folder shaped the way a real one is: migrations/ owns the shape, and
+ * seed.py applies them before inserting. `makeUser` above predates migrations
+ * and writes a schema.sql instead — left alone deliberately, since every
+ * regenerateAll test around it only needs *a* generator that works, and
+ * rewriting them is not this change.
+ */
+function makeMigratedUser(slug: string, migrations: Record<string, string>) {
+  const dir = join(root, slug)
+  mkdirSync(join(dir, 'migrations'), { recursive: true })
+  for (const [name, sql] of Object.entries(migrations)) {
+    writeFileSync(join(dir, 'migrations', name), sql)
+  }
+  writeFileSync(
+    join(dir, 'seed.py'),
+    [
+      'import os, sqlite3, sys',
+      'here = os.path.dirname(os.path.abspath(__file__))',
+      'mig = os.path.join(here, "migrations")',
+      'db = sqlite3.connect(sys.argv[1])',
+      'names = sorted(f for f in os.listdir(mig) if f.endswith(".sql"))',
+      'for n in names:',
+      '    db.executescript(open(os.path.join(mig, n), encoding="utf-8").read())',
+      'if names:',
+      '    db.execute("PRAGMA user_version = %d" % int(names[-1][:3]))',
+      'db.execute("INSERT INTO spend VALUES (\'PALACE TEST\')")',
+      'db.commit()',
+      'db.close()',
+      '',
+    ].join('\n'),
+  )
+}
+
+describe('regenerateAllEmpty', () => {
+  it('applies the shape and writes no rows', () => {
+    makeMigratedUser('devone', {
+      '001_initial.sql': 'CREATE TABLE spend (merchant TEXT NOT NULL);',
+    })
+
+    regenerateAllEmpty(root)
+
+    const db = new Database(join(root, 'devone', 'synthetic.db'), { readonly: true })
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS c FROM spend').get()).toEqual({ c: 0 })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('empties a database that seed.py had already filled', () => {
+    // The actual workflow: you have been building against sample rows, and you
+    // want to see the screen a friend gets on their first morning. If this
+    // only worked on a fresh checkout it would be useless.
+    makeMigratedUser('devone', {
+      '001_initial.sql': 'CREATE TABLE spend (merchant TEXT NOT NULL);',
+    })
+    regenerateAll(root)
+
+    const filled = new Database(join(root, 'devone', 'synthetic.db'), { readonly: true })
+    try {
+      expect((filled.prepare('SELECT COUNT(*) AS c FROM spend').get() as { c: number }).c)
+        .toBeGreaterThan(0)
+    } finally {
+      filled.close()
+    }
+
+    regenerateAllEmpty(root)
+
+    const db = new Database(join(root, 'devone', 'synthetic.db'), { readonly: true })
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS c FROM spend').get()).toEqual({ c: 0 })
+    } finally {
+      db.close()
+    }
+  }, SUBPROCESS_TIMEOUT_MS)
+
+  it('applies migrations in order and stamps user_version to the last one', () => {
+    // 002 ALTERs what 001 created, so an out-of-order application throws
+    // rather than quietly producing a different shape.
+    makeMigratedUser('devone', {
+      '001_initial.sql': 'CREATE TABLE spend (merchant TEXT NOT NULL);',
+      '002_add_amount.sql': 'ALTER TABLE spend ADD COLUMN amount_cents INTEGER;',
+    })
+
+    regenerateAllEmpty(root)
+
+    const db = new Database(join(root, 'devone', 'synthetic.db'), { readonly: true })
+    try {
+      const columns = (db.pragma('table_info(spend)') as { name: string }[]).map((c) => c.name)
+      expect(columns).toEqual(['merchant', 'amount_cents'])
+      // Matches what seed.py stamps, so an empty synthetic database does not
+      // look like one the migration runner still owes work to.
+      expect(db.pragma('user_version', { simple: true })).toBe(2)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('creates an empty database for a scaffolded folder with no migrations', () => {
+    // The scaffolded state (tests/users/conventions.test.ts): a folder exists,
+    // nobody has designed a shape. seed.py produces an empty file here too,
+    // and lib/db/userData.ts opens synthetic.db with fileMustExist in dev — so
+    // the file has to exist either way.
+    mkdirSync(join(root, 'devone'), { recursive: true })
+    writeFileSync(join(root, 'devone', 'seed.py'), 'import sys, sqlite3\nsqlite3.connect(sys.argv[1]).close()\n')
+
+    expect(regenerateAllEmpty(root)).toEqual([join(root, 'devone', 'synthetic.db')])
+    expect(existsSync(join(root, 'devone', 'synthetic.db'))).toBe(true)
+  })
+
+  it('leaves a real <slug>.db byte-identical, same as regenerateAll', () => {
+    // Same property the deploy test above pins, asserted separately because
+    // this mode deletes and rewrites through a different code path — it never
+    // spawns seed.py, so it does not inherit that guarantee.
+    makeMigratedUser('devtwo', {
+      '001_initial.sql': 'CREATE TABLE spend (merchant TEXT NOT NULL);',
+    })
+    const real = join(root, 'devtwo', 'devtwo.db')
+    writeFileSync(real, 'PRETEND ENCRYPTED BYTES')
+    const before = readFileSync(real)
+
+    regenerateAllEmpty(root)
+
+    expect(readFileSync(real).equals(before)).toBe(true)
+  })
+
+  it('skips a non-slug directory, same as the seeded path', () => {
+    makeMigratedUser('devone', {
+      '001_initial.sql': 'CREATE TABLE spend (merchant TEXT NOT NULL);',
+    })
+    mkdirSync(join(root, '.hidden', 'migrations'), { recursive: true })
+    writeFileSync(join(root, '.hidden', 'seed.py'), '')
+    writeFileSync(join(root, '.hidden', 'migrations', '001_initial.sql'), 'CREATE TABLE x (a TEXT);')
+
+    expect(regenerateAllEmpty(root)).toEqual([join(root, 'devone', 'synthetic.db')])
+    expect(existsSync(join(root, '.hidden', 'synthetic.db'))).toBe(false)
+  })
 })

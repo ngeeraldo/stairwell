@@ -21,6 +21,11 @@ If this dashboard's shape holds no free text — a tracker whose rows are counts
 and day keys — there is nowhere to put that marker and the sweep does not ask
 for one. Do NOT invent a junk row to satisfy it; the loudness is carried by
 the SYNTHETIC DATA banner instead. See tests/users/conventions.test.ts.
+
+This file is only ever asked for data. The EMPTY state — what the friend's own
+database holds on the morning their dashboard ships — is built from the
+migrations alone by `npm run synthetic -- --empty`, so nothing here needs a
+mode for it and nothing here should grow one.
 """
 
 import os

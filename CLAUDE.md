@@ -218,9 +218,16 @@ architectural changes; do not relitigate decided items).
   The scaffold ships an empty-render test and `screenshots/screens.ts` carries
   an empty-state screen, because a test can only prove it does not throw —
   whether it reads as "waiting" or as "broken" is a question only a picture
-  answers. **A day before the friend started is not a day they failed:** the
-  first version of this rendered fourteen rows saying "missed" on a friend's
-  first morning, with every test green.
+  answers. For a friend's OWN dashboard, that picture comes from
+  ```bash
+  npm run synthetic -- --empty   # shape, no rows; `npm run synthetic` restores
+  ```
+  which rebuilds every `users/*/synthetic.db` from its migrations alone.
+  `screenshots/screens.ts`'s empty-state screen covers the platform chrome
+  around a dashboard and is pinned to devtwo, so it cannot answer this for a
+  dashboard you are building. **A day before the friend started is not a day
+  they failed:** the first version of this rendered fourteen rows saying
+  "missed" on a friend's first morning, with every test green.
 - **Metrics never carry user values.** `dashboard_write` records a slug and a
   panel and nothing else — no day, no count, no payload. This is permanent
   policy for every panel type, and it is what makes the login page's promise

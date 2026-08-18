@@ -263,6 +263,13 @@ What that means when you are building:
   their own empty database; that is ordinary, not an error. The scaffold ships
   an empty-render test and `screenshots/screens.ts` carries an empty-state
   screen — CLAUDE.md, 2026-08-15 migrations design §9.
+- **Look at zero rows, do not just test them.** A test proves an empty
+  dashboard does not throw; only a picture says whether it reads as "waiting"
+  or as "broken". `npm run synthetic -- --empty` rebuilds every
+  `users/*/synthetic.db` from its migrations with no rows, and `npm run
+  synthetic` puts the sample data back — CLAUDE.md, `docs/runbook.md` step 7.4.
+  The `screenshots/screens.ts` empty-state screen does NOT cover this: it is
+  pinned to devtwo and photographs the platform chrome, per §12 below.
 - **A day before the friend started is not a day they failed.** devtwo's
   dashboard once rendered fourteen rows saying "missed" on a friend's first
   morning, and devone showed `$0.00` where the truth was "nothing logged yet".

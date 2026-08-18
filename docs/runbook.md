@@ -447,6 +447,23 @@ More than one screen? The tab strip only appears once `screens` has two or more
 entries — click each tab, or go straight to `/<slug>?screen=<id>` for the one
 you are iterating on. Click through every screen once before you ship.
 
+**Then look at day one.** What you have been iterating against is `seed.py`'s
+sample data; what the friend gets on their first morning is their own database
+with nothing in it. Those are different screens, and only one of them is the
+first thing they will ever see:
+
+```bash
+npm run synthetic -- --empty             # shape only, no rows
+# reload /<slug> — every screen, same as above
+npm run synthetic                        # put the sample data back
+```
+
+The empty-render test in their `tests/` proves the dashboard does not throw. It
+cannot tell you whether the result reads as "waiting" or as "broken", and that
+distinction has already cost this project a friend's first morning — a day
+before they started rendered as a day they failed, with every test green
+(build-rules §6). Leave it empty long enough to actually read it.
+
 If a login under `npm run dev` looks like it did not stick, reload — it is the
 cold-route artifact described in `docs/local-dev.md`, not your code.
 
