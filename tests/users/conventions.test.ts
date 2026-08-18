@@ -83,10 +83,12 @@ const isBuilt = (slug: string) =>
  * dashboard module works inside this suite (it does exactly this through
  * `dashboardLoaderFor`), so the same dynamic import, run directly against the
  * slug rather than through the registry, is used here too — this sweep must
- * cover a built-but-not-yet-registered folder, which the registry loader
+ * cover a complete-but-not-yet-registered folder (dashboard.tsx exists the
+ * moment a folder is `complete`, regardless of whether it has a migrations
+ * shape yet — see the `whenComplete` gate below), which the registry loader
  * cannot reach at all.
  *
- * Cached per slug: several `whenBuilt` checks below each need the same
+ * Cached per slug: several `whenComplete` checks below each need the same
  * import, and re-importing per assertion would run the module's top-level
  * code (and pay the transform cost) once per check for no reason.
  */
@@ -339,12 +341,26 @@ describe('users/ folder conventions', () => {
     )
 
     // The four properties `screens: DashboardScreen[]` cannot express as a
-    // type, run over every BUILT folder — not only registered ones, so a
-    // dashboard that is built but not yet wired into
-    // lib/dashboard/registry.ts is still caught here rather than escaping
-    // every sweep until the day it's registered.
+    // type, run over every COMPLETE folder — not `whenBuilt`. `screens`
+    // comes from dashboard.tsx, one of the five REQUIRED entries that make a
+    // folder `complete`; `whenBuilt` additionally requires `hasShape` (a real
+    // .sql migration file), which is about the DATA shape and has no
+    // relationship to a dashboard's screens. Gating on `whenBuilt` skipped
+    // these checks on run4, which has migrations but no numbered .sql file
+    // yet — and run4 is the one folder in the repo whose screens export
+    // (`walk_now`) actually distinguishes SCREEN_ID_PATTERN from
+    // SLUG_PATTERN; every other folder uses `morning`, which passes both.
+    // Fix round 1, finding 1: gating on whenBuilt made the sweep exercise
+    // zero cases where the id-pattern choice mattered.
+    //
+    // Safe on a freshly scaffolded folder: platform/templates ships
+    // `screens: [{ id: 'morning', title: 'Morning', order: 1 }]`, which
+    // trivially satisfies all four checks. No separate vacuity guard is
+    // needed either — the file's existing "sweeps at least one BUILT
+    // dashboard" guard already proves at least one COMPLETE folder exists
+    // (built implies complete).
 
-    whenBuilt('screens is non-empty', async () => {
+    whenComplete('screens is non-empty', async () => {
       const screens = await loadScreens(slug)
       // Empty is legal to the type system and fatal at render: activeScreen
       // throws on it (lib/dashboard/contract.ts), turning the page into
@@ -352,7 +368,7 @@ describe('users/ folder conventions', () => {
       expect(screens.length).toBeGreaterThan(0)
     })
 
-    whenBuilt('every screen id matches the spec id shape', async () => {
+    whenComplete('every screen id matches the spec id shape', async () => {
       const screens = await loadScreens(slug)
       for (const screen of screens) {
         expect(
@@ -362,7 +378,7 @@ describe('users/ folder conventions', () => {
       }
     })
 
-    whenBuilt('every screen order is an integer', async () => {
+    whenComplete('every screen order is an integer', async () => {
       const screens = await loadScreens(slug)
       for (const screen of screens) {
         expect(
@@ -372,7 +388,7 @@ describe('users/ folder conventions', () => {
       }
     })
 
-    whenBuilt('screen ids are unique within the folder', async () => {
+    whenComplete('screen ids are unique within the folder', async () => {
       const screens = await loadScreens(slug)
       const ids = screens.map((s) => s.id)
       expect(
