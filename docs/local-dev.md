@@ -177,8 +177,14 @@ data locally. For that:
 ./scripts/pull-spec.sh devtwo --local
 ```
 
-`--local` reads `PLATFORM_DB` (falling back to `platform/dev/synthetic.db`,
-same as everything else in this doc) and is the only form Claude runs.
+`export-spec.ts` (what `--local` calls) refuses to run at all if
+`PLATFORM_DB` is unset — it never falls back to a synthetic database, because
+the same code path also runs on the droplet against the real one, where a
+silent fallback would write fake data into a friend's `spec.md` as if it were
+their real confirmed spec. `--local` supplies `platform/dev/synthetic.db`
+itself when you have not set `PLATFORM_DB` in your shell, so the command
+above works with no setup — that default lives in the safe, always-local
+wrapper, not in the script it calls. It is the only form Claude runs.
 
 ## Announcing a build, or asking a question, in a friend's chat
 
@@ -192,22 +198,36 @@ push, which is a permanent lie in an append-only transcript for every
 account that was not the reason for that deploy.
 
 ```bash
-npx tsx scripts/announce-deploy.ts devtwo
+PLATFORM_DB=platform/dev/synthetic.db npx tsx scripts/announce-deploy.ts devtwo --plain
 ```
 
-Posts the confirmed version's `change_summary` (or, for a legacy row with
-none, its `title`) into `devtwo`'s chat — once per confirmed spec version.
-Safe to re-run: a version already announced is reported, not repeated.
+DRY RUN by default — this prints the confirmed version's `change_summary`
+(or, for a legacy row with none, its `title`) without posting anything; add
+`--send` to actually write it into `devtwo`'s chat, once per confirmed spec
+version. Safe to re-run either way: a version already announced is reported,
+not repeated.
+
+`--plain` is in the example on purpose: without it, drafting goes through the
+real Anthropic API and needs `ANTHROPIC_API_KEY` set (`deploy/required-env`),
+which a local walkthrough of this doc has no other reason to require. Drop
+`--plain` once you actually want to try the drafted-sentence path and have a
+key set — see `docs/runbook.md` step 9 for the full dry-run-then-send flow.
 
 ```bash
-npx tsx scripts/ask-user.ts devtwo "Want the streak to reset on a missed day, or just pause?"
+PLATFORM_DB=platform/dev/synthetic.db npx tsx scripts/ask-user.ts devtwo "Want the streak to reset on a missed day, or just pause?"
 ```
 
 Posts a question into `devtwo`'s chat for a mid-build decision only they can
 make. The friend's reply lands in the transcript like any other message.
 
-Both take `PLATFORM_DB` the same way every script in this doc does — point
-it at `platform/dev/synthetic.db` locally, never at a real database.
+Both refuse to run at all if `PLATFORM_DB` is unset — no fallback, for the
+same reason `export-spec.ts` above has none: the same two scripts also run on
+the droplet against the real platform database, so a silent fallback there
+would draft or send into a synthetic account while looking like it reached
+the friend. Unlike `pull-spec.sh --local`, neither has a wrapper that
+supplies a local default for you, so the `PLATFORM_DB=` prefix above is not
+optional — point it at `platform/dev/synthetic.db` locally, never at a real
+database.
 
 ## Building a dashboard
 
