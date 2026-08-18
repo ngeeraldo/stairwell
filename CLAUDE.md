@@ -12,7 +12,15 @@ architectural changes; do not relitigate decided items).
 - All dev and testing runs on synthetic data ONLY. Never open, read, or
   query any *.db other than synthetic.db.
 - synthetic.db is regenerated from seed.py at session start — never edit it directly.
-- All synthetic merchants/values are loudly fake ("COFFEE PALACE TEST").
+- All synthetic merchants/values are loudly fake ("COFFEE PALACE TEST")
+  **wherever the shape has free text to carry the marker.** A seed producing
+  only numbers and day keys is not asked for one and cannot supply one: a
+  count or a `2026-08-18` cannot contain the word and still be the thing it
+  is. `tests/users/conventions.test.ts` decides this per folder via its own
+  `isFreeText`, and the rule the marker actually enforces is the fixture one
+  under Testing below — `seed.py` is committed SOURCE, so a real person's
+  merchant list pasted into one is outside .gitignore, the guard hook and
+  Gate F alike, and that sweep is the only thing that would notice.
 - Never log, commit, or write real user data, Plaid tokens, or secrets to
   code, fixtures, tests, or debug output.
 - Derived keys exist only in the in-process TTL map — never serialized,
@@ -210,9 +218,16 @@ architectural changes; do not relitigate decided items).
   The scaffold ships an empty-render test and `screenshots/screens.ts` carries
   an empty-state screen, because a test can only prove it does not throw —
   whether it reads as "waiting" or as "broken" is a question only a picture
-  answers. **A day before the friend started is not a day they failed:** the
-  first version of this rendered fourteen rows saying "missed" on a friend's
-  first morning, with every test green.
+  answers. For a friend's OWN dashboard, that picture comes from
+  ```bash
+  npm run synthetic -- --empty   # shape, no rows; `npm run synthetic` restores
+  ```
+  which rebuilds every `users/*/synthetic.db` from its migrations alone.
+  `screenshots/screens.ts`'s empty-state screen covers the platform chrome
+  around a dashboard and is pinned to devtwo, so it cannot answer this for a
+  dashboard you are building. **A day before the friend started is not a day
+  they failed:** the first version of this rendered fourteen rows saying
+  "missed" on a friend's first morning, with every test green.
 - **Metrics never carry user values.** `dashboard_write` records a slug and a
   panel and nothing else — no day, no count, no payload. This is permanent
   policy for every panel type, and it is what makes the login page's promise

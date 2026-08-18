@@ -53,6 +53,48 @@ const SCREEN_ID_PATTERN = /^[a-z0-9]+(_[a-z0-9]+)*$/
  */
 const SUBPROCESS_TIMEOUT_MS = 60_000
 
+/**
+ * A value that is a number, or a bare calendar day/instant — nothing else.
+ *
+ * Deliberately narrow. Anything this does NOT match counts as free text below,
+ * so a pattern that grew to cover "sort of structured" values would quietly
+ * stop requiring the marker from the columns that most need it.
+ */
+const STRUCTURAL_VALUE =
+  /^(-?\d+(\.\d+)?|\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z?)?)$/
+
+/**
+ * Whether a seeded value is somewhere a real person's data could hide.
+ *
+ * The check below enforces CLAUDE.md > Data safety's loudly-fake rule by
+ * looking for the literal marker `TEST`. That works for a merchant name and is
+ * impossible for a bathroom count: a value that is a number, or a day key,
+ * cannot carry the word and still be the thing it is. devtwo already hit this
+ * and paid the marker with a sentinel row whose `day` its own migration
+ * documents as invalid — a proxy being satisfied, not a rule being met.
+ *
+ * The rule the marker actually serves is CLAUDE.md > Testing's: "a fixture is
+ * never recorded from a real person's data". `seed.py` is committed SOURCE, so
+ * it sits outside every other guard here — .gitignore, the guard hook and Gate
+ * F all govern DATABASES, and none of them would notice a real person's
+ * merchant list pasted into a generator and committed forever. This check is
+ * the only thing that would.
+ *
+ * That threat needs somewhere to hide, and only free text has room. An integer
+ * is not traceable to anyone, and '2026-08-18' is a fact about the calendar
+ * rather than about a person. So the marker is required of a seed that
+ * produces free text, and not of one that produces only numbers and days.
+ *
+ * This is narrower than "every synthetic value is loudly fake", which is what
+ * CLAUDE.md says and what no version of this check has ever enforced: devone's
+ * own categories ('eating out', 'groceries') carry no marker and never have.
+ * One marked value per seed is the bar, unchanged — the only thing that moved
+ * is whether a seed with nowhere to put one is asked for it anyway.
+ */
+export function isFreeText(value: unknown): value is string {
+  return typeof value === 'string' && value !== '' && !STRUCTURAL_VALUE.test(value)
+}
+
 const USERS = resolve(__dirname, '..', '..', 'users')
 
 // users/ holds one directory per account, and an account slug can never be
@@ -113,6 +155,35 @@ function loadScreens(slug: string): Promise<DashboardScreen[]> {
 const temps: string[] = []
 afterAll(() => {
   for (const d of temps) rmSync(d, { recursive: true, force: true })
+})
+
+// Pinned directly, because the loud-fake sweep below now DECIDES whether to
+// demand a marker at all based on this predicate. Getting it wrong in the
+// permissive direction is silent: a seed full of real merchant names read as
+// "structural" would skip the check entirely and the sweep would stay green.
+describe('isFreeText — where a real person’s data could hide', () => {
+  it('treats names and descriptions as free text', () => {
+    for (const value of ['COFFEE PALACE TEST', 'eating out', 'Sam', 'a', '2026-08-18 SAMPLE TEST']) {
+      expect(isFreeText(value)).toBe(true)
+    }
+  })
+
+  it('treats numbers and day keys as structural', () => {
+    // Numbers whether stored as INTEGER or as TEXT: SQLite is dynamically
+    // typed, so a seed may hand back either for the same column.
+    for (const value of [0, 7, -1, 1.5, '7', '-1', '1755561600000']) {
+      expect(isFreeText(value)).toBe(false)
+    }
+    for (const value of ['2026-08-18', '2026-08-18T14:30:00Z', '2026-08-18 14:30']) {
+      expect(isFreeText(value)).toBe(false)
+    }
+  })
+
+  it('treats null, empty and non-strings as nothing to mark', () => {
+    for (const value of [null, undefined, '', Buffer.from([1, 2, 3])]) {
+      expect(isFreeText(value)).toBe(false)
+    }
+  })
 })
 
 describe('users/ folder conventions', () => {
@@ -304,7 +375,7 @@ describe('users/ folder conventions', () => {
     )
 
     whenBuilt(
-      'generates loudly-fake, non-empty data',
+      'generates non-empty data, loudly fake wherever it has free text',
       () => {
         const out = mkdtempSync(join(tmpdir(), `stairwell-loud-${slug}-`))
         temps.push(out)
@@ -323,6 +394,7 @@ describe('users/ folder conventions', () => {
 
           let rows = 0
           let loud = false
+          let freeText = 0
           for (const table of tables) {
             const all = db.prepare(`SELECT * FROM "${table}"`).all() as Record<
               string,
@@ -333,13 +405,22 @@ describe('users/ folder conventions', () => {
             // named e.g. "test_flag" would satisfy a JSON.stringify(all) scan
             // while every row held realistic, non-fake data.
             for (const row of all) {
-              if (Object.values(row).some((v) => String(v).includes('TEST'))) {
-                loud = true
+              for (const value of Object.values(row)) {
+                if (!isFreeText(value)) continue
+                freeText += 1
+                // The marker is looked for in free text only. A structural
+                // value cannot contain it, so this is the same assertion the
+                // check has always made — stated over the values that can
+                // actually carry it.
+                if (value.includes('TEST')) loud = true
               }
             }
           }
           expect(rows).toBeGreaterThan(0)
-          expect(loud).toBe(true)
+          // A seed that produces only numbers and day keys has nowhere to put
+          // the marker, and nothing for a real person's data to hide in.
+          // See isFreeText.
+          if (freeText > 0) expect(loud).toBe(true)
         } finally {
           db.close()
         }

@@ -18,7 +18,8 @@ const DASHBOARDS: Record<string, () => Promise<DashboardModule>> = {
   devone: () => import('@/users/devone/dashboard'),
   devtwo: () => import('@/users/devtwo/dashboard'),
   run3: () => import('@/users/run3/dashboard'),
-  run4: () => import('@/users/run4/dashboard')
+  run4: () => import('@/users/run4/dashboard'),
+  run8: () => import('@/users/run8/dashboard'),
 }
 
 /**

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: Canvas; color: CanvasText; }
+  .frame { max-width: 60rem; margin: 0 auto; padding: 1.5rem 1rem; }
+
+  .screen-title { font-size: 1.1rem; font-weight: 600; margin: 0 0 1rem; opacity: 0.7; }
+  .panel { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+           border-radius: 0.75rem; padding: 1rem; margin: 0 0 1rem; }
+  .panel-title { font-size: 0.9rem; font-weight: 600; margin: 0 0 0.5rem; }
+  .figure { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; }
+  .note { font-size: 0.85rem; opacity: 0.65; }
+</style>
+</head>
+<body>
+<div class="frame">
+<div id="screen-tracker"><section class="screen"><style>#screen-tracker .screen-title { font-size:1.05rem;letter-spacing:.02em;text-transform:uppercase;opacity:.6;margin-bottom:14px }
+#screen-tracker .grid { display:grid;grid-template-columns:1fr;gap:16px }
+@media(min-width:760px) { #screen-tracker .grid { grid-template-columns:minmax(260px,340px) 1fr;align-items:stretch }
+ }
+#screen-tracker .count-panel { display:flex;flex-direction:column;justify-content:center }
+#screen-tracker .count-row { display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:6px }
+#screen-tracker .count-row .figure { font-size:5.5rem;line-height:.9;font-variant-numeric:tabular-nums;font-weight:600 }
+@media(min-width:760px) { #screen-tracker .count-row .figure { font-size:6.5rem }
+ }
+#screen-tracker .btn { width:64px;height:64px;border-radius:50%;border:1.5px solid rgba(125,145,170,.45);background:rgba(125,145,170,.10);font-size:2rem;line-height:1;display:flex;align-items:center;justify-content:center;cursor:pointer;color:inherit;flex:0 0 auto;font-weight:400 }
+#screen-tracker .btn.plus { background:#2f6f5e;border-color:#2f6f5e;color:#fff;width:76px;height:76px;font-size:2.4rem }
+#screen-tracker .chart-head { display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap }
+#screen-tracker .toggle { display:inline-flex;border:1px solid rgba(125,145,170,.4);border-radius:999px;overflow:hidden;font-size:.72rem;letter-spacing:.05em;text-transform:uppercase }
+#screen-tracker .toggle span { padding:5px 12px;opacity:.65 }
+#screen-tracker .toggle span.on { background:rgba(47,111,94,.15);color:#2f6f5e;opacity:1;font-weight:600 }
+#screen-tracker .bars { display:grid;grid-template-columns:repeat(7,1fr);gap:8px;align-items:end;height:150px;margin-top:20px }
+@media(min-width:760px) { #screen-tracker .bars { height:200px;gap:14px }
+ }
+#screen-tracker .bar { display:flex;flex-direction:column;justify-content:flex-end;height:100%;gap:6px;text-align:center }
+#screen-tracker .bar i { display:block;background:rgba(47,111,94,.35);border-radius:5px 5px 0 0 }
+#screen-tracker .bar.today i { background:#2f6f5e }
+#screen-tracker .bar b { font-size:.8rem;font-variant-numeric:tabular-nums;font-weight:600 }
+#screen-tracker .days { display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-top:8px;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;opacity:.55;text-align:center }
+@media(min-width:760px) { #screen-tracker .days { gap:14px }
+ }
+</style><h2 class="screen-title">Bathroom count</h2><div class="grid"><div class="panel count-panel"><div class="panel-title">Today</div><div class="count-row"><button class="btn" type="button">	&&minus;</button><div class="figure">5</div><button class="btn plus" type="button">+</button></div><p class="note">Sunday &middot; last week this day: 6</p></div><div class="panel"><div class="chart-head"><div class="panel-title">This week</div><span class="toggle"><span class="on">Daily</span><span>Weekly avg</span></span></div><div class="bars"><div class="bar"><b>8</b><i style="height:72%"></i></div><div class="bar"><b>7</b><i style="height:63%"></i></div><div class="bar"><b>9</b><i style="height:82%"></i></div><div class="bar"><b>6</b><i style="height:54%"></i></div><div class="bar"><b>8</b><i style="height:72%"></i></div><div class="bar"><b>11</b><i style="height:100%"></i></div><div class="bar today"><b>5</b><i style="height:45%"></i></div></div><div class="days"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><p class="note">Averaging 7.7 a day this week</p></div></div></section></div>
+</div>
+</body>
+</html>
