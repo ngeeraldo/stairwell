@@ -232,8 +232,9 @@ architectural changes; do not relitigate decided items).
   never a panel id.
   `dashboard_open` follows the same bound: it carries `screen_order`, the
   active screen's integer position, and never the screen's `id` — a
-  spec-authored identifier under the same slug rule as a panel id. See
-  Dashboard folder conventions for the full mechanism.
+  spec-authored identifier under the same slug rule as a panel id. See the
+  "`dashboard_open` writes one row per render" bullet below, further down
+  this section, for the full mechanism.
 - **Build notes never carry user values either.** `users/<slug>/notes/v<n>.md`
   is committed to the repo and describes the SHAPE of what was built — a table,
   a panel, a computation — never a row, a value, or a merchant. Same bound as

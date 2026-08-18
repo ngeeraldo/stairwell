@@ -24,7 +24,8 @@ import { readBuildNotes } from '@/lib/build/notes'
  * living one import away. `DashboardScreen`'s id/title/order mirror
  * lib/spec/schema.ts's `Screen` exactly (lib/dashboard/contract.ts says so),
  * and a screen id is spec-authored: it comes from the same model output as
- * `divorce_lawyer_fund`-shaped panel and value ids (CLAUDE.md, Sacred data),
+ * `divorce_lawyer_fund`-shaped panel and value ids (CLAUDE.md, Dashboard
+ * folder conventions — "Metrics never carry user values"),
  * which use underscores. SLUG_PATTERN (`^[a-z0-9-]{1,32}$`) allows hyphens
  * and forbids underscores — the opposite of a spec id's actual shape — so it
  * would reject a perfectly valid spec-derived screen id on the day one

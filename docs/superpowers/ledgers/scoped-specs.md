@@ -367,6 +367,22 @@ directives (`default-src`, `img-src`, …) do not govern *navigation*, so a
 `<meta http-equiv="refresh" content="0;url=http://…">` inside a fragment is a
 channel the CSP layer cannot close. Only the source-level strip can.
 
+**Why the strip closes it rather than the `sandbox=""` attribute every
+consumer already sets on its iframe — a correction, recorded because the
+first answer given here was wrong.** The ruling that started this work
+originally reasoned that an empty `sandbox=""` blocks TOP-level navigation
+but not a frame navigating *itself*, so a meta-refresh redirect would still
+fire and only the strip could stop it. That reasoning is **false**: for a
+meta refresh specifically, an empty `sandbox=""` counts it as an "automatic
+feature" and blocks it outright — verified afterward in real Chromium. The
+strip is still the right fix, but for a different, better reason: it is the
+layer that does not depend on how the document is later rendered, so it
+holds even for a consumer that is not sandboxed, is missing the attribute by
+a future mistake, or renders this content some other way entirely. A future
+reader who reasons their way to the original (wrong) conclusion — "the
+sandbox already covers this, why does the strip exist" — should stop here
+rather than rediscover the correction independently.
+
 Getting that strip right took five fix rounds. Four of them shipped a
 genuinely different, independently reproduced bypass, because each round
 tried to answer "is this particular `<meta>` tag the dangerous kind" by
@@ -626,6 +642,26 @@ anything but test temp files.
     duplication by importing `usersRoot` from `userDb.ts` reintroduces
     exactly the coupling this avoided, and the two copies have to be kept in
     step by hand if the `USERS_DIR` convention ever changes.
+
+18. **The tab strip has never been through this repo's own screenshot-review
+    gate, and that is outstanding, not merely absent.** (Task 22.) All four
+    dashboards on this branch declare exactly one screen, so `tabStrip`
+    (`app/[user]/page.tsx`) has never rendered for anyone — CLAUDE.md's
+    Onboarding section treats "every screen is reviewed as a picture before
+    its task is committed" as a gate (onboarding ledger D16), and this one has
+    not passed through it, because nothing yet exists for it to render
+    against. The first person to add a second screen to any dashboard will
+    also be the first person to ever see this chrome live, on their own
+    build, with no prior picture to compare it to. Also from Task 22: no test
+    covers a stray `?screen=` param arriving against a dashboard whose
+    `screens` is `undefined` — a path `renderDashboard` still defends
+    (`screens === undefined ? undefined : activeScreen(...)`,
+    `app/[user]/page.tsx`) even though Task 23 made `DashboardModule.screens`
+    required, so the registry's own types make the branch unreachable for
+    every dashboard actually wired up through it
+    (`lib/dashboard/contract.ts`'s `DashboardModule` doc comment says so
+    directly). Low risk — a short-circuit with an obvious correct answer —
+    but untested is untested.
 
 ---
 
