@@ -7,7 +7,13 @@ import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount, findAccountBySlug } from '@/lib/auth/accounts'
 import { readTranscript } from '@/lib/db/appendOnly'
 import { insertSpec, confirmSpec } from '@/lib/db/specs'
-import { announce, announceTarget, commitAnnouncement, plainBody } from '@/lib/chat/announce'
+import {
+  AlreadyAnnouncedError,
+  announce,
+  announceTarget,
+  commitAnnouncement,
+  plainBody,
+} from '@/lib/chat/announce'
 import type { SpecVersion } from '@/lib/spec/schema'
 import type { LegacySpecPayload } from '@/lib/spec/legacy'
 
@@ -279,6 +285,47 @@ describe('commitAnnouncement', () => {
         }
       ).n,
     ).toBe(metricsBefore)
+  })
+
+  // Final review, Important 4. Two concurrent `--send` runs both call
+  // announceTarget BEFORE either has written anything, so both resolve the
+  // SAME ConfirmedTarget with `ok: true` — announceTarget's own check cannot
+  // see a commit that has not happened yet. This test hands commitAnnouncement
+  // that same stale target twice, simulating exactly that race: the guard has
+  // to live inside commitAnnouncement's own transaction, not just in
+  // announceTarget's read, or both calls succeed and `deploy_announced` (a
+  // sacred, append-only metric per CLAUDE.md) gets a permanent duplicate.
+  it('refuses a second commit for the same target, even when both resolved the target before either wrote (the race)', () => {
+    confirmAVersion(db, 'devtwo', { change_summary: 'racy build' })
+    const target = announceTarget(db, 'devtwo')
+    if (!target.ok) throw new Error('expected a target')
+
+    const transcriptBefore = readTranscript(db, accountId).length
+    const metricsBefore = (
+      db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
+        n: number
+      }
+    ).n
+
+    commitAnnouncement(db, target, { body: 'first sender wins', promptSha: 'a'.repeat(12), at: 10 })
+
+    // The SAME target object — exactly what a second, concurrent process
+    // would be holding, since it read it before the first commit landed.
+    expect(() =>
+      commitAnnouncement(db, target, { body: 'second sender loses', promptSha: 'b'.repeat(12), at: 11 }),
+    ).toThrow(AlreadyAnnouncedError)
+
+    // Exactly one of each — the second call wrote NEITHER half of the pair,
+    // not a partial duplicate.
+    expect(readTranscript(db, accountId).length).toBe(transcriptBefore + 1)
+    expect(
+      (
+        db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
+          n: number
+        }
+      ).n,
+    ).toBe(metricsBefore + 1)
+    expect(readTranscript(db, accountId).at(-1)!.body).toBe('first sender wins')
   })
 })
 

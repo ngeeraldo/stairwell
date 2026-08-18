@@ -234,6 +234,91 @@ describe('runAnnounce', () => {
     expect(client.propose).not.toHaveBeenCalled()
   })
 
+  // Final review, Important 4: --body-file sends Nico's own reviewed bytes
+  // verbatim, with no model call — the way to actually send what an earlier
+  // dry run showed, rather than a fresh independent sample.
+  describe('--body-file', () => {
+    function writeBody(text: string): string {
+      const path = join(dir, 'reviewed-body.txt')
+      writeFileSync(path, text)
+      return path
+    }
+
+    it('sends the file verbatim and makes no model call', async () => {
+      const path = writeBody('Exactly what Nico reviewed.')
+      const client = failingClient()
+      const out = await runAnnounce(
+        { ...deps, client },
+        { slug: 'sam', send: true, plain: false, bodyFile: path },
+      )
+      expect(out.kind).toBe('announced')
+      expect(lastTranscriptBody(db)).toBe('Exactly what Nico reviewed.')
+      expect(client.propose).not.toHaveBeenCalled()
+    })
+
+    it('reads the file fresh on a dry run too, and writes nothing', async () => {
+      const path = writeBody('Preview only.')
+      const out = await runAnnounce(deps, { slug: 'sam', send: false, plain: false, bodyFile: path })
+      expect(out.kind).toBe('drafted')
+      expect(out.body).toBe('Preview only.')
+      expect(transcriptCount(db)).toBe(0)
+    })
+
+    it('reports body_file_invalid, naming the path, when the file cannot be read', async () => {
+      const out = await runAnnounce(deps, {
+        slug: 'sam',
+        send: true,
+        plain: false,
+        bodyFile: join(dir, 'does-not-exist.txt'),
+      })
+      expect(out.kind).toBe('body_file_invalid')
+      expect(out.message).toContain('does-not-exist.txt')
+      expect(transcriptCount(db)).toBe(0)
+    })
+
+    it('refuses to combine with --plain, since both skip drafting differently', async () => {
+      const path = writeBody('irrelevant')
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: true, bodyFile: path })
+      expect(out.kind).toBe('draft_failed')
+      expect(transcriptCount(db)).toBe(0)
+    })
+  })
+
+  // Final review, Important 4: without --body-file, --send re-drafts — a
+  // fresh, independent model sample — so the operator gets told the text
+  // about to be written permanently may not match an earlier dry run.
+  describe('the re-draft warning', () => {
+    it('warns on --send when no --body-file was given', async () => {
+      writeNotes('sam', 1)
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
+      expect(out.kind).toBe('announced')
+      expect(out.warnings.join(' ')).toMatch(/fresh|new model sample/i)
+      expect(out.warnings.join(' ')).toMatch(/--body-file/)
+    })
+
+    it('does not warn on a dry run — nothing is written yet to disagree with', async () => {
+      writeNotes('sam', 1)
+      const out = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
+      expect(out.kind).toBe('drafted')
+      expect(out.warnings).toEqual([])
+    })
+
+    it('does not warn on --send --plain — the fixed sentence never varies', async () => {
+      writeNotes('sam', 1)
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: true })
+      expect(out.kind).toBe('announced')
+      expect(out.warnings).toEqual([])
+    })
+
+    it('does not warn on --send --body-file — nothing was redrafted', async () => {
+      const path = join(dir, 'reviewed.txt')
+      writeFileSync(path, 'Reviewed text.')
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false, bodyFile: path })
+      expect(out.kind).toBe('announced')
+      expect(out.warnings).toEqual([])
+    })
+  })
+
   // D17 (unified-loop ledger), exercised end to end. Every test above seeds
   // no transcript rows, so readTranscript returns [] and the trailing-user-
   // turn branch in scripts/announce-deploy.ts never runs — this is the one
@@ -291,6 +376,27 @@ describe('runAnnounce', () => {
 })
 
 describe('resolveClient', () => {
+  // Final review, Important 4: --body-file must not require ANTHROPIC_API_KEY
+  // either — it makes no model call, the same situation --plain already
+  // covers, just from a file instead of a fixed sentence.
+  it('--body-file: returns the same never-called stub as --plain, needing no credential', async () => {
+    const original = process.env.ANTHROPIC_API_KEY
+    delete process.env.ANTHROPIC_API_KEY
+    try {
+      const client = resolveClient(false, '/some/path.txt')
+      await expect(
+        client.propose({
+          system: '',
+          messages: [],
+          signal: new AbortController().signal,
+          schema: {},
+        }),
+      ).rejects.toThrow()
+    } finally {
+      if (original !== undefined) process.env.ANTHROPIC_API_KEY = original
+    }
+  })
+
   it('--plain: returns a stub that rejects if ever called, needing no credential', async () => {
     const client = resolveClient(true)
     await expect(
@@ -344,6 +450,7 @@ describe('exitCodeFor', () => {
       'notes_invalid',
       'draft_failed',
       'no_confirmed_spec',
+      'body_file_invalid',
     ]
     const ok: AnnounceOutcome['kind'][] = ['drafted', 'announced', 'already_announced']
     for (const kind of refusals) expect(exitCodeFor(kind)).not.toBe(0)

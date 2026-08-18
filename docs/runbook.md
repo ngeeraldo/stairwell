@@ -507,12 +507,21 @@ views you have.
 
 ## Step 9 — Tell them it landed
 
+**`--send` on its own RE-DRAFTS.** It makes a fresh, independent model call —
+not the sentence you read in step 1 — so reading a draft does not gate what
+actually gets sent unless you send that exact draft back. `--body-file` is
+how: it posts a file's bytes verbatim, with no model call, so what lands in
+the transcript is byte-for-byte what you read.
+
 ```bash
 # 1. Draft it and read it. Writes nothing.
 ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND"
 
-# 2. Happy with it? Send it.
-ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND --send"
+# 2. Happy with EXACTLY that sentence? Save it to a local file — paste it,
+#    don't retype it — then copy it to the droplet and send it verbatim.
+pbpaste > "/tmp/announce-$FRIEND.txt"   # or your editor of choice
+scp "/tmp/announce-$FRIEND.txt" "$DROPLET:/tmp/announce-$FRIEND.txt"
+ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND --send --body-file /tmp/announce-$FRIEND.txt"
 ```
 
 The draft is written from `notes/v$V.md` — what shipped, plus any in-spirit
@@ -526,6 +535,11 @@ If it warns that `## Open` is non-empty, the announcement is still correct —
 but you owe them a chat about the part that did not land, via
 `scripts/ask-user.ts` (step 4) or a new proposal.
 
+Skipping `--body-file` and running `--send` directly still works — it is not
+forbidden, just re-drafting, and it prints a warning saying so on every run.
+Use it only when the wording difference between "what I read" and "what gets
+sent" genuinely does not matter for that announcement.
+
 If the API is down and the announcement has to go out now:
 
 ```bash
@@ -533,7 +547,8 @@ ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND --send 
 ```
 
 `--plain` sends the old fixed sentence and makes no model call. It is the only
-sanctioned way to announce without reading the notes.
+sanctioned way to announce without reading the notes. (`--plain` and
+`--body-file` are two different ways to skip drafting — pass at most one.)
 
 Posts into **that one account's** chat, **once per confirmed spec version**.
 Safe to re-run: an already-announced version is reported, not repeated.
@@ -580,7 +595,7 @@ is here because getting it wrong is expensive and quiet.
 | Add a new prompt version — `agent-v3.md` | `prompt_sha` is stamped on transcript and spec rows that already exist, so editing `agent-v2.md` changes what an already-written hash points at. Prompts are added, and that is a data-safety property. |
 | Run `announce-deploy.ts` by hand, once per friend, at step 9 | `deploy.sh` deploys the whole service. Calling the announcer from it would post "your dashboard is live" into every account's chat on every push — a permanent line in an append-only transcript. |
 | Write `notes/v<n>.md` before announcing, and never edit one afterwards | It is the only record of what shipped, and step 9 speaks from it. An edited note changes what an already-sent, permanent announcement was based on. |
-| Read the drafted announcement before `--send` | `transcripts` rejects DELETE. It is the first generated sentence this system writes into it. |
+| Read the drafted announcement, then send it back with `--send --body-file` | `transcripts` rejects DELETE. `--send` alone re-drafts — a fresh model sample, not the sentence you read — so reading a draft only gates what gets written when `--body-file` sends that exact draft back verbatim, with no model call. |
 | Leave every `deploy_announced` and `first_session_start` metric row in place | Both are read for correctness, not observed. Losing one makes a weeks-old build re-announce itself, or a months-old account report a first session again. They look like telemetry and are not. |
 | Build locally with `scripts/create-local-account.ts` + `npm run dev` | `npm start` sets `NODE_ENV=production`, the only switch `lib/db/userData.ts` has, so a login there takes the production branch and `lib/db/migrate.ts` writes a real `users/<slug>/<slug>.db` onto your laptop. Gate F blocks your next commit until it is removed. |
 | Ship every droplet change through `git push` and `deploy/deploy.sh` | `deploy.sh` runs `git pull --ff-only`, so a hand-edit there is clobbered by the next deploy and is invisible on the laptop where the dashboard is actually built. |

@@ -180,12 +180,39 @@ export function plainBody(headline: string, first: boolean): string {
 export type ConfirmedTarget = Extract<AnnounceTarget, { ok: true }>
 
 /**
+ * Thrown by commitAnnouncement's own re-check, below — never by
+ * announceTarget's read, which returns `{ ok: false, reason:
+ * 'already_announced' }` instead of throwing. Two different shapes for the
+ * same fact because they answer two different questions: announceTarget asks
+ * "is there anything to do" before a caller has spent anything; this asks "is
+ * it still true right now, inside the transaction that is about to commit."
+ */
+export class AlreadyAnnouncedError extends Error {
+  constructor(specId: number) {
+    super(`spec ${specId} was already announced`)
+    this.name = 'AlreadyAnnouncedError'
+  }
+}
+
+/**
  * Write the announcement and its guard row, together or not at all.
  *
  * The transaction is the whole idempotency guarantee: two independent INSERTs
  * would leave the failure open where the transcript commits and the metric
  * does not, so the next run sees "not yet announced" and posts a second,
  * permanent duplicate into a table that rejects DELETE.
+ *
+ * FINAL REVIEW, IMPORTANT 4: `alreadyAnnounced` is re-checked HERE, inside the
+ * transaction, not just by the caller's earlier `announceTarget` read. Two
+ * concurrent `--send` runs for the same account both read "not yet announced"
+ * before either has written anything — announceTarget's own check cannot see
+ * the other run's in-flight commit — and without a re-check at the point of
+ * writing, both would post a real transcript row and a real deploy_announced
+ * metric, permanently, into two append-only tables. The re-check and the
+ * writes are one transaction (better-sqlite3's db.transaction is exclusive
+ * for its whole body against another write transaction on the same
+ * connection/database file), so the second run's re-check sees the first
+ * run's commit and refuses instead of duplicating it.
  */
 export function commitAnnouncement(
   db: PlatformDb,
@@ -198,6 +225,9 @@ export function commitAnnouncement(
   },
 ): void {
   db.transaction(() => {
+    if (alreadyAnnounced(db, target.accountId, target.specId)) {
+      throw new AlreadyAnnouncedError(target.specId)
+    }
     announce(db, {
       accountId: target.accountId,
       body: write.body,
