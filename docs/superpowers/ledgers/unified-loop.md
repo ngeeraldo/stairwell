@@ -719,6 +719,354 @@ block anything, and all are cheap:
       observed durations were 3–5s rather than a constant, and Caddy's own log
       attributes the cancellation to the client.
 
+    **ROOT CAUSE, 2026-08-18: `net::ERR_NETWORK_CHANGED`.** Chrome's own
+    Network tab named it on the sixth occurrence. Chrome cancels in-flight
+    requests when the OS network interface changes — a laptop roaming between
+    wifi access points or bands, or a VPN re-establishing. Nothing server-side
+    can emit it. It accounts for every observation: random timing, the page
+    surviving (the marker is live client state, so there was no reload),
+    "context canceled" correctly blamed on the client, and exactly one
+    `/api/chat` request per message in the access log.
+
+    **BUT THE RATE IS ELEVATED BEYOND EXPOSURE TIME, AND THAT PART IS STILL
+    OPEN.** Nico pushed back on "random network change" and was right to:
+
+    | | Attempts | Aborts | Rate |
+    |---|---|---|---|
+    | Ordinary chat turns | 73 | 1 | 1.4% |
+    | Authoring attempts | 16 | 6 | 37.5% |
+
+    One abort across ~630s of ordinary-turn exposure is ~0.0016/s, which for a
+    ~78s proposing request predicts 11.7% — about 2 of 16. Six were observed.
+    P(>=6) under that model is ~1.3%. So the authoring window is roughly 3x more
+    dangerous per second than an ordinary turn's, and duration alone does not
+    explain it.
+
+    **The one candidate that is OURS**, and the next thing to test: Caddy
+    advertises `Alt-Svc: h3=":443"` on every response, so Chrome is continuously
+    invited onto HTTP/3. QUIC is far more sensitive to interface changes than
+    TCP, and connection migration is exactly where that error class originates.
+    `servers { protocols h1 h2 }` in `deploy/Caddyfile` turns the invitation
+    off; a `chrome://net-export` capture during a failure would settle it
+    outright by showing whether the OS reported a network change at all.
+
+    **SHIPPED 2026-08-18, three changes, none of which needs the elevation
+    explained:**
+    - **Authoring no longer dies with the connection.** `RunTurnInput` takes
+      `authoringSignal` separately from `signal`; the route passes one it never
+      aborts. A dropped connection is now a DELAY — authoring finishes, `specs`
+      gets its row, and the card arrives on the friend's next load. Bounded by
+      `SPEC_TIMEOUT_MS`, not by the socket.
+    - **The mockup call retries a transient failure** (`MAX_MOCKUP_ATTEMPTS`,
+      `isTransient` in `lib/chat/client.ts`). The retry that followed the sixth
+      abort died on `overloaded_error` AFTER a validated draft had been billed
+      4704 output tokens. The SDK cannot cover it: `propose` streams, so a
+      mid-stream error event arrives after the response began — which is why the
+      shape carried `type: 'overloaded_error'` with `status: null`.
+    - **The marker no longer lies.** `{saved:true}` is sent the moment the
+      assistant row and its `chat_turn` metric land, ahead of the authoring
+      window. A saved-but-dropped turn now says so and offers Reload rather than
+      Retry.
+    - **The heartbeat** (`lib/chat/heartbeat.ts`) remains, and is **still
+      untested**: the one failure since it deployed came at 3.86s, before the
+      first 5s beat. Do not credit it and do not lower the interval to chase
+      this — idleness cannot explain a 3.86s teardown, and the honest reason to
+      keep it is that a silent 90-second response is bad regardless.
+
+    **Still open:**
+    - The 3x elevation above. Alt-Svc is the lead; `chrome://net-export` is the
+      instrument.
+    - Whether the model STREAM should also survive a dropped connection. It is
+      still tied to `signal`, so a friend who disconnects mid-reply loses that
+      reply (one `stream_aborted` row ever). Deliberate for now: a reply nobody
+      received is arguably not worth persisting, and the tokens are spent
+      either way.
+    - `deploy/Caddyfile`'s access log is on, and `/var/log/caddy/access.log` was
+      chmod'd to 644 during this investigation so it could be read without
+      sudo. Both are investigation scaffolding — revisit when this closes.
+      NOTE the trap that cost an hour: `sudo caddy validate` PROVISIONS the
+      config, which creates the log file as root and then blocks the `caddy`
+      user from opening it. `systemctl reload caddy` validates on its own; do
+      not run validate under sudo.
+
+## Deferred, accepted
+
+- The internal critique pass (D8).
+- A generalized entry-widget write route (D10) — raised to Nico as a scope question.
+- Highlighting only changed panels in the mockup. File 02 §3 calls full re-render
+  "acceptable for the pilot" and the highlight "a styling improvement, not a
+  requirement." Skipped.
+- Storing the structural diff. `specs` takes no new column (D2/R2), so the diff is
+  derived on demand by `lib/spec/diff.ts`. File 02 §2 permits "or make it cheaply
+  derivable." Counts (not content) ride on the `spec_confirmed` metric row so the
+  metrics pipeline has a time series without a join.
+
+---
+
+## Built
+
+Fourteen tasks, executed subagent-driven with a task review after each and a
+whole-branch review at the end. 789 tests pass, `tsc --noEmit` is clean,
+`next build` succeeds, `.claude/hooks/test-hooks.sh` is 158/158.
+
+The design held. There is one loop: the agent raises its hand with the same
+zero-payload `propose_spec`, a second call authors the **whole surface** under
+structured output, a third renders the mockup from the *validated* payload, the
+friend confirms, and the diff between confirmed versions is the record of what
+they asked for. A first interview and a one-word relabel travel the same path.
+
+**What the pre-flight scan caught, before any code was written.** Two blocking
+defects in the plan itself: Task 1 deleted `parseSpecInput` while `author.ts` still
+imported it (the branch would not have compiled at the end of the first task), and
+Task 9 omitted `author.ts` from its file list although `Proposal` — the type the
+NDJSON `proposal` line carries — lives there. Both would have surfaced as
+mid-branch breakage; the scan cost twenty minutes.
+
+**Three amendments were ruled during implementation**, each recorded above:
+
+- **D15 extended.** The mockup call's counters were specified on the failure row
+  only, leaving the *success* path as the one place a returning, billed model call
+  reached no metrics row. Caught by an implementer reading the constraint rather
+  than the instruction.
+- **D2 given a lifetime.** "Server-computed cannot be wrong" conflated *not
+  hallucinated* with *not stale*. The pointer is now read at write time.
+- **D9 given a lifetime.** Same gap: which constant was settled, when the choice is
+  made was not. The promise now rides on the proposal.
+
+**The recurring lesson, and it is the same one step 4 recorded:** every
+Important finding on this branch originated in the plan, not in an implementer's
+work. Implementers were fast and accurate against a well-specified brief — and
+faithfully shipped the brief's own defects until something independent looked at
+the result. Twice an implementer disagreed with a brief and was right both times:
+the derived-input error message that contradicted its own test, and a red-test
+control instrument that would have proved the wrong thing.
+
+**Defects that only existed in the composition**, invisible to any per-task review:
+
+- An operator announcement appends an `assistant` transcript row after a turn's own
+  `assistant` row — the first path in this codebase able to produce consecutive
+  same-role messages. Anthropic's own documentation contradicts itself on whether
+  that is a 400 or a silent merge. On the 400 reading, the *first* announcement
+  bricks that account's chat forever, since `transcripts` rejects DELETE. Closed by
+  folding same-role runs in `toMessages`, which makes the question moot.
+- `first` was computed once per page load and applied to every card, including cards
+  that stream in later — so after confirming v1, a relabel's card promised "tomorrow
+  morning". The page-load tests could not see it; only a test driving `applyTurn`
+  could.
+- `based_on_version` was read before a call that can run three minutes, while the
+  previous card's confirm button stayed live.
+
+**Tests that could not fail**, found and fixed: a `not.toContain` that was
+vacuously true because `renderToStaticMarkup` escapes the apostrophe in "it'll";
+admin assertions matching serialized props rather than rendered output; a mutation
+that reddened nothing because no test drove the component doing the threading; a
+`not.toContain` for a value the fixture could never have produced. The control that
+caught them is the one step 4 adopted — delete the guarded code, confirm exactly the
+intended test goes red — now run on every task.
+
+## The checkpoint — PASSED 2026-08-13, in production
+
+Run as `devtwo` against `app.stairwell.run`, on the same 53-commit deploy that
+first carried step 6a to the droplet (`8117b6e` → `2c1ee04`). `devtwo` asked for
+"a simple counter that counts up by 1 with a reset button" — a genuine new panel
+requested against an account whose only confirmed spec is a **legacy** one, so
+this exercised the legacy arm rather than the easy path.
+
+What it proves, all of which was previously untestable because the suite drives a
+fake client:
+
+- **`SPEC_JSON_SCHEMA` is accepted by the API.** Fifteen fields, nested `anyOf`
+  for the three value kinds, required-and-nullable throughout. Nothing before this
+  had ever sent one.
+- **`spec-v2.md` produces output `parseSpecDraft` accepts.** A prompt describing a
+  shape the validator rejects would have been invisible to every test.
+- **The separate mockup call works** (D7), and the card rendered its preview.
+- **The legacy arm works end to end**: `currentVersionBlock` fed the writer
+  devtwo's v1 legacy spec as rendered markdown with the assign-ids-fresh note, and
+  the new version was written with `based_on_version: 1`.
+- **The card led with what changed**, not the summary.
+- **The delivery line read "small changes usually land within a few hours."** This
+  is the one worth recording: `first` is false because a confirmed spec exists
+  *below* this version. The plan's original rule (`!hasConfirmedSpec`) would have
+  said "tomorrow morning" for a one-word counter, and the version the whole-branch
+  review forced — `first` riding on the proposal, computed with
+  `hasConfirmedSpecBelow` — is what produced the right sentence on a real card.
+  Both halves of D9's amendment are confirmed live.
+- **ntfy fired on confirmation**, and the card settled to "Building this one."
+
+**Not verified, and left for whenever it is next convenient** — none of these
+block anything, and all are cheap:
+
+- The `attempt` value on the `spec_proposed` row. If proposals routinely need two
+  attempts, every one silently costs two model calls; the number is one query away
+  and nobody has looked.
+- `./scripts/pull-spec.sh devtwo` against the new renderer — `renderSpecMarkdown`
+  has never run on live data, only fixtures.
+- The admin pane's structural diff on a real pair of versions.
+- `scripts/announce-deploy.ts` and `scripts/ask-user.ts` against the droplet.
+
+## Residual risks
+
+1. **Nobody has confirmed what the Messages API actually does with consecutive
+   same-role messages.** The fold in `toMessages` does not depend on the answer and
+   is permanent either way — see **D17**, which is a ruling, not a mitigation. What
+   remains genuinely residual is only the not-knowing: anyone reasoning about
+   transcript shape for some *other* purpose should know this question was routed
+   around rather than settled, and should not read the fold's existence as evidence
+   that the 400 behaviour is real.
+
+2. **The metrics redactor is coupled to a convention in a different file.**
+   `metricMessage()` strips double-quoted segments, which assumes
+   `lib/spec/validate.ts` double-quotes every interpolated content value. It mostly
+   does — but `parseSpecVersion` throws ``JSON parse error: ${err.message}`` with the
+   inner message unquoted by our code, reachable through the outer catch on a corrupt
+   current row. Bounded (~30 chars, and V8 quotes the offending snippet itself), but
+   an unquoted interpolation added to `validate.ts` later would silently widen it.
+
+3. **The announce transaction's atomicity is proven by inspection, not by a test.**
+   No test induces a mid-transaction failure and asserts the transcript row rolled
+   back.
+
+4. **`deploy_announced` metric rows are load-bearing for correctness** — the first
+   such row in this codebase (D16). Pruning one makes a weeks-old build announce
+   itself again into an append-only transcript. Now stated in CLAUDE.md's sacred-data
+   section, because the "never clean up" rule needed the consequence attached.
+
+5. **`scripts/ask-user.ts` writes to an append-only transcript with zero tests** and
+   takes no injected clock, unlike its sibling. `scripts/` sits outside the
+   pre-commit gate's scopes, so nothing catches it — and it is the model the next
+   operator CLI will be copied from.
+
+6. **`alreadyAnnounced` swallows `JSON.parse` failures**, so one corrupt
+   `deploy_announced` blob produces a duplicate announcement — the exact permanent
+   outcome the function exists to prevent.
+
+7. **The `first` fallback is held by tests, not by the compiler.** `first` is
+   required on the server's `Proposal` and optional on the client's `CardProposal`;
+   TypeScript does not object to a possibly-undefined value in a boolean position and
+   this repo has no ESLint. An edit dropping `?? first` compiles clean and silently
+   promises the wrong thing. `tests/chat/panel.test.ts` is the only thing catching it.
+
+8. **`EntryWidget.fields[].choices` never reaches `spec.md`.** A `choice`-typed entry
+   field arrives at the builder with no rendered options — an under-specified build
+   contract, small but real once a choice field exists.
+
+9. **A generalized entry-widget write route does not exist and is deliberately out of
+   scope** (D10). Every panel that accepts input still needs its own hand-written
+   platform route holding the four ordered checks. This is the hand-pain the roadmap
+   says to automate rung-by-rung; the trigger is spec versions routinely declaring
+   entry widgets.
+
+10. **`lib/spec/author.ts` is ~505 lines with five hand-built `appendMetric` sites**
+    that each repeat their field shape. Deliberately not factored — the reviewer
+    agreed a premature builder would hide the D15 distinctions the comments work to
+    make explicit — but a sixth site is where this stops being true.
+
+11. **Pre-existing dangling citations** to `.superpowers/sdd/…` scratch reports
+    survive in `app/[user]/ChatPanel.tsx` and `tests/session/keymap.test.ts`, from
+    steps 4 and 6a. Not introduced here; noted because this branch fixed its own and
+    the pattern will keep recurring until someone sweeps them.
+
+12. **`devone` and `devtwo` remain live production logins with published passwords**
+    (step-3 residual 7, step-4 residual 8, unchanged). Should close before the first
+    real user account exists.
+
+13. **OPEN — a proposal intermittently dies with the friend told a lie.**
+    Five failures in twelve authoring attempts across four accounts and several
+    days, with no code change between a failure and a success. It is the most
+    user-visible defect known about this branch and it still has no root cause,
+    though the shape is now much better understood — see the duration table
+    below. UPDATED 2026-08-18 after a fourth and fifth occurrence: one theory
+    below is WITHDRAWN as a misreading, and a mitigation has shipped. The
+    theories that were *ruled out* are recorded because re-deriving them costs
+    an hour, and the withdrawn one is kept for exactly the same reason.
+
+    **What the friend sees.** The agent replies, "Putting together a preview…"
+    appears, and then the turn is marked **"interrupted — not saved"** with a retry
+    button, and no card ever arrives.
+
+    **What actually happened.** The turn succeeded completely. `chat_turn` was
+    written both times, with the user row and the assistant row committed to
+    `transcripts`. The model called `propose_spec`. Then the client connection went
+    away, which aborted the authoring call — `spec_aborted` with all-zero counters,
+    which is the honest record of a call that died before the API returned anything.
+    The route withholds `{done:true}` when `request.signal.aborted`, and the panel
+    treats a missing `done` as "interrupted".
+
+    **So the marker is wrong, and this is the part worth fixing first.**
+    `finishTurn(state, false)` cannot distinguish *nothing was saved* from *the turn
+    was saved and only the preview was lost*. In this failure it says "not saved"
+    about a message that IS saved, and offers a retry button that writes a duplicate
+    user row into an append-only transcript. That is a correctness bug in the panel
+    independent of whatever causes the disconnect, and it predates this branch —
+    step 4 shipped the rule. This branch made it much likelier to fire by making the
+    authoring window two model calls plus a possible retry where it was one.
+
+    **Evidence from Caddy** (`journalctl -u caddy`), which logs errors even with no
+    access log configured:
+
+    ```
+    "msg":"aborting with incomplete response","duration":4.592647519,
+    "proto":"HTTP/2.0","method":"POST","uri":"/api/chat",
+    "error":"reading: context canceled"
+    ```
+
+    Two such warnings, durations **4.59s** and **3.03s**, each landing within 10ms
+    of a `spec_aborted` row. `context canceled` means the downstream client's
+    context died while Caddy was reading from Next.js — the browser went away, not
+    a proxy or server timeout.
+
+    **The unexplained part — WITHDRAWN 2026-08-18, it was a misreading.** This
+    entry used to say: the aborted request windows do not contain the
+    `chat_turn` timestamps, therefore **there were more `/api/chat` requests
+    than messages the friend sent**, and something client-side fires extra POSTs
+    and abandons them. That inference was drawn by subtracting Caddy's
+    `duration` field from the warning's `ts` to get a request start time. It
+    does not survive a fourth occurrence:
+
+    - The `run5` abort (2026-08-18 15:13:57 UTC) has `duration: 3.41s`, implying
+      a start 36.5s AFTER the `chat_turn` it belongs to — the same arithmetic,
+      the same apparent phantom.
+    - But the aborted request carries `Content-Length: 81`, and the user message
+      committed at 15:13:14 is 69 chars: `{"body":"<69 chars>"}` is 80-81 bytes.
+      It is THAT message's request, not a second one.
+    - A second POST would have written its own user transcript row before the
+      model call (`lib/chat/turn.ts` appends the user row up front, so an
+      aborted turn leaves a user row with no assistant row). There is none. No
+      `stream_aborted` row either.
+
+    So there was one request, and `duration` on that warning is not the request's
+    wall-clock lifetime. The DevTools observation of exactly one request on the
+    successful attempt was never in tension with anything. **Do not re-derive
+    the phantom-POST theory** — and note the confirming evidence came from a
+    field (`Content-Length`) already present in the log the first time.
+
+    **What the pattern actually is.** Every authoring attempt in the platform's
+    history, timed from the preceding `chat_turn` to its outcome row:
+
+    | Outcome | Durations |
+    |---|---|
+    | `spec_aborted` | 8.0s, 17.3s, 18.2s, 36.5s, 40.0s |
+    | `spec_proposed` | 47.0s, 50.6s, 65.5s, 72.3s, 76.0s, 90.5s, 97.5s |
+
+    Five of twelve attempts died. Every abort landed EARLIER than the fastest
+    success, and at no repeating value — so it is not a deadline of ours
+    (`SPEC_TIMEOUT_MS` is 180s), not a proxy timeout (`deploy/Caddyfile`
+    configures none), and not a fixed timer anywhere. What the five share is a
+    connection that had carried no bytes for a while.
+
+    Also worth reading off that table: a successful proposal takes up to 97
+    seconds, while `platform/prompts/agent-v5.md` has the agent promise "about a
+    minute". The promise is already being overrun on the successes.
+
+    **Ruled out, with reasons:**
+    - *Compression buffering hiding the spinner.* The friend confirmed
+      "Putting together a preview…" rendered, so `{"authoring":true}` reached the
+      browser and `encode zstd gzip` is flushing.
+    - *A proxy or server idle timeout.* `deploy/Caddyfile` configures none, the
+      observed durations were 3–5s rather than a constant, and Caddy's own log
+      attributes the cancellation to the client.
+
     **SHIPPED 2026-08-18: the heartbeat** (`lib/chat/heartbeat.ts`, wired in
     `app/api/chat/route.ts`). A `{"hb":1}` line every 5 seconds for the whole
     request — 5s because the shortest torn-down silent window measured was 8.0s.
