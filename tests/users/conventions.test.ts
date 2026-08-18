@@ -14,9 +14,32 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3-multiple-ciphers'
 import { afterAll, describe, expect, it } from 'vitest'
 import { SLUG_PATTERN } from '@/lib/auth/slug'
+import type { DashboardScreen } from '@/lib/dashboard/contract'
 import { declaredObjects } from '@/tests/support/declaredObjects'
 import { verifyManifest } from '@/lib/db/migrationFiles'
 import { readBuildNotes } from '@/lib/build/notes'
+
+/**
+ * Governs a screen id — NOT lib/auth/slug.ts's SLUG_PATTERN, despite both
+ * living one import away. `DashboardScreen`'s id/title/order mirror
+ * lib/spec/schema.ts's `Screen` exactly (lib/dashboard/contract.ts says so),
+ * and a screen id is spec-authored: it comes from the same model output as
+ * `divorce_lawyer_fund`-shaped panel and value ids (CLAUDE.md, Sacred data),
+ * which use underscores. SLUG_PATTERN (`^[a-z0-9-]{1,32}$`) allows hyphens
+ * and forbids underscores — the opposite of a spec id's actual shape — so it
+ * would reject a perfectly valid spec-derived screen id on the day one
+ * contains an underscore. Both id shapes ARE safe as a `?screen=<id>` query
+ * value and a `#screen-<id>` DOM id, so the deciding fact is provenance
+ * (spec-authored, not account-authored), not URL/DOM safety.
+ *
+ * Mirrors the unexported `ID` constant in lib/spec/fields.ts
+ * (`/^[a-z0-9]+(_[a-z0-9]+)*$/`) rather than importing it: this task's brief
+ * scopes changes to this file and tests/dashboard/registry.test.ts only, and
+ * `ID` is deliberately not part of that module's public surface. Kept in
+ * sync by inspection, same as the shape check below is a duplicate of
+ * fields.ts's own throw, not a delegation to it.
+ */
+const SCREEN_ID_PATTERN = /^[a-z0-9]+(_[a-z0-9]+)*$/
 
 /**
  * Every test in this file spawns python3 once per user folder. vitest's
@@ -48,6 +71,41 @@ const REQUIRED = ['migrations', 'seed.py', 'queries.ts', 'dashboard.tsx', 'tests
 
 const isBuilt = (slug: string) =>
   REQUIRED.every((entry) => existsSync(join(USERS, slug, entry)))
+
+/**
+ * A dashboard.tsx module has to actually be IMPORTED to check what its
+ * `screens` export holds at runtime — a type check already proves the export
+ * exists and shapes each entry as `{ id, title, order }` (task 23 made it
+ * required), but not that the array is non-empty, that its ids are unique,
+ * or that its `order`s are integers, all of which the type system cannot see.
+ * This file did not import any .tsx module before this sweep;
+ * tests/dashboard/contract.test.ts already proves a dynamic `import()` of a
+ * dashboard module works inside this suite (it does exactly this through
+ * `dashboardLoaderFor`), so the same dynamic import, run directly against the
+ * slug rather than through the registry, is used here too — this sweep must
+ * cover a built-but-not-yet-registered folder, which the registry loader
+ * cannot reach at all.
+ *
+ * Cached per slug: several `whenBuilt` checks below each need the same
+ * import, and re-importing per assertion would run the module's top-level
+ * code (and pay the transform cost) once per check for no reason.
+ */
+const screensCache = new Map<string, Promise<DashboardScreen[]>>()
+function loadScreens(slug: string): Promise<DashboardScreen[]> {
+  let cached = screensCache.get(slug)
+  if (!cached) {
+    // @vite-ignore — this path is fully dynamic (a variable slug, no file
+    // extension), so vite:dynamic-import-vars cannot glob it for code-split
+    // analysis and would otherwise only warn. vite-node (vitest's runtime)
+    // resolves it directly, the same way it resolves the real dashboard
+    // import inside dashboardLoaderFor for tests/dashboard/contract.test.ts.
+    cached = import(/* @vite-ignore */ `@/users/${slug}/dashboard`).then(
+      (mod) => (mod as { screens: DashboardScreen[] }).screens,
+    )
+    screensCache.set(slug, cached)
+  }
+  return cached
+}
 
 const temps: string[] = []
 afterAll(() => {
@@ -279,5 +337,48 @@ describe('users/ folder conventions', () => {
       },
       SUBPROCESS_TIMEOUT_MS,
     )
+
+    // The four properties `screens: DashboardScreen[]` cannot express as a
+    // type, run over every BUILT folder — not only registered ones, so a
+    // dashboard that is built but not yet wired into
+    // lib/dashboard/registry.ts is still caught here rather than escaping
+    // every sweep until the day it's registered.
+
+    whenBuilt('screens is non-empty', async () => {
+      const screens = await loadScreens(slug)
+      // Empty is legal to the type system and fatal at render: activeScreen
+      // throws on it (lib/dashboard/contract.ts), turning the page into
+      // dashboard_error instead of showing anything. Better a red test here.
+      expect(screens.length).toBeGreaterThan(0)
+    })
+
+    whenBuilt('every screen id matches the spec id shape', async () => {
+      const screens = await loadScreens(slug)
+      for (const screen of screens) {
+        expect(
+          SCREEN_ID_PATTERN.test(screen.id),
+          `screen id "${screen.id}" is not a valid spec-shaped id (lowercase letters, digits, single underscores)`,
+        ).toBe(true)
+      }
+    })
+
+    whenBuilt('every screen order is an integer', async () => {
+      const screens = await loadScreens(slug)
+      for (const screen of screens) {
+        expect(
+          Number.isInteger(screen.order),
+          `screen "${screen.id}" has a non-integer order: ${JSON.stringify(screen.order)}`,
+        ).toBe(true)
+      }
+    })
+
+    whenBuilt('screen ids are unique within the folder', async () => {
+      const screens = await loadScreens(slug)
+      const ids = screens.map((s) => s.id)
+      expect(
+        new Set(ids).size,
+        `duplicate screen id among: ${ids.join(', ')} — ?screen= would be ambiguous`,
+      ).toBe(ids.length)
+    })
   })
 })
