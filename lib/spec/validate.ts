@@ -49,6 +49,14 @@ export function parseSpecVersion(json: string): SpecVersion {
   return sealVersion(draftFrom(src), based, ops)
 }
 
+/**
+ * HISTORICAL as of Task 18 (final review, Minor 8): no production code calls
+ * this anymore. It validated MOCKUP_JSON_SCHEMA's single-field whole-document
+ * reply (lib/spec/schema.ts); the Task 18 cutover to a scoped, per-screen
+ * mockup call replaced that with parseScreenMockups below, validating
+ * SCREEN_MOCKUP_JSON_SCHEMA's array-of-fragments reply instead. Kept, not
+ * deleted, for the same reason MOCKUP_JSON_SCHEMA and MOCKUP_PROMPT are.
+ */
 export function parseMockupInput(raw: unknown): string {
   return text(record(raw, 'mockup'), 'mockup_html', 'mockup')
 }

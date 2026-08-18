@@ -54,6 +54,14 @@ export const SPEC_PATCH_PROMPT = 'spec-v3.md'
  * floor), and tells the model NOT to add a banner. The honesty signal moved
  * from the numbers to a banner injected at serve time by lib/spec/banner.ts —
  * a guard the model cannot forget, which "£000.00" was not.
+ *
+ * HISTORICAL as of Task 18 (final review, Minor 8): no production code calls
+ * this anymore. The Task 18 cutover to a scoped, per-screen mockup call
+ * (MOCKUP_SCREENS_PROMPT below, SCREEN_MOCKUP_JSON_SCHEMA, `composeMockup`)
+ * superseded the whole-document call this prompt drove. Kept, not deleted:
+ * `mockup_prompt_sha` rows written before that cutover point at this file's
+ * hash, and prompts are added, never edited or removed (CLAUDE.md) — an
+ * already-written hash must keep resolving to real prompt text.
  */
 export const MOCKUP_PROMPT = 'mockup-v3.md'
 

@@ -4,7 +4,7 @@
 // model — so every fixture here is hand-built rather than seeded.
 import { describe, expect, it } from 'vitest'
 import { affectedScreens, composeMockup } from '@/lib/spec/mockupCompose'
-import type { Panel, Screen } from '@/lib/spec/schema'
+import { SpecShapeError, type Panel, type Screen } from '@/lib/spec/schema'
 
 function panel(id: string): Panel {
   return {
@@ -269,6 +269,19 @@ describe('composeMockup', () => {
     expect(() => composeMockup(SCREENS, new Map([['morning', 'x']]))).toThrow(/money/)
   })
 
+  // Final review, Critical 1: this must be a SpecShapeError, not a plain
+  // Error — lib/spec/author.ts's metricMessage redacts quoted strings ONLY
+  // for SpecShapeError, and a plain Error's message (a friend-derived screen
+  // id, quoted) would reach the append-only `metrics` table verbatim.
+  it('throws a SpecShapeError, so its quoted screen id can be redacted before it reaches metrics', () => {
+    try {
+      composeMockup(SCREENS, new Map([['morning', 'x']]))
+      throw new Error('expected composeMockup to throw')
+    } catch (error) {
+      expect(error).toBeInstanceOf(SpecShapeError)
+    }
+  })
+
   it('carries the stylesheet, so fragments drawn in different versions match', () => {
     expect(composeMockup(SCREENS, FRAGMENTS)).toContain('.panel')
   })
@@ -378,6 +391,79 @@ describe('composeMockup', () => {
       // that job already.
       expect(html).not.toContain('sandbox')
       expect(html).not.toContain('frame-ancestors')
+    })
+
+    // Final review, Minor 6. Two false claims the reviewer probed: that CSS
+    // nesting (`&`) is dropped like an unhandled at-rule (it is not — it is
+    // preserved, inheriting the parent's now-scoped selector for free), and
+    // that the url()-stripping guarantee is unconditionally "all or nothing
+    // per block" (splitDeclarationsTopLevel used to split INSIDE a nested
+    // rule's own braces, since it tracked paren depth but not brace depth).
+    describe('CSS nesting (final review, Minor 6)', () => {
+      it('preserves a safe nested rule, scoped by inheriting its parent selector', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><style>.panel { color: red; &:hover { color: blue; } }</style>M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        // Not dropped: the nested selector text survives, nested inside the
+        // ALREADY-scoped parent rule — `&` resolves against
+        // `#screen-morning .panel`, not against `.panel` unscoped.
+        expect(html).toContain('#screen-morning .panel')
+        expect(html).toContain('&:hover')
+        expect(html).toContain('color: blue')
+      })
+
+      // The failure mode the fix closes: an unsafe url() as the LAST
+      // declaration in a nested rule (no trailing `;` before the nested
+      // rule's own closing brace) put the brace on the DROPPED side and the
+      // opening brace on the KEPT side — orphaning an open brace that a real
+      // CSS parser then closes against whatever `}` it finds NEXT, consuming
+      // every rule in between (here, the `.after` sibling) as garbage inside
+      // the still-open `.panel` rule. Brace-depth tracking in
+      // splitDeclarationsTopLevel means the whole nested rule can now only be
+      // kept or dropped WHOLE, so this can no longer happen.
+      it('drops a nested rule whole when it carries an unsafe url(), without unbalancing what follows', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><style>' +
+              '.panel { &:hover { color: blue; background: url(https://cdn.example.test/leak.png) } }' +
+              '.after { color: green }' +
+              '</style>M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+
+        // No leak: the unsafe host never reaches the output.
+        expect(html).not.toContain('cdn.example.test')
+
+        // The sibling rule survives as a REAL top-level rule, not text
+        // swallowed into an unclosed `.panel` block — the direct symptom of
+        // the bug this fix closes.
+        expect(html).toContain('#screen-morning .after')
+        expect(html).toContain('color: green')
+
+        // The strongest check: every emitted <style> block is brace-balanced
+        // on its own — the document has TWO (the head's FRAME/NUDGE chrome,
+        // always well-formed, and the fragment's own scoped one) and this
+        // checks both rather than assuming which is which. An unbalanced
+        // block is exactly what let the sibling rule above get silently
+        // absorbed, with every substring-based assertion above still
+        // passing — brace counting is the one check that would have caught
+        // it even if the assertions above did not.
+        const styleBlocks = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]!)
+        expect(styleBlocks.length).toBeGreaterThan(0)
+        for (const block of styleBlocks) {
+          const opens = (block.match(/\{/g) ?? []).length
+          const closes = (block.match(/\}/g) ?? []).length
+          expect(opens).toBe(closes)
+        }
+      })
     })
 
     // Fix round 1. The reviewer ran composeMockup for real and found four

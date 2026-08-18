@@ -1462,13 +1462,61 @@ describe('authorSpec', () => {
       expect(proposal!.preview_html).toContain('morning')
     })
 
-    it('writes no spec row when a fragment is missing for an unchanged screen', async () => {
+    // Final review, Important 2. Before this fix, a version confirmed BEFORE
+    // spec_screen_mockups existed (zero rows, simulated by
+    // confirmCurrentSpecWithoutFragments) hit composeMockup's own-fragment
+    // gap on EVERY subsequent patch that didn't touch every screen, because
+    // affectedScreens only reports what the OPS touched and a meta-only
+    // patch touches none. That is permanent for the account — `specs` is
+    // append-only, so there is no backfill — until a patch is authored that
+    // happens to touch every screen. The fix treats "no carried fragment" as
+    // affected too, so the very first patch after this deploy asks the model
+    // to redraw everything it is missing and the account heals itself.
+    it('heals a pre-branch account: a meta-only patch on a version with no stored fragments still succeeds and draws every screen', async () => {
       confirmCurrentSpecWithoutFragments(TWO_SCREEN_BASE)
-      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
+      const client = fake({
+        drafts: [
+          {
+            change_summary: 'Renamed the dashboard.',
+            data_requirements: [],
+            open_questions: [],
+            ops: [{ op: 'set_meta', title: 'New title', summary: null, background: null }],
+          },
+        ],
+      })
 
-      expect(await authorSpec(deps(client.client), INPUT)).toBeUndefined()
-      expect(lastMetric('spec_error').kind).toBe('mockup_failed')
+      const proposal = await authorSpec(deps(client.client), INPUT)
+
+      expect(proposal).toBeDefined()
+      // The ops named no screen, but both were missing a fragment, so both
+      // had to be asked for.
+      const asked = JSON.stringify(client.calls[1]!.messages)
+      expect(asked).toContain('morning')
+      expect(asked).toContain('money')
+
+      // A full, gap-free fragment set is now stored — not the fabricated
+      // baseFragment() the "carries the unchanged screen's fragment forward"
+      // tests use, but a freshly drawn one, because there was nothing to
+      // carry.
+      const fragments = readScreenMockups(db, proposal!.id)
+      expect(fragments.get('morning')).toBe(drawnFragment('morning'))
+      expect(fragments.get('money')).toBe(drawnFragment('money'))
+
+      // And no error, let alone a screen id, ever reached the metrics log.
+      expect(metrics().some((r) => r.event === 'spec_error')).toBe(false)
     })
+
+    // Final review, Critical 1. This is the failure mode the healing test
+    // above closes off in practice for lib/spec/author.ts's own caller — with
+    // the fix above applied, composeMockup can no longer be handed a
+    // draft.screens id it has no fragment for, so its own "no fragment for
+    // screen" throw is unreachable from authorSpec by construction (proved in
+    // the mockupCompose.test.ts unit test alongside it). It remains reachable
+    // from any OTHER caller with a narrower guarantee — see
+    // app/[user]/page.tsx's pageLoadPreview, which already catches
+    // unconditionally and degrades to mockup_html — which is why the fix
+    // belongs in composeMockup itself (a SpecShapeError, redacted by
+    // metricMessage) rather than only in this call site.
 
     it('makes no mockup call at all for a meta-only patch, and carries every fragment forward', async () => {
       confirmCurrentSpec(TWO_SCREEN_BASE)

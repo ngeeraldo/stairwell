@@ -12,7 +12,13 @@
 // lib/spec/banner.ts still injects the SYNTHETIC banner into the composed
 // document at serve time and is untouched by any of this.
 import type { Screen } from './schema'
+import { SpecShapeError } from './schema'
 import type { SpecPatchOp } from './patch'
+// CSP_META lives in banner.ts, not here: Important 3 (final review) needs
+// the identical literal at the srcDoc/ChatPanel boundary, for documents this
+// module never touched. One constant, imported, rather than two strings that
+// could drift.
+import { CSP_META } from './banner'
 
 /**
  * The classes the frame styles for you. A NUDGE, not a vocabulary — a model may
@@ -396,9 +402,27 @@ function isSafeReferenceValue(raw: string): boolean {
 
 /**
  * Split a declaration list on top-level `;` only — a `;` inside a quoted
- * string, or inside the parens of a `url(...)` or `var(...)`, does not end a
- * declaration. Mirrors splitSelectorsTopLevel's bound exactly, applied to `;`
- * instead of `,`: textual, not a real CSS value parser.
+ * string, inside the parens of a `url(...)` or `var(...)`, or inside a
+ * BRACED nested rule (CSS nesting: `&:hover { color: blue; }`), does not end
+ * a declaration. Mirrors splitSelectorsTopLevel's bound exactly, applied to
+ * `;` instead of `,`: textual, not a real CSS value parser.
+ *
+ * CORRECTED 2026-08-17 (final review, Minor 6): brace tracking was missing
+ * here until now. scopeCss does not recurse into a nested rule (`&{ }`) —
+ * it treats the whole plain-rule body, nested block included, as one text
+ * blob and hands it here. Without brace depth, the `;` INSIDE the nested
+ * rule's own declarations looked top-level too, so a nested rule got split
+ * across two or more "declarations". If declarationIsSafe then dropped one
+ * of those pieces (an unsafe url() in the nested rule), the pieces left
+ * behind, rejoined with `;`, were an ORPHANED open or close brace — CSS with
+ * unbalanced braces, which a real parser recovers from by treating
+ * everything up to the next `}` (often the NEXT sibling rule) as part of the
+ * broken one. The unsafe url() was still dropped either way — no leak — but
+ * "drop the bad declaration, keep the rest well-formed" was not actually
+ * true for anything with braces in it. Tracking `{`/`}` depth the same way
+ * parens are tracked below closes that: a nested rule can never be split
+ * internally, so it is either kept whole (every url() inside it safe) or
+ * dropped whole (any unsafe) — balanced either way.
  */
 function splitDeclarationsTopLevel(body: string): string[] {
   const parts: string[] = []
@@ -415,13 +439,13 @@ function splitDeclarationsTopLevel(body: string): string[] {
       i = stop + 1
       continue
     }
-    if (c === '(') {
+    if (c === '(' || c === '{') {
       depth++
       current += c
       i++
       continue
     }
-    if (c === ')') {
+    if (c === ')' || c === '}') {
       depth = Math.max(0, depth - 1)
       current += c
       i++
@@ -538,8 +562,20 @@ function scopeSelectorGroup(prelude: string, scope: string): string | null {
  * Task 25: a surviving rule's body also has any declaration carrying an
  * external `url(...)` dropped (stripExternalUrlDeclarations) before it is
  * emitted — the CSS half of hardening the mockup surfaces against external
- * fetches. That is a value-level drop, unrelated to whether the rule parsed;
- * it happens after this function has already decided the rule is real.
+ * fetches. That is a value-level drop, unrelated to whether the RULE
+ * parsed — it happens after this function has already decided the rule is
+ * real — but it is NOT unrelated to whether the EMITTED TEXT stays balanced.
+ *
+ * CORRECTED 2026-08-17 (final review, Minor 6): until splitDeclarationsTopLevel
+ * tracked brace depth (see its own comment), a rule body containing a CSS
+ * nesting block (`&:hover { ... }`) could get split MID-nested-rule on the
+ * `;` inside it, and dropping one of those pieces for an unsafe `url()` left
+ * the rest — rejoined with `;` — with an orphaned `{` or `}`. The unsafe URL
+ * never leaked (declarationIsSafe still caught it), but this function's own
+ * "all-or-nothing per block" framing above was not actually being kept at
+ * the declaration-filtering step, only at the parse-failure step. Brace
+ * tracking closes that: a nested block can now only be kept or dropped
+ * WHOLE, so the emitted text is balanced either way.
  */
 function scopeCss(css: string, scope: string): string | null {
   let out = ''
@@ -607,9 +643,22 @@ function scopeCss(css: string, scope: string): string | null {
  * scopeCss's contract, rather than truncated. Dropping beats passing through
  * or truncating: an unscopable rule is exactly the one that would leak, and a
  * silent partial block is exactly the one that would look complete while
- * missing content. It does NOT handle `@keyframes`, `@font-face`,
- * `@supports`, or CSS nesting (`&`) — those are dropped too, silently, which
- * is the same bound applied uniformly rather than special-cased.
+ * missing content. It does NOT handle `@keyframes`, `@font-face`, or
+ * `@supports` — those ARE dropped too, silently, the same bound applied
+ * uniformly rather than special-cased.
+ *
+ * CORRECTED 2026-08-17 (final review, Minor 6): CSS nesting (`&`) used to be
+ * listed alongside those as "dropped too". It is not — it is PRESERVED,
+ * inheriting the parent selector's scope for free. scopeCss does not descend
+ * into a plain rule's body at all (only `@media` recurses); a nested block
+ * like `&:hover { color: blue; }` rides through as literal text inside the
+ * ALREADY-scoped parent rule's braces (`#screen-x .panel { ...; &:hover {
+ * color: blue; } }`), so a browser resolving `&` against that scoped parent
+ * lands on `#screen-x .panel:hover` — exactly right — with no special
+ * handling needed here. The one thing that DOES touch it is
+ * stripExternalUrlDeclarations (see splitDeclarationsTopLevel), which now
+ * tracks brace depth so a nested block can only be kept or dropped WHOLE,
+ * never split mid-declaration.
  */
 function scopeFragmentStyles(html: string, screenId: string): string {
   const scope = `#screen-${screenId}`
@@ -928,6 +977,17 @@ function stripExternalReferences(html: string): string {
  * outright — see its own comment for why this policy cannot be the thing
  * doing that job, and for why the strip does not try to identify just the
  * refresh one.
+ *
+ * NOT COVERED BY THIS FUNCTION AT ALL: a document that never passed through
+ * it. Final review, Important 3: a version confirmed before this branch
+ * existed stores a `mockup_html` the OLD prompt drew directly, and three
+ * fallbacks (app/[user]/page.tsx's pageLoadPreview, and SpecCard's own `??
+ * proposal.mockup_html`) can hand that raw, un-composed document straight to
+ * the `srcDoc` boundary. lib/spec/banner.ts's `withCsp` closes that gap at
+ * the boundary itself, the same way `withBanner` already does for the
+ * banner — see its doc comment. `CSP_META` below is imported from there
+ * rather than written twice, so this function's policy and that boundary's
+ * fallback policy are the same string by construction.
  */
 export function composeMockup(
   screens: Screen[],
@@ -944,7 +1004,17 @@ export function composeMockup(
     .map((screen) => {
       const html = fragments.get(screen.id)
       if (html === undefined) {
-        throw new Error(`composeMockup: no fragment for screen "${screen.id}"`)
+        // CORRECTED 2026-08-17 (final review, Critical 1): this was a plain
+        // Error. metricMessage (lib/spec/author.ts) redacts quoted strings
+        // ONLY for SpecShapeError; a plain Error's message — screen.id and
+        // all — passed through verbatim into the append-only `metrics`
+        // table, which rejects UPDATE and DELETE. A pre-branch confirmed
+        // version has zero spec_screen_mockups rows, so a set_meta-only
+        // patch on one hits `affected.length === 0`, skips the mockup call,
+        // leaves `fragments` empty, and lands here on every attempt — a
+        // friend-derived screen id, permanently, in a metrics row. Must be a
+        // SpecShapeError so the existing redaction in metricMessage applies.
+        throw new SpecShapeError(`composeMockup: no fragment for screen "${screen.id}"`)
       }
       const scoped = scopeFragmentStyles(html, screen.id)
       return `<div id="screen-${screen.id}">${stripExternalReferences(scoped)}</div>`
@@ -956,7 +1026,7 @@ export function composeMockup(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+${CSP_META}
 <style>${FRAME}${NUDGE}</style>
 </head>
 <body>

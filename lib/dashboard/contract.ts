@@ -101,12 +101,13 @@ export type DashboardScreen = { id: string; title: string; order: number }
  * "the array is non-empty". `activeScreen` still throws on that case (see
  * below), and app/[user]/page.tsx's own `renderDashboard` still catches that
  * throw the same way it catches a throwing `Dashboard()` call, turning it
- * into `dashboard_error` rather than a 500. That branch — and the comment on
- * it in app/[user]/page.tsx describing `undefined` as "not migrated yet" —
- * is now unreachable through the registry's real types; it is left as
- * defense in depth rather than deleted, since the array is still supplied by
- * a `Promise<DashboardModule>` resolved dynamically at runtime, not proven
- * by the type system alone.
+ * into `dashboard_error` rather than a 500. That `screens === undefined`
+ * branch in app/[user]/page.tsx's `renderDashboard` is now unreachable
+ * through the registry's real types — CORRECTED there final review, Minor 5,
+ * after this paragraph outlived being true — and is left as defense in
+ * depth rather than deleted, since the array is still supplied by a
+ * `Promise<DashboardModule>` resolved dynamically at runtime, not proven by
+ * the type system alone.
  */
 export type DashboardModule = {
   default: DashboardComponent

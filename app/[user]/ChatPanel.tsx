@@ -8,11 +8,12 @@ import { useEffect, useRef, useState } from 'react'
 // client bundle — a value import here would.
 import type { Proposal } from '@/lib/spec/author'
 import type { StoredSpec } from '@/lib/spec/stored'
-// A VALUE import, not type-only: withBanner runs in the browser now (see the
-// srcDoc comment on SpecCard below), and this module is safe to bundle
-// client-side — pure string handling, no server-only dependency, unlike
-// lib/spec/author.ts and lib/spec/stored.ts above.
-import { withBanner } from '@/lib/spec/banner'
+// A VALUE import, not type-only: withBanner (and withCsp, final review
+// Important 3) run in the browser now (see the srcDoc comment on SpecCard
+// below), and this module is safe to bundle client-side — pure string
+// handling, no server-only dependency, unlike lib/spec/author.ts and
+// lib/spec/stored.ts above.
+import { withBanner, withCsp } from '@/lib/spec/banner'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { buildTimeline } from '@/lib/chat/timeline'
@@ -535,7 +536,15 @@ export function SpecCard({
    * dropped this fallback would compile clean regardless.
    * tests/chat/panel.test.ts is what actually catches its removal.
    */
-  const previewHtml = withBanner(proposal.preview_html ?? proposal.mockup_html)
+  // withCsp added final review, Important 3: composeMockup (lib/spec/
+  // mockupCompose.ts) puts the fetch-blocking meta CSP into every document
+  // IT builds, but three fallbacks — pageLoadPreview's legacy/no-fragments/
+  // composition-failure arms and the `?? proposal.mockup_html` right here —
+  // can hand this boundary a document composeMockup never touched, drawn by
+  // a pre-branch prompt with no such guarantee. Same idempotent shape as
+  // withBanner, so a document that already carries the tag never gets a
+  // second.
+  const previewHtml = withCsp(withBanner(proposal.preview_html ?? proposal.mockup_html))
   return (
     /*
       CARD ANATOMY, top to bottom, exactly as onboarding-ux-spec.md lists it:
@@ -596,7 +605,12 @@ export function SpecCard({
           The MOCKUP banner used to be guaranteed by that route (withBanner,
           applied at serve time — lib/spec/banner.ts). srcDoc bypasses it
           entirely, so previewHtml applies it here instead: same rule, moved
-          to the new boundary, not dropped. */}
+          to the new boundary, not dropped. Final review, Important 3: the
+          meta CSP (withCsp, same file) moved here for the identical reason —
+          it is a document guarantee applied at serve time by the two mockup
+          routes' headers AND by composeMockup itself, and srcDoc bypasses
+          both, so previewHtml is where it has to be enforced for THIS
+          surface too. */}
       {/*
         SCALED DOWN, not cropped. The iframe is laid out at twice the column's
         width and half scale, so the preview shows the mockup as a small whole

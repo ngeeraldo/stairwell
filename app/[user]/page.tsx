@@ -254,17 +254,22 @@ async function renderDashboard(
 ) {
   try {
     const { default: Dashboard, screens } = await loader()
-    // `screens` is undefined for every dashboard registered on this branch
-    // today — task 22 is the first task of Part D, and migrating each
-    // dashboard onto a declared `screens` list is later work. That is a
-    // known, harmless, present-day state: it degrades to a single implicit
-    // screen and no tab chrome below, rather than calling activeScreen with
-    // an empty list. A dashboard that HAS migrated and explicitly exports
-    // `screens: []` has opted into the contract and gotten it wrong — THAT
-    // goes through activeScreen normally, which throws (see contract.ts),
-    // and is caught by this function's own try/catch below exactly like a
-    // throwing Dashboard() call, turning it into `dashboard_error` rather
-    // than a 500.
+    // CORRECTED 2026-08-17 (final review, Minor 5): this used to say
+    // `screens` is undefined for every dashboard registered on this branch —
+    // true only through task 22. As of task 23, `DashboardModule.screens` is
+    // REQUIRED (lib/dashboard/contract.ts) and all four registered
+    // dashboards declare it, so `screens === undefined` cannot happen through
+    // any real registry entry today. The `undefined` branch below stays as
+    // defense in depth, not a live case: a `Promise<DashboardModule>`
+    // resolved dynamically at runtime is not proven by the type system
+    // alone, so a module that lies about its own declared shape still
+    // degrades to a single implicit screen and no tab chrome, rather than
+    // calling activeScreen with an undefined list. A dashboard that HAS
+    // registered and explicitly exports `screens: []` has opted into the
+    // contract and gotten it wrong — THAT goes through activeScreen
+    // normally, which throws (see contract.ts), and is caught by this
+    // function's own try/catch below exactly like a throwing Dashboard()
+    // call, turning it into `dashboard_error` rather than a 500.
     const active = screens === undefined ? undefined : activeScreen(screens, requestedScreen)
     // CALLED, not returned as <Dashboard />: an element would defer execution
     // to React's render, outside this try, and the catch is the whole point.

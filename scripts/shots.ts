@@ -449,6 +449,14 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
       )
       confirmSpec(db, { specId: v1Id, accountId, at: base + 3000 })
 
+      // Final review, Minor 9: this used to model the rename as an
+      // `update_screen` op naming the SCREEN ('money') with its title and
+      // order both unchanged — a no-op shape that authorSpec never actually
+      // produces for a panel-title rename. A rename to a panel's own title
+      // is what `replace_panel` is for (lib/spec/patch.ts): the full updated
+      // panel, matching id, is what `authorSpec` writes. Corrected to match
+      // what this fixture claims to mirror.
+      const renamedPanel = { ...draft.screens[1]!.panels[0]!, title: 'Dining' }
       const v2Draft = {
         ...draft,
         change_summary: 'Renamed "Eating out" to "Dining".',
@@ -456,11 +464,11 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
           draft.screens[0]!,
           {
             ...draft.screens[1]!,
-            panels: [{ ...draft.screens[1]!.panels[0]!, title: 'Dining' }],
+            panels: [renamedPanel],
           },
         ],
       }
-      const v2 = sealVersion(v2Draft, 1, [{ op: 'update_screen', id: 'money', title: 'Money', order: 2 }])
+      const v2 = sealVersion(v2Draft, 1, [{ op: 'replace_panel', panel: renamedPanel }])
       const v2Id = insertSpec(db, {
         accountId,
         conversationId: 'shots-conversation',

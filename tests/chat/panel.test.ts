@@ -23,6 +23,7 @@ import ChatPanel, {
   type PanelState,
 } from '@/app/[user]/ChatPanel'
 import type { SpecVersion } from '@/lib/spec/schema'
+import { CSP_META } from '@/lib/spec/banner'
 
 // tsconfig.json sets "jsx": "preserve" for Next's own SWC compiler, which
 // auto-injects the JSX runtime import. vitest's esbuild transform instead
@@ -931,6 +932,34 @@ describe('the card previews only the affected surface', () => {
       }),
     )
     expect(json).toContain('wholedashboardmarker')
+  })
+
+  // Final review, Important 3. A pre-branch mockup_html never passed through
+  // composeMockup, so it carries none of Task 25's meta CSP — this is the
+  // same "no scoped preview" fallback as the test above, with an external
+  // <img> in the fallback document standing in for the real hazard: a raw,
+  // pre-branch document reaching the srcDoc boundary unprotected. withCsp is
+  // applied at that boundary (SpecCard's previewHtml) regardless of which
+  // arm supplied the html, so the tag must show up here even though this
+  // document was never built by composeMockup.
+  it('CSP-protects the whole-mockup fallback too, for a pre-branch document with an external reference', () => {
+    const { preview_html: _unused, ...legacy } = {
+      ...PROPOSAL,
+      mockup_html:
+        '<!doctype html><html><head></head><body>' +
+        '<img src="https://evil.example.test/pixel.png">' +
+        '</body></html>',
+    }
+    const json = JSON.stringify(
+      SpecCard({
+        proposal: legacy as CardProposal,
+        live: true,
+        busy: false,
+        first: true,
+        onConfirm: noop,
+      }),
+    )
+    expect(json).toContain(JSON.stringify(CSP_META).slice(1, -1))
   })
 
   // The same defect shape as ledger D9's: a value computed once per page load

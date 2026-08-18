@@ -202,10 +202,23 @@ function mockupFields(
  * Redaction applies to `SpecShapeError` and nothing else, because the quoting
  * convention is that class's: every content interpolation in lib/spec/validate.ts
  * is double-quoted, and everything left unquoted there is structural (a path
- * like `screens[0].panels[1]`, or one of the fixed `kind`/`status` enums). Any
- * other error reaching here — SQLite, the SDK, a bug — carries infrastructure
- * text with no spec content in it, and mangling that would cost real debugging
- * information for nothing.
+ * like `screens[0].panels[1]`, or one of the fixed `kind`/`status` enums).
+ *
+ * CORRECTED 2026-08-17 (final review, Critical 1): this used to assert that
+ * any non-`SpecShapeError` reaching here "carries infrastructure text with no
+ * spec content in it". That was true when written and stopped being true the
+ * moment a second content-interpolating throw site existed outside
+ * validate.ts — lib/spec/mockupCompose.ts's "no fragment for screen" error
+ * quoted a friend-derived screen id and, as a plain `Error`, sailed through
+ * this function unredacted into the append-only `metrics` table. It is now a
+ * `SpecShapeError` for exactly this reason. The actual invariant is narrower
+ * and is on the WRITER, not the reader: every error that interpolates spec
+ * content into its message must be a `SpecShapeError`, so it gets quoted with
+ * double quotes (matching this function's redaction regex) and reaches this
+ * function through that class. Anything added later that builds a message out
+ * of a friend's own words — a screen id, a panel id, anything typed through
+ * the chat surface — must follow that same convention or it will leak here
+ * exactly as this one did.
  *
  * The retry path deliberately does NOT go through this: the model gets the
  * full message, quoted ids and all.
@@ -630,23 +643,35 @@ export async function authorSpec(
       // happening NOW, and this call is the long one.
       input.onStage?.('mockup')
 
+      // Fragments this version keeps unchanged, taken from the version the
+      // patch was applied to. A version confirmed BEFORE this existed has
+      // none at all.
+      const carried =
+        current === undefined ? new Map<string, string>() : readScreenMockups(db, current.id)
+      fragments = new Map(carried)
+
       // Which screens THIS patch touched, in draft.screens order. `base` is
       // the SpecVersion the patch was applied to (undefined on both
       // whole-surface paths, where `ops` is null too and affectedScreens
       // treats that as "everything is affected"). affectedScreens needs the
       // screens array, not the whole version.
-      const affected = affectedScreens(base?.screens ?? null, draft.screens, patch?.ops ?? null)
-
-      // Fragments this version keeps unchanged, taken from the version the
-      // patch was applied to. A version confirmed BEFORE this existed has
-      // none — its next patch has nothing to carry forward, and the
-      // composeMockup call below throws on the resulting gap. That surfaces
-      // as an ordinary mockup_failed with no row written, exactly like any
-      // other mockup failure, rather than a composed document with a hole in
-      // it.
-      const carried =
-        current === undefined ? new Map<string, string>() : readScreenMockups(db, current.id)
-      fragments = new Map(carried)
+      //
+      // CORRECTED 2026-08-17 (final review, Important 2): unioned with every
+      // screen in draft.screens that `carried` has no fragment for. Without
+      // this, a version confirmed BEFORE spec_screen_mockups existed has no
+      // fragments at all, so a set_meta-only patch on one — affected.length
+      // === 0 from the ops alone — leaves `fragments` empty and
+      // composeMockup throws on EVERY attempt, forever: `specs` is
+      // append-only, so there is no backfill path for those pre-branch rows.
+      // Treating "no carried fragment" as "affected" makes the first patch
+      // after this deploy redraw what it lacks and the account heals itself.
+      // This does not compose around the hole (ledger D7 stands unchanged):
+      // nothing is left missing at compose time, it is drawn instead.
+      const patchAffected = affectedScreens(base?.screens ?? null, draft.screens, patch?.ops ?? null)
+      const missingCarried = draft.screens
+        .map((s) => s.id)
+        .filter((id) => !carried.has(id) && !patchAffected.includes(id))
+      const affected = [...patchAffected, ...missingCarried]
 
       // NO AFFECTED SCREENS MEANS NO CALL. A meta-only patch changes the spec
       // and no pixel, so every fragment carries forward untouched and there is
@@ -682,9 +707,11 @@ export async function authorSpec(
       }
 
       // The WHOLE document: this is specs.mockup_html, the build contract on
-      // disk and what the admin pane renders. Throws if any screen has no
-      // fragment — see the `carried` comment above for the one case that
-      // happens in practice.
+      // disk and what the admin pane renders. Throws (as a SpecShapeError,
+      // so metricMessage redacts it) if any screen still has no fragment —
+      // in practice that means the model omitted a requested screen from its
+      // reply, since `affected` above now guarantees every carried-less
+      // screen was asked for.
       mockupHtml = composeMockup(draft.screens, fragments)
       // The friend's card: only what changed. For v1 (and the legacy
       // one-time whole-surface fallback), affected IS every screen, so this
