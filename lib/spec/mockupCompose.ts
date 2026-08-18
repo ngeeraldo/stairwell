@@ -620,23 +620,53 @@ function scopeFragmentStyles(html: string, screenId: string): string {
 }
 
 /**
- * Task 25, fix round 3. Find the `>` that actually closes a tag opened at
- * `start` (which must point at its `<`), treating a quoted attribute value as
- * an opaque span the way findStringEnd already does for CSS strings — a `>`
- * inside `content="0;url=http://evil>x"` is DATA, not the tag's end.
+ * Task 25, fix round 4. Find the closing quote for an HTML attribute value
+ * that opens with `quote` at `start` (pointing AT the opening quote).
  *
- * Deliberately does NOT reuse indexOfOutsideStrings even though it solves the
- * identical shape of problem for CSS: that function also treats `/* … *\/` as
- * an opaque comment span, which is a CSS rule with no HTML analogue, and
- * importing it here would risk swallowing real tag content after an
+ * DELIBERATELY NOT findStringEnd, and this separation is itself the fix for a
+ * Critical the reviewer found in round 3. findStringEnd implements the CSS
+ * <string-token> rule: a backslash escapes the character after it, so `\"`
+ * does not close the string. HTML ATTRIBUTE VALUES HAVE NO ESCAPE MECHANISM
+ * AT ALL — a real browser's tokenizer closes a double-quoted value at the
+ * very next literal `"`, full stop, and a backslash inside one is just a
+ * character like any other. Round 3 reused findStringEnd for HTML tag
+ * scanning anyway (on this task's own coordinator's suggestion, unchecked
+ * against the HTML spec), so `<meta content="0;url=http://evil\"
+ * http-equiv="refresh">` — where a browser closes `content`'s value at the
+ * `\"` and then reads a clean, separate `http-equiv="refresh"` right after —
+ * instead made the CSS-rule scanner treat `\"` as an escaped quote, run past
+ * the tag's real end, hit the unterminated-tag fallback, and (under round
+ * 3's fail-open behavior) leak the rest of the fragment verbatim. DO NOT
+ * MERGE THIS BACK WITH findStringEnd: the two functions encode different,
+ * incompatible grammars that happen to both use quote characters, and
+ * sharing a scanner between them is exactly what produced this bug.
+ *
+ * Returns -1 if `quote` never recurs — an unterminated attribute value.
+ */
+function findHtmlAttrValueEnd(html: string, start: number, quote: string): number {
+  return html.indexOf(quote, start + 1)
+}
+
+/**
+ * Find the `>` that actually closes a tag opened at `start` (which must
+ * point at its `<`), treating a quoted attribute value as an opaque span so a
+ * `>` inside `content="0;url=http://evil>x"` is read as DATA, not the tag's
+ * end — round 3's fix for the first version of this bug (a naive `[^>]*}`
+ * regex that stopped at the first `>` regardless of quoting).
+ *
+ * Uses findHtmlAttrValueEnd (round 4), NOT findStringEnd — see that
+ * function's comment for why sharing a CSS-rule scanner here was itself a
+ * bug, not just a style choice.
+ *
+ * Also deliberately does NOT reuse indexOfOutsideStrings, which solves the
+ * identical shape of problem for CSS: that function additionally treats
+ * `/* … *\/` as an opaque comment span, a CSS rule with no HTML analogue,
+ * and importing it here would risk swallowing real tag content after an
  * unrelated `/` immediately followed by `*` inside an unquoted attribute
- * value (a URL's `://` does not trigger it, but a contrived value could).
- * findStringEnd itself carries no such CSS-specific assumption — it only
- * knows quotes and backslash-escapes — so it is the piece worth sharing, not
- * indexOfOutsideStrings as a whole.
+ * value.
  *
- * Returns -1 if the tag never closes (an unterminated quote) — the caller
- * does not guess where it would have ended.
+ * Returns -1 if the tag never closes (an unterminated attribute value) — the
+ * caller does not guess where it would have ended.
  */
 function findTagEnd(html: string, start: number): number {
   let i = start
@@ -644,7 +674,7 @@ function findTagEnd(html: string, start: number): number {
   while (i < n) {
     const c = html[i]!
     if (c === '"' || c === "'") {
-      const end = findStringEnd(html, i, c)
+      const end = findHtmlAttrValueEnd(html, i, c)
       if (end === -1) return -1
       i = end + 1
       continue
@@ -688,10 +718,18 @@ function findTagEnd(html: string, start: number): number {
  * http-equiv="refresh">` matched only the substring up to that inner `>`,
  * never saw `http-equiv` at all, and the reviewer confirmed the whole live
  * tag survived byte-for-byte. findTagEnd is quote-aware, closing that.
- * Matched case-insensitively and tolerant of attribute order, whitespace, and
- * all three HTML attribute-value quoting forms for `http-equiv`'s value, so
- * `<META HTTP-EQUIV = "REFRESH" content="…">` and `<meta content="…"
+ * Round 3's own findTagEnd was ALSO wrong in a second way, fixed in round 4:
+ * it found a quote's close using the CSS backslash-escape rule
+ * (findStringEnd), which HTML does not have — see findHtmlAttrValueEnd's own
+ * comment for the exact bypass that produced. Matched case-insensitively and
+ * tolerant of attribute order, whitespace, and all three HTML
+ * attribute-value quoting forms for `http-equiv`'s value, so `<META
+ * HTTP-EQUIV = "REFRESH" content="…">` and `<meta content="…"
  * http-equiv='refresh'>` are both caught.
+ *
+ * FAILS CLOSED on a tag findTagEnd cannot bound (round 4; round 3 failed
+ * OPEN here, and that choice is what turned a boundary bug into a full leak
+ * — see the branch below for the reasoning).
  */
 function stripMetaRefresh(html: string): string {
   let out = ''
@@ -710,12 +748,26 @@ function stripMetaRefresh(html: string): string {
 
     const closeIdx = findTagEnd(html, open.index)
     if (closeIdx === -1) {
-      // Unterminated tag — an unclosed quote means this file cannot tell
-      // where it ends. Emit the rest verbatim rather than guessing: unlike
-      // scopeCss's all-or-nothing drop of a <style> BLOCK it owns entirely,
-      // this function has no floor to degrade to, and eating unrelated
-      // sibling markup because one tag failed to parse would be its own bug.
-      out += html.slice(open.index)
+      // Task 25, fix round 4: FAILS CLOSED — everything from this <meta
+      // onward is DROPPED, not emitted. Round 3 did the opposite ("emit the
+      // rest verbatim rather than guessing"), reasoning that this function
+      // "has no floor to degrade to" the way scopeCss's <style>-block drop
+      // does. That reasoning was itself the bug fix round 4 exists to close:
+      // an unterminated attribute quote is exactly the boundary miscount
+      // round 3's own CSS-escape mistake produced, and failing open turned a
+      // parsing bug into leaking the ENTIRE rest of the fragment — the
+      // worst possible outcome for a function whose only job is closing a
+      // leak channel. Reconsidered rather than kept on the coordinator's
+      // word: a fragment with a truly unterminated attribute quote is
+      // already malformed HTML with no well-defined meaning (a real
+      // browser's own error recovery for it is unpredictable, and emulating
+      // that recovery is not this file's job), so there is no "correct"
+      // remainder to preserve here — dropping is not a lesser-accuracy
+      // fallback, it is the only reading that does not require guessing.
+      // The asymmetry in what each choice costs settles it: failing open
+      // risks a friend's data reaching a third party; failing closed risks a
+      // malformed fragment's tail (which was already broken) rendering
+      // incompletely. A privacy guard takes the second cost every time.
       break
     }
 

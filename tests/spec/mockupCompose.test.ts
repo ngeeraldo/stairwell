@@ -511,6 +511,89 @@ describe('composeMockup', () => {
         expect(html).not.toContain('cdn.example.test')
         expect(html).toContain('M</section>')
       })
+
+      // Fix round 4 (reviewer-found, on a bug the COORDINATOR's own round-3
+      // instruction introduced): round 3's findTagEnd reused findStringEnd,
+      // which implements the CSS rule that a backslash escapes the next
+      // character. HTML attribute values have NO escape mechanism — a
+      // browser closes a double-quoted value at the very next literal `"`,
+      // full stop, and a backslash inside one is just a character. These
+      // three cases all depend on that HTML rule being followed correctly.
+      describe('fix round 4: HTML attribute values have no backslash-escaping (unlike CSS)', () => {
+        it('closes content= at a literal backslash-quote, content before http-equiv — a browser sees TWO clean attributes here, not one unterminated one', () => {
+          const fragments = new Map([
+            [
+              'morning',
+              '<section><meta content="0;url=http://cdn.example.test/leak\\" http-equiv="refresh">M</section>',
+            ],
+            ['money', '<section>£</section>'],
+          ])
+          const html = composeMockup(SCREENS, fragments)
+          expect(html.toLowerCase()).not.toContain('refresh')
+          expect(html).not.toContain('cdn.example.test')
+          // The strongest signal this parsed CORRECTLY rather than merely
+          // "not leaking": under the CSS-escape bug, findTagEnd ran off the
+          // end of the fragment looking for a quote that (per the wrong
+          // rule) hadn't closed yet, triggering the unterminated fallback —
+          // which round 3 answered by emitting everything verbatim
+          // (`refresh` and the domain would BOTH survive) and round 4
+          // answers by dropping everything including this M — so seeing M
+          // survive here proves the tag was bounded correctly, not that a
+          // fallback happened to be conservative in the right direction.
+          expect(html).toContain('M</section>')
+        })
+
+        it('closes content= at a literal backslash-quote, http-equiv before content — reviewer reproduced the bug in both attribute orders', () => {
+          const fragments = new Map([
+            [
+              'morning',
+              '<section><meta http-equiv="refresh" content="0;url=http://cdn.example.test/leak\\">M</section>',
+            ],
+            ['money', '<section>£</section>'],
+          ])
+          const html = composeMockup(SCREENS, fragments)
+          expect(html.toLowerCase()).not.toContain('refresh')
+          expect(html).not.toContain('cdn.example.test')
+          expect(html).toContain('M</section>')
+        })
+
+        it('treats a backslash in the middle of a value as an ordinary character, not an escape', () => {
+          const fragments = new Map([
+            [
+              'morning',
+              '<section><meta http-equiv="refresh" content="0;url=http://cdn.example.test/le\\ak">M</section>',
+            ],
+            ['money', '<section>£</section>'],
+          ])
+          const html = composeMockup(SCREENS, fragments)
+          expect(html.toLowerCase()).not.toContain('refresh')
+          expect(html).not.toContain('cdn.example.test')
+          expect(html).toContain('M</section>')
+        })
+      })
+
+      // Fix round 4: the fallback for a tag findTagEnd genuinely cannot
+      // bound (a real unterminated attribute quote — no closing quote
+      // anywhere in the fragment) changed from fail-OPEN (round 3: emit the
+      // unparseable remainder verbatim) to fail-CLOSED (round 4: drop
+      // everything from the malformed <meta to the end of the fragment).
+      // This is what stops a future boundary bug from becoming a full leak
+      // again on its own, rather than depending on findTagEnd being perfect.
+      it('fails CLOSED on a genuinely unterminated attribute quote — drops from the malformed tag to the end of the fragment rather than guessing', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><meta http-equiv="refresh" content="0;url=http://cdn.example.test/leakM</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).not.toContain('cdn.example.test')
+        // The otherwise-legitimate tail (M</section>) is ALSO gone — the
+        // accepted cost of failing closed on a fragment that is already
+        // malformed HTML with no well-defined boundary.
+        expect(html).not.toContain('M</section>')
+      })
     })
   })
 })
