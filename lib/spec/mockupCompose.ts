@@ -305,28 +305,93 @@ function splitSelectorsTopLevel(prelude: string): string[] {
 }
 
 /**
- * Task 25: whether a URL-like value — a CSS `url(...)` argument, or an HTML
- * `src`/`href` attribute value — points somewhere other than an inline
- * `data:` URI or the document's own relative space.
- *
- * A privacy-promise guard, not a styling rule (see the route CSP this
- * mirrors, `default-src 'none'; img-src data:`): any external fetch is a
- * channel that can leak transcript-derived mockup content to a third party
- * when a friend opens their own preview.
- *
- * THE BOUND, STATED PLAINLY: this reads the value textually, same posture as
- * the rest of this file. A bare scheme (`http:`, `https:`, `blob:`,
- * `javascript:`, anything with a `:` before the first `/`) or a
- * protocol-relative `//host` is external; a relative path, a `#fragment`, or
- * an empty value is left alone — there is no request context at compose time
- * to resolve a relative path against, so treating it as safe is honest, not
- * a guess.
+ * Task 25, fix round 1. Decode the numeric HTML character references
+ * (`&#104;`, `&#x68;`) a browser would decode before ever looking at an
+ * attribute value as a URL. Named references (`&amp;`) are deliberately NOT
+ * handled — this exists to see past one specific trick (spelling a scheme so
+ * it does not read as one until decoded), not to be a general entity table.
  */
-function isExternalReference(value: string): boolean {
-  const v = value.trim()
-  if (v === '' || /^data:/i.test(v)) return false
-  if (/^\/\//.test(v)) return true
-  return /^[a-z][a-z0-9+.-]*:/i.test(v)
+function decodeNumericEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);?/gi, (_full, hex: string) => {
+      const code = Number.parseInt(hex, 16)
+      return Number.isFinite(code) ? String.fromCodePoint(code) : ''
+    })
+    .replace(/&#(\d+);?/g, (_full, dec: string) => {
+      const code = Number.parseInt(dec, 10)
+      return Number.isFinite(code) ? String.fromCodePoint(code) : ''
+    })
+}
+
+/**
+ * Task 25, fix round 1. Decode CSS escape sequences (`\68` → `h`, consuming
+ * one trailing whitespace per the CSS spec; `\(` → `(` for a non-hex escaped
+ * character) — the mechanism a `url(...)` argument can use to spell a scheme
+ * that does not read as one until a CSS parser decodes it. Applied uniformly
+ * to every value this file checks, not only ones found inside a `<style>`
+ * block: running it over an HTML attribute value that happens to contain no
+ * backslash is a no-op, and running it is cheaper than reasoning about
+ * exactly which of the two decodings a given call site needs.
+ */
+function decodeCssEscapes(value: string): string {
+  return value
+    .replace(/\\([0-9a-f]{1,6})\s?/gi, (_full, hex: string) => {
+      const code = Number.parseInt(hex, 16)
+      return Number.isFinite(code) ? String.fromCodePoint(code) : ''
+    })
+    .replace(/\\(.)/g, (_full, ch: string) => ch)
+}
+
+/**
+ * Task 25, fix round 1. Remove the ASCII tab, newline and carriage return
+ * (and, belt and braces, every other C0 control character) that the URL
+ * spec itself strips before parsing — `ht<TAB>p://` is `http://` to a
+ * browser's URL parser, so it must be to this check too.
+ */
+function stripUrlWhitespace(value: string): string {
+  // eslint-disable-next-line no-control-regex -- deliberately matching C0 controls
+  return value.replace(/[\x00-\x1F\x7F]/g, '')
+}
+
+/**
+ * Task 25, fix round 1: what a raw attribute/declaration value looks like
+ * once decoded and cleaned the way a browser would see it, before this file
+ * judges whether it is safe. Order matters: entities first (an HTML
+ * attribute value is entity-decoded before anything downstream reads it as
+ * CSS or a URL), then CSS escapes (relevant when the value came from inside
+ * a `url(...)` token, harmless no-op otherwise), then whitespace/control
+ * stripping (the URL parser's own last step).
+ */
+function normalizeReferenceValue(raw: string): string {
+  return stripUrlWhitespace(decodeCssEscapes(decodeNumericEntities(raw))).trim()
+}
+
+/**
+ * Task 25, fix round 1: INVERTED from the original "does this look
+ * external?" check, per the reviewer's ruling — a blocklist loses to the
+ * next encoding nobody thought of, and this repo's own `scopeCss` already
+ * establishes the right default for a safety net: drop what cannot be
+ * PROVEN safe, rather than pass through what does not match a known-bad
+ * pattern.
+ *
+ * A normalized value (normalizeReferenceValue) survives only as one of:
+ * a `data:` URI, a pure `#fragment`, an empty value, or a relative path with
+ * no scheme and no leading `//`. Everything else — a bare scheme regardless
+ * of how it was spelled before decoding, a protocol-relative `//host`, or
+ * anything this function does not recognize — is unsafe. A privacy-promise
+ * guard, not a styling rule: any external fetch is a channel that can leak
+ * transcript-derived mockup content to a third party when a friend opens
+ * their own preview, so an unrecognized shape fails closed rather than
+ * being given the benefit of the doubt.
+ */
+function isSafeReferenceValue(raw: string): boolean {
+  const v = normalizeReferenceValue(raw)
+  if (v === '') return true
+  if (/^data:/i.test(v)) return true
+  if (v.startsWith('#')) return true
+  if (/^\/\//.test(v)) return false
+  if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return false
+  return true
 }
 
 /**
@@ -375,32 +440,42 @@ function splitDeclarationsTopLevel(body: string): string[] {
   return parts
 }
 
-/** Whether a declaration's text contains a `url(...)` whose argument is external. */
-function declarationHasExternalUrl(decl: string): boolean {
+/**
+ * Whether every `url(...)` argument in a declaration's text is provably safe
+ * (isSafeReferenceValue). Task 25 fix round 1: inverted from "has an
+ * external url()" — a declaration with a `url(...)` this regex cannot make
+ * sense of (no closing paren found, say) is not "safe" merely because no
+ * external URL was matched, so this checks every match found and requires
+ * each to pass, rather than requiring one bad match to fail.
+ */
+function declarationIsSafe(decl: string): boolean {
   const re = /url\(\s*(['"]?)([\s\S]*?)\1\s*\)/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(decl)) !== null) {
-    if (isExternalReference(m[2] ?? '')) return true
+    if (!isSafeReferenceValue(m[2] ?? '')) return false
   }
-  return false
+  return true
 }
 
 /**
- * Drop any declaration in a rule body that references an external
- * `url(...)` — `background(-image)`, `mask-image`, `cursor`,
+ * Drop any declaration in a rule body that references a `url(...)` which is
+ * not provably safe — `background(-image)`, `mask-image`, `cursor`,
  * `list-style-image`, any property a model might reach for — rather than
  * rewrite the URL: an unscopable rule is exactly the one that would leak, and
  * this file drops what it cannot make safe (scopeCss's own rule, applied one
  * level deeper).
  *
- * THE BOUND: textual, per declarationHasExternalUrl above. A url() reached
+ * THE BOUND: textual, per declarationIsSafe above. A url() reached
  * indirectly through a CSS custom property (`--bg: url(http://evil); ...:
  * var(--bg)`) is not traced — that would need real value resolution this file
- * does not do.
+ * does not do. (After fix round 1, this residual gap is also covered by the
+ * document-level meta CSP composeMockup now emits — see its own comment —
+ * which is enforced against what the browser actually resolves regardless of
+ * how a value got there.)
  */
 function stripExternalUrlDeclarations(body: string): string {
   return splitDeclarationsTopLevel(body)
-    .filter((decl) => !declarationHasExternalUrl(decl))
+    .filter((decl) => declarationIsSafe(decl))
     .join(';')
 }
 
@@ -560,25 +635,56 @@ function scopeFragmentStyles(html: string, screenId: string): string {
  * Two passes, in order:
  *  1. An inline `style="..."` attribute is a fragment's only way to carry CSS
  *     OUTSIDE a `<style>` tag, so its declarations get the exact same
- *     external-url() drop as a `<style>` block's (stripExternalUrlDeclarations)
- *     — this is not "the CSS guard" and "the HTML guard", it is one guard
- *     reached from two syntactic positions.
- *  2. Every `src=`/`href=` attribute whose value is external — a bare scheme
- *     or a protocol-relative `//` (isExternalReference) — is removed
- *     entirely, not blanked to `src=""`: an empty value on some elements
- *     re-requests the CURRENT document, which would defeat the point.
+ *     not-provably-safe url() drop as a `<style>` block's
+ *     (stripExternalUrlDeclarations) — this is not "the CSS guard" and "the
+ *     HTML guard", it is one guard reached from two syntactic positions.
+ *  2. Every `src=`/`href=` attribute whose value is not provably safe
+ *     (isSafeReferenceValue) — double-quoted, single-quoted, OR unquoted, all
+ *     three HTML attribute-value forms — is removed entirely, not blanked to
+ *     `src=""`: an empty value on some elements re-requests the CURRENT
+ *     document, which would defeat the point.
+ *
+ * DEFENCE IN DEPTH, NOT THE ONLY LAYER. Fix round 1 (reviewer-found): a
+ * string-match blocklist here lost to four encodings that spell a scheme
+ * without LOOKING like one until decoded — an HTML numeric entity
+ * (`&#104;ttp://`), a tab inside the scheme (a browser's URL parser strips
+ * it, so `ht<TAB>p://` IS `http://` to the browser), a CSS backslash escape
+ * (`\68ttp://`), and an unquoted attribute value, which the old regex never
+ * matched at all. This function now normalizes (decode entities, decode CSS
+ * escapes, strip URL whitespace/control chars — normalizeReferenceValue)
+ * before judging, closing those four; but the REAL fix for "the next
+ * encoding nobody thought of" is composeMockup's document-level `<meta
+ * http-equiv="Content-Security-Policy">` (see its own comment), which the
+ * browser enforces against the value it actually resolves, after every
+ * decoding step, regardless of which one a future trick uses. This function
+ * is the layer that keeps the SOURCE clean; the meta CSP is the layer that
+ * cannot be tricked by a source it never fully understood.
  *
  * THE BOUND, STATED PLAINLY. This strips `src=`, `href=`, and `url(...)`
  * inside `style="..."`. It does NOT strip: `xlink:href` (SVG's own reference
- * attribute), `<object data=…>`, `<video poster=…>`, `srcset`, a `<meta
- * http-equiv="refresh" content="…url=…">` redirect, or a CSS custom-property
- * indirection. These shapes are not in the vocabulary mockup-v4.md asks the
- * model to draw (`<section>`/`<div>`/`<img>`/inline `<style>`), and adding
- * cases nothing produces would be exactly the unbounded, ever-growing parser
- * scopeCss's own doc comment already declines to become. A fragment that DOES
- * reach for one of them is a real, load-bearing gap in this guard — not
- * covered here, and not covered by the route CSP either for the srcDoc
- * surface.
+ * attribute), `<object data=…>`, `<video poster=…>`, `srcset`, or a CSS
+ * custom-property indirection. These shapes are not in the vocabulary
+ * mockup-v4.md asks the model to draw (`<section>`/`<div>`/`<img>`/inline
+ * `<style>`), and adding cases nothing produces would be exactly the
+ * unbounded, ever-growing parser scopeCss's own doc comment already declines
+ * to become. BUT — and this is the materially different claim fix round 1
+ * makes true — a fragment that DOES reach for one of them is no longer the
+ * same kind of gap it was before composeMockup's meta CSP existed. `xlink:href`
+ * (as an image fetch), `object`/`embed` `data=`, `<video poster=>`, and
+ * `srcset` are all subresource fetches the meta CSP's `img-src`/`default-src
+ * 'none'` fallback blocks regardless of which HTML attribute requested them
+ * — unstripped here, they still fail to load, so the outcome is a BROKEN
+ * IMAGE, not a leak. Ditto a CSS custom-property indirection: the CSP is
+ * enforced against the resolved fetch, not the source text, so `--bg:
+ * url(http://evil); background: var(--bg)` is blocked exactly like a direct
+ * `url(http://evil)` would be. The one shape that is NOT closed by the meta
+ * CSP is a `<meta http-equiv="refresh" content="…url=…">` redirect: that is a
+ * NAVIGATION, which CSP's fetch directives (`default-src`, `img-src`, …) do
+ * not govern, and an empty `sandbox` restricts navigating the TOP browsing
+ * context from a sandboxed frame, not the sandboxed frame navigating itself.
+ * A fragment that emits one could still send the friend's own preview frame
+ * to an external URL. Not in the model's vocabulary today; a real,
+ * unaddressed gap if it ever appears.
  */
 function stripExternalReferences(html: string): string {
   const stylesSanitized = html.replace(
@@ -586,9 +692,17 @@ function stripExternalReferences(html: string): string {
     (_full, prefix: string, quote: string, value: string) =>
       `${prefix}${quote}${stripExternalUrlDeclarations(value)}${quote}`,
   )
+  // Task 25, fix round 1: three alternatives for the three HTML attribute-value
+  // forms — double-quoted, single-quoted, unquoted (a run with no whitespace
+  // and none of the characters HTML forbids unquoted:
+  // `"'=<>` and backtick). The old version matched only the first two, so
+  // `<img src=https://evil.example/x.png>` sailed straight through.
   return stylesSanitized.replace(
-    /\s(?:src|href)\s*=\s*(['"])([\s\S]*?)\1/gi,
-    (full: string, _quote: string, value: string) => (isExternalReference(value) ? '' : full),
+    /\s(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi,
+    (full: string, dq: string | undefined, sq: string | undefined, uq: string | undefined) => {
+      const value = dq ?? sq ?? uq ?? ''
+      return isSafeReferenceValue(value) ? full : ''
+    },
   )
 }
 
@@ -611,6 +725,26 @@ function stripExternalReferences(html: string): string {
  * (`Proposal.preview_html`, what ChatPanel's card renders by `srcDoc`) —
  * composeMockup is the one place both are built, so it is the one place this
  * guard needs to live to cover both.
+ *
+ * Task 25, fix round 1: the emitted `<head>` also carries a `<meta
+ * http-equiv="Content-Security-Policy">` with the same three fetch-blocking
+ * directives Nico pinned for the two routes' headers (`default-src 'none';
+ * style-src 'unsafe-inline'; img-src data:`) — ONE policy in two places,
+ * rather than a route policy and a separate document policy that could
+ * drift. THIS IS THE STRUCTURAL GUARANTEE, not the regex stripping above:
+ * stripExternalReferences reads the SOURCE text and can be beaten by an
+ * encoding it does not decode; the meta CSP is enforced by the browser
+ * against the URL it actually resolves, after every decoding step a browser
+ * performs, so it cannot be tricked by a source it never fully understood —
+ * the reason the reviewer ranked it as the fix that matters most. Verified
+ * empirically (not assumed) that a `<meta>` CSP inside a `srcDoc`-loaded,
+ * `sandbox=""` iframe is enforced: a data: image loads, an external image
+ * fires a real network request that fails with a CSP console violation and
+ * never paints. `sandbox` and `frame-ancestors` are deliberately absent from
+ * this policy — they are HEADER-only concepts (a `<meta>` CSP cannot set
+ * them; the HTML spec ignores a sandbox directive there), and the job they
+ * would do is already done by the `sandbox=""` attribute every iframe that
+ * renders this document already carries.
  */
 export function composeMockup(
   screens: Screen[],
@@ -639,6 +773,7 @@ export function composeMockup(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
 <style>${FRAME}${NUDGE}</style>
 </head>
 <body>

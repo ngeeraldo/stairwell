@@ -367,5 +367,78 @@ describe('composeMockup', () => {
       const html = composeMockup(SCREENS, fragments)
       expect(html).not.toContain('fonts.example.test')
     })
+
+    it('emits a document-level meta CSP with the same three fetch-blocking directives as the routes', () => {
+      const html = composeMockup(SCREENS, FRAGMENTS)
+      expect(html).toContain(
+        '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">',
+      )
+      // sandbox/frame-ancestors are header-only and deliberately absent —
+      // the meta tag cannot carry them, and the iframe's own sandbox="" does
+      // that job already.
+      expect(html).not.toContain('sandbox')
+      expect(html).not.toContain('frame-ancestors')
+    })
+
+    // Fix round 1. The reviewer ran composeMockup for real and found four
+    // shapes that beat the ORIGINAL blocklist-style regex: it string-matched
+    // "does this look external", and each of these does not — until a
+    // browser decodes it. isSafeReferenceValue is now an ALLOWLIST fed by
+    // normalizeReferenceValue (decode entities, decode CSS escapes, strip URL
+    // whitespace/control chars) — same four cases, now closed at the regex
+    // layer too, on top of the meta CSP above which was already the primary
+    // guarantee against exactly this kind of encoding trick.
+    describe('fix round 1: encodings that defeated the original blocklist', () => {
+      it('strips an HTML numeric-entity-encoded scheme (&#104;ttp://) from an <img src>', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><img src="&#104;ttp://cdn.example.test/leak.png" alt="x">M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).toContain('alt="x"')
+      })
+
+      it('strips a scheme with an ASCII tab spliced into it (ht<TAB>p://) — the URL parser strips it, so this IS http://', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><img src="ht\tp://cdn.example.test/leak.png" alt="x">M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).toContain('alt="x"')
+      })
+
+      it('strips a CSS backslash-escaped scheme (\\68ttp://) inside an unquoted url()', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><style>.tile { background: url(\\68ttp://cdn.example.test/leak.png); color: red }</style>M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).toMatch(/#screen-morning[^{]*\.tile[^}]*color:\s*red/)
+      })
+
+      it('strips an UNQUOTED external src attribute — the old regex only matched quoted values', () => {
+        const fragments = new Map([
+          ['morning', '<section><img src=https://cdn.example.test/leak.png alt=x>M</section>'],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).not.toContain('cdn.example.test')
+        // The following unquoted attribute is untouched — this is a targeted
+        // strip of the offending attribute, not a fallback that drops the tag.
+        expect(html).toContain('alt=x')
+      })
+    })
   })
 })
