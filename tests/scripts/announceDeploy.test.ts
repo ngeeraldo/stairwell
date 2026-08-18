@@ -1,7 +1,8 @@
 // tests/scripts/announceDeploy.test.ts
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
@@ -16,6 +17,9 @@ import {
   type AnnounceDeps,
   type AnnounceOutcome,
 } from '@/scripts/announce-deploy'
+
+const REPO = resolve(__dirname, '..', '..')
+const SCRIPT = join(REPO, 'scripts', 'announce-deploy.ts')
 
 const MOCKUP = '<!doctype html><html><body>COFFEE PALACE TEST</body></html>'
 
@@ -455,5 +459,82 @@ describe('exitCodeFor', () => {
     const ok: AnnounceOutcome['kind'][] = ['drafted', 'announced', 'already_announced']
     for (const kind of refusals) expect(exitCodeFor(kind)).not.toBe(0)
     for (const kind of ok) expect(exitCodeFor(kind)).toBe(0)
+  })
+})
+
+/**
+ * The CLI wrapper, as a real subprocess — the command Nico actually types
+ * over ssh at runbook step 9. announce-deploy.ts used to fall back to
+ * platform/dev/synthetic.db when PLATFORM_DB was unset; a forgotten
+ * $STAIRWELL prelude on the droplet would then draft or send an
+ * announcement into a synthetic account while looking like it reached the
+ * friend. It now refuses instead; these tests pin that at the process
+ * boundary, not just as an exported function.
+ *
+ * `--plain` is used throughout so `resolveClient` never constructs a real
+ * Anthropic client (which throws MissingCredentialError with no API key
+ * present) — that would fail the process for an unrelated reason before the
+ * PLATFORM_DB check is even reached, since resolveClient runs first.
+ */
+describe('scripts/announce-deploy.ts (CLI)', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'stairwell-announce-cli-'))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  function run(
+    args: string[],
+    env: Record<string, string | undefined> = {},
+  ): { status: number; output: string } {
+    // Child env built from a CLONE of process.env — the real process.env is
+    // never touched, unlike the ANTHROPIC_API_KEY save/restore above, which
+    // this file needs because resolveClient() there is called in-process.
+    const childEnv = { ...process.env, ...env }
+    if (!('PLATFORM_DB' in env)) delete childEnv.PLATFORM_DB
+    delete childEnv.ANTHROPIC_API_KEY
+    try {
+      const output = execFileSync('npx', ['tsx', SCRIPT, ...args], {
+        cwd: REPO,
+        env: childEnv,
+        stdio: 'pipe',
+        encoding: 'utf8',
+      })
+      return { status: 0, output }
+    } catch (err) {
+      const e = err as { status: number | null; stdout: string; stderr: string }
+      return { status: e.status ?? 1, output: `${e.stdout}${e.stderr}` }
+    }
+  }
+
+  it('refuses to run when PLATFORM_DB is not set', () => {
+    const { status, output } = run(['clitest', '--plain'])
+    expect(status).not.toBe(0)
+    expect(output).toContain('PLATFORM_DB is not set')
+  })
+
+  it('refuses even when PLATFORM_DB is an explicit empty string', () => {
+    const { status, output } = run(['clitest', '--plain'], { PLATFORM_DB: '' })
+    expect(status).not.toBe(0)
+    expect(output).toContain('PLATFORM_DB is not set')
+  })
+
+  it('gets past the PLATFORM_DB gate once it is set, and fails for the account instead', async () => {
+    const target = join(dir, 'platform.db')
+    const db = openPlatformDb(target)
+    try {
+      await createAccount(db, { slug: 'clitest', role: 'user', password: 'TEST-CLI-ANNOUNCE' })
+    } finally {
+      db.close()
+    }
+
+    const { status, output } = run(['clitest', '--plain'], { PLATFORM_DB: target })
+    expect(status).not.toBe(0)
+    expect(output).not.toContain('PLATFORM_DB')
+    expect(output).toContain('no confirmed spec')
   })
 })

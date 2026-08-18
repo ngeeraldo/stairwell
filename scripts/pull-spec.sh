@@ -14,6 +14,16 @@
 # platform database there — see the header of scripts/export-spec.ts. --local
 # is the only form an agent runs, against a synthetic PLATFORM_DB.
 #
+# export-spec.ts refuses to run at all if PLATFORM_DB is unset (no fallback —
+# see its header). --local supplies platform/dev/synthetic.db itself, via
+# `${PLATFORM_DB:-...}`, so a bare `./scripts/pull-spec.sh <user> --local`
+# still works without the caller exporting anything first — but a caller who
+# HAS set PLATFORM_DB (a test pointed at a disposable db, an agent pointed
+# elsewhere) is passed through unchanged. That default belongs here, in the
+# wrapper that only ever runs locally against synthetic data, and not inside
+# export-spec.ts itself, which the OTHER branch below also calls against the
+# REAL platform database on the droplet.
+#
 # This script is a thin wrapper and does no file writing itself: fetch the
 # confirmed spec as JSON from export-spec.ts, hand it to write-spec-pair.ts.
 #
@@ -40,7 +50,7 @@ main() {
 
   local json
   if [ "${2:-}" = "--local" ]; then
-    json=$(npx tsx scripts/export-spec.ts "$user")
+    json=$(PLATFORM_DB="${PLATFORM_DB:-platform/dev/synthetic.db}" npx tsx scripts/export-spec.ts "$user")
   else
     # `set -a; . ./.env` because a non-interactive ssh loads no profile and no
     # EnvironmentFile — only systemd does that for the running service. Without

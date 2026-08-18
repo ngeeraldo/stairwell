@@ -13,6 +13,14 @@
 // scripts/pull-spec.sh devtwo --local is the only form of this pull an
 // agent runs; that script's --local is what passes a synthetic PLATFORM_DB
 // through to this file.
+//
+// REFUSES TO RUN if PLATFORM_DB is unset, rather than falling back to
+// platform/dev/synthetic.db. A non-interactive `ssh` loads no profile and no
+// EnvironmentFile, so a forgotten $STAIRWELL prelude on the droplet is
+// exactly the state a fallback would hit — and a fallback there would write
+// synthetic data into a friend's users/<slug>/spec.md as if it were their
+// real confirmed spec, silently, with no error telling Nico it happened.
+import { resolve } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 import { currentSpec } from '@/lib/db/specs'
@@ -54,15 +62,33 @@ export function exportSpec(
   return { spec_md, mockup_html: spec.mockup_html }
 }
 
+/**
+ * No fallback — see the header comment. `??` only catches null/undefined, so
+ * an explicit empty string (`PLATFORM_DB=` with nothing after it) is checked
+ * for by hand or it would resolve to the cwd.
+ */
+function resolvePlatformDbPath(): string {
+  if (!process.env.PLATFORM_DB) {
+    console.error(
+      'Refusing to run: PLATFORM_DB is not set.\n\n' +
+        'This script never falls back to a synthetic database — a fallback ' +
+        "on the droplet would write synthetic data into a friend's " +
+        'users/<slug>/spec.md as if it were their real confirmed spec, ' +
+        'silently. Set it explicitly, e.g.:\n\n' +
+        '  PLATFORM_DB=platform/dev/synthetic.db npx tsx scripts/export-spec.ts <slug>',
+    )
+    process.exit(1)
+  }
+  return resolve(process.env.PLATFORM_DB)
+}
+
 if (process.argv[1]?.endsWith('export-spec.ts')) {
   const slug = process.argv[2]
   if (!slug) {
     console.error('usage: tsx scripts/export-spec.ts <slug>')
     process.exit(2)
   }
-  const db = openPlatformDb(
-    process.env.PLATFORM_DB ?? 'platform/dev/synthetic.db',
-  )
+  const db = openPlatformDb(resolvePlatformDbPath())
   try {
     // Nothing is written to stdout unless exportSpec returns successfully —
     // an uncaught throw here prints to stderr and exits non-zero, and
