@@ -87,6 +87,7 @@ describe('no message text reaches ntfy.sh', () => {
         sessionId: 'sess-1',
         body: `please remember ${SENTINEL}`,
         signal: new AbortController().signal,
+        authoringSignal: new AbortController().signal,
         onText: () => {},
       },
     )

@@ -61,7 +61,35 @@ export type TurnInput = {
    * corrected later.
    */
   body: string | null
+  /**
+   * The HTTP request's signal. Governs the model STREAM and nothing after it:
+   * a friend who closes the tab mid-reply gets no assistant row (see the
+   * stream_aborted path), because a reply nobody received is not worth
+   * persisting and the tokens are already spent either way.
+   */
   signal: AbortSignal
+  /**
+   * The signal governing the AUTHORING call, deliberately separate from
+   * `signal` above.
+   *
+   * These were one field until 2026-08-18, and that was the defect. A proposal
+   * takes 47-97 seconds across two model calls, and 6 of 16 attempts died
+   * because the browser's connection went away inside that window — Chrome
+   * reporting ERR_NETWORK_CHANGED, i.e. the laptop's own wifi or VPN moving
+   * under it. Every one of those aborts discarded work that was already
+   * running and, on the worst of them, already billed, and handed the friend
+   * nothing.
+   *
+   * A dropped connection is now a DELAY, not a loss: authoring runs to
+   * completion, `specs` gets its row, and app/[user]/page.tsx serves the card
+   * on the friend's next load. Nothing is lost that was paid for.
+   *
+   * Still a signal rather than nothing, because the abort path in
+   * lib/spec/author.ts is correct and worth keeping for a caller that really
+   * does want to cancel — a test, or a future scheduled context. The route
+   * passes one that is never aborted.
+   */
+  authoringSignal: AbortSignal
   onText: (text: string) => void
   /**
    * Reports the crossing from writing the spec to drawing the preview, so the
@@ -338,7 +366,9 @@ export async function runTurn(
       proposal = await authorSpec({
         accountId: input.accountId,
         conversationId,
-        signal: input.signal,
+        // NOT input.signal — see authoringSignal's docstring. Passing the
+        // request's signal here is what made a wifi hop destroy a proposal.
+        signal: input.authoringSignal,
         onStage: input.onStage,
       })
     } catch {

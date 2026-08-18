@@ -74,8 +74,15 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
 // authorSpec is a real dependency of the route (lib/spec/author.ts), not part
 // of the chat client. Mocked separately so tests can choose success/failure
 // without having to satisfy the real spec schema.
-/** Set by the 'propose-slow' double; called by a test to let authoring finish. */
-const slowAuthoring: { release?: () => void } = {}
+/**
+ * Set by the 'propose-slow' double; called by a test to let authoring finish.
+ * `onEnter` fires the moment authoring is entered, so a test can act at that
+ * exact point instead of racing the stream.
+ */
+const slowAuthoring: { release?: () => void; onEnter?: () => void } = {}
+
+/** Every signal the route has handed to authorSpec, newest last. */
+const authoringSignals: AbortSignal[] = []
 
 const PROPOSAL_FIXTURE = {
   id: 7,
@@ -110,7 +117,9 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
         input.onStage?.('mockup')
         return PROPOSAL_FIXTURE
       }
+      authoringSignals.push(input.signal)
       if (behaviour.value === 'propose-slow') {
+        slowAuthoring.onEnter?.()
         // An authoring call that does not return until the test says so —
         // the 47-97 second window the heartbeat exists to keep warm.
         await new Promise<void>((resolve) => {
@@ -139,6 +148,9 @@ beforeEach(() => {
   cookieSlot.value = undefined
   behaviour.value = 'ok'
   handle = undefined
+  authoringSignals.length = 0
+  slowAuthoring.release = undefined
+  slowAuthoring.onEnter = undefined
 })
 
 afterEach(() => {
@@ -384,6 +396,30 @@ describe('POST /api/chat', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('authors the proposal on a signal the client cannot abort', async () => {
+    // The whole point of RunTurnInput.authoringSignal, pinned at the layer that
+    // supplies it. Before this the route passed request.signal straight
+    // through, so a wifi hop mid-preview destroyed work already in flight.
+    await signIn(false)
+    behaviour.value = 'propose-slow'
+
+    const entered = new Promise<void>((resolve) => {
+      slowAuthoring.onEnter = resolve
+    })
+    const aborter = new AbortController()
+    const res = await postWithSignal({ body: 'hi' }, aborter.signal)
+
+    await entered
+    // The friend's connection dies while the preview is being drawn.
+    aborter.abort()
+    slowAuthoring.release!()
+    await lines(res)
+
+    const handed = authoringSignals.at(-1)!
+    expect(handed.aborted).toBe(false)
+    expect(handed).not.toBe(aborter.signal)
   })
 
   it('sends NDJSON, not JSON', async () => {

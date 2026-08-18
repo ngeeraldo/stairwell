@@ -204,6 +204,10 @@ const input = (over: Partial<Parameters<typeof runTurn>[1]> = {}) => ({
   sessionId: 'sess-1',
   body: 'what should I watch?',
   signal: new AbortController().signal,
+  // Separate from `signal` on purpose — a test that wants to abort the model
+  // stream should not silently also abort authoring, and vice versa. Overriding
+  // one leaves the other live.
+  authoringSignal: new AbortController().signal,
   onText: () => {},
   ...over,
 })
@@ -886,6 +890,67 @@ describe('the completion rule with propose_spec', () => {
     first: true,
   }
 
+  it('hands authoring a signal the request cannot abort', async () => {
+    // THE REGRESSION THIS EXISTS FOR. Authoring used to receive input.signal,
+    // so a laptop hopping wifi mid-preview (Chrome: ERR_NETWORK_CHANGED)
+    // cancelled work that was already running and sometimes already billed.
+    // 6 of 16 authoring attempts died that way. A dropped connection is now a
+    // delay: authoring finishes and the row lands.
+    const requestAborter = new AbortController()
+    let authoringSignalWasAborted: boolean | undefined
+    let sawSignal: AbortSignal | undefined
+
+    const outcome = await runTurn(
+      {
+        db,
+        client: toolClient('one moment', ['propose_spec']),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async (i) => {
+          // The connection dies partway through the authoring call.
+          requestAborter.abort()
+          sawSignal = i.signal
+          authoringSignalWasAborted = i.signal.aborted
+          return PROPOSAL
+        },
+      },
+      input({ signal: requestAborter.signal }),
+    )
+
+    expect(authoringSignalWasAborted).toBe(false)
+    expect(sawSignal).not.toBe(requestAborter.signal)
+    // And the proposal really did come back, rather than being discarded.
+    expect(outcome.kind).toBe('completed')
+    expect(outcome.proposal).toEqual(PROPOSAL)
+    expect(outcome.proposalFailed).toBeFalsy()
+  })
+
+  it('still cancels authoring when the AUTHORING signal is the one that aborts', async () => {
+    // The abort path in lib/spec/author.ts is correct and stays reachable —
+    // untying the two signals must not quietly make it dead code.
+    const authoringAborter = new AbortController()
+    authoringAborter.abort()
+    let seenAborted: boolean | undefined
+
+    await runTurn(
+      {
+        db,
+        client: toolClient('one moment', ['propose_spec']),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async (i) => {
+          seenAborted = i.signal.aborted
+          return undefined
+        },
+      },
+      input({ authoringSignal: authoringAborter.signal }),
+    )
+
+    expect(seenAborted).toBe(true)
+  })
+
   it('appends the assistant row AND proposes when both happened', async () => {
     let called = false
     const outcome = await runTurn(
@@ -900,7 +965,7 @@ describe('the completion rule with propose_spec', () => {
           return PROPOSAL
         },
       },
-      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
     )
     expect(outcome.kind).toBe('completed')
     expect(outcome.proposal).toEqual(PROPOSAL)
@@ -920,7 +985,7 @@ describe('the completion rule with propose_spec', () => {
         alert: noAlert,
         authorSpec: async () => PROPOSAL,
       },
-      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
     )
     expect(outcome.proposal).toEqual(PROPOSAL)
     expect(readTranscript(db, 1).filter((r) => r.role === 'assistant')).toHaveLength(0)
@@ -938,7 +1003,7 @@ describe('the completion rule with propose_spec', () => {
           throw new Error('must not be called')
         },
       },
-      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
     )
     expect(outcome.kind).toBe('empty')
     expect(outcome.proposal).toBeUndefined()
@@ -960,7 +1025,7 @@ describe('the completion rule with propose_spec', () => {
         alert: noAlert,
         authorSpec: async () => PROPOSAL,
       },
-      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
     )
     // No usable reply was delivered — `kind` reflects reply usability, not
     // proposal success, same as an ordinary text-less tool call.
@@ -986,7 +1051,7 @@ describe('the completion rule with propose_spec', () => {
     // tell them apart, permanently.
     await runTurn(
       { db, client: toolClient('', ['propose_spec']), now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: async () => PROPOSAL },
-      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
     )
     const [event] = metrics().map((r) => r.event)
     // Positive first: an early-failing runTurn writes no metric row at all,
@@ -1023,6 +1088,7 @@ describe('the completion rule with propose_spec', () => {
         sessionId: 's',
         body: 'hi',
         signal: new AbortController().signal,
+        authoringSignal: new AbortController().signal,
         onText: () => {},
         onStage: (stage) => seen.push(stage),
       },
@@ -1058,7 +1124,7 @@ describe('the completion rule with propose_spec', () => {
     }
     const outcome = await runTurn(
       { db, client: truncatedToolClient, now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: async () => PROPOSAL },
-      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+      { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
     )
     expect(outcome.kind).toBe('empty') // not usable: stop_reason is max_tokens
     expect(readTranscript(db, 1).filter((r) => r.role === 'assistant')).toHaveLength(0)
@@ -1072,7 +1138,7 @@ describe('the completion rule with propose_spec', () => {
     it('is true when the tool was called and authoring failed', async () => {
       const outcome = await runTurn(
         { db, client: toolClient('one moment', ['propose_spec']), now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: async () => undefined },
-        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
       )
       expect(outcome.proposal).toBeUndefined()
       expect(outcome.proposalFailed).toBe(true)
@@ -1081,7 +1147,7 @@ describe('the completion rule with propose_spec', () => {
     it('is false (or absent) when authoring succeeded', async () => {
       const outcome = await runTurn(
         { db, client: toolClient('one moment', ['propose_spec']), now: () => 1_000, context: 'interview', alert: noAlert, authorSpec: async () => PROPOSAL },
-        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
       )
       expect(outcome.proposal).toEqual(PROPOSAL)
       expect(outcome.proposalFailed ?? false).toBe(false)
@@ -1115,7 +1181,7 @@ describe('the completion rule with propose_spec', () => {
             throw new Error('unexpectedly broken dependency')
           },
         },
-        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
       )
       expect(outcome.kind).toBe('completed')
       expect(outcome.proposal).toBeUndefined()
@@ -1137,7 +1203,7 @@ describe('the completion rule with propose_spec', () => {
             throw new Error('unexpectedly broken dependency')
           },
         },
-        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
       )
       expect(outcome.kind).toBe('empty')
       expect(outcome.proposal).toBeUndefined()
@@ -1186,7 +1252,7 @@ describe('the completion rule with propose_spec', () => {
     async function turn(seen: Parameters<typeof capturingClient>[0]) {
       await runTurn(
         { db, client: capturingClient(seen), now: () => 5_000, context: 'interview', alert: noAlert, authorSpec: fakeAuthorSpec },
-        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, onText: () => {} },
+        { accountId: 1, sessionId: 's', body: 'hi', signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
       )
     }
 
@@ -1252,7 +1318,7 @@ describe('the completion rule with propose_spec', () => {
       const seen: { system?: string; messages?: { role: string; content: string }[] } = {}
       await runTurn(
         { db, client: capturingClient(seen), now: () => 5_000, context: 'interview', alert: noAlert, authorSpec: fakeAuthorSpec },
-        { accountId: 1, sessionId: 's', body: null, signal: new AbortController().signal, onText: () => {} },
+        { accountId: 1, sessionId: 's', body: null, signal: new AbortController().signal, authoringSignal: new AbortController().signal, onText: () => {} },
       )
 
       const last = seen.messages![seen.messages!.length - 1]!

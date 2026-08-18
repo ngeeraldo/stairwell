@@ -144,6 +144,19 @@ export async function POST(request: Request) {
         stopped: () => request.signal.aborted,
       })
 
+      // A SIGNAL THAT IS NEVER ABORTED, handed to the authoring call only.
+      //
+      // The friend's connection dying must not destroy a proposal. 6 of 16
+      // authoring attempts died that way before this existed — Chrome
+      // reporting ERR_NETWORK_CHANGED as a laptop moved between wifi
+      // access points or a VPN re-established, at a random point inside a
+      // 47-97 second window. See RunTurnInput.authoringSignal.
+      //
+      // Bounded, despite never aborting: lib/chat/client.ts caps each
+      // authoring call at SPEC_TIMEOUT_MS, so an abandoned request cannot
+      // run forever.
+      const authoringSignal = new AbortController().signal
+
       const outcome = await runTurn(
         {
           db,
@@ -178,6 +191,7 @@ export async function POST(request: Request) {
           // validated, and the slow half — drawing the preview — is starting.
           onStage: (stage) => controller.enqueue(line({ stage })),
           signal: request.signal,
+          authoringSignal,
           onText: (text) => {
             // A client that has gone away makes enqueue throw. The turn's own
             // abort path has already decided what to persist; this just keeps
@@ -210,7 +224,17 @@ export async function POST(request: Request) {
       if (outcome.kind === 'completed' && !request.signal.aborted) {
         controller.enqueue(line({ done: true }))
       }
-      controller.close()
+      // Guarded: a client that went away mid-authoring leaves this stream
+      // already cancelled, and close() on a cancelled controller throws —
+      // which, inside start(), surfaces as an unhandled rejection rather than
+      // a failed request. Much likelier now that authoring outlives the
+      // connection instead of dying with it.
+      try {
+        controller.close()
+      } catch {
+        // Nothing to tell anyone: the reader is gone, and everything worth
+        // persisting was written before we got here.
+      }
     },
   })
 
