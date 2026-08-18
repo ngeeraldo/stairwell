@@ -16,6 +16,14 @@
 // Deliberately NOT called from deploy/deploy.sh, for the same reason
 // scripts/announce-deploy.ts is not: this is a one-off, account-specific
 // message, not something every deploy should trigger for every account.
+//
+// REFUSES TO RUN if PLATFORM_DB is unset, rather than falling back to
+// platform/dev/synthetic.db. A non-interactive `ssh` loads no profile and no
+// EnvironmentFile, so a forgotten $STAIRWELL prelude on the droplet is
+// exactly the state a fallback would hit — and a fallback there would post
+// the question into a synthetic account instead of the friend's real chat,
+// silently, while Nico believes it was asked.
+import { resolve } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 import { announce } from '@/lib/chat/announce'
@@ -26,6 +34,26 @@ export function askUser(db: PlatformDb, slug: string, question: string): void {
   announce(db, { accountId: account.id, body: question, at: Date.now() })
 }
 
+/**
+ * No fallback — see the header comment. `??` only catches null/undefined, so
+ * an explicit empty string (`PLATFORM_DB=` with nothing after it) is checked
+ * for by hand or it would resolve to the cwd.
+ */
+function resolvePlatformDbPath(): string {
+  if (!process.env.PLATFORM_DB) {
+    console.error(
+      'Refusing to run: PLATFORM_DB is not set.\n\n' +
+        'This script never falls back to a synthetic database — a fallback ' +
+        'on the droplet would post the question into a synthetic account ' +
+        "instead of the friend's real chat, silently. Set it explicitly, " +
+        'e.g.:\n\n' +
+        '  PLATFORM_DB=platform/dev/synthetic.db npx tsx scripts/ask-user.ts <slug> "<question>"',
+    )
+    process.exit(1)
+  }
+  return resolve(process.env.PLATFORM_DB)
+}
+
 if (process.argv[1]?.endsWith('ask-user.ts')) {
   const slug = process.argv[2]
   const question = process.argv[3]
@@ -33,9 +61,7 @@ if (process.argv[1]?.endsWith('ask-user.ts')) {
     console.error('usage: tsx scripts/ask-user.ts <slug> "<question>"')
     process.exit(2)
   }
-  const db = openPlatformDb(
-    process.env.PLATFORM_DB ?? 'platform/dev/synthetic.db',
-  )
+  const db = openPlatformDb(resolvePlatformDbPath())
   try {
     askUser(db, slug, question)
     console.log(`posted to '${slug}'`)

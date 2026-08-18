@@ -1,7 +1,8 @@
 // tests/scripts/exportSpec.test.ts
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
@@ -9,6 +10,9 @@ import { confirmSpec, insertSpec } from '@/lib/db/specs'
 import { SpecShapeError, type SpecVersion } from '@/lib/spec/schema'
 import { type LegacySpecPayload } from '@/lib/spec/legacy'
 import { exportSpec } from '@/scripts/export-spec'
+
+const REPO = resolve(__dirname, '..', '..')
+const SCRIPT = join(REPO, 'scripts', 'export-spec.ts')
 
 const MOCKUP = '<!doctype html><html><body>COFFEE PALACE TEST</body></html>'
 
@@ -269,5 +273,60 @@ _None._
   it('names the failure instead of crashing when the stored payload is corrupt', () => {
     expect(() => exportSpec(db, 'devthree')).toThrow(SpecShapeError)
     expect(() => exportSpec(db, 'devthree')).toThrow(/spec payload/)
+  })
+})
+
+/**
+ * The CLI wrapper, as a real subprocess — the command pull-spec.sh actually
+ * shells out to. This is the load-bearing addition: export-spec.ts used to
+ * fall back to platform/dev/synthetic.db when PLATFORM_DB was unset, and
+ * that fallback is exactly what would write a friend's spec.md from fake
+ * data on the droplet if $STAIRWELL was ever forgotten (pull-spec.sh:53's
+ * comment names the same hazard). It now refuses instead; these tests pin
+ * that refusal at the process boundary, not just in exportSpec() itself.
+ */
+describe('scripts/export-spec.ts (CLI)', () => {
+  function run(
+    args: string[],
+    env: Record<string, string | undefined> = {},
+  ): { status: number; output: string } {
+    // Build the child's env from a CLONE of process.env — never mutate the
+    // real process.env, which several tests in this repo do without
+    // try/finally and which would leak PLATFORM_DB across files that share a
+    // worker if this test ever did the same.
+    const childEnv = { ...process.env, ...env }
+    if (!('PLATFORM_DB' in env)) delete childEnv.PLATFORM_DB
+    try {
+      const output = execFileSync('npx', ['tsx', SCRIPT, ...args], {
+        cwd: REPO,
+        env: childEnv,
+        stdio: 'pipe',
+        encoding: 'utf8',
+      })
+      return { status: 0, output }
+    } catch (err) {
+      const e = err as { status: number | null; stdout: string; stderr: string }
+      return { status: e.status ?? 1, output: `${e.stdout}${e.stderr}` }
+    }
+  }
+
+  it('refuses to run when PLATFORM_DB is not set', () => {
+    const { status, output } = run(['devtwo'])
+    expect(status).not.toBe(0)
+    expect(output).toContain('PLATFORM_DB is not set')
+  })
+
+  it('refuses even when PLATFORM_DB is an explicit empty string', () => {
+    const { status, output } = run(['devtwo'], { PLATFORM_DB: '' })
+    expect(status).not.toBe(0)
+    expect(output).toContain('PLATFORM_DB is not set')
+  })
+
+  it('exports the confirmed spec to stdout as JSON once PLATFORM_DB is set', () => {
+    const { status, output } = run(['devtwo'], { PLATFORM_DB: join(dir, 'synthetic.db') })
+    expect(status).toBe(0)
+    const parsed = JSON.parse(output) as { spec_md: string; mockup_html: string }
+    expect(parsed.spec_md).toContain('# Eating out and the car fund')
+    expect(parsed.mockup_html).toBe(MOCKUP)
   })
 })

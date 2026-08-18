@@ -27,10 +27,13 @@ Two rules that shape every command below:
   actually built.
 - **Set `PLATFORM_DB` on every command you send over ssh**, via the
   `$STAIRWELL` prelude below. A non-interactive `ssh` loads no profile and no
-  `EnvironmentFile`, so the far side has it unset otherwise — and the scripts
-  then either refuse to run or fall back to a synthetic database, on the
-  production box. `scripts/pull-spec.sh` handles this itself; the ones you type
-  by hand need the prelude.
+  `EnvironmentFile`, so the far side has it unset otherwise. Most of what you
+  type by hand now refuses outright and names `PLATFORM_DB` in the error —
+  `platform-query.ts`, `ask-user.ts`, `announce-deploy.ts` — but
+  `create-invite.ts` and `revoke-invite.ts` still fall back to a synthetic
+  database instead of refusing, so the prelude is what's required either way.
+  `scripts/pull-spec.sh` handles this itself; the ones you type by hand need
+  the prelude.
 
 ## Set these first
 
@@ -173,19 +176,41 @@ warn about.
 Verify it landed (read-only, on the droplet):
 
 ```bash
-ssh "$DROPLET" "$STAIRWELL && sqlite3 platform.db 'SELECT slug, used_at IS NOT NULL AS used, revoked_at IS NOT NULL AS revoked FROM invites;'"
+ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/platform-query.ts 'SELECT slug, used_at IS NOT NULL AS used, revoked_at IS NOT NULL AS revoked FROM invites WHERE slug = ?;' --param $FRIEND"
 
-ssh "$DROPLET" "$STAIRWELL && sqlite3 platform.db 'SELECT a.slug, k.account_id IS NOT NULL AS enveloped FROM accounts a LEFT JOIN account_keys k ON k.account_id = a.id;'"
+ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/platform-query.ts 'SELECT a.slug, k.account_id IS NOT NULL AS enveloped FROM accounts a LEFT JOIN account_keys k ON k.account_id = a.id WHERE a.slug = ?;' --param $FRIEND"
 
 ssh "$DROPLET" "$STAIRWELL && ls -la users/$FRIEND/"
 ```
 
-Note the SQL is in **single** quotes inside the double-quoted command. That
-nesting only works because none of these statements contains an apostrophe; if
-you write your own query with one, put the SQL in a file rather than fighting
-the quoting.
+`scripts/platform-query.ts` is what these run against — **not** `sqlite3`,
+which is not installed on the droplet (confirmed live: `sqlite3: command not
+found`). It ships with the app, so nothing needs installing there, and it
+opens the database `{ readonly: true }`, so pasting a write by mistake throws
+instead of landing. It refuses outright if `PLATFORM_DB` is unset, which is
+exactly what the `$STAIRWELL` prelude sets.
 
-Expect `used=1, revoked=0`, `enveloped=1`, and a `<slug>.db` file of a few KB.
+`--param $FRIEND` binds the `?` in each query to your slug, so the row you get
+back is the one you just created, not the whole table — with several accounts
+onboarded this stops you eyeballing past the rest. `$FRIEND` is safe to
+splice into the double-quoted `ssh` command unquoted, the same way step 2
+already does (`scripts/create-invite.ts $FRIEND`): step 1 pins its shape to
+`^[a-z0-9-]{1,32}$`, which cannot contain a quote or a space.
+
+Note the SQL itself is in **single** quotes inside the double-quoted `ssh`
+command. That nesting only works because none of these statements contains an
+apostrophe; if you write your own query with a literal value that might have
+one, bind it with `--param` instead of splicing it into the SQL text — that
+sidesteps the nesting entirely, the same way it does for `$FRIEND` above. For
+a query long or awkward enough that even that is unwieldy, put the SQL in a
+file and pass `--file <path>`:
+
+```bash
+ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/platform-query.ts --file /tmp/my-query.sql"
+```
+
+Expect one row: `used=1, revoked=0` from the first query, `enveloped=1` from
+the second, and a `<slug>.db` file of a few KB.
 
 ---
 
@@ -601,7 +626,7 @@ is here because getting it wrong is expensive and quiet.
 | Ship every droplet change through `git push` and `deploy/deploy.sh` | `deploy.sh` runs `git pull --ff-only`, so a hand-edit there is clobbered by the next deploy and is invisible on the laptop where the dashboard is actually built. |
 | Name every branch `<slug>/v<n>` | Git stores a bare `sam` as a *file* under `refs/heads/`, which can never coexist with the *directory* `refs/heads/sam/`. One `git branch sam` makes `sam/v2` impossible for as long as it exists. |
 | Write dashboard code on the version branch — check `git branch --show-current` first | `main` is the line the droplet pulls. A half-built dashboard sitting there means an unrelated urgent fix cannot ship without it. |
-| Point `PLATFORM_DB` at `platform/dev/synthetic.db` for anything you run locally | `export-spec.ts`, `announce-deploy.ts` and `ask-user.ts` read non-synthetic data by design — *on the server*. |
+| Point `PLATFORM_DB` at `platform/dev/synthetic.db` for anything you run locally | `export-spec.ts`, `announce-deploy.ts` and `ask-user.ts` read non-synthetic data by design — *on the server*. All three now refuse outright if `PLATFORM_DB` is unset rather than falling back — that refusal is what makes this rule enforced rather than merely advised. |
 | Glob the sidecars: `users/<slug>/<slug>.db*` | `-wal` and `-shm` hold the same rows as the database. A copy or a delete that takes only the main file is taking part of the database. |
 
 ---
@@ -644,7 +669,7 @@ harness: `docs/local-dev.md`.
 | Symptom | Cause |
 |---|---|
 | `no confirmed spec for '<slug>'` on pull | They have drafts but pressed confirm on none. Correct refusal — check the Spec tab in `/admin`. |
-| Pull wrote something that looks synthetic | `PLATFORM_DB` wasn't set on the far side. `pull-spec.sh` sources `.env` itself; a hand-typed `export-spec.ts` doesn't. |
+| Pull fails with `Refusing to run: PLATFORM_DB is not set` | `.env` on the far side doesn't set it — `pull-spec.sh` sources `.env` itself before calling `export-spec.ts`, so this points at `.env`, not at the command you typed. `export-spec.ts` has no fallback (see its header): it refuses rather than guessing, so this can no longer come back as a spec that quietly *looks* synthetic — only as a loud failure naming the variable. |
 | Their dashboard says **Under construction** | The folder was scaffolded but `migrations/001_initial.sql` has not been written. Expected between step 7's scaffold and the build. |
 | A friend cannot log in, and ntfy says a migration failed | The session was refused rather than served over a half-migrated shape. The alert carries the slug and migration number; the server log has the error. Their `<slug>.backup.db` holds the pre-migration copy. |
 | "This dashboard failed to load", permanently | Something read *file existence* as *has data*. Existence means **holds at least one table** — every friend has a file from day one. |

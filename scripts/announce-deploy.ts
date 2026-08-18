@@ -45,7 +45,15 @@
 // permanent lie in an append-only transcript for every account that was not
 // the reason for that particular deploy. This stays a one-line command Nico
 // runs for the specific account whose build just shipped.
+//
+// REFUSES TO RUN if PLATFORM_DB is unset, rather than falling back to
+// platform/dev/synthetic.db. A non-interactive `ssh` loads no profile and no
+// EnvironmentFile, so a forgotten $STAIRWELL prelude on the droplet is
+// exactly the state a fallback would hit — and a fallback there would draft
+// or send an announcement into a synthetic account instead of the friend's
+// real chat, silently, while Nico believes it landed.
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { readTranscript } from '@/lib/db/appendOnly'
 import { toMessages } from '@/lib/chat/history'
@@ -323,46 +331,84 @@ export function exitCodeFor(kind: AnnounceOutcome['kind']): number {
   return refusal.includes(kind) ? 1 : 0
 }
 
-if (process.argv[1]?.endsWith('announce-deploy.ts')) {
-  const args = process.argv.slice(2)
-  // --body-file takes a value, so its argument (and the flag itself) must be
-  // excluded before scanning for the positional slug — otherwise the path
-  // would be mistaken for the slug.
-  const bodyFileIndex = args.indexOf('--body-file')
-  const bodyFile = bodyFileIndex === -1 ? undefined : args[bodyFileIndex + 1]
-  if (bodyFileIndex !== -1 && bodyFile === undefined) {
-    console.error('--body-file requires a path argument')
-    process.exit(2)
-  }
-  const slug = args.find(
-    (a, i) => !a.startsWith('--') && (bodyFileIndex === -1 || i !== bodyFileIndex + 1),
-  )
-  const send = args.includes('--send')
-  const plain = args.includes('--plain')
-  if (!slug) {
+/**
+ * No fallback — see the header comment. `??` only catches null/undefined, so
+ * an explicit empty string (`PLATFORM_DB=` with nothing after it) is checked
+ * for by hand or it would resolve to the cwd.
+ */
+export function resolvePlatformDbPath(): string {
+  if (!process.env.PLATFORM_DB) {
     console.error(
-      'usage: tsx scripts/announce-deploy.ts <slug> [--send] [--plain] [--body-file <path>]',
+      'Refusing to run: PLATFORM_DB is not set.\n\n' +
+        'This script never falls back to a synthetic database — a fallback ' +
+        'on the droplet would draft or send an announcement into a ' +
+        "synthetic account instead of the friend's real chat, silently. " +
+        'Set it explicitly, e.g.:\n\n' +
+        '  PLATFORM_DB=platform/dev/synthetic.db npx tsx scripts/announce-deploy.ts <slug>',
     )
-    process.exit(2)
-  }
-
-  let client: ChatClient
-  try {
-    client = resolveClient(plain, bodyFile)
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error))
     process.exit(1)
   }
+  return resolve(process.env.PLATFORM_DB)
+}
 
-  const db = openPlatformDb(process.env.PLATFORM_DB ?? 'platform/dev/synthetic.db')
-  try {
-    const out = await runAnnounce({ db, client, now: Date.now }, { slug, send, plain, bodyFile })
-    for (const w of out.warnings) console.error(`warning: ${w}`)
-    if (out.body) console.log(`\n${out.body}\n`)
-    console.log(out.message)
-    const code = exitCodeFor(out.kind)
-    if (code !== 0) process.exit(code)
-  } finally {
-    db.close()
-  }
+if (process.argv[1]?.endsWith('announce-deploy.ts')) {
+  // Wrapped in an async IIFE rather than a bare top-level `await`. This repo
+  // has no `"type": "module"` in package.json, so `npx tsx` transpiles a
+  // plain .ts entry point to CommonJS, and CommonJS cannot contain top-level
+  // await — esbuild refuses at transform time, before a single line of this
+  // file runs. Found while proving the PLATFORM_DB refusal below actually
+  // works end to end: it did not, because the process never started.
+  // `void ... .catch(...)` is what stands in for the crash a bare top-level
+  // await would have surfaced as an unhandled rejection instead.
+  void (async () => {
+    const args = process.argv.slice(2)
+    // --body-file takes a value, so its argument (and the flag itself) must be
+    // excluded before scanning for the positional slug — otherwise the path
+    // would be mistaken for the slug.
+    const bodyFileIndex = args.indexOf('--body-file')
+    const bodyFile = bodyFileIndex === -1 ? undefined : args[bodyFileIndex + 1]
+    if (bodyFileIndex !== -1 && bodyFile === undefined) {
+      console.error('--body-file requires a path argument')
+      process.exit(2)
+    }
+    const slug = args.find(
+      (a, i) => !a.startsWith('--') && (bodyFileIndex === -1 || i !== bodyFileIndex + 1),
+    )
+    const send = args.includes('--send')
+    const plain = args.includes('--plain')
+    if (!slug) {
+      console.error(
+        'usage: tsx scripts/announce-deploy.ts <slug> [--send] [--plain] [--body-file <path>]',
+      )
+      process.exit(2)
+    }
+
+    let client: ChatClient
+    try {
+      client = resolveClient(plain, bodyFile)
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      process.exit(1)
+    }
+
+    const db = openPlatformDb(resolvePlatformDbPath())
+    try {
+      const out = await runAnnounce({ db, client, now: Date.now }, { slug, send, plain, bodyFile })
+      for (const w of out.warnings) console.error(`warning: ${w}`)
+      if (out.body) console.log(`\n${out.body}\n`)
+      console.log(out.message)
+      const code = exitCodeFor(out.kind)
+      if (code !== 0) process.exit(code)
+    } finally {
+      db.close()
+    }
+  })().catch((error) => {
+    // A throw that escapes runAnnounce entirely (e.g. announceTarget's "no
+    // account with slug") — every EXPECTED refusal already returns an
+    // AnnounceOutcome and is handled above via exitCodeFor. Printed as a
+    // message, not swallowed as a silent process exit 1 the way an unhandled
+    // rejection otherwise would.
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
 }
