@@ -5,7 +5,7 @@
 // these as you build — but keep the empty-database one, whatever else changes.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as React from 'react'
-import Dashboard from '@/users/__SLUG__/dashboard'
+import Dashboard, { screens } from '@/users/__SLUG__/dashboard'
 import { emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
 // JSX compiles to React.createElement, which this component's module expects
@@ -30,6 +30,17 @@ describe('users/__SLUG__', () => {
     } finally {
       db.close()
     }
+  })
+
+  it('declares its placeholder screen — take a real id/title from spec.md once one exists', () => {
+    // `DashboardModule.screens` is required (lib/dashboard/contract.ts,
+    // task 23), so a scaffold must export one even before a spec confirms
+    // real ids/titles — this pins dashboard.tsx's own placeholder export.
+    // Once ./scripts/pull-spec.sh writes a real spec.md, replace this with
+    // the id/title from its own `## Screens` section instead, the way
+    // users/run3/dashboard.tsx and users/run4/dashboard.tsx do — never a
+    // second, invented source.
+    expect(screens).toEqual([{ id: 'morning', title: 'Morning', order: 1 }])
   })
 
   it('renders on an EMPTY database without throwing', () => {

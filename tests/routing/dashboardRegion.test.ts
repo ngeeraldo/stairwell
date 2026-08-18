@@ -71,11 +71,19 @@ vi.mock('next/headers', () => ({
 
 // --- the two seams under test ---------------------------------------------
 //
-// `screens` is optional on the fixture's module shape for the same reason it
-// is optional on lib/dashboard/contract.ts's real DashboardModule: most tests
-// in this file exercise a module that has not declared any (today's actual
-// state for every registered dashboard), and only the tab-strip tests below
-// set it.
+// `screens` is optional here on PURPOSE, and no longer for the reason task 22
+// gave — as of task 23, `lib/dashboard/contract.ts`'s real `DashboardModule`
+// requires it, and every registered dashboard declares one. This local
+// `Loader` type is DELIBERATELY WIDER than that real type, because
+// 'renders no tab strip when the dashboard has not declared screens yet'
+// below needs to construct a module with no `screens` at all — the shape a
+// real, registry-typed dashboard can no longer take, but one
+// `renderDashboard`'s own `screens === undefined` branch still handles as
+// defense in depth (see the comment on that branch in app/[user]/page.tsx
+// and on `DashboardModule` in lib/dashboard/contract.ts). Tightening this
+// fixture to match the real required type would make that test impossible to
+// write, not just harder — there would be no way to construct the module the
+// test needs.
 type Loader =
   | (() => Promise<{
       default: (p: unknown) => unknown

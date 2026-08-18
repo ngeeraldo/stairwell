@@ -61,11 +61,16 @@ export type DashboardProps = {
    * for readability, not completeness. Requiring it would force each of those
    * call sites — dozens across four folders, plus every scaffold's tests
    * hereafter — to name a field their dashboard does not read, for no
-   * type-safety gain: a real render can never omit it (page.tsx always
-   * supplies `active.id`), and a component that starts branching on it gets
-   * full type coverage on that branch the moment it's written, optional or
-   * not. Revisit if a second screen ever needs page.tsx itself to prove it
-   * always passes one.
+   * type-safety gain: app/[user]/page.tsx's call site still writes
+   * `screen: active?.id`, not `active.id` — `active` is computed from a
+   * ternary that keeps a `DashboardScreen | undefined` shape on purpose (the
+   * `undefined` arm is defense in depth for a module that fails the
+   * now-required `screens` field some other way than the type system, see
+   * `DashboardModule` below), so the one real producer of this prop is
+   * itself written against the optional case, not a case that could drop the
+   * `?`. A component that starts branching on it gets full type coverage on
+   * that branch the moment it's written, optional or not. Revisit if a
+   * second screen ever needs page.tsx itself to prove it always passes one.
    */
   screen?: string
 }
