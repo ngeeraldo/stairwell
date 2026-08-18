@@ -16,6 +16,11 @@ shape from it and you add the inserts. Every value you add must be loudly fake
 (CLAUDE.md > Data safety) — a screen full of them must read as obviously
 synthetic at a glance, e.g. "COFFEE PALACE TEST". users/devone/seed.py is the
 worked example.
+
+If this dashboard's shape holds no free text — a tracker whose rows are counts
+and day keys — there is nowhere to put that marker and the sweep does not ask
+for one. Do NOT invent a junk row to satisfy it; the loudness is carried by
+the SYNTHETIC DATA banner instead. See tests/users/conventions.test.ts.
 """
 
 import os

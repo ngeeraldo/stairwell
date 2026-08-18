@@ -254,8 +254,11 @@ What that means when you are building:
   in `tests/db/userData.test.ts`.
 - The banner follows the WORLD, not the friend's row count, and is bordered,
   tinted chrome rather than a line of text — CLAUDE.md.
-- All synthetic merchants/values are loudly fake (`COFFEE PALACE TEST`) —
-  CLAUDE.md > Data safety.
+- All synthetic merchants/values are loudly fake (`COFFEE PALACE TEST`)
+  **wherever the shape has free text to carry the marker** — a seed producing
+  only numbers and day keys is not asked for one, since a count cannot contain
+  the word and still be a count. `tests/users/conventions.test.ts`'s own
+  `isFreeText` decides it per folder — CLAUDE.md > Data safety.
 - **Every dashboard must render on zero rows.** A friend's first session shows
   their own empty database; that is ordinary, not an error. The scaffold ships
   an empty-render test and `screenshots/screens.ts` carries an empty-state

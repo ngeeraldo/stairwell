@@ -12,7 +12,15 @@ architectural changes; do not relitigate decided items).
 - All dev and testing runs on synthetic data ONLY. Never open, read, or
   query any *.db other than synthetic.db.
 - synthetic.db is regenerated from seed.py at session start — never edit it directly.
-- All synthetic merchants/values are loudly fake ("COFFEE PALACE TEST").
+- All synthetic merchants/values are loudly fake ("COFFEE PALACE TEST")
+  **wherever the shape has free text to carry the marker.** A seed producing
+  only numbers and day keys is not asked for one and cannot supply one: a
+  count or a `2026-08-18` cannot contain the word and still be the thing it
+  is. `tests/users/conventions.test.ts` decides this per folder via its own
+  `isFreeText`, and the rule the marker actually enforces is the fixture one
+  under Testing below — `seed.py` is committed SOURCE, so a real person's
+  merchant list pasted into one is outside .gitignore, the guard hook and
+  Gate F alike, and that sweep is the only thing that would notice.
 - Never log, commit, or write real user data, Plaid tokens, or secrets to
   code, fixtures, tests, or debug output.
 - Derived keys exist only in the in-process TTL map — never serialized,
