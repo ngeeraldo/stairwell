@@ -326,6 +326,11 @@ until the announce step disagreed with it.
 
 ## Step 7 — Build the dashboard
 
+**Read `docs/dashboard-build-rules.md` before you write any code.** It indexes
+every rule governing a `users/<slug>/` build, with a citation on each line.
+This step is the *sequence*; that file is the *substance*, and nothing below
+repeats it.
+
 Confirm you are on the version branch before anything else here — this is the
 step that writes code, and main is the line the droplet pulls:
 
@@ -333,90 +338,76 @@ step that writes code, and main is the line the droplet pulls:
 git branch --show-current               # expect <slug>/v<n>
 ```
 
-**Flow A only:** add the line that `new-dashboard.sh` printed at step 6 to
-`lib/dashboard/registry.ts`. Flow B's line is already there — skip to "Build
-toward `mockup.html`".
+### 7.1 Register the dashboard — Flow A only
+
+Add the line `new-dashboard.sh` printed at step 6 to `lib/dashboard/registry.ts`:
 
 ```ts
 <slug>: () => import('@/users/<slug>/dashboard'),
 ```
 
-A folder with no registry line fails `tests/dashboard/registry.test.ts` — and
-`hasDashboard()` is also what decides whether their chat opens collapsed, so the
-registry line is what "the dashboard shipped" *means* to the app.
+Flow B's line is already there. Why it is load-bearing beyond rendering:
+build-rules §2.
 
-Five entries are required in the folder (`tests/users/conventions.test.ts`
-sweeps for them): `migrations/`, `seed.py`, `queries.ts`, `dashboard.tsx`,
-`tests/`.
+### 7.2 Write the shape
 
-The scaffold ships **no shape**: `migrations/` holds a README and nothing else,
-and the dashboard says "Under construction". Writing
-`migrations/001_initial.sql` from their confirmed spec — and regenerating the
-manifest beside it, the README has the command — is the first real step of the
-build. Their database stays empty until you do, which is correct: an empty
-database is what they have.
+**This is the first real step of the build, and nothing after it means anything
+until it is done.** The scaffold ships no shape: `migrations/` holds a README,
+`seed.py` has no inserts, and the dashboard says "Under construction".
+
+Read `users/$FRIEND/spec.md`, then write the migration its tables need. Which
+file you write depends on what is already in the folder, not on which flow you
+are in — a new friend can arrive on a `v2` branch with an empty `migrations/`:
+
+```bash
+ls users/$FRIEND/migrations/*.sql 2>/dev/null || echo "none yet"
+```
+
+- **None yet** → write `migrations/001_initial.sql`. While 001 has never been
+  applied you can edit it freely; that is the whole window for getting a shape
+  right cheaply.
+- **One or more already there** → write the next number (`002_*.sql`, …), never
+  an edit to an existing file, and **ship a data-survival test in the same
+  commit**: seed the old shape, migrate, assert the rows survived. Rules and
+  reasoning: build-rules §5.
+
+Then regenerate the manifest, which is what proves an applied migration has not
+been edited since. The command lives in their own migrations README:
+
+```bash
+cat users/$FRIEND/migrations/README.md   # the node -e one-liner is in here
+```
+
+Now add `seed.py`'s inserts — loudly fake values only, `COFFEE PALACE TEST` —
+and check both halves landed:
 
 ```bash
 npm run synthetic                        # regenerates every users/*/synthetic.db
 npx vitest run "users/$FRIEND"
 ```
 
-Build toward `mockup.html`. Take feasibility doubts back to the friend via
-`ask-user.ts` (step 4) and build on their answer.
+If `npm run synthetic` prints `<slug>: no shape yet, empty database`, the
+migration did not land, and the tests that just passed proved nothing.
 
-### If the spec has more than one screen
+### 7.3 Build toward `mockup.html`
 
-Take `id`/`title`/`order` for each screen straight from `spec.md`'s own
-`## Screens` section — never invent a second source that could drift from
-what the spec promised (`lib/dashboard/contract.ts`'s `DashboardScreen`
-mirrors `lib/spec/schema.ts`'s `Screen` type exactly):
+`spec.md` + `mockup.html` are the build contract. Feasibility doubts go back to
+the friend rather than into a guess — `scripts/ask-user.ts`, step 4 — and you
+build on their answer.
 
-```ts
-export const screens: DashboardScreen[] = [
-  { id: 'morning', title: 'Morning', order: 1 },
-  { id: 'evening', title: 'Evening', order: 2 },
-]
+Everything about *how* to build lives in build-rules: what a dashboard is handed
+and may not do (§3), multi-screen specs and the tab strip you must not draw
+(§3), entry widgets (§4), which database serves and rendering zero rows (§6).
+**Check §4 early** — a dashboard with a write path is two pieces of work, since
+the widget POSTs to a platform route you also have to write.
 
-export default function Dashboard({ slug, screen }: DashboardProps) {
-  if (screen === 'evening') {
-    return (
-      <section>
-        <h2>Evening</h2>
-      </section>
-    )
-  }
-  return (
-    <section>
-      <h2>Morning</h2>
-    </section>
-  )
-}
-```
-
-**Never render your own tab strip.** `app/[user]/page.tsx` draws it — plain
-server-rendered `<a href="?screen=...">` anchors on the search param, above
-whatever this component returns — reading this exported `screens` array. It
-does that by CALLING this component (`Dashboard(...)`, not `<Dashboard />`),
-so the whole render runs inside the page's own `try`/`catch`; a `<Tabs>`
-component returned from here would be a nested function component, whose body
-React defers to its own render pass, OUTSIDE that catch — a throw there 500s
-the page after the `dashboard_open` metric row has already been written. See
-CLAUDE.md > Dashboard folder conventions for the full reasoning.
-
-`screens` is REQUIRED — an empty array throws at render (`activeScreen`,
-caught into `dashboard_error` rather than a 500) — and it is checked by the
-same sweep as everything else in the folder:
+Re-sweep the folder's shape whenever you change it:
 
 ```bash
 npx vitest run tests/users/conventions.test.ts
 ```
 
-That sweep proves shape only (ids unique, orders are integers, the array is
-non-empty), never that a screen's own content is right, or that the tabs read
-well next to each other. Click through every screen once against `npm run dev`
-before shipping — see "See it on a screen" below.
-
-### See it on a screen
+### 7.4 See it on a screen
 
 No test tells you whether it matches the mockup. Look at it.
 
@@ -426,58 +417,62 @@ No test tells you whether it matches the mockup. Look at it.
 npx tsx scripts/create-local-account.ts "$FRIEND" 'a-local-password-10-plus'
 ```
 
-One line, no browser, no invite. The password is local, disposable and yours;
-it has nothing to do with the one they set on the droplet, and you will type it
-at `/login` every time you come back to this build.
+One line, no browser, no invite. The password is local, disposable and yours; it
+has nothing to do with the one they set on the droplet, and you will type it at
+`/login` every time you come back to this build.
 
-**This script is the whole step** — it replaced an earlier instruction to run
-`npm run build && npm start` and register through the browser. `npm start` sets
-`NODE_ENV=production`, which is the only switch `lib/db/userData.ts` has, so a
-login there took the production branch and `lib/db/migrate.ts` wrote a real
-`users/<slug>/<slug>.db` **onto the laptop** — the one file CLAUDE.md > Data
-safety keeps on the server. `create-local-account.ts` writes account rows and
-nothing on the filesystem, and refuses to run under `NODE_ENV=production` at
-all.
+**Never reach for `npm run build && npm start` to do this instead.** `npm start`
+sets `NODE_ENV=production`, and a login there writes a real
+`users/<slug>/<slug>.db` onto your laptop — the one file that belongs only on
+the server (CLAUDE.md > Data safety). `create-local-account.ts` refuses to run
+under production at all. If one is already sitting there from an older run,
+Gate F blocks your next commit and prints the fix:
 
-If one is already sitting there from an older run, **Gate F** blocks your next
-commit and prints the fix: `rm users/<slug>/<slug>.db*` — with the `*`, because
-`-wal` and `-shm` hold the same rows.
+```bash
+rm users/<slug>/<slug>.db*               # the * matters: -wal and -shm hold the same rows
+```
 
-**Then, every time** — `npm run dev`, log in at `/login` as the slug. You land
-on `/<slug>`: their dashboard, reading `users/<slug>/synthetic.db`, under the
-**SYNTHETIC DATA** banner. Anything the dashboard's entry widget writes goes to
+**Then, every time:**
+
+```bash
+npm run dev                              # then log in at /login as the slug
+```
+
+You land on `/<slug>`: their dashboard, reading `users/<slug>/synthetic.db`,
+under the **SYNTHETIC DATA** banner. Anything the entry widget writes goes to
 that same file, so the loop is honest — type a value, save, see it. Keep
 `mockup.html` open beside it and iterate.
 
-A freshly scaffolded folder has no migrations, so its `synthetic.db` is
-**empty** and the banner sits above a dashboard with no numbers under it. That
-is expected until you write `001_initial.sql` and re-run `npm run synthetic`.
-
-**More than one screen?** The tab strip only appears once `screens` has two or
-more entries — click each tab, or go straight to `/<slug>?screen=<id>` for the
-one you are iterating on.
+More than one screen? The tab strip only appears once `screens` has two or more
+entries — click each tab, or go straight to `/<slug>?screen=<id>` for the one
+you are iterating on. Click through every screen once before you ship.
 
 If a login under `npm run dev` looks like it did not stick, reload — it is the
 cold-route artifact described in `docs/local-dev.md`, not your code.
 
-**If their dashboard has a write path, budget for a platform route.** A
-dashboard gets a read-only handle and can never write. Exactly two things write
-to a friend's real database: `lib/db/migrate.ts`, which creates it and changes
-its SHAPE at unlock, and a platform route, which writes ROWS into the shape it
-finds. A friend who logs anything needs their own route alongside
-`app/api/users/[user]/walk/route.ts`; it is not a refactor of that one, and it
-is where the four ordered auth checks live.
-
-### Write the build notes
+### 7.5 Write the build notes
 
 Before you ship, write `users/$FRIEND/notes/v$V.md`. `notes/README.md` in their
 folder holds the template and says which sections the friend sees.
 
-It is the only record of what actually shipped and why — `spec.md` is
-overwritten by the next pull and records what was *asked for*. Step 9 speaks
-from this file and refuses without it.
+Step 9 speaks from this file and refuses without it. Never put their data in it
+— it is committed to the repo (build-rules §2).
 
-Never put their data in it. It is committed to the repo.
+### 7.6 Commit the build
+
+Step 8 merges this branch. It does not pick up anything you left uncommitted:
+
+```bash
+git status --short                       # review first: nothing stray, no *.db
+git add -A                               # or name the paths, if the tree holds other work
+git commit -m "Build $FRIEND's dashboard v$V"
+```
+
+Gate B wants a test under `users/$FRIEND/tests/` for a change under that folder,
+and one under `tests/` if you also wrote a platform route. Gate C typechecks.
+Gate F blocks the commit outright while a non-synthetic database sits under
+`users/`, and has no skip. Committing in smaller pieces as you go is fine — the
+only rule is that nothing is left behind when you reach step 8.
 
 ---
 
@@ -597,9 +592,10 @@ git branch -d "$FRIEND/v$V"     # -d: git refuses the delete if the merge never 
 
 Versions 2, 3, … are **Flow B** in the table at the top: they confirm a new
 whole-surface spec in chat, and you run 0 → 4 → 5 → 6 → 7 → 8 → 9 again on a
-fresh `<slug>/v<n>` branch. `pull-spec.sh` overwrites the pair, step 7 skips the
-scaffold and the registry line, and everything else is the same work as the
-first time.
+fresh `<slug>/v<n>` branch. `pull-spec.sh` overwrites the pair, step 6 skips the
+scaffold and step 7 skips the registry line, and everything else is the same
+work as the first time — including a migration, which at v2 is the next number
+rather than `001` (step 7.2).
 
 The announce script tracks versions, so the second run announces v2 and stays
 quiet about v1.
@@ -670,7 +666,7 @@ harness: `docs/local-dev.md`.
 |---|---|
 | `no confirmed spec for '<slug>'` on pull | They have drafts but pressed confirm on none. Correct refusal — check the Spec tab in `/admin`. |
 | Pull fails with `Refusing to run: PLATFORM_DB is not set` | `.env` on the far side doesn't set it — `pull-spec.sh` sources `.env` itself before calling `export-spec.ts`, so this points at `.env`, not at the command you typed. `export-spec.ts` has no fallback (see its header): it refuses rather than guessing, so this can no longer come back as a spec that quietly *looks* synthetic — only as a loud failure naming the variable. |
-| Their dashboard says **Under construction** | The folder was scaffolded but `migrations/001_initial.sql` has not been written. Expected between step 7's scaffold and the build. |
+| Their dashboard says **Under construction** | The folder was scaffolded but `migrations/001_initial.sql` has not been written. Expected between step 6's scaffold and step 7.2, and it is what step 7.2 exists to fix. |
 | A friend cannot log in, and ntfy says a migration failed | The session was refused rather than served over a half-migrated shape. The alert carries the slug and migration number; the server log has the error. Their `<slug>.backup.db` holds the pre-migration copy. |
 | "This dashboard failed to load", permanently | Something read *file existence* as *has data*. Existence means **holds at least one table** — every friend has a file from day one. |
 | Deploy aborted, site still fine | Tests failed before the restart. The old process is untouched. |
