@@ -1,15 +1,15 @@
 // users/run8/tests/dashboard.test.ts
 //
-// SCAFFOLD TESTS. Everything here is about the folder being wired up, not
-// about run8's dashboard, because that has not been designed yet. Replace
-// these as you build — but keep the empty-database one, whatever else changes.
+// What the component renders, over the two databases that actually occur: an
+// empty one (a friend's first morning) and one with history.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as React from 'react'
+import type { UserDb } from '@/lib/db/userDb'
 import Dashboard, { screens } from '@/users/run8/dashboard'
 import { emptyDbFromMigrations } from '@/tests/support/userMigrations'
 
 // JSX compiles to React.createElement, which this component's module expects
-// to find globally — it is a server component rendered by calling it, not by
+// to find globally — it is a server component rendered by CALLING it, not by
 // mounting it, so nothing else brings React into scope.
 beforeEach(() => {
   vi.stubGlobal('React', React)
@@ -18,68 +18,96 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('users/run8', () => {
-  it('says it is not built yet', () => {
-    const db = emptyDbFromMigrations('run8')
-    try {
-      const json = JSON.stringify(
-        Dashboard({ slug: 'run8', db, today: '2026-01-01', timeZone: 'UTC' }),
-      )
-      expect(json).toContain('Under construction')
-      expect(json).toContain('run8')
-    } finally {
-      db.close()
-    }
+const TODAY = '2026-08-16' // a Sunday, so a full Mon–Sun week is in range
+
+function render(db: UserDb, today = TODAY): string {
+  return JSON.stringify(Dashboard({ slug: 'run8', db, today, timeZone: 'UTC' }))
+}
+
+function tap(db: UserDb, day: string, delta: number, times = 1): void {
+  const insert = db.prepare('INSERT INTO pee_events (day, at, delta) VALUES (?, ?, ?)')
+  for (let i = 0; i < times; i++) insert.run(day, 1, delta)
+}
+
+describe('users/run8 dashboard', () => {
+  let db: UserDb
+
+  beforeEach(() => {
+    db = emptyDbFromMigrations('run8')
+  })
+  afterEach(() => {
+    db.close()
   })
 
-  it('declares its placeholder screen — take a real id/title from spec.md once one exists', () => {
-    // `DashboardModule.screens` is required (lib/dashboard/contract.ts,
-    // task 23), so a scaffold must export one even before a spec confirms
-    // real ids/titles — this pins dashboard.tsx's own placeholder export.
-    // Once ./scripts/pull-spec.sh writes a real spec.md, replace this with
-    // the id/title from its own `## Screens` section instead, the way
-    // users/run3/dashboard.tsx and users/run4/dashboard.tsx do — never a
-    // second, invented source.
-    expect(screens).toEqual([{ id: 'morning', title: 'Morning', order: 1 }])
+  it('declares the screen spec.md confirmed', () => {
+    // The id and title are the spec's own words (`### \`tracker\` — Bathroom
+    // count`), never a second source that could drift from what was confirmed.
+    expect(screens).toEqual([{ id: 'tracker', title: 'Bathroom count', order: 1 }])
   })
 
   it('renders on an EMPTY database without throwing', () => {
-    // KEEP THIS ONE. There is no synthetic fallback: a friend's first session
-    // renders THEIR database, and it has nothing in it. An empty dashboard is
-    // an ordinary state, not an error (2026-08-15 migrations design, §9), so
-    // anything that reaches for rows[0] without a guard is a defect this
-    // catches — before the friend does, on the first screen they ever see.
-    //
-    // It passes trivially today, because the scaffold reads no data at all.
-    // It stops being trivial the moment you write a query, which is exactly
-    // when it starts earning its place.
-    const db = emptyDbFromMigrations('run8')
-    try {
-      expect(
-        Dashboard({ slug: 'run8', db, today: '2026-01-01', timeZone: 'UTC' }),
-      ).toBeDefined()
-    } finally {
-      db.close()
-    }
+    // KEEP THIS ONE. A friend's first session renders THEIR database, and it
+    // has nothing in it — there is no synthetic fallback standing in front of
+    // it. Anything reaching for rows[0] without a guard is a defect this
+    // catches before the friend does.
+    expect(render(db)).toBeDefined()
+  })
+
+  it('says nothing is logged yet rather than drawing a week of zeroes', () => {
+    // The devtwo mistake, in this dashboard's shape: seven empty bars on a
+    // first morning would report days the friend had no dashboard on as days
+    // they went nowhere (build-rules §6).
+    const html = render(db)
+    expect(html).toContain('Nothing logged yet')
+    expect(html).not.toContain('Averaging')
+  })
+
+  it('still shows a live zero counter on an empty database', () => {
+    // "0 today" at 7am is TRUE and is the cue to press plus — unlike a week of
+    // zero bars, which is a claim about days nobody has any standing to judge.
+    // So the counter renders, and the plus button is present and enabled.
+    const html = render(db)
+    expect(html).toContain('Add one to today')
+  })
+
+  it('disables minus at zero so the button cannot lie about what it will do', () => {
+    // The route refuses a minus that would take a day below zero. If the
+    // control stayed live it would invite a press that silently does nothing.
+    expect(render(db)).toContain('"disabled":true')
+
+    tap(db, TODAY, 1)
+    expect(render(db)).toContain('"disabled":false')
+  })
+
+  it("shows today's net total, not its number of rows", () => {
+    tap(db, TODAY, 1, 5)
+    tap(db, TODAY, -1)
+    // Six rows, net four. A panel counting rows would say 6.
+    expect(render(db)).toContain('4')
+  })
+
+  it('posts each button to the platform count route', () => {
+    // A dashboard never holds a writable handle; the widget POSTs to a route
+    // (build-rules §4). Both buttons, and the delta each carries.
+    const html = render(db)
+    expect(html).toContain('/api/users/run8/count')
+    expect(html).toContain('"value":"-1"')
+    expect(html).toContain('"value":"1"')
+  })
+
+  it('names the weekday from the day it was handed, not from a clock', () => {
+    expect(render(db, '2026-08-16')).toContain('Sunday')
+    expect(render(db, '2026-08-12')).toContain('Wednesday')
+  })
+
+  it('renders both chart views so CSS alone switches between them', () => {
+    // Both are in the markup at once and :has() decides which is visible —
+    // no client component, and therefore no nested function component whose
+    // body would render outside the page's try/catch (build-rules §3).
+    tap(db, TODAY, 1, 3)
+    const html = render(db)
+    expect(html).toContain('run8-view-daily')
+    expect(html).toContain('run8-view-weekly')
+    expect(html).toContain('Averaging')
   })
 })
-
-// ─── what to add as you build ───
-//
-// THE DAY IS THE FRIEND'S. One instant, two zones, two different rendered
-// days — an assertion impossible for an implementation that reads any clock,
-// and one that means the same thing on every machine that runs it. The version
-// of this test that asserted the HOST's calendar date passed on a UTC host
-// while guarding a bug that cost a whole ledger
-// (docs/superpowers/ledgers/friend-timezone.md):
-//
-//   expect(someQuery(db, 'Asia/Tokyo')[0]!.day).toBe('2026-03-15')
-//   expect(someQuery(db, 'America/New_York')[0]!.day).toBe('2026-03-14')
-//
-// THE WRITE PATH, if this dashboard has one — a platform route that inserts
-// into its shape, e.g. app/api/users/[user]/walk/route.ts. Cover it here, not
-// only the read side. The step-6a ledger's headline defect existed ONLY where
-// a write path and a read path met: seed.py always marked today walked, and
-// the dashboard hid its tap control once today was walked, and each half was
-// correct alone. Reviewing either in isolation could not have found it.
-// users/devtwo/tests/write.test.ts is the worked example.
