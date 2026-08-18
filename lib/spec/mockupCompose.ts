@@ -686,52 +686,66 @@ function findTagEnd(html: string, start: number): number {
 }
 
 /**
- * Task 25, fix round 2 (fixed in round 3): drop any `<meta
- * http-equiv="refresh">` tag entirely — not just its `content=` target, the
- * whole tag. A mockup has no legitimate use for a self-navigating preview —
- * it is a static picture of a dashboard screen — so there is nothing here to
- * preserve, unlike `src`/`href`/`url()` where a safe form (a `data:` URI, a
- * relative path) has to survive.
+ * Task 25, fix round 5: drop EVERY `<meta ...>` tag from a fragment,
+ * unconditionally — not just an `http-equiv="refresh"` one. Renamed from
+ * `stripMetaRefresh` because that name promised a DISCRIMINATION (drop the
+ * dangerous kind, keep the rest) this function no longer makes.
  *
- * WHY STRIP IT AT ALL, given every current consumer independently sandboxes
- * the document and a sandboxed frame without `allow-scripts` refuses a meta
- * refresh outright (verified in Chromium: "Refused to execute the redirect…
- * document is sandboxed, and the 'allow-scripts' keyword is not set"). Round
- * 2's original reasoning here was WRONG about the mechanism — it claimed an
- * empty `sandbox=""` blocks a frame from navigating some OTHER browsing
- * context but not itself, and for a meta refresh specifically that is
- * backwards: a meta refresh counts as an "automatic feature," which an empty
- * sandbox blocks outright, full stop. The reviewer caught this; recorded here
- * so the wrong claim is not the one a future reader inherits. The fix is
- * still right, for the reason that actually holds: a source-level strip does
- * not depend on how the document is later rendered. `stripMetaRefresh`'s own
- * contract says the tag is dropped unconditionally, and nothing stops a
- * future caller rendering this composed HTML somewhere the sandbox attribute
- * is absent, forgotten, or weakened — an "it's safe because something else
- * happens to cover it" guard is the accidental-guard pattern this repo has a
- * name for, and this function should do what its own contract says
- * regardless of who else also happens to be doing the job today.
+ * WHY THE WHOLE CLASS, NOT JUST THE DANGEROUS MEMBER — three consecutive
+ * rounds tried to answer "which meta tag is a refresh" by parsing attributes
+ * out of text, and each attempt shipped a working bypass, because each
+ * required deciding correctly and each decision was defeated by a
+ * differently-shaped decoy:
+ *   - Round 2: a `[^>]*` tag-boundary regex stopped at the first `>`,
+ *     including one inside a quoted attribute value, so a crafted `content=`
+ *     hid `http-equiv="refresh"` outside the matched substring entirely.
+ *   - Round 3 fixed the boundary (findTagEnd) but reused the CSS
+ *     backslash-escape rule (findStringEnd) to find a quote's close — HTML
+ *     attribute values have no escape mechanism, so `content="...\"
+ *     http-equiv="refresh">` read as one unterminated value instead of two
+ *     clean attributes, and round 3's fail-open fallback leaked the tag AND
+ *     everything after it.
+ *   - Round 4 fixed BOTH the boundary and the escape rule
+ *     (findHtmlAttrValueEnd) and changed the fallback to fail closed — and
+ *     the reviewer still found a live exploit, this time not in the tag
+ *     boundary at all: the `http-equiv` VALUE-EXTRACTION regex re-scanned
+ *     the correctly-bounded tag's raw text for the first textual
+ *     `http-equiv=`, and `<meta data-note='http-equiv="x"' http-equiv=
+ *     "refresh" content="...">` put a decoy `http-equiv="x"` inside an
+ *     UNRELATED attribute's quoted value, ahead of the real one, so the
+ *     regex matched the decoy, read "x", decided "not refresh," and shipped
+ *     the real redirect untouched.
  *
- * THE BOUND: textual, using findTagEnd (round 3) rather than a `[^>]*` regex
- * — round 2 shipped with the latter, which stops at the FIRST `>` including
- * one inside a quoted attribute value, so `<meta content="0;url=http://evil>x"
- * http-equiv="refresh">` matched only the substring up to that inner `>`,
- * never saw `http-equiv` at all, and the reviewer confirmed the whole live
- * tag survived byte-for-byte. findTagEnd is quote-aware, closing that.
- * Round 3's own findTagEnd was ALSO wrong in a second way, fixed in round 4:
- * it found a quote's close using the CSS backslash-escape rule
- * (findStringEnd), which HTML does not have — see findHtmlAttrValueEnd's own
- * comment for the exact bypass that produced. Matched case-insensitively and
- * tolerant of attribute order, whitespace, and all three HTML
- * attribute-value quoting forms for `http-equiv`'s value, so `<META
- * HTTP-EQUIV = "REFRESH" content="…">` and `<meta content="…"
- * http-equiv='refresh'>` are both caught.
+ * Three rounds, three holes, one root cause: matching text without
+ * attribute-boundary context, where "which attribute is this text actually
+ * inside of" is exactly the question a regex re-scan cannot answer and a
+ * real tokenizer would have to. REMOVING THE DECISION REMOVES THE BUG CLASS.
+ * This is the same reasoning `scopeCss` already follows for a `<style>`
+ * block it cannot fully parse — dropped whole rather than trusted with a
+ * partial understanding of it — applied here to an entire ELEMENT TYPE
+ * rather than a parse failure: a fragment (a `<section>` destined for the
+ * document `<body>`) has NO legitimate use for ANY `<meta>` tag. The
+ * document's charset, viewport, and CSP are supplied once by the frame in
+ * `composeMockup`, never by a fragment. A non-refresh `<meta>` inside a body
+ * section is invalid HTML a browser silently ignores anyway, so dropping one
+ * costs nothing real — the one exception that would matter
+ * (`http-equiv="refresh"`) is exactly the shape being removed. STATED
+ * PLAINLY SO NOBODY REINTRODUCES THE DISCRIMINATION AS AN OPTIMISATION: do
+ * not resurrect an `http-equiv` check here. The lesson of three rounds is
+ * that the check is the bug.
  *
- * FAILS CLOSED on a tag findTagEnd cannot bound (round 4; round 3 failed
- * OPEN here, and that choice is what turned a boundary bug into a full leak
- * — see the branch below for the reasoning).
+ * Reuses findTagEnd (round 4, now well-tested) to find each tag's real
+ * boundary — that part of round 3/4's work was correct and stays. What is
+ * GONE is the `http-equiv` value-extraction regex entirely: there is nothing
+ * left for it to decide.
+ *
+ * FAILS CLOSED on a tag findTagEnd cannot bound (round 4's reasoning stands
+ * unchanged: an unterminated attribute quote has no well-defined boundary to
+ * recover, and the cost of failing open — leaking the rest of the fragment —
+ * is worse than the cost of failing closed — losing an already-malformed
+ * fragment's tail).
  */
-function stripMetaRefresh(html: string): string {
+function stripMetaTags(html: string): string {
   let out = ''
   let i = 0
   const n = html.length
@@ -748,33 +762,14 @@ function stripMetaRefresh(html: string): string {
 
     const closeIdx = findTagEnd(html, open.index)
     if (closeIdx === -1) {
-      // Task 25, fix round 4: FAILS CLOSED — everything from this <meta
-      // onward is DROPPED, not emitted. Round 3 did the opposite ("emit the
-      // rest verbatim rather than guessing"), reasoning that this function
-      // "has no floor to degrade to" the way scopeCss's <style>-block drop
-      // does. That reasoning was itself the bug fix round 4 exists to close:
-      // an unterminated attribute quote is exactly the boundary miscount
-      // round 3's own CSS-escape mistake produced, and failing open turned a
-      // parsing bug into leaking the ENTIRE rest of the fragment — the
-      // worst possible outcome for a function whose only job is closing a
-      // leak channel. Reconsidered rather than kept on the coordinator's
-      // word: a fragment with a truly unterminated attribute quote is
-      // already malformed HTML with no well-defined meaning (a real
-      // browser's own error recovery for it is unpredictable, and emulating
-      // that recovery is not this file's job), so there is no "correct"
-      // remainder to preserve here — dropping is not a lesser-accuracy
-      // fallback, it is the only reading that does not require guessing.
-      // The asymmetry in what each choice costs settles it: failing open
-      // risks a friend's data reaching a third party; failing closed risks a
-      // malformed fragment's tail (which was already broken) rendering
-      // incompletely. A privacy guard takes the second cost every time.
+      // Fails closed — see the doc comment above and round 4's report for
+      // the full reasoning. Nothing from this <meta onward is emitted.
       break
     }
 
-    const tag = html.slice(open.index, closeIdx + 1)
-    const m = /http-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag)
-    const value = (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim().toLowerCase()
-    if (value !== 'refresh') out += tag
+    // No inspection of the tag's contents at all — that inspection is the
+    // bug three rounds kept re-discovering a new shape of. Every <meta> tag
+    // this scanner bounds is simply omitted from the output.
     i = closeIdx + 1
   }
 
@@ -805,11 +800,14 @@ function stripMetaRefresh(html: string): string {
  *     three HTML attribute-value forms — is removed entirely, not blanked to
  *     `src=""`: an empty value on some elements re-requests the CURRENT
  *     document, which would defeat the point.
- *  3. Fix round 2: any `<meta http-equiv="refresh">` tag is dropped whole
- *     (stripMetaRefresh) — a navigation channel the meta CSP does not reach
- *     (CSP's fetch directives do not govern navigations), stripped at the
- *     source rather than relied on a sandbox attribute to block; see that
- *     function's own comment for why.
+ *  3. Fix round 2 (broadened to every `<meta>` tag in round 5): any `<meta>`
+ *     tag is dropped whole (stripMetaTags) — closes a navigation channel the
+ *     meta CSP does not reach (CSP's fetch directives do not govern
+ *     navigations), stripped at the source rather than relied on a sandbox
+ *     attribute to block. Round 5 stopped trying to identify WHICH meta tag
+ *     is the dangerous one after three straight rounds of that decision
+ *     itself shipping a bypass; see that function's own comment for why the
+ *     whole element type goes rather than just `http-equiv="refresh"`.
  *
  * DEFENCE IN DEPTH, NOT THE ONLY LAYER. Fix round 1 (reviewer-found): a
  * string-match blocklist here lost to four encodings that spell a scheme
@@ -851,10 +849,14 @@ function stripMetaRefresh(html: string): string {
  * was correct — it is a NAVIGATION, and CSP's fetch directives (`default-src`,
  * `img-src`, …) genuinely do not govern navigations. Do not assume the meta
  * CSP is doing this job; it is not, by design of the CSP spec, not by an
- * oversight in this file. What closes it is stripMetaRefresh (pass 3, above):
- * the whole tag is dropped at compose time, unconditionally, rather than
- * validated — the same "drop what cannot be made safe" posture as everything
- * else in this file.
+ * oversight in this file. What closes it is stripMetaTags (pass 3, above):
+ * EVERY `<meta>` tag is dropped at compose time, unconditionally — as of
+ * round 5, not just an `http-equiv="refresh"` one — rather than validated.
+ * Three straight rounds tried validating instead (deciding which meta tag
+ * was dangerous) and each shipped a bypass; see stripMetaTags's own comment
+ * for the full history. Dropping the whole element type is the same "drop
+ * what cannot be made safe" posture as everything else in this file, applied
+ * to a class instead of a parse failure.
  */
 function stripExternalReferences(html: string): string {
   const stylesSanitized = html.replace(
@@ -874,9 +876,10 @@ function stripExternalReferences(html: string): string {
       return isSafeReferenceValue(value) ? full : ''
     },
   )
-  // Task 25, fix round 2: the navigation channel neither the attribute pass
-  // above nor the meta CSP reaches — see stripMetaRefresh's own comment.
-  return stripMetaRefresh(attrsSanitized)
+  // Task 25, fix round 2 (broadened in round 5): the navigation channel
+  // neither the attribute pass above nor the meta CSP reaches — see
+  // stripMetaTags's own comment.
+  return stripMetaTags(attrsSanitized)
 }
 
 /**
@@ -921,8 +924,10 @@ function stripExternalReferences(html: string): string {
  *
  * NOT COVERED BY THIS META CSP: a navigation. `default-src`/`img-src` are
  * fetch directives; a `<meta http-equiv="refresh">` redirect is closed
- * separately, by stripMetaRefresh (fix round 2) dropping the tag outright —
- * see its own comment for why this policy cannot be the thing doing that job.
+ * separately, by stripMetaTags (fix rounds 2–5) dropping every `<meta>` tag
+ * outright — see its own comment for why this policy cannot be the thing
+ * doing that job, and for why the strip does not try to identify just the
+ * refresh one.
  */
 export function composeMockup(
   screens: Screen[],

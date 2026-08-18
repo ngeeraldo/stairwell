@@ -481,13 +481,27 @@ describe('composeMockup', () => {
         expect(html).toContain('M</section>')
       })
 
-      it('leaves an unrelated <meta> tag (e.g. viewport) alone — this is a targeted drop, not a sweep of every meta tag', () => {
+      // CHANGED in fix round 5. This used to assert a non-refresh <meta> was
+      // left alone — a TARGETED drop, deciding which meta tag was dangerous
+      // by inspecting its http-equiv value. Round 5 deleted that decision
+      // entirely (see stripMetaTags's doc comment: three straight rounds of
+      // "which meta tag is dangerous" each shipped a bypass), so every
+      // <meta> tag in a fragment is now dropped unconditionally, this one
+      // included. Dropping it is harmless, not merely accepted collateral: a
+      // fragment is a <section> destined for the document <body>, and a
+      // <meta> tag has no valid effect there at all — a browser ignores a
+      // body-level <meta name="description"> outright, so removing it changes
+      // nothing about what a friend sees. The document's real <meta
+      // charset>/<meta viewport>/<meta CSP> are supplied once, by the frame
+      // in composeMockup, never by a fragment.
+      it('also drops an unrelated, non-refresh <meta> tag (e.g. a body-level "description") — harmless, since a browser ignores one there anyway', () => {
         const fragments = new Map([
           ['morning', '<section><meta name="description" content="a panel">M</section>'],
           ['money', '<section>£</section>'],
         ])
         const html = composeMockup(SCREENS, fragments)
-        expect(html).toContain('<meta name="description" content="a panel">')
+        expect(html).not.toContain('<meta name="description"')
+        expect(html).toContain('M</section>')
       })
 
       // Fix round 3 (reviewer-found). A `>` INSIDE a quoted attribute value is
@@ -593,6 +607,103 @@ describe('composeMockup', () => {
         // accepted cost of failing closed on a fragment that is already
         // malformed HTML with no well-defined boundary.
         expect(html).not.toContain('M</section>')
+      })
+    })
+
+    // Fix round 5 (reviewer-found, on round 4's own fix). Rounds 2–4 each
+    // tried to identify WHICH <meta> tag was dangerous by scanning the
+    // bounded tag's text for `http-equiv=`. Round 4 correctly bounded the
+    // tag and correctly parsed attribute VALUES — but the regex that found
+    // `http-equiv` in the first place still just re-scanned raw text with no
+    // idea which ATTRIBUTE that text was actually inside. A decoy attribute
+    // (`data-note='http-equiv="x"'`) carrying the literal string
+    // `http-equiv="x"` inside its own quoted value, positioned before the
+    // real `http-equiv="refresh"`, made the regex match the decoy, decide
+    // "not refresh," and ship the real redirect completely untouched.
+    //
+    // Round 5's answer is not a fourth attempt at the same kind of decision:
+    // stripMetaTags no longer inspects a tag's attributes AT ALL. Every
+    // <meta> tag findTagEnd can bound is dropped, full stop, so there is no
+    // `http-equiv` regex left for a decoy to fool.
+    describe('fix round 5: stop discriminating which <meta> tag is dangerous — strip every one', () => {
+      it("strips the reviewer's exact decoy shape — a fake http-equiv=\"x\" hidden inside an unrelated attribute's quoted value, ahead of the real one", () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><meta data-note=\'http-equiv="x"\' http-equiv="refresh" content="0;url=http://cdn.example.test/leak">M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html.toLowerCase()).not.toContain('refresh')
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).not.toContain('data-note')
+        expect(html).toContain('M</section>')
+      })
+
+      it('strips a ">" hidden inside a SINGLE-quoted attribute value, not just a double-quoted one', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            "<section><meta content='0;url=http://cdn.example.test/leak>x' http-equiv=\"refresh\">M</section>",
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html.toLowerCase()).not.toContain('refresh')
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).toContain('M</section>')
+      })
+
+      it('strips two <meta> tags in the same fragment, in one pass, leaving the surrounding markup intact', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><meta http-equiv="refresh" content="0;url=http://cdn.example.test/leak"><p>hi</p><meta name="description" content="a panel">M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html.toLowerCase()).not.toContain('refresh')
+        expect(html).not.toContain('cdn.example.test')
+        expect(html).not.toContain('data-note')
+        expect(html).not.toContain('<meta name="description"')
+        // Everything that was never inside a <meta> tag survives untouched.
+        expect(html).toContain('<p>hi</p>')
+        expect(html).toContain('M</section>')
+      })
+
+      // Confirms this scanner only ever touches a <meta ...> tag's own
+      // span — ordinary fragment text carrying the exact punctuation the
+      // tag scanner cares about (>, ", ', \) must survive byte-for-byte when
+      // it is not part of any <meta> tag at all.
+      it('leaves ordinary text containing >, ", \', and \\ — none of it inside a <meta> tag — completely untouched', () => {
+        const text = `<p>Say "hi" &amp; 'bye' — 3 &gt; 2, and C:\\path\\here</p>`
+        const fragments = new Map([
+          ['morning', `<section>${text}M</section>`],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).toContain(text)
+      })
+
+      // The other half of the guarantee: the frame's OWN meta CSP (emitted
+      // once, in <head>, by composeMockup itself — see its doc comment) is
+      // completely unaffected by stripMetaTags, which only ever runs on
+      // FRAGMENT text. If it did not survive, hardening the fragments would
+      // have quietly disabled the stronger of the two guards.
+      it('still emits the document-level meta CSP even when a fragment is full of stripped <meta> tags', () => {
+        const fragments = new Map([
+          [
+            'morning',
+            '<section><meta http-equiv="refresh" content="0;url=http://cdn.example.test/leak">M</section>',
+          ],
+          ['money', '<section>£</section>'],
+        ])
+        const html = composeMockup(SCREENS, fragments)
+        expect(html).toContain(
+          '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">',
+        )
       })
     })
   })
