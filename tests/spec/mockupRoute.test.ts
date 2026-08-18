@@ -181,10 +181,43 @@ describe('GET /mockup/<version>', () => {
     // no-store because this is per-account content behind a session, and a
     // shared cache holding one would be the worst kind of leak. The CSP is
     // for the friend who opens the URL directly, with no iframe around it.
+    //
+    // Task 25: `sandbox` restricts scripts/forms/navigation; the three
+    // directives appended after it are the fetch-blocking half — see the
+    // route's own comment for the full rationale (Nico's pinned policy:
+    // default-src 'none'; style-src 'unsafe-inline'; img-src data:).
     await seed()
     const response = await get('1')
     expect(response.headers.get('cache-control')).toBe('no-store')
-    expect(response.headers.get('content-security-policy')).toBe('sandbox')
+    expect(response.headers.get('content-security-policy')).toBe(
+      "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    )
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+  })
+
+  // Task 25's red test: a fixture shaped exactly like the leak this guard
+  // exists for — a stored mockup whose HTML carries a real outbound
+  // reference to a third party. The route does not rewrite the stored bytes
+  // (that is lib/spec/mockupCompose.ts's job, at COMPOSE time, tested in
+  // tests/spec/mockupCompose.test.ts) — its only lever is the header that
+  // tells a friend's own browser not to fetch it. Deleting the appended CSP
+  // directives from the route (reverting to the old bare `'sandbox'` value)
+  // turns this test red, which is the point: a guard nobody has watched fail
+  // is a guard nobody should trust.
+  it('forbids the CSP from allowing an external image the stored mockup carries', async () => {
+    await seed({
+      mockupHtml:
+        '<!doctype html><html><body><img src="https://cdn.example.test/leak.png"></body></html>',
+    })
+    const response = await get('1')
+    const csp = response.headers.get('content-security-policy')
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain("style-src 'unsafe-inline'")
+    expect(csp).toContain('img-src data:')
+    // The negative half, and the one that actually catches a regression: an
+    // `img-src` directive that grew an `https:` source would still contain
+    // `data:` and pass a purely positive assertion.
+    expect(csp).not.toContain('https:')
+    expect(csp).not.toContain('http:')
   })
 })

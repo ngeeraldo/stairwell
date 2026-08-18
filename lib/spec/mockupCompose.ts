@@ -305,6 +305,106 @@ function splitSelectorsTopLevel(prelude: string): string[] {
 }
 
 /**
+ * Task 25: whether a URL-like value — a CSS `url(...)` argument, or an HTML
+ * `src`/`href` attribute value — points somewhere other than an inline
+ * `data:` URI or the document's own relative space.
+ *
+ * A privacy-promise guard, not a styling rule (see the route CSP this
+ * mirrors, `default-src 'none'; img-src data:`): any external fetch is a
+ * channel that can leak transcript-derived mockup content to a third party
+ * when a friend opens their own preview.
+ *
+ * THE BOUND, STATED PLAINLY: this reads the value textually, same posture as
+ * the rest of this file. A bare scheme (`http:`, `https:`, `blob:`,
+ * `javascript:`, anything with a `:` before the first `/`) or a
+ * protocol-relative `//host` is external; a relative path, a `#fragment`, or
+ * an empty value is left alone — there is no request context at compose time
+ * to resolve a relative path against, so treating it as safe is honest, not
+ * a guess.
+ */
+function isExternalReference(value: string): boolean {
+  const v = value.trim()
+  if (v === '' || /^data:/i.test(v)) return false
+  if (/^\/\//.test(v)) return true
+  return /^[a-z][a-z0-9+.-]*:/i.test(v)
+}
+
+/**
+ * Split a declaration list on top-level `;` only — a `;` inside a quoted
+ * string, or inside the parens of a `url(...)` or `var(...)`, does not end a
+ * declaration. Mirrors splitSelectorsTopLevel's bound exactly, applied to `;`
+ * instead of `,`: textual, not a real CSS value parser.
+ */
+function splitDeclarationsTopLevel(body: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let depth = 0
+  let i = 0
+  const n = body.length
+  while (i < n) {
+    const c = body[i]!
+    if (c === '"' || c === "'") {
+      const end = findStringEnd(body, i, c)
+      const stop = end === -1 ? n - 1 : end
+      current += body.slice(i, stop + 1)
+      i = stop + 1
+      continue
+    }
+    if (c === '(') {
+      depth++
+      current += c
+      i++
+      continue
+    }
+    if (c === ')') {
+      depth = Math.max(0, depth - 1)
+      current += c
+      i++
+      continue
+    }
+    if (c === ';' && depth === 0) {
+      parts.push(current)
+      current = ''
+      i++
+      continue
+    }
+    current += c
+    i++
+  }
+  parts.push(current)
+  return parts
+}
+
+/** Whether a declaration's text contains a `url(...)` whose argument is external. */
+function declarationHasExternalUrl(decl: string): boolean {
+  const re = /url\(\s*(['"]?)([\s\S]*?)\1\s*\)/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(decl)) !== null) {
+    if (isExternalReference(m[2] ?? '')) return true
+  }
+  return false
+}
+
+/**
+ * Drop any declaration in a rule body that references an external
+ * `url(...)` — `background(-image)`, `mask-image`, `cursor`,
+ * `list-style-image`, any property a model might reach for — rather than
+ * rewrite the URL: an unscopable rule is exactly the one that would leak, and
+ * this file drops what it cannot make safe (scopeCss's own rule, applied one
+ * level deeper).
+ *
+ * THE BOUND: textual, per declarationHasExternalUrl above. A url() reached
+ * indirectly through a CSS custom property (`--bg: url(http://evil); ...:
+ * var(--bg)`) is not traced — that would need real value resolution this file
+ * does not do.
+ */
+function stripExternalUrlDeclarations(body: string): string {
+  return splitDeclarationsTopLevel(body)
+    .filter((decl) => !declarationHasExternalUrl(decl))
+    .join(';')
+}
+
+/**
  * Scope one selector to `scope`. Returns null for a selector this function
  * will not touch: a bare `html`, `body`, or `:root` (compared case-
  * insensitively, whitespace-trimmed) is the frame's alone to own — a fragment
@@ -359,6 +459,12 @@ function scopeSelectorGroup(prelude: string, scope: string): string | null {
  * selector) is NOT a parse failure and does not trigger this — this function
  * understood that rule's boundaries and chose not to emit it. Only a genuine
  * "I cannot tell where this ends" is.
+ *
+ * Task 25: a surviving rule's body also has any declaration carrying an
+ * external `url(...)` dropped (stripExternalUrlDeclarations) before it is
+ * emitted — the CSS half of hardening the mockup surfaces against external
+ * fetches. That is a value-level drop, unrelated to whether the rule parsed;
+ * it happens after this function has already decided the rule is real.
  */
 function scopeCss(css: string, scope: string): string | null {
   let out = ''
@@ -391,7 +497,12 @@ function scopeCss(css: string, scope: string): string | null {
       out += `${prelude} { ${scopedBody} }\n`
     } else if (!prelude.startsWith('@')) {
       const scopedSelector = scopeSelectorGroup(prelude, scope)
-      if (scopedSelector) out += `${scopedSelector} { ${body} }\n`
+      if (scopedSelector) {
+        // Task 25: a declaration referencing an external url() is dropped
+        // here too, same pass, same all-or-nothing-per-declaration posture —
+        // see stripExternalUrlDeclarations.
+        out += `${scopedSelector} { ${stripExternalUrlDeclarations(body)} }\n`
+      }
       // else: every selector in the group was frame-owned — drop the rule.
     }
     // else: an at-rule this function does not handle (@font-face, @keyframes,
@@ -434,6 +545,54 @@ function scopeFragmentStyles(html: string, screenId: string): string {
 }
 
 /**
+ * Task 25: strip external references from the fragment's own markup — the
+ * `<style>` half of the guard lives in scopeCss/stripExternalUrlDeclarations
+ * above; this is the rest of the document. `default-src 'none'` on the two
+ * serving routes (app/mockup/[version]/route.ts,
+ * app/admin/mockup/[user]/[version]/route.ts) is a header, and a header
+ * cannot reach the ONE surface that matters most: app/[user]/ChatPanel.tsx
+ * renders the friend's own scoped preview with `srcDoc`, not `src`, which is
+ * never served by either route and therefore carries no header at all. This
+ * runs at compose time instead, so the guarantee travels WITH the document —
+ * the route, the srcDoc card, and the admin pane all get it from one place,
+ * the same posture lib/spec/banner.ts takes for the SYNTHETIC banner.
+ *
+ * Two passes, in order:
+ *  1. An inline `style="..."` attribute is a fragment's only way to carry CSS
+ *     OUTSIDE a `<style>` tag, so its declarations get the exact same
+ *     external-url() drop as a `<style>` block's (stripExternalUrlDeclarations)
+ *     — this is not "the CSS guard" and "the HTML guard", it is one guard
+ *     reached from two syntactic positions.
+ *  2. Every `src=`/`href=` attribute whose value is external — a bare scheme
+ *     or a protocol-relative `//` (isExternalReference) — is removed
+ *     entirely, not blanked to `src=""`: an empty value on some elements
+ *     re-requests the CURRENT document, which would defeat the point.
+ *
+ * THE BOUND, STATED PLAINLY. This strips `src=`, `href=`, and `url(...)`
+ * inside `style="..."`. It does NOT strip: `xlink:href` (SVG's own reference
+ * attribute), `<object data=…>`, `<video poster=…>`, `srcset`, a `<meta
+ * http-equiv="refresh" content="…url=…">` redirect, or a CSS custom-property
+ * indirection. These shapes are not in the vocabulary mockup-v4.md asks the
+ * model to draw (`<section>`/`<div>`/`<img>`/inline `<style>`), and adding
+ * cases nothing produces would be exactly the unbounded, ever-growing parser
+ * scopeCss's own doc comment already declines to become. A fragment that DOES
+ * reach for one of them is a real, load-bearing gap in this guard — not
+ * covered here, and not covered by the route CSP either for the srcDoc
+ * surface.
+ */
+function stripExternalReferences(html: string): string {
+  const stylesSanitized = html.replace(
+    /(\sstyle\s*=\s*)(['"])([\s\S]*?)\2/gi,
+    (_full, prefix: string, quote: string, value: string) =>
+      `${prefix}${quote}${stripExternalUrlDeclarations(value)}${quote}`,
+  )
+  return stylesSanitized.replace(
+    /\s(?:src|href)\s*=\s*(['"])([\s\S]*?)\1/gi,
+    (full: string, _quote: string, value: string) => (isExternalReference(value) ? '' : full),
+  )
+}
+
+/**
  * One document from per-screen fragments.
  *
  * `only` scopes it to the screens a patch touched — the friend's preview card.
@@ -443,6 +602,15 @@ function scopeFragmentStyles(html: string, screenId: string): string {
  * A MISSING FRAGMENT THROWS. Composing around a gap would produce a document
  * that looks complete and is silently missing a screen — and for
  * `specs.mockup_html` that document is the build contract.
+ *
+ * Task 25: every fragment also passes through stripExternalReferences here,
+ * after scoping — see that function's doc comment for exactly which
+ * reference shapes are stripped and which are not. This runs for BOTH the
+ * whole-surface document (`specs.mockup_html`, what the two routes serve and
+ * what MockupDialog's iframe loads by `src`) and the scoped `only` document
+ * (`Proposal.preview_html`, what ChatPanel's card renders by `srcDoc`) —
+ * composeMockup is the one place both are built, so it is the one place this
+ * guard needs to live to cover both.
  */
 export function composeMockup(
   screens: Screen[],
@@ -461,7 +629,8 @@ export function composeMockup(
       if (html === undefined) {
         throw new Error(`composeMockup: no fragment for screen "${screen.id}"`)
       }
-      return `<div id="screen-${screen.id}">${scopeFragmentStyles(html, screen.id)}</div>`
+      const scoped = scopeFragmentStyles(html, screen.id)
+      return `<div id="screen-${screen.id}">${stripExternalReferences(scoped)}</div>`
     })
     .join('\n')
 

@@ -329,7 +329,41 @@ describe('the admin mockup route', () => {
     // exactly as misleading in the admin portal.
     expect(html).toContain(BANNER_MARKER)
     expect(html).toContain('COFFEE PALACE TEST')
-    expect(response.headers.get('content-security-policy')).toBe('sandbox')
+    // Task 25: `sandbox` restricts scripts/forms/navigation; the three
+    // directives after it are the fetch-blocking half — see
+    // app/admin/mockup/[user]/[version]/route.ts for the full rationale.
+    expect(response.headers.get('content-security-policy')).toBe(
+      "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    )
+  })
+
+  // Task 25's red test, admin side: a fixture shaped exactly like the leak
+  // this guard exists for — a stored mockup whose HTML carries a real
+  // outbound reference. Nico read this route's response over reading the
+  // route source, so the fixture has to be the thing that would actually
+  // fetch in a browser, not a synthetic assertion about the route's code.
+  it('forbids the CSP from allowing an external image the stored mockup carries', async () => {
+    const { devone } = await seed()
+    const { insertSpec } = await import('@/lib/db/specs')
+    insertSpec(db!, {
+      accountId: devone,
+      conversationId: 'c',
+      promptSha: 'sha',
+      payload: { title: 'x' },
+      mockupHtml:
+        '<!doctype html><html><body><img src="https://cdn.example.test/leak.png"></body></html>',
+      at: 100,
+    })
+
+    const response = await get('devone', '1')
+    const csp = response.headers.get('content-security-policy')
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain('img-src data:')
+    // The negative half of the assertion, and the one that would actually
+    // catch a regression: `img-src data:` alone does not forbid `https:` if
+    // the directive were ever loosened to `img-src data: https:` or similar.
+    expect(csp).not.toContain('https:')
+    expect(csp).not.toContain('http:')
   })
 
   it('404s a non-admin, telling them nothing about whether it exists', async () => {

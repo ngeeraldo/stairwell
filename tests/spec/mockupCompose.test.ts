@@ -272,4 +272,100 @@ describe('composeMockup', () => {
   it('carries the stylesheet, so fragments drawn in different versions match', () => {
     expect(composeMockup(SCREENS, FRAGMENTS)).toContain('.panel')
   })
+
+  // Task 25's red test: the fixture Nico asked for — a fragment carrying an
+  // external `url(...)` and an external `<img src>` in the same document.
+  // This is the shape a route CSP header cannot reach, because
+  // app/[user]/ChatPanel.tsx renders `Proposal.preview_html` (built by this
+  // same composeMockup, via the `only` path) into an iframe with `srcDoc`,
+  // not `src` — no HTTP response, no header. Deleting the
+  // stripExternalReferences call in composeMockup (or the
+  // stripExternalUrlDeclarations call inside scopeCss) turns this test red.
+  describe('Task 25: stripping external references at compose time', () => {
+    it('drops a declaration with an external url() from a <style> block, keeping a safe sibling declaration', () => {
+      const fragments = new Map([
+        [
+          'morning',
+          '<section><style>.tile { background: url(https://cdn.example.test/leak.png); color: red }</style>M</section>',
+        ],
+        ['money', '<section>£</section>'],
+      ])
+      const html = composeMockup(SCREENS, fragments)
+      expect(html).not.toContain('cdn.example.test')
+      expect(html).not.toContain('https:')
+      // The rest of the same declaration block survives — dropping is
+      // per-declaration, not per-rule or per-block.
+      expect(html).toMatch(/#screen-morning[^{]*\.tile[^}]*color:\s*red/)
+    })
+
+    it('keeps an external url() call that is confined to a comment or unrelated text unaffected, but drops a real inline data: url() image unchanged', () => {
+      const fragments = new Map([
+        [
+          'morning',
+          '<section><style>.tile { background: url(data:image/png;base64,AAAA); color: red }</style>M</section>',
+        ],
+        ['money', '<section>£</section>'],
+      ])
+      const html = composeMockup(SCREENS, fragments)
+      // A data: URL is exactly what img-src data: exists to allow — it must
+      // survive, or this guard would break every legitimate inline image.
+      expect(html).toContain('url(data:image/png;base64,AAAA)')
+    })
+
+    it('drops an external url() reached through an inline style="" attribute outside any <style> tag', () => {
+      const fragments = new Map([
+        [
+          'morning',
+          '<section style="background: url(https://cdn.example.test/leak.png); color: red">M</section>',
+        ],
+        ['money', '<section>£</section>'],
+      ])
+      const html = composeMockup(SCREENS, fragments)
+      expect(html).not.toContain('cdn.example.test')
+      // The safe sibling declaration in the same style="" attribute survives.
+      expect(html).toContain('color: red')
+    })
+
+    it('strips an external <img src>, and a protocol-relative // src, entirely — not blanked to src=""', () => {
+      const fragments = new Map([
+        [
+          'morning',
+          '<section><img src="https://cdn.example.test/leak.png" alt="x"><img src="//cdn.example.test/leak2.png" alt="y">M</section>',
+        ],
+        ['money', '<section>£</section>'],
+      ])
+      const html = composeMockup(SCREENS, fragments)
+      expect(html).not.toContain('cdn.example.test')
+      // Removed outright, not left as an empty attribute — src="" would
+      // re-request the current document on some elements.
+      expect(html).not.toContain('src=""')
+      expect(html).toContain('alt="x"')
+      expect(html).toContain('alt="y"')
+    })
+
+    it('keeps a data: <img src>, and a same-document relative src, untouched', () => {
+      const fragments = new Map([
+        [
+          'morning',
+          '<section><img src="data:image/png;base64,AAAA" alt="ok"><a href="#section-2">jump</a>M</section>',
+        ],
+        ['money', '<section>£</section>'],
+      ])
+      const html = composeMockup(SCREENS, fragments)
+      expect(html).toContain('src="data:image/png;base64,AAAA"')
+      expect(html).toContain('href="#section-2"')
+    })
+
+    it('strips an external <link href> (a stylesheet or web font url a model was asked never to use, made a guarantee here)', () => {
+      const fragments = new Map([
+        [
+          'morning',
+          '<section><link rel="stylesheet" href="https://fonts.example.test/font.css">M</section>',
+        ],
+        ['money', '<section>£</section>'],
+      ])
+      const html = composeMockup(SCREENS, fragments)
+      expect(html).not.toContain('fonts.example.test')
+    })
+  })
 })
