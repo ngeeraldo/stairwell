@@ -564,15 +564,33 @@ how: it posts a file's bytes verbatim, with no model call, so what lands in
 the transcript is byte-for-byte what you read.
 
 ```bash
-# 1. Draft it and read it. Writes nothing.
-ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND"
+# 1. Draft it. Writes nothing to the transcript. `tee` prints the sentence AND
+#    saves it, so what you read is literally the bytes you are about to send.
+ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND" \
+  | tee "/tmp/announce-$FRIEND.txt"
 
-# 2. Happy with EXACTLY that sentence? Save it to a local file — paste it,
-#    don't retype it — then copy it to the droplet and send it verbatim.
-pbpaste > "/tmp/announce-$FRIEND.txt"   # or your editor of choice
+# 2. Optional — change the wording by editing the file. What is in it is what
+#    gets posted.
+#    $EDITOR "/tmp/announce-$FRIEND.txt"
+
+# 3. Send those exact bytes. No model call, no re-draft.
 scp "/tmp/announce-$FRIEND.txt" "$DROPLET:/tmp/announce-$FRIEND.txt"
 ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND --send --body-file /tmp/announce-$FRIEND.txt"
 ```
+
+**Nothing passes through the clipboard, and that is the point.** This step used
+to say `pbpaste > "/tmp/announce-$FRIEND.txt"`, which made the announcement
+depend on the clipboard still holding the draft. On 2026-08-18 it did not: it
+held *this file's own command block*, because copying the commands is what you
+have just done at that point in the process. Three shell commands went into a
+friend's chat, and `transcripts` rejects DELETE, so they are still there.
+
+The draft now goes straight from the command that produced it into the file
+that sends it. `announce-deploy.ts` writes the body to **stdout** and every
+other line — the `DRY RUN` notice, the `## Open` warning — to **stderr**, so
+`tee` captures the sentence alone while you still see the rest on screen.
+`--body-file` also refuses a body containing `ssh `, `scp `, `npx tsx` or the
+variables above, as a backstop for a file assembled some other way.
 
 The draft is written from `notes/v$V.md` — what shipped, plus any in-spirit
 adjustment worth mentioning — and from what they have already been told, so it

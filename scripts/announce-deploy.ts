@@ -96,6 +96,25 @@ export type AnnounceDeps = {
 }
 
 /**
+ * Substrings that mean a --body-file holds a terminal transcript, not prose.
+ *
+ * A crude check on purpose. It cannot know what a friend's announcement should
+ * say, so it only refuses text that could not plausibly BE one — and the cost
+ * of a false positive is rewording a sentence, while the cost of a miss is a
+ * permanent row in a transcript that rejects DELETE.
+ *
+ * Every entry is drawn from the paste that made this necessary: the runbook's
+ * own step-9 command block, sent to a friend on 2026-08-18 because `pbpaste`
+ * read a clipboard that still held it.
+ *
+ * This is the SECOND of two independent guards, and the weaker one. The first
+ * is that stdout now carries only the body, so the documented flow never puts
+ * a human hand between the draft and the send. This exists for the case where
+ * someone assembles the file some other way.
+ */
+const SHELL_MARKERS = ['ssh ', 'scp ', 'npx tsx', '$DROPLET', '$STAIRWELL', '$FRIEND']
+
+/**
  * The whole command, as a function, so every branch is testable without a
  * subprocess. The CLI below parses argv, calls resolveClient and this
  * function, and prints; every DECISION it makes (which client, which exit
@@ -157,6 +176,18 @@ export async function runAnnounce(
         message: `could not read --body-file '${opts.bodyFile}': ${
           error instanceof Error ? error.message : String(error)
         }`,
+        warnings,
+      }
+    }
+    const shellish = SHELL_MARKERS.find((marker) => body.includes(marker))
+    if (shellish !== undefined) {
+      return {
+        kind: 'body_file_invalid',
+        message:
+          `--body-file '${opts.bodyFile}' contains ${JSON.stringify(shellish)}, ` +
+          'which reads as a shell command rather than a message to a friend. ' +
+          'Nothing was sent. Re-draft and pipe it through `tee` — ' +
+          'docs/runbook.md step 9.',
         warnings,
       }
     }
@@ -395,8 +426,24 @@ if (process.argv[1]?.endsWith('announce-deploy.ts')) {
     try {
       const out = await runAnnounce({ db, client, now: Date.now }, { slug, send, plain, bodyFile })
       for (const w of out.warnings) console.error(`warning: ${w}`)
-      if (out.body) console.log(`\n${out.body}\n`)
-      console.log(out.message)
+      // STDOUT CARRIES THE BODY AND NOTHING ELSE. Everything else — warnings
+      // above, the status line below — goes to stderr, so that
+      //
+      //   ssh ... announce-deploy.ts <slug> | tee /tmp/announce-<slug>.txt
+      //
+      // produces a file holding exactly the sentence, ready to hand straight
+      // back to --body-file. docs/runbook.md step 9 depends on this split.
+      //
+      // It used to print the status line here too, which is why that step told
+      // you to route the draft through the CLIPBOARD instead. That cost a real
+      // friend a real message: on 2026-08-18 the clipboard still held the
+      // runbook's own command block, `pbpaste` wrote three shell commands into
+      // the file, and --body-file posted them verbatim into an append-only
+      // transcript that rejects DELETE. The clipboard was ambient state
+      // standing between reading a sentence and sending it; this removes the
+      // reason it was ever there.
+      if (out.body) console.log(out.body)
+      console.error(out.message)
       const code = exitCodeFor(out.kind)
       if (code !== 0) process.exit(code)
     } finally {

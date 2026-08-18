@@ -1,5 +1,5 @@
 // tests/scripts/announceDeploy.test.ts
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -280,6 +280,64 @@ describe('runAnnounce', () => {
       expect(transcriptCount(db)).toBe(0)
     })
 
+    // ── The 2026-08-18 paste ────────────────────────────────────────────
+    //
+    // Step 9 used to route the draft through the CLIPBOARD (`pbpaste`), so
+    // sending the sentence you read depended on the clipboard still holding
+    // it. It did not: it held the runbook's own command block, which is what
+    // a person has just copied at that moment in the process. Three shell
+    // commands went into a friend's transcript, which rejects DELETE.
+    //
+    // The real fix is that stdout now carries only the body, so `tee` can
+    // replace the clipboard entirely. These cover the backstop.
+    it('refuses a body that is a pasted terminal command, and sends nothing', async () => {
+      const path = writeBody(
+        'pbpaste > "/tmp/announce-$FRIEND.txt"\n' +
+          'scp "/tmp/announce-$FRIEND.txt" "$DROPLET:/tmp/announce-$FRIEND.txt"\n' +
+          'ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND --send"\n',
+      )
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false, bodyFile: path })
+
+      expect(out.kind).toBe('body_file_invalid')
+      // Nothing reached the transcript. This is the assertion that matters:
+      // the exact byte sequence above is permanently in a real friend's chat.
+      expect(transcriptCount(db)).toBe(0)
+    })
+
+    it('names the marker it tripped on, so the refusal is actionable', async () => {
+      const out = await runAnnounce(deps, {
+        slug: 'sam',
+        send: true,
+        plain: false,
+        bodyFile: writeBody('ssh nowhere'),
+      })
+      expect(out.message).toContain('ssh ')
+      expect(out.message).toContain('step 9')
+    })
+
+    it('refuses on a DRY RUN too, before anyone is tempted to add --send', async () => {
+      const out = await runAnnounce(deps, {
+        slug: 'sam',
+        send: false,
+        plain: false,
+        bodyFile: writeBody('npx tsx scripts/announce-deploy.ts sam'),
+      })
+      expect(out.kind).toBe('body_file_invalid')
+    })
+
+    it('lets ordinary prose through, including prose about the dashboard', async () => {
+      // The guard must not cost a legitimate announcement. Nothing here trips
+      // a marker, and the words are the kind a real announcement uses.
+      const path = writeBody(
+        "Your tracker's up — tap counter for today, and the week's graph " +
+          'toggles between daily totals and weekly averages.',
+      )
+      const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false, bodyFile: path })
+
+      expect(out.kind).toBe('announced')
+      expect(lastTranscriptBody(db)).toContain("Your tracker's up")
+    })
+
     it('refuses to combine with --plain, since both skip drafting differently', async () => {
       const path = writeBody('irrelevant')
       const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: true, bodyFile: path })
@@ -510,6 +568,78 @@ describe('scripts/announce-deploy.ts (CLI)', () => {
       return { status: e.status ?? 1, output: `${e.stdout}${e.stderr}` }
     }
   }
+
+  /** Like `run`, but keeps the two streams apart — which is the whole point. */
+  function runSplit(
+    args: string[],
+    env: Record<string, string | undefined> = {},
+  ): { status: number; stdout: string; stderr: string } {
+    const childEnv = { ...process.env, ...env }
+    if (!('PLATFORM_DB' in env)) delete childEnv.PLATFORM_DB
+    delete childEnv.ANTHROPIC_API_KEY
+    // spawnSync, not execFileSync: the latter RETURNS stdout and surfaces
+    // stderr only by throwing, so a successful run has no way to hand back
+    // what went to stderr — which is exactly the stream under test here.
+    const result = spawnSync('npx', ['tsx', SCRIPT, ...args], {
+      cwd: REPO,
+      env: childEnv,
+      encoding: 'utf8',
+    })
+    return {
+      status: result.status ?? 1,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+    }
+  }
+
+  // ── STDOUT IS THE BODY AND NOTHING ELSE ──────────────────────────────────
+  //
+  // docs/runbook.md step 9 pipes a dry run through `tee` to produce the file
+  // it then hands to --body-file. That only works if the status line stays off
+  // stdout. It did not, which is why the step routed the draft through the
+  // clipboard instead, which is how three shell commands ended up in a real
+  // friend's append-only transcript on 2026-08-18.
+  //
+  // A subprocess, not a console spy: the defect is in which STREAM a line
+  // lands on, and an in-process spy on console.log/console.error would assert
+  // the split this file already knows about rather than the one a shell sees.
+  it('keeps the status line off stdout, so `| tee` captures only the sentence', async () => {
+    const target = join(dir, 'platform.db')
+    const database = openPlatformDb(target)
+    let id: number
+    try {
+      id = await createAccount(database, {
+        slug: 'clitest',
+        role: 'user',
+        password: 'TEST-CLI-ANNOUNCE',
+      })
+      const specId = insertSpec(database, {
+        accountId: id,
+        conversationId: 'conv-cli',
+        promptSha: 'sha-cli-0001',
+        payload: currentPayload(),
+        mockupHtml: MOCKUP,
+        at: 1_000,
+      })
+      confirmSpec(database, { specId, accountId: id, at: 1_500 })
+    } finally {
+      database.close()
+    }
+
+    const bodyPath = join(dir, 'reviewed.txt')
+    writeFileSync(bodyPath, 'Your tracker is live.')
+
+    const { stdout, stderr } = runSplit(['clitest', '--body-file', bodyPath], {
+      PLATFORM_DB: target,
+    })
+
+    // Exactly the sentence — this is what `tee` would write to the file that
+    // --body-file reads back.
+    expect(stdout.trim()).toBe('Your tracker is live.')
+    expect(stdout).not.toContain('DRY RUN')
+    // The status line still reaches a human, on the other stream.
+    expect(stderr).toContain('DRY RUN')
+  })
 
   it('refuses to run when PLATFORM_DB is not set', () => {
     const { status, output } = run(['clitest', '--plain'])
