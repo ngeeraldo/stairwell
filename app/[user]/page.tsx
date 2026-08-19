@@ -9,19 +9,6 @@ import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { readDeviceClass, readTimeZone } from '@/lib/metrics/deviceClass'
 import { dayKey } from '@/lib/time/dayKey'
-import {
-  hasConfirmedSpecBelow,
-  newestSpec,
-  readConfirmations,
-  specByVersion,
-  type SpecRecord,
-} from '@/lib/db/specs'
-import { SpecShapeError, type Screen } from '@/lib/spec/schema'
-import { readStoredSpec, type StoredSpec } from '@/lib/spec/stored'
-import { affectedScreens, composeMockup } from '@/lib/spec/mockupCompose'
-import { readScreenMockups } from '@/lib/db/screenMockups'
-import type { Proposal } from '@/lib/spec/author'
-import type { PlatformDb } from '@/lib/db/platform'
 import type { UserDb } from '@/lib/db/userDb'
 import type { DeviceClass } from '@/lib/metrics/deviceClass'
 import { WrongKeyError } from '@/lib/db/encryptedUserDb'
@@ -66,64 +53,6 @@ import { Shell } from './Shell'
  */
 function dashboardErrorKind(error: unknown): 'wrong_key' | 'error' {
   return error instanceof WrongKeyError ? 'wrong_key' : 'error'
-}
-
-/**
- * The base version's own screens, for affectedScreens's `base` argument — or
- * null when there genuinely is none (a v1 card, where `based_on_version` is
- * null and every screen is affected anyway) or the base row cannot be read as
- * the current shape (a legacy base, which carries no ids to resolve against —
- * see currentVersionBlock in lib/spec/author.ts for the same distinction made
- * at authoring time).
- *
- * FIX ROUND 1, FINDING 1: this used to be skipped (base passed as `null`
- * unconditionally) on the reasoning that the result was "narrower, never
- * wrong". That reasoning missed `remove_panel`: its ONLY possible
- * contribution to `affectedScreens` is the screen the panel was removed FROM
- * (`was(op.id)` in mockupCompose.ts), which needs `base` to resolve at all.
- * With `base` null, a patch made only of `remove_panel` ops produced an EMPTY
- * `affected` list — which falls through to the WHOLE `mockup_html`, not a
- * narrower document. That is wider than what the live card showed, on the one
- * surface where the friend is deciding, and the exact D9 genus this task
- * exists to close: the same card answering differently depending on when it
- * is read.
- */
-function baseScreensFor(db: PlatformDb, accountId: number, basedOnVersion: number | null): Screen[] | null {
-  if (basedOnVersion === null) return null
-  const baseRecord = specByVersion(db, accountId, basedOnVersion)
-  if (!baseRecord) return null
-  const baseStored = readStoredSpec(baseRecord.payload)
-  return baseStored.kind === 'version' ? baseStored.version.screens : null
-}
-
-/**
- * The scoped preview for the PAGE-LOAD card, mirroring what lib/spec/author.ts
- * computes at authoring time — same two ingredients (affectedScreens,
- * composeMockup), from the STORED record instead of a fresh model call, and
- * now the same THREE ingredients: `base` is fetched via `based_on_version`
- * (baseScreensFor above), exactly as author.ts fetches it via `currentSpec` at
- * authoring time, so a reload cannot disagree with what the live card showed.
- *
- * A MISSING FRAGMENT THROWS inside composeMockup, by design — right for
- * authoring (ledger D7: a mockup call that returned but left a hole must not
- * silently become a complete-looking document) and WRONG for a render: a
- * version confirmed before this branch existed has no `spec_screen_mockups`
- * rows at all, and a page render must not fail over a preview. Any failure
- * here — that throw, or anything else, including a corrupt or unreadable base
- * row — degrades to `mockup_html`, the same whole document `dashboard.tsx`'s
- * build contract already renders correctly.
- */
-function pageLoadPreview(db: PlatformDb, accountId: number, newest: SpecRecord, stored: StoredSpec): string {
-  if (stored.kind !== 'version') return newest.mockup_html
-  try {
-    const base = baseScreensFor(db, accountId, stored.version.based_on_version)
-    const affected = affectedScreens(base, stored.version.screens, stored.version.ops)
-    if (affected.length === 0) return newest.mockup_html
-    const fragments = readScreenMockups(db, newest.id)
-    return composeMockup(stored.version.screens, fragments, affected)
-  } catch {
-    return newest.mockup_html
-  }
 }
 
 async function dashboardRegion(
@@ -400,67 +329,6 @@ export default async function UserSpace({
   const timeZone = await readTimeZone()
   const day = { today: dayKey(Date.now(), timeZone), timeZone }
 
-  const newest = newestSpec(getDb(), accountId)
-  // Which delivery promise the card rendered from the record makes. Computed
-  // HERE, from the record, because ChatPanel is a client component with no
-  // database and the alternative — the agent remembering to say it — is
-  // exactly what the fixed chrome exists to replace.
-  //
-  // The question is "is the card on screen this account's FIRST dashboard",
-  // which is NOT "has this account ever confirmed anything" — see
-  // hasConfirmedSpecBelow. Asking the unbounded version meant a friend who
-  // pressed "Build this" on their first card and then RELOADED saw that same
-  // card promise their whole first dashboard within a few hours. The card's
-  // own comment says a friend reloading afterwards should still see the
-  // timeframe; it has to be the right one.
-  //
-  // Bounded by the displayed proposal's version, so: nothing confirmed yet →
-  // true; only this card confirmed → still true, it really is their first
-  // dashboard; an earlier spec confirmed with a newer proposal above it →
-  // false. No proposal at all means no card to promise anything about, and
-  // true is the honest default for an account with no dashboard yet.
-  const first =
-    newest === undefined || !hasConfirmedSpecBelow(getDb(), accountId, newest.version)
-
-  // Rendered from the record on load, so a friend who closes the tab
-  // mid-decision comes back to the same card, still confirmable.
-  let proposal: (Proposal & { confirmed: boolean }) | undefined
-  if (newest) {
-    try {
-      // readStoredSpec, not either parser directly: it is the one place
-      // that decides which shape a row is, and the card renders whichever
-      // arm comes back. A row written before the unified loop can never be
-      // rewritten (specs rejects UPDATE), so both arms are permanent.
-      const stored = readStoredSpec(newest.payload)
-      proposal = {
-        id: newest.id,
-        version: newest.version,
-        at: newest.at,
-        // Carried on the card itself, not only handed to ChatPanel as a prop:
-        // every card must answer for itself, because a card proposed later in
-        // this same session arrives through the `proposal` NDJSON line with no
-        // re-render behind it (see Proposal.first). The prop stays as the
-        // fallback for a streamed card that somehow carries none.
-        first,
-        spec: stored,
-        mockup_html: newest.mockup_html,
-        // The scoped preview for THIS card — see pageLoadPreview. Degrades to
-        // mockup_html (the whole document) for a legacy row and for any
-        // version with no stored fragments, rather than ever throwing here.
-        preview_html: pageLoadPreview(getDb(), accountId, newest, stored),
-        confirmed: newest.confirmed_at !== null,
-      }
-    } catch (error) {
-      // specs is append-only, so a corrupt row can never be deleted to make
-      // this go away. Degrade to no card rather than let the throw become a
-      // 500 for the friend — anything OTHER than the expected shape error
-      // still escapes, because that's a bug this page has no business
-      // hiding.
-      if (!(error instanceof SpecShapeError)) throw error
-      proposal = undefined
-    }
-  }
-
   // The shell's one boolean (onboarding-ux-spec.md S3). "Deployed" is exactly
   // "is this slug in lib/dashboard/registry.ts" — a line there is what makes a
   // dashboard render at all, so nothing else in the system can disagree.
@@ -522,16 +390,9 @@ export default async function UserSpace({
           initial={readTranscript(getDb(), accountId).map((row) => ({
             role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
             body: row.body,
-            // The stored timestamp, so this row can be ordered against the
-            // proposals and confirmations merged alongside it.
+            // The stored timestamp — the order the turns actually happened in.
             at: row.at,
           }))}
-          proposal={proposal}
-          // Read from `spec_confirmations`, so a decision made last week still
-          // shows where it was made rather than only as a card's state
-          // (onboarding ledger D5a). Nothing is written to render this.
-          confirmations={readConfirmations(getDb(), accountId)}
-          first={first}
         />
       }
       content={

@@ -18,9 +18,15 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-/** Every file under app/ that renders an iframe. */
+/**
+ * Every file under app/ that renders an iframe.
+ *
+ * `app/[user]/ChatPanel.tsx` used to be one of these — the proposal card's
+ * scaled-down `srcDoc` preview. The card, and its iframe, are gone: the agent
+ * now says in words that it has what it needs, and nothing on the friend's
+ * screen renders model-authored HTML any more.
+ */
 const SITES = [
-  'app/[user]/ChatPanel.tsx',
   'app/[user]/MockupDialog.tsx',
   'app/admin/[user]/page.tsx',
 ]

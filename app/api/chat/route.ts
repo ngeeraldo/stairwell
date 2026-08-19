@@ -204,24 +204,14 @@ export async function POST(request: Request) {
             db,
             now: Date.now,
           }),
-          authorSpec: (proposeInput) => {
-            // Emitted here, not before runTurn: the waiting state is only
-            // true once the reply has finished streaming and the authoring
-            // call actually starts — this callback fires exactly then.
-            if (!request.signal.aborted) {
-              controller.enqueue(line({ authoring: true }))
-            }
-            return authorSpecImpl({ db, client: turnClient, now: Date.now, context }, proposeInput)
-          },
+          authorSpec: (proposeInput) =>
+            authorSpecImpl({ db, client: turnClient, now: Date.now, context }, proposeInput),
         },
         {
           accountId: session.account_id,
           sessionId: sessionId!,
           currentState,
           body,
-          // A real transition, forwarded as it happens: the spec came back and
-          // validated, and the slow half — drawing the preview — is starting.
-          onStage: (stage) => controller.enqueue(line({ stage })),
           // The exchange is committed. Sent before authoring begins, so a
           // connection that dies during the preview still leaves the browser
           // knowing the reply was saved — which is the difference between
@@ -240,17 +230,6 @@ export async function POST(request: Request) {
           },
         },
       ).finally(stopHeartbeat)
-
-      // Only when a proposal was ATTEMPTED. An ordinary turn — the tool was
-      // never called — emits neither line, distinct from an attempt that
-      // failed.
-      if (!request.signal.aborted) {
-        if (outcome.proposal) {
-          controller.enqueue(line({ proposal: outcome.proposal }))
-        } else if (outcome.proposalFailed) {
-          controller.enqueue(line({ proposal_error: true }))
-        }
-      }
 
       // THE TURN ITSELF FAILED, upstream, and the friend needs to be told which
       // kind of nothing they got. Without this line the panel could only fall

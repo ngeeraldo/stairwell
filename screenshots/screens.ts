@@ -228,99 +228,85 @@ export const SCREENS: Screen[] = [
     ],
   },
   {
+    // RETIRED. There is no more card: app/[user]/ChatPanel.tsx no longer
+    // renders one, no button, no confirm control. The agent now says in
+    // words that it has what it needs, and the build lands silently in the
+    // background — s3-shell-placeholder already shows what a friend's chat
+    // looks like with no card, since that is now every state.
+    //
+    // `live: false` rather than deleted: tests/scripts/shots.test.ts's
+    // "covers every surface this branch ships" check names this id
+    // explicitly, so a future removal of the check is the thing that should
+    // decide whether the row goes too, not a screens.ts edit alone.
     id: 'card-proposal',
     path: '/SLUG',
     routeFile: 'app/[user]/page.tsx',
     state: 'friend-new',
-    live: true,
+    live: false,
     assertions: [
-      'Card anatomy, top to bottom: version label, title, one-line description, then the scaled mockup preview, then a COLLAPSED "Details", then the confirm control.',
-      'The mockup preview renders actual content — not a blank white box, which is what a broken /mockup route looks like.',
-      'The delivery line is present under the buttons.',
-      'At 375 the preview scales to the column instead of overflowing it.',
+      'RETIRED — the proposal card this screen photographed no longer renders anywhere.',
+      'See s3-shell-placeholder for what a friend\'s chat looks like now: turns only, no card, no confirm control.',
     ],
   },
   {
-    // Task 19: the card used to show the friend's ENTIRE dashboard to review a
-    // one-word relabel. This is the screen that proves the fix — a friend with
-    // an already-confirmed two-screen dashboard (Home, Money) asks for a
-    // one-word relabel on Money, and the card that streams back previews ONLY
-    // the Money screen, not Home too.
-    //
-    // WHAT THIS SHOT CANNOT TELL YOU, same caveat as mockup-document just
-    // below and for the same reason: the fragment HTML here is the SEED
-    // FIXTURE from scripts/shots.ts ('friend-tweak'), not model output — the
-    // harness never calls the live API (CLAUDE.md > Testing). This guards the
-    // scoping mechanism (composeMockup + affectedScreens, wired through
-    // ChatPanel's srcDoc) and the visual result of narrowing it; it cannot
-    // prove a real model call scopes correctly, only that a scoped document
-    // reaching this component renders as a scoped preview rather than a
-    // broken one.
+    // RETIRED, same reason as card-proposal just above: the scoped preview
+    // this screen proved (task 19's composeMockup + affectedScreens, wired
+    // through ChatPanel's srcDoc) was a property of the CARD, which is gone.
     id: 'card-proposal-scoped',
     path: '/SLUG',
     routeFile: 'app/[user]/ChatPanel.tsx',
     state: 'friend-tweak',
-    live: true,
+    live: false,
     assertions: [
-      'The small preview shows ONLY the Money screen — one panel, "Dining". It does NOT also show the Home screen (the "Streak" panel), which is what the OLD unscoped card would have included.',
-      'The panel reads "Dining", not "Eating out" — the just-renamed label, proving this is the NEW version\'s preview and not a stale or cached one.',
-      'The card still reads as a complete, presentable mini dashboard on its own — not a cut-off fragment, not blank, not obviously missing something.',
-      'At 375 the scoped preview scales to the column the same as any other card (compare against card-proposal).',
-      'The "View full screen" control is still present — opening it is a SEPARATE screen (card-fullscreen) that intentionally shows the whole two-screen dashboard, not this scoped view.',
+      'RETIRED — the scoped small preview this screen photographed lived on the proposal card, which no longer renders.',
+      'The scoping mechanism itself (composeMockup + affectedScreens) still exists server-side; nothing on the friend\'s screen shows its output any more.',
     ],
   },
   {
-    // THE SCREEN THAT WAS NEVER PHOTOGRAPHED, and the omission is why a
-    // defect survived a gate built for exactly this class of thing.
-    //
-    // The wait is the longest-lived screen in the product — about a minute,
-    // more than any other single view a friend sits in front of — and it had
-    // no shot. Every part of it was unit-tested and correct: the server
-    // reports both stages, the panel reads them, the sentence changes. What
-    // no test in this repo could see was that the bar under the sentence was
-    // the same fixed width in both stages, so the thing a person actually
-    // watches never moved. Nico read it as a progress bar stuck at a third
-    // and never getting to two thirds, which is precisely what it was.
+    // RETIRED. The two-stage progress bar this pair photographed
+    // (AuthoringWait in app/[user]/ChatPanel.tsx) is gone along with the
+    // card it served — a friend waiting for a reply now sees the ordinary
+    // thinking indicator (ThinkingRow) and nothing more, the same as any
+    // other turn.
     id: 'wait-writing-spec',
     path: '/SLUG',
     routeFile: 'app/[user]/ChatPanel.tsx',
     state: 'friend-new',
     act: 'wait-writing-spec',
-    live: true,
+    live: false,
     assertions: [
-      'It says "Writing the spec…" — the first half.',
-      'THE AGENT\'S REPLY IS READABLE ABOVE THE WAIT, all of it. It is the only thing there is to read for the next minute, and the list anchors while the assistant turn is still empty — so a reply that grew out of view would leave a friend staring at a bar with nothing to do.',
-      'The bar is roughly a THIRD of the column and clearly unfinished. Read it as a stranger would: does it look like something in progress, or like something stopped?',
-      'The bar sits in a visible track, so its width reads as a position rather than as a floating block of some arbitrary size.',
-      'At 375 the bar spans the column without overflowing it.',
+      'RETIRED — the two-stage progress bar this screen photographed ("Writing the spec…") no longer exists.',
+      'A friend waiting for a reply now sees only the ordinary thinking indicator, unchanged from any other turn.',
     ],
   },
   {
+    // RETIRED alongside wait-writing-spec, its pair.
     id: 'wait-drawing-preview',
     path: '/SLUG',
     routeFile: 'app/[user]/ChatPanel.tsx',
     state: 'friend-new',
     act: 'wait-drawing-preview',
-    live: true,
+    live: false,
     assertions: [
-      'It says "Drawing the preview…" — the second and much longer half.',
-      'THE BAR IS VISIBLY FURTHER ALONG THAN IN wait-writing-spec. Open the two shots side by side: if the bar is in the same place, the screen is lying about progress for most of a minute, which is the whole reason this pair exists.',
-      'It has NOT reached the end. A full bar is a claim that the work is finished.',
+      'RETIRED — the two-stage progress bar this screen photographed ("Drawing the preview…") no longer exists.',
+      'There is no second stage to show: authoring still runs server-side, but nothing on the wire reports it any more.',
     ],
   },
   {
+    // RETIRED. "View full screen" was the card's own control, opening the
+    // SAME session-authed /mockup/<version> route the admin portal's
+    // MockupDialog still reads from (see admin-mockup below, which keeps
+    // covering that route and that dialog component). With no card there is
+    // no friend-facing control left that opens it.
     id: 'card-fullscreen',
     path: '/SLUG',
     routeFile: 'app/[user]/page.tsx',
     state: 'friend-new',
     act: 'open-fullscreen',
-    live: true,
+    live: false,
     assertions: [
-      'The dialog fills the viewport at both widths, with one close X top-right and nothing else.',
-      'The page behind is dimmed and inert; there is no second overlay and no nesting.',
-      'The mockup inside is the same document as the card preview, at full width.',
-      'AT 1440: the mockup uses the width. It is NOT a phone-width column centred in empty space — panels sit beside each other where the content supports it, and prose stays at a readable measure rather than running the full width.',
-      'AT 375: the same document reads as a single-column phone dashboard, nothing clipped, no horizontal scroll.',
+      'RETIRED — "View full screen" was a control on the proposal card, which no longer renders.',
+      'The dialog component and the route it reads from are unchanged and still covered by admin-mockup, the admin portal\'s own use of the same affordance.',
     ],
   },
   {

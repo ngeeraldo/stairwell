@@ -106,11 +106,6 @@ export type TurnInput = {
   authoringSignal: AbortSignal
   onText: (text: string) => void
   /**
-   * Reports the crossing from writing the spec to drawing the preview, so the
-   * panel can say which half of the wait a friend is in. See AuthorInput.
-   */
-  onStage?: (stage: 'mockup') => void
-  /**
    * Fires once the assistant row and its chat_turn metric are COMMITTED, before
    * authoring starts.
    *
@@ -490,7 +485,6 @@ export async function runTurn(
         // NOT input.signal — see authoringSignal's docstring. Passing the
         // request's signal here is what made a wifi hop destroy a proposal.
         signal: input.authoringSignal,
-        onStage: input.onStage,
       })
     } catch {
       // Defense in depth. authorSpec's own contract (lib/spec/author.ts) is

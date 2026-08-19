@@ -2,36 +2,16 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-// Type-only: lib/spec/author.ts pulls in server-only modules (better-sqlite3
-// et al), and lib/spec/stored.ts pulls in the validators. `import type` is
-// erased at compile time regardless of bundler, so none of that reaches the
-// client bundle — a value import here would.
-import type { Proposal } from '@/lib/spec/author'
-import type { StoredSpec } from '@/lib/spec/stored'
-// A VALUE import, not type-only: withBanner (and withCsp, final review
-// Important 3) run in the browser now (see the srcDoc comment on SpecCard
-// below), and this module is safe to bundle client-side — pure string
-// handling, no server-only dependency, unlike lib/spec/author.ts and
-// lib/spec/stored.ts above.
-import { withBanner, withCsp } from '@/lib/spec/banner'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { buildTimeline } from '@/lib/chat/timeline'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
-import { MockupDialog } from './MockupDialog'
 
 type Turn = {
   role: 'user' | 'assistant'
   body: string
   /**
-   * When this turn happened, so it can be ordered against proposals and
-   * confirmations (lib/chat/timeline.ts). Transcript rows bring the stored
-   * value; a turn created by send() stamps Date.now(), which is naturally
-   * later than anything already on screen.
+   * When this turn happened. Transcript rows bring the stored value; a turn
+   * created by send() stamps Date.now(), which is naturally later than
+   * anything already on screen.
    */
   at: number
   /**
@@ -43,14 +23,13 @@ type Turn = {
   /**
    * True once the server has confirmed this exchange is committed — the
    * `{saved:true}` line, sent the moment the assistant row and its chat_turn
-   * metric land and before authoring starts.
+   * metric land.
    *
    * `interrupted` without this means nothing was written and a retry is the
-   * right move. `interrupted` WITH this means the reply is durable and only the
-   * preview was lost — and since lib/chat/turn.ts no longer ties authoring to
-   * the connection, that preview is probably still being drawn. Retrying there
-   * would re-send a message that is already in an append-only table, for a
-   * reply that already exists.
+   * right move. `interrupted` WITH this means the reply is durable and only
+   * the connection dropped afterward — retrying there would re-send a
+   * message that is already in an append-only table, for a reply that
+   * already exists.
    */
   saved?: boolean
   /**
@@ -136,91 +115,25 @@ function updateLastTurn(turns: Turn[], patch: (last: Turn) => Turn): Turn[] {
 }
 
 /**
- * What a card holds instead of a payload: the tagged union readStoredSpec
- * returns, either arm.
- *
- * An ALIAS, not a second declaration of the same union. lib/spec/stored.ts is
- * "the ONE place anything discriminates a pre-unification row from a current
- * one"; re-spelling `{kind:'version'} | {kind:'legacy'}` here would give that
- * discrimination a second home, free to drift, in the one file that renders
- * both arms to a person.
- */
-export type CardSpec = StoredSpec
-
-/** The version arm's payload shape, derived from CardSpec rather than
- * imported separately, so it cannot end up naming a different type from the
- * one this card is actually handed. */
-type SpecVersionShape = Extract<CardSpec, { kind: 'version' }>['version']
-
-/** What SpecCard needs. `confirmed` is optional because a proposal freshly
- * streamed in from the `proposal` NDJSON line has none yet — only the record
- * read back from the DB (page.tsx) carries a definite value.
- *
- * `first` is re-declared OPTIONAL, against a server type that requires it,
- * because on this side of the wire it genuinely can be missing: a streamed
- * card is JSON.parse output cast to this type, and nothing validates it.
- * `undefined` is falsy, so a bare `first ? … : …` would silently render the
- * change wording — the wrong promise — for a first dashboard. Typing it as
- * possibly-absent forces the read site to say what happens then (it falls back
- * to the page's own server-computed answer, see SpecCard). */
-export type CardProposal = Omit<Proposal, 'first'> & {
-  first?: boolean
-  confirmed?: boolean
-}
-
-/**
- * Everything ChatPanel holds about the transcript and the proposal flow,
- * gathered into one object so it can be updated through ONE pure reducer
- * (applyLine/finishTurn below) rather than four independent setStates that
- * each have to remember which of the others to also touch.
+ * Everything ChatPanel holds about the transcript, gathered into one object
+ * so it can be updated through ONE pure reducer (applyLine/finishTurn below)
+ * rather than scattered setStates.
  *
  * This split exists for testability as much as for tidiness: ChatPanel
  * itself uses hooks, so it cannot be called directly in a test (no dispatcher
- * outside a real render) — the way SpecCard could be, which is why SpecCard
- * was pulled out as its own export in the first place. Pulling the STATE
- * TRANSITIONS out too, as plain functions with no React in them, means the
- * interesting logic (a proposal line superseding a card, an interrupted turn
- * coexisting with a proposal, only the newest proposal being live) is
- * directly testable without a DOM, instead of living entirely inside a
- * component nothing in this test suite can drive.
+ * outside a real render). Pulling the STATE TRANSITIONS out as plain
+ * functions with no React in them means the interesting logic is directly
+ * testable without a DOM, instead of living entirely inside a component
+ * nothing in this test suite can drive.
+ *
+ * There used to be more here — a proposal card's state, a two-stage
+ * authoring wait, a confirm-attempt failure flag. All of it drove a preview
+ * card and its buttons, which are gone: the agent now says in words that it
+ * has what it needs, and the build lands without anyone confirming
+ * anything. `turns` is what's left.
  */
 export type PanelState = {
   turns: Turn[]
-  proposals: CardProposal[]
-  /** True from the `authoring` line until a proposal/proposal_error line (or
-   * the turn simply ending) resolves the wait. */
-  authoring: boolean
-  /**
-   * WHICH HALF of the wait we are in, when there is one.
-   *
-   * Two stages, both real: 'spec' from the moment the agent decides to propose,
-   * 'mockup' from the moment the spec has validated and the drawing call
-   * starts. The second is where most of the minute goes, which is exactly why
-   * saying so is worth the wiring — a friend who knows they are on the slow
-   * part is waiting, and a friend who does not is wondering whether it broke.
-   *
-   * Deliberately NOT a percentage. There is no honest token-level progress for
-   * either call, and a bar that crawls to 80% and stops is worse than no bar.
-   * The wait DOES advance a bar between these two values (see AuthoringWait),
-   * which is not the same thing: it has one position per real milestone and
-   * moves only when the server reports one.
-   */
-  authoringStage: 'spec' | 'mockup' | null
-  proposalError: boolean
-  /**
-   * Confirmations, as timeline events (onboarding ledger D5a). Seeded from
-   * `spec_confirmations` on page load and appended when a confirm succeeds in
-   * this session, so the event appears where the friend actually decided
-   * rather than where the card was offered — which can be days earlier.
-   */
-  confirmations: { version: number; at: number }[]
-  /** Set when a confirm attempt resolved false (see attemptConfirm) — a
-   * plain, brief failure shown on the live card. Cleared by startTurn (a
-   * new turn starting) and by applyLine's proposal branch (a new card
-   * arriving) — fix round 2: without both of those, a stale failure from an
-   * OLDER, already-superseded card kept showing on a brand-new one that
-   * nobody had touched yet. */
-  confirmError: boolean
 }
 
 /**
@@ -233,10 +146,6 @@ export type PanelState = {
 export function applyLine(state: PanelState, raw: unknown): PanelState {
   const message = raw as {
     t?: string
-    authoring?: boolean
-    stage?: 'mockup'
-    proposal?: CardProposal
-    proposal_error?: boolean
     saved?: boolean
     turn_failed?: boolean
   }
@@ -248,12 +157,8 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
     }
   }
   if (message.turn_failed) {
-    // Clears any wait too: the turn is over, and a spinner left running under
-    // a failure message is a second lie on the same screen.
     return {
       ...state,
-      authoring: false,
-      authoringStage: null,
       turns: updateLastTurn(state.turns, (last) => ({ ...last, failed: true })),
     }
   }
@@ -266,74 +171,17 @@ export function applyLine(state: PanelState, raw: unknown): PanelState {
       turns: updateLastTurn(state.turns, (last) => ({ ...last, saved: true })),
     }
   }
-  if (message.stage === 'mockup') {
-    // Only meaningful while a wait is on screen: a stray stage line with no
-    // authoring in flight must not conjure one.
-    return state.authoring ? { ...state, authoringStage: 'mockup' } : state
-  }
-  if (message.authoring) {
-    return { ...state, authoring: true, authoringStage: 'spec' }
-  }
-  if (message.proposal) {
-    // Appended, not assigned: the card already on screen (from an earlier
-    // turn or the page-load prop) becomes superseded rather than
-    // disappearing — see CardProposal's docstring and withLiveness below.
-    // Independent of `done`: on the no-usable-text path the route can emit
-    // this line with no following {done:true}. finishTurn (below) decides
-    // the interrupted marker separately, so a proposal card and "interrupted
-    // — not saved" can coexist honestly on the same turn — neither branch
-    // here knows or cares whether `done` ever arrives.
-    return {
-      ...state,
-      authoring: false,
-      authoringStage: null,
-      proposalError: false,
-      // Fix round 2: a confirmError from an OLDER card must not bleed onto
-      // this brand-new one — nobody has touched it yet, so "That didn't go
-      // through" would be a false failure at the exact decision moment this
-      // feature exists to make honest.
-      confirmError: false,
-      proposals: [...state.proposals, message.proposal],
-    }
-  }
-  if (message.proposal_error) {
-    return { ...state, authoring: false, authoringStage: null, proposalError: true }
-  }
   return state
 }
 
 /**
- * What starts a new turn: append the pending user/assistant exchange, and
- * clear anything that belonged to the PREVIOUS turn or a previous confirm
- * attempt so it can't bleed into this one — a stale authoring wait, a stale
- * proposal_error, or (fix round 2) a stale confirmError left over from a
- * confirm attempt on a now-irrelevant card. Pure: the literal function
- * send() calls to begin a turn.
+ * What starts a new turn: append the pending user/assistant exchange. Pure:
+ * the literal function send() calls to begin a turn.
  */
 export function startTurn(state: PanelState, text: string, at: number): PanelState {
   return {
     ...state,
     turns: [...state.turns, ...pendingTurns(text, at)],
-    authoring: false,
-    authoringStage: null,
-    proposalError: false,
-    confirmError: false,
-  }
-}
-
-/**
- * A turn the product started: an empty assistant turn and nothing else.
- *
- * No user turn, because nobody typed. Pure and exported for the same reason
- * startTurn is — the interesting state transitions are testable without a DOM.
- */
-export function startAgentTurn(state: PanelState, at: number): PanelState {
-  return {
-    ...state,
-    turns: [...state.turns, { role: 'assistant', body: '', at }],
-    authoring: false,
-    authoringStage: null,
-    proposalError: false,
   }
 }
 
@@ -344,14 +192,12 @@ export function startAgentTurn(state: PanelState, at: number): PanelState {
  * for how a test recreates a full turn from these two building blocks.
  */
 export function finishTurn(state: PanelState, done: boolean): PanelState {
-  if (done) return { ...state, authoring: false, authoringStage: null }
+  if (done) return state
   // Design spec section 6.1. The partial stays visible and is labelled, so
   // the screen agrees with the transcript instead of quietly showing text
-  // that was never saved. Any proposal card added by applyLine during this
-  // same turn is untouched — see applyLine's proposal branch.
+  // that was never saved.
   return {
     ...state,
-    authoring: false,
     turns: updateLastTurn(state.turns, (last) => ({ ...last, interrupted: true })),
   }
 }
@@ -383,8 +229,7 @@ function isDoneLine(raw: unknown): boolean {
  * and it is send() itself — a hook-bearing component body this suite
  * cannot drive — that decides when to call finishTurn with the accumulated
  * value. That orchestration is the residual gap; everything else this
- * function does is the literal code send() runs. See task-11-report.md's
- * residual-mutations list for the full accounting.
+ * function does is the literal code send() runs.
  */
 export function applyTurn(state: PanelState, lines: unknown[]): PanelState {
   let next = state
@@ -400,615 +245,21 @@ export function applyTurn(state: PanelState, lines: unknown[]): PanelState {
 }
 
 /**
- * Pair every proposal with whether IT is the one that's currently
- * confirmable — only the newest is (design spec 5.2). Pulled out of the
- * render entirely, rather than computed inline in JSX, so that rule has
- * real test coverage: JSX inside a hook-bearing component can't be driven
- * without a DOM, so any logic left there is untested by construction.
- * ChatPanel's render does nothing more than map over this function's
- * output.
- */
-export function withLiveness(
-  proposals: CardProposal[],
-): { proposal: CardProposal; live: boolean }[] {
-  const newestId = proposals.reduce<number | undefined>(
-    (max, p) => (max === undefined || p.id > max ? p.id : max),
-    undefined,
-  )
-  return proposals.map((proposal) => ({ proposal, live: proposal.id === newestId }))
-}
-
-/** The exact request confirming a proposal makes. Exported so the request
- * shape (method, url, and — this is the specific thing a wrong key would
- * silently break — the `specId` body key the server expects) has real
- * coverage: a test can call this directly rather than re-implementing a
- * POST body inside a test double. */
-export function confirmRequest(specId: number): { url: string; init: RequestInit } {
-  return {
-    url: '/api/spec/confirm',
-    init: {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ specId }),
-    },
-  }
-}
-
-/**
- * Attempt to confirm a proposal, resolving to whether it worked. NEVER
- * resolves to nothing and never throws: a 400/404/409 and a network failure
- * both resolve `false`, so the caller (ChatPanel's onConfirm) always has an
- * explicit fact to act on instead of a swallowed non-event at the single
- * most important moment in the product.
- */
-export async function attemptConfirm(specId: number, fetchImpl: typeof fetch): Promise<boolean> {
-  try {
-    const { url, init } = confirmRequest(specId)
-    const response = await fetchImpl(url, init)
-    return response.ok
-  } catch {
-    return false
-  }
-}
-
-// Fixed chrome, not agent prose, for the same reason it always was: this is
-// the most load-bearing promise in the pilot and it is made at the exact
-// moment the friend decides, so it cannot depend on a model remembering to
-// say it. What is NEW is that there are two of them.
-//
-// Under the unified loop the same card carries a one-word relabel and a
-// first dashboard. One sentence cannot be honest about both — "tomorrow
-// morning" over-promises the wait on a small change and contradicts what the
-// agent's own prompt says (small changes land within a few hours). Selected
-// by whether this account has a confirmed version yet, computed server-side.
-//
-// Both are still passive and name nobody — the agent is not the one building,
-// and naming Nico turns the surface into a middleman — and neither promises a
-// notification, because nothing can deliver one (architecture-overview.md
-// line 49: delivery nudges stay out-of-app). Constants, not copy typed twice,
-// so the confirmed and not-yet-confirmed cards can never drift apart on the
-// one line that matters most.
-export const DELIVERY_FIRST =
-  "Your dashboard gets built as soon as possible — at the latest, it'll be here tomorrow morning."
-export const DELIVERY_CHANGE =
-  'This gets built as soon as possible — small changes usually land within a few hours.'
-
-/** The title, from whichever arm this card holds. Pulled out because the
- * heading and the iframe's accessible name both need it, and a card that
- * announced a different preview from the one it shows would be worse than
- * either mistake alone. */
-function cardTitle(spec: CardSpec): string {
-  return spec.kind === 'version' ? spec.version.title : spec.payload.title
-}
-
-/**
- * The whole surface, screen by screen.
- *
- * Every screen's panels, not just the first screen's: a friend whose change
- * touched a second screen must be able to see it on the card they are about
- * to press "Build this" on. Each panel shows its title and its `display` —
- * what will be on the screen — rather than `intent`, which is the reason for
- * it and reads as the agent explaining itself back to them.
- *
- * Sorted by `order`, exactly as the admin pane sorts it
- * (app/admin/[user]/page.tsx) and as renderSpecMarkdown sorts it before
- * writing spec.md. Nothing stops a model emitting screens in an order other
- * than `order`, and if this mapped the raw array the friend approving a
- * proposal and the person building it would be reading the same proposal in
- * two different sequences.
- */
-function VersionBody({ version }: { version: SpecVersionShape }) {
-  const screens = [...version.screens].sort((a, b) => a.order - b.order)
-  return (
-    <ul>
-      {screens.map((screen) => (
-        <li key={screen.id}>
-          <strong>{screen.title}</strong>
-          <ul>
-            {screen.panels.map((panel) => (
-              <li key={panel.id}>
-                <strong>{panel.title}</strong> — {panel.display}
-              </li>
-            ))}
-          </ul>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-/**
- * The moment a promise gets made.
- *
- * `live` is false for a superseded card: it stays visible in the scrollback
- * so the conversation reads as a history of what was offered, but it carries
- * no buttons. The server enforces the same rule (409), because a stale tab is
- * not bound by what this rendered.
- *
- * `first` selects the delivery promise, and is computed server-side from the
- * record — this component has no database and must not guess. It has no
- * default for the same reason: a defaulted `first` is a wrong promise made
- * silently.
- *
- * The card's OWN answer wins over the prop, and that ordering is the fix for
- * a real contradiction: the prop is computed once, during a page render, for
- * the card that existed then. A card proposed later in the same conversation
- * arrives through the `proposal` NDJSON line with no re-render behind it, so
- * the prop describes a different card — and a friend who confirmed their first
- * dashboard yesterday and asked for a one-word relabel today was told the
- * relabel would be here "at the latest, tomorrow morning". Every card the
- * server emits now carries its own answer (lib/spec/author.ts); the prop is
- * what a card that somehow carries none falls back to, which is right for the
- * page-load card and never worse than guessing.
- *
- * `confirmError` is honest, brief failure feedback for a confirm attempt
- * that did not succeed (§Important 3, fix round 1) — no invented promise,
- * just the fact that it didn't go through. Only meaningful (and only ever
- * passed true) on the live, unconfirmed card: nothing failed on a
- * superseded or already-confirmed one.
- */
-export function SpecCard({
-  proposal,
-  live,
-  busy,
-  first,
-  confirmError,
-  onConfirm,
-}: {
-  proposal: CardProposal
-  live: boolean
-  busy: boolean
-  first: boolean
-  confirmError?: boolean
-  onConfirm: (specId: number) => void
-}) {
-  const { spec } = proposal
-  const title = cardTitle(spec)
-  // One expression, read twice below, so the confirmed and unconfirmed halves
-  // of this card cannot disagree about what was promised.
-  const delivery = (proposal.first ?? first) ? DELIVERY_FIRST : DELIVERY_CHANGE
-  /**
-   * The scoped document this card's small preview draws — see
-   * Proposal.preview_html (lib/spec/author.ts) for what "scoped" means.
-   *
-   * `?? proposal.mockup_html` is the SAME defect shape as `first` just above,
-   * ledger D9. FIX ROUND 1, FINDING 3: `preview_html` is required on
-   * `CardProposal` too — `Omit<Proposal, 'first'>` touches nothing but
-   * `first` (see CardProposal's own doc comment) — so this is not a type-
-   * level gap the way `first` is. The gap is at RUNTIME: a card that streamed
-   * in through the `proposal` NDJSON line is `JSON.parse` output cast to that
-   * type, and nothing validates it, so the field can be absent despite what
-   * the type claims. The compiler has no way to flag that — an edit that
-   * dropped this fallback would compile clean regardless.
-   * tests/chat/panel.test.ts is what actually catches its removal.
-   */
-  // withCsp added final review, Important 3: composeMockup (lib/spec/
-  // mockupCompose.ts) puts the fetch-blocking meta CSP into every document
-  // IT builds, but three fallbacks — pageLoadPreview's legacy/no-fragments/
-  // composition-failure arms and the `?? proposal.mockup_html` right here —
-  // can hand this boundary a document composeMockup never touched, drawn by
-  // a pre-branch prompt with no such guarantee. Same idempotent shape as
-  // withBanner, so a document that already carries the tag never gets a
-  // second.
-  const previewHtml = withCsp(withBanner(proposal.preview_html ?? proposal.mockup_html))
-  return (
-    /*
-      CARD ANATOMY, top to bottom, exactly as onboarding-ux-spec.md lists it:
-      version label + title + one-line description → scaled-down live mockup
-      preview → collapsed "Details" disclosure → confirm control.
-      
-      The order is the argument. The visual carries the pitch, so it comes
-      before the words; the behavioural spec is present but collapsed, because
-      "the mockup renders synthetic numbers and cannot communicate behaviour —
-      and what the user confirms is the whole versioned spec, not just the
-      picture."
-      
-      NO CARD STATE MACHINE. Nothing here is stored per card: what renders is a
-      conditional over spec-version data the loop already has. Confirmed →
-      label; else newest → confirm control; else → an inert card, version label
-      only. Correctness lives server-side, where a confirm on any non-newest
-      version is rejected with a 409.
-    */
-    <section
-      aria-label="Proposed dashboard"
-      data-spec-id={proposal.id}
-      className="space-y-4 rounded-lg border bg-card p-4"
-    >
-      <div className="space-y-1">
-        <p className="text-xs font-medium text-muted-foreground">v{proposal.version}</p>
-        <h3 className="font-semibold">{title}</h3>
-        {/* What changed comes FIRST, above the summary. On a tweak the summary
-            is text they already read last time, and burying the one new
-            sentence underneath it is how a one-word relabel becomes invisible
-            on the card where they approve it. */}
-        <p className="text-sm">
-          {spec.kind === 'version' ? spec.version.change_summary : spec.payload.summary}
-        </p>
-      </div>
-
-      {/* Scaled to the column, and non-interactive at card size — which the
-          spec explicitly allows, and `pointer-events-none` implements without
-          a second mechanism.
-
-          `srcDoc`, not `src`, as of this card's scoped preview. It used to be
-          `src="/mockup/<version>"`, the same session-authed route the
-          full-screen dialog below still uses (onboarding ledger D14) — one
-          route meant the two were byte-identical. That stopped being true the
-          moment the small preview needed to show only the AFFECTED screens:
-          the route serves `mockup_html`, the whole stored document, which is
-          right for the dialog (a friend asked to see everything) and wrong
-          here (see previewHtml above). The dialog is unchanged and still
-          shows the complete dashboard on purpose — this scaled preview is the
-          one place a friend reviews just what they asked for.
-
-          Sealed off either way. An empty sandbox grants nothing — no scripts,
-          no same-origin, no forms, no top-level navigation — so model-authored
-          markup can never run code in a friend's session, and the preview
-          stays a LAYOUT promise rather than a behaviour promise somebody then
-          has to build. tests/spec/sandbox.test.ts pins this — on `sandbox=""`
-          itself, which this change leaves untouched.
-
-          The MOCKUP banner used to be guaranteed by that route (withBanner,
-          applied at serve time — lib/spec/banner.ts). srcDoc bypasses it
-          entirely, so previewHtml applies it here instead: same rule, moved
-          to the new boundary, not dropped. Final review, Important 3: the
-          meta CSP (withCsp, same file) moved here for the identical reason —
-          it is a document guarantee applied at serve time by the two mockup
-          routes' headers AND by composeMockup itself, and srcDoc bypasses
-          both, so previewHtml is where it has to be enforced for THIS
-          surface too. */}
-      {/*
-        SCALED DOWN, not cropped. The iframe is laid out at twice the column's
-        width and half scale, so the preview shows the mockup as a small whole
-        rather than the top-left corner of a full-size one — which is what the
-        first screenshot review found.
-        
-        CSS only: a JS-measured scale factor would be a second implementation
-        of the arrangement rule the shell exists to avoid, and it would render
-        differently on the server than on the client for a frame.
-        
-        `pointer-events-none` implements "non-interactive at card size is
-        fine" without a second mechanism; the full-screen dialog is where a
-        friend actually looks.
-      */}
-      {/* h-48/h-[24rem], not the h-64/h-[32rem] this shipped with (fix round
-          1, finding 2): that height was sized for a denser mockup, and it
-          left a single-screen preview roughly 60% empty box. This task makes
-          a short, single-screen preview the COMMON case rather than the
-          exception, so the box shrinks with it. Still CSS-only — no JS-
-          measured scale factor, which is the same rule the comment above
-          already states and which still stands — and a taller multi-screen
-          preview still clips under `overflow-hidden` exactly as it did
-          before; only the threshold moved, not the failure mode. "View full
-          screen" is the escape hatch either way. */}
-      <div className="h-48 w-full overflow-hidden rounded-md border bg-background">
-        <iframe
-          title={`Preview of ${title}`}
-          srcDoc={previewHtml}
-          sandbox=""
-          className="pointer-events-none h-[24rem] w-[200%] origin-top-left scale-50 border-0"
-        />
-      </div>
-
-      <div className="flex items-center gap-2">
-        <MockupDialog src={`/mockup/${proposal.version}`} title={title} />
-      </div>
-
-      {/* Collapsed by default, and always present. The visual carries the
-          pitch; this is what they are actually confirming. */}
-      <Collapsible>
-        <CollapsibleTrigger asChild>
-          <Button type="button" variant="ghost" size="sm" className="px-0">
-            Details
-          </Button>
-        </CollapsibleTrigger>
-        {/*
-          forceMount: the content stays in the DOM and Radix marks it `hidden`
-          when closed, rather than unmounting it. Two reasons, and neither is
-          about tests — the build contract a friend is confirming should be
-          findable by a browser's own find-in-page and by assistive tech, and a
-          Details block that does not exist until clicked is not "always
-          present" in any sense the spec would recognise.
-        */}
-        <CollapsibleContent forceMount className="pt-2 text-sm data-[state=closed]:hidden">
-          {spec.kind === 'version' ? (
-            <>
-              <p className="mb-2 text-muted-foreground">{spec.version.summary}</p>
-              <VersionBody version={spec.version} />
-            </>
-          ) : (
-            <>
-              {/* The frozen arm, rendered as it always was. `specs` rejects
-                  UPDATE, so these rows can never be rewritten into the current
-                  shape and this markup has no end date — lib/spec/legacy.ts. */}
-              <ul className="list-disc space-y-1 pl-5">
-                {spec.payload.panels.map((panel) => (
-                  <li key={panel.name}>
-                    <strong>{panel.name}</strong> — {panel.shows}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </CollapsibleContent>
-      </Collapsible>
-
-      {proposal.confirmed ? (
-        /*
-          THE CARD STATES THE FACT AND SAYS NOTHING ELSE. The timeframe used to
-          be repeated here, on the reasoning that a friend reloading later
-          should still see it. That reasoning was right while nothing else
-          spoke after a confirmation — but the agent now sees the confirmation
-          (lib/chat/confirmations.ts) and agent-v4.md's "After they confirm"
-          makes those two commitments its job, in its own words, in the
-          conversation. Keeping a copy here would be two versions of one
-          promise that can drift apart, which is the argument
-          lib/copy/onboarding.ts makes about the promise block.
-
-          The LIVE card below keeps its delivery line: that one is part of the
-          pitch a friend reads BEFORE deciding, and nothing else says it at the
-          moment the decision is made.
-        */
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Building this one.</p>
-        </div>
-      ) : live ? (
-        <div className="space-y-2">
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              disabled={busy}
-              onClick={() => onConfirm(proposal.id)}
-            >
-              Build this
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                /* just keep talking */
-              }}
-            >
-              Not quite yet
-            </Button>
-          </div>
-          {confirmError && (
-            <p className="text-sm text-destructive">
-              <em>That didn&apos;t go through — try again.</em>
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground">{delivery}</p>
-        </div>
-      ) : null}
-    </section>
-  )
-}
-
-/**
- * The authoring wait, an honest proposal_error failure, and every proposal
- * card. No hooks of its own — same reason as SpecCard — so it can be driven
- * directly in a test instead of relying on state that merely IMPLIES what
- * would have rendered. tests/chat/panel.test.ts drives this with a
- * proposal_error line and confirms both the failure text renders AND no
- * card appears — the property the vacuous parseNdjson-only version of that
- * test (fix round 1 finding) could never have caught.
- */
-/**
- * The wait, with the stage it is actually in.
- *
- * Two lines of copy and a pulse, and every part of it is load-bearing:
- *
- * - THE STAGE IS REAL. 'spec' means the agent has decided to propose; 'mockup'
- *   means the spec came back, validated, and a second model call has started.
- *   Nothing here is a timer or an estimate — the panel says what the server
- *   last told it happened.
- * - THE SECOND STAGE IS MOST OF THE MINUTE. Saying so is the whole point: a
- *   friend who knows they are on the slow part is waiting, and a friend who
- *   does not is deciding whether the thing is broken and starting to click.
- * - IT MOVES, AND THE BAR IS PART OF WHAT MOVES. The first version pulsed a
- *   fixed-width block through both stages and changed only the sentence above
- *   it. Nico watched it and reported a progress bar that "starts and ends at
- *   around 1/3 of the width, never moving to 2/3" — which is what a bar-shaped
- *   thing that never advances says to the person looking at it, whatever the
- *   words beside it say. A frozen indicator is the exact reading this element
- *   exists to prevent, so it now advances when the stage does.
- *
- * TWO REAL EVENTS, TWO POSITIONS — and that is still not a percentage. The
- * objection was never to a bar; it was to inventing progress nobody can
- * measure, a crawl to 80% that sits there. Nothing here is interpolated, timed,
- * or estimated: the bar has exactly as many positions as the server has
- * milestones to report, and it moves only when one arrives. It deliberately
- * does not reach the end, because a full bar would be a claim that the work is
- * done.
- *
- * The fill is the stock Skeleton pulse, overridden at the CALL SITE the same
- * way ThinkingRow overrides it — components/ui/* stays as the CLI wrote it
- * (CLAUDE.md).
- *
- * aria-live="polite" so the stage change is announced rather than only seen.
- * The bar carries no separate announcement: it says the same thing as the
- * sentence, and a screen reader should hear it once.
- */
-export function AuthoringWait({ stage }: { stage: 'spec' | 'mockup' | null }) {
-  const drawing = stage === 'mockup'
-  return (
-    <div data-authoring-stage={stage ?? 'spec'} aria-live="polite" className="space-y-2">
-      <p className="text-sm text-muted-foreground">
-        {drawing ? 'Drawing the preview…' : 'Writing the spec…'}
-      </p>
-      {/* A track the full width of the column, so "how far along" is legible
-          against something. Without it the fill is a floating block and its
-          width means nothing — which is how the fixed one read. */}
-      <div
-        aria-hidden="true"
-        className="h-3 w-full overflow-hidden rounded-full bg-foreground/10"
-      >
-        <Skeleton
-          className={`h-full rounded-full bg-foreground/30 transition-[width] duration-700 ease-out ${
-            drawing ? 'w-[66%]' : 'w-[33%]'
-          }`}
-        />
-      </div>
-    </div>
-  )
-}
-
-export function ProposalRegion({
-  authoring,
-  authoringStage = null,
-  proposalError,
-}: {
-  authoring: boolean
-  authoringStage?: 'spec' | 'mockup' | null
-  proposalError: boolean
-}) {
-  return (
-    <>
-      {authoring && <AuthoringWait stage={authoringStage} />}
-      {proposalError && (
-        <p className="text-muted-foreground">
-          <em>Couldn&apos;t put together a preview this time — say more and I&apos;ll try again.</em>
-        </p>
-      )}
-    </>
-  )
-}
-
-/**
- * A confirmation, where it happened.
- *
- * Small and inert on purpose. It is a FACT, not a card: giving it card weight
- * would make the scrollback read as two proposals, and what actually happened
- * is that one of them was accepted.
- */
-export function ConfirmationRow({ version, at }: { version: number; at: number }) {
-  return (
-    <li data-confirmation={version} className="text-xs text-muted-foreground">
-      Confirmed v{version} — {new Date(at).toLocaleString()}
-    </li>
-  )
-}
-
-/**
  * Put the newest item in view.
  *
  * A plain function taking anything with the two properties, not a hook and not
  * a method, for the reason everything interesting in this file is pulled out:
  * a scroll that only happens inside a `useEffect` is a scroll no test in this
- * suite can drive. This is the operation; whether the effect fires is the
- * screenshot review's half of the job (`card-proposal`, which is precisely
- * where it was caught).
+ * suite can drive.
  *
  * Found by the screenshot gate, not by a test, and it had been true since the
  * chat surface was built: the transcript rendered top-down inside an
  * `overflow-y-auto` list that nothing ever scrolled, so a friend returning to
- * their interview landed on their FIRST message. It went unseen because the
- * shot fixture had an empty transcript until now — the proposal card was the
- * only thing in the column, so nothing had to scroll for it to be visible.
+ * their interview landed on their FIRST message.
  */
 export function scrollToNewest(el: { scrollTop: number; scrollHeight: number } | null): void {
   if (!el) return
   el.scrollTop = el.scrollHeight
-}
-
-/**
- * The conversation as one ordered list: turns, proposal cards, and
- * confirmations, each where it happened.
- *
- * Cards used to render in a region BELOW the whole transcript, so a proposal
- * made on Tuesday sat at the bottom of Thursday's conversation, detached from
- * the exchange that produced it (onboarding ledger D5). The confirmation was
- * worse: it showed as the card changing state at the moment it was OFFERED,
- * and those two timestamps can be days apart (D5a).
- *
- * A component with no hooks, so a test can drive it directly — the same reason
- * SpecCard and TurnRow were pulled out.
- */
-export function Timeline({
-  turns,
-  proposals,
-  confirmations,
-  busy,
-  thinking = false,
-  confirming,
-  confirmError,
-  first,
-  onConfirm,
-  onRetry,
-  listRef,
-}: {
-  turns: Turn[]
-  proposals: CardProposal[]
-  confirmations: { version: number; at: number }[]
-  busy: boolean
-  thinking?: boolean
-  confirming: boolean
-  confirmError: boolean
-  /** Threaded straight through from the page, and the FALLBACK each card uses
-   * when it carries no answer of its own. Passed to every card, not just the
-   * live one: a superseded or already-confirmed card still shows a promise.
-   * It is not the answer for cards that arrived after the page rendered —
-   * those bring their own (see SpecCard's `first`). */
-  first: boolean
-  onConfirm: (specId: number) => void
-  onRetry: (source: string) => void
-  /**
-   * The scroll container, held by ChatPanel so this component can stay
-   * hookless and directly callable in a test — the same reason SpecCard and
-   * TurnRow are separate exports. Optional, so those direct calls need not
-   * supply one.
-   */
-  listRef?: React.RefObject<HTMLOListElement | null>
-}) {
-  const live = withLiveness(proposals)
-  const liveById = new Map(live.map(({ proposal, live: isLive }) => [proposal.id, isLive]))
-
-  const items = buildTimeline<Turn, CardProposal>({
-    turns: turns.map((turn) => ({ at: turn.at, turn })),
-    proposals: proposals.map((proposal) => ({ at: proposal.at, proposal })),
-    confirmations,
-  })
-
-  return (
-    <ol ref={listRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto text-sm">
-      {items.map((item, index) => {
-        if (item.kind === 'turn') {
-          return (
-            <TurnRow
-              key={`turn-${index}`}
-              turn={item.turn}
-              busy={busy}
-              onRetry={onRetry}
-            />
-          )
-        }
-        if (item.kind === 'confirmation') {
-          return (
-            <ConfirmationRow
-              key={`confirmed-${item.version}-${item.at}`}
-              version={item.version}
-              at={item.at}
-            />
-          )
-        }
-        const isLive = liveById.get(item.proposal.id) ?? false
-        return (
-          <li key={`spec-${item.proposal.id}`}>
-            <SpecCard
-              proposal={item.proposal}
-              live={isLive}
-              busy={confirming}
-              first={first}
-              confirmError={isLive && confirmError}
-              onConfirm={onConfirm}
-            />
-          </li>
-        )
-      })}
-      {thinking && <ThinkingRow />}
-    </ol>
-  )
 }
 
 /**
@@ -1048,7 +299,7 @@ export function ThinkingRow() {
  * One turn's row: the body, and — when the stream ended without
  * {done:true} — the "interrupted, not saved" marker and its retry button.
  * No hooks of its own, pulled out for the same testability reason as
- * SpecCard/ProposalRegion.
+ * everything else in this file.
  *
  * WHO SAID IT IS VISIBLE, not just readable by a machine. Both roles rendered
  * as identical paragraphs, distinguished only by a `data-role` attribute — so
@@ -1131,12 +382,10 @@ export function TurnRow({
           </p>
         ) : turn.saved ? (
           <p>
-            <em>saved — the connection dropped, and the preview may still be on its way</em>{' '}
+            <em>saved — the connection dropped, and the reply is still there</em>{' '}
             {/* Reload, not Retry. The message is already in `transcripts` and
                 the reply already exists, so re-sending would duplicate a row
-                for an answer that came back. Authoring no longer dies with the
-                connection (RunTurnInput.authoringSignal), so the card is
-                plausibly waiting on the next render. */}
+                for an answer that came back. */}
             <Button
               type="button"
               variant="outline"
@@ -1172,115 +421,74 @@ export function TurnRow({
   )
 }
 
+/**
+ * The conversation, top to bottom.
+ *
+ * Used to merge turns with proposal cards and confirmation events, each
+ * rendered where it happened (lib/chat/timeline.ts's `buildTimeline`, still
+ * used by the admin transcript pane for exactly that). ChatPanel no longer
+ * has either of those: there is no card to place and no confirmation to mark,
+ * so `turns` is the only thing on screen and its own array order — the order
+ * the transcript was read in, with each send() appending to the end — is
+ * already the right order. No merge needed for one list.
+ *
+ * A component with no hooks, so a test can drive it directly.
+ */
+export function Timeline({
+  turns,
+  busy,
+  thinking = false,
+  onRetry,
+  listRef,
+}: {
+  turns: Turn[]
+  busy: boolean
+  thinking?: boolean
+  onRetry: (source: string) => void
+  /**
+   * The scroll container, held by ChatPanel so this component can stay
+   * hookless and directly callable in a test. Optional, so those direct
+   * calls need not supply one.
+   */
+  listRef?: React.RefObject<HTMLOListElement | null>
+}) {
+  return (
+    <ol ref={listRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto text-sm">
+      {turns.map((turn, index) => (
+        <TurnRow key={`turn-${index}`} turn={turn} busy={busy} onRetry={onRetry} />
+      ))}
+      {thinking && <ThinkingRow />}
+    </ol>
+  )
+}
+
 export default function ChatPanel({
   initial,
-  proposal,
-  confirmations = [],
-  first,
 }: {
   initial: Turn[]
-  /** Seeded from `spec_confirmations`, so a decision made last week still
-   * shows where it was made (onboarding ledger D5a). */
-  confirmations?: { version: number; at: number }[]
-  /** Typed as the CLIENT-side shape, not the server's `Proposal`, because that
-   * is what it becomes the moment it is seeded into panel state alongside
-   * cards decoded off the wire. A full server-built proposal is assignable. */
-  proposal?: CardProposal & { confirmed: boolean }
-  /** True when the card the page rendered is this account's first dashboard.
-   * Server-computed, and the fallback for any card that carries no answer of
-   * its own — see SpecCard's `first`. */
-  first: boolean
 }) {
-  // Seeded from the DB record so a friend who closes the tab mid-decision
-  // comes back to the same card, still confirmable.
   const [panel, setPanel] = useState<PanelState>({
     turns: initial,
-    proposals: proposal ? [proposal] : [],
-    confirmations,
-    authoring: false,
-    authoringStage: null,
-    proposalError: false,
-    confirmError: false,
   })
   const listRef = useRef<HTMLOListElement>(null)
-  // Anchor to the newest item whenever the number of things in the timeline
-  // changes: on first paint, when a send appends a turn, and when a proposal
-  // card or a confirmation arrives.
-  //
-  // Deliberately NOT on every streamed chunk. Following the text token by
-  // token would yank a friend back down the moment they scrolled up to re-read
-  // something mid-reply, and the turn they are watching was already anchored
-  // when it started. The cost is that a long reply grows past the fold; the
-  // alternative takes the scrollbar away from them, which is worse.
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const itemCount = panel.turns.length + panel.proposals.length + panel.confirmations.length
-  // itemCount AND busy. Count alone anchored the turn when it STARTED and then
-  // let the reply grow past the fold as it streamed — the friend watched the
-  // answer they asked for scroll out of view. `busy` flips false the moment the
-  // reply is complete, so this scrolls once more when the message has actually
-  // arrived, which is the thing the friend wanted to see.
+  // Anchor to the newest item whenever the number of turns changes (first
+  // paint, and every send), and again once a reply finishes — `itemCount`
+  // alone anchors when a turn STARTS, and a long reply would otherwise grow
+  // past the fold while it streams. `busy` flipping false is what re-anchors
+  // once the answer has actually arrived.
   //
-  // AND `panel.authoring`, because on a proposing turn `busy` never gets the
-  // chance to do its job. It stays true through the whole authoring minute, so
-  // the second anchor lands after the wait is over — and for that entire
-  // minute the ONLY thing on screen worth reading is a reply the friend cannot
-  // see. The first anchor fired while the assistant turn was still empty, so
-  // the list is parked on their own message with the answer entirely below the
-  // fold. Found by the wait screenshots; no test in this suite can see it.
-  //
-  // `authoring` flips true exactly when the reply is complete — the route
-  // emits that line after the stream has finished and the tool call starts —
-  // which is the same moment `busy` was added to catch on an ordinary turn.
-  // Same intent, the one path where the existing dep cannot express it.
-  //
-  // Still NOT per streamed chunk, and that restraint is unchanged: following
-  // token by token yanks a friend back down the instant they scroll up to
-  // re-read something mid-reply. Three anchors per proposing turn, not two
-  // hundred — and the stage changing partway through is deliberately not one
-  // of them, or a friend re-reading during the slow half gets yanked.
+  // Deliberately NOT on every streamed chunk. Following the text token by
+  // token would yank a friend back down the moment they scrolled up to
+  // re-read something mid-reply, and the turn they are watching was already
+  // anchored when it started. The cost is that a long reply grows past the
+  // fold; the alternative takes the scrollbar away from them, which is worse.
+  const itemCount = panel.turns.length
   useEffect(() => {
     scrollToNewest(listRef.current)
-  }, [itemCount, busy, panel.authoring])
-
-  // Guards the confirm buttons across ALL cards, not just the live one — a
-  // second click while the first POST is in flight must not fire twice.
-  const [confirming, setConfirming] = useState(false)
-
-  async function onConfirm(specId: number) {
-    if (confirming) return
-    setConfirming(true)
-    setPanel((p) => ({ ...p, confirmError: false }))
-    const ok = await attemptConfirm(specId, fetch)
-    if (ok) {
-      setPanel((p) => ({
-        ...p,
-        proposals: p.proposals.map((x) => (x.id === specId ? { ...x, confirmed: true } : x)),
-        // The event, at the moment they decided. Stamped from the client
-        // clock, which is the only clock this side of the wire has — the
-        // server's own `spec_confirmations.at` replaces it on the next load,
-        // and the two only have to agree about ORDER, not about the value.
-        confirmations: [
-          ...p.confirmations,
-          { version: p.proposals.find((x) => x.id === specId)?.version ?? 0, at: Date.now() },
-        ],
-      }))
-      // The acknowledgment, now rather than on their next message. After the
-      // card state updates, so the confirmed card is already on screen when
-      // the reply starts arriving under it.
-      void acknowledgeConfirmation()
-    } else {
-      // A non-ok response (404/409) means the card is stale or gone; a
-      // network failure means nothing was learned either way. Either way
-      // the friend is told, plainly, rather than the button just quietly
-      // re-enabling with no explanation at the moment they decided.
-      // Cleared by startTurn/applyLine's proposal branch (see PanelState),
-      // not here — see fix round 2.
-      setPanel((p) => ({ ...p, confirmError: true }))
-    }
-    setConfirming(false)
-  }
+  }, [itemCount, busy])
 
   async function send(text: string) {
     if (!text.trim() || busy) return
@@ -1290,25 +498,7 @@ export default function ChatPanel({
     await streamTurn({ body: text })
   }
 
-  /**
-   * Ask the agent to respond to a confirmation, immediately.
-   *
-   * Pressing "Build this" used to record the decision and produce silence —
-   * agent-v4 promises an acknowledgment, but nothing ran a turn, so it waited
-   * for the friend's next message. That is the wrong moment to say nothing:
-   * they have just committed to something.
-   *
-   * No user bubble, because they did not type anything — only the empty
-   * assistant turn the reply streams into.
-   */
-  async function acknowledgeConfirmation() {
-    if (busy) return
-    setBusy(true)
-    setPanel((p) => startAgentTurn(p, Date.now()))
-    await streamTurn({ trigger: 'confirmation' })
-  }
-
-  /** The read loop, shared by both kinds of turn. */
+  /** The read loop, shared by every turn. */
   async function streamTurn(payload: Record<string, unknown>) {
     let done = false
     try {
@@ -1362,23 +552,9 @@ export default function ChatPanel({
       <Timeline
         listRef={listRef}
         turns={panel.turns}
-        proposals={panel.proposals}
-        confirmations={panel.confirmations}
         busy={busy}
         thinking={isThinking(panel.turns, busy)}
-        confirming={confirming}
-        confirmError={panel.confirmError}
-        first={first}
-        onConfirm={onConfirm}
         onRetry={(source) => void send(source)}
-      />
-
-      {/* Below the list, not in it: these describe what is happening NOW,
-          rather than something that happened at a point in the conversation. */}
-      <ProposalRegion
-        authoring={panel.authoring}
-        authoringStage={panel.authoringStage}
-        proposalError={panel.proposalError}
       />
 
       <form

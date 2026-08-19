@@ -26,7 +26,6 @@ type Behaviour =
   | 'no-credential'
   | 'propose-ok'
   | 'propose-fail'
-  | 'propose-staged'
   | 'propose-slow'
   | 'stream-error'
 const behaviour: { value: Behaviour } = { value: 'ok' }
@@ -124,19 +123,11 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
   return {
     ...actual,
     // Takes its input, because one of the things the route is on the hook for
-    // is the callback it puts IN that input. A double declaring no parameters
-    // cannot notice a missing `onStage`, which is why the route's half of the
-    // stage wiring went unpinned.
+    // is which signal it puts IN that input (see authoringSignals below).
     authorSpec: async (
       _deps: unknown,
       input: import('@/lib/spec/author').AuthorInput,
     ) => {
-      if (behaviour.value === 'propose-staged') {
-        // What the real authorSpec does at the same point: the spec came back
-        // and validated, and the slow call is starting.
-        input.onStage?.('mockup')
-        return PROPOSAL_FIXTURE
-      }
       authoringSignals.push(input.signal)
       if (behaviour.value === 'propose-slow') {
         slowAuthoring.onEnter?.()
@@ -401,8 +392,8 @@ describe('POST /api/chat', () => {
       const got = await lines(res)
 
       expect(got.filter((l) => (l as { hb?: number }).hb === 1)).toHaveLength(3)
-      // The beats did not displace anything: the real turn still completed.
-      expect(got.some((l) => (l as { proposal?: unknown }).proposal)).toBe(true)
+      // The beats did not displace anything: the real turn still completed —
+      // `done` only arrives after runTurn has awaited authoring to the end.
       expect(got.at(-1)).toEqual({ done: true })
     } finally {
       vi.useRealTimers()
@@ -505,73 +496,34 @@ describe('POST /api/chat', () => {
   })
 })
 
-describe('POST /api/chat — the proposal lines', () => {
-  it('emits authoring, then proposal, then done', async () => {
+describe('POST /api/chat — no proposal or stage lines reach the browser', () => {
+  // The card, the two buttons and the two-stage progress bar are gone from
+  // the friend's screen (app/[user]/ChatPanel.tsx). This describe block pins
+  // the absence on the WIRE, not just in the panel: a deletion with no test
+  // can be silently undone by a future edit that re-adds the enqueue calls
+  // without anyone noticing the panel already ignores them.
+
+  it('streams only the reply, saved and done — even on a turn that triggers authoring', async () => {
+    // THE CASE THAT MATTERS MOST: authoring really did run (runTurn still
+    // calls authorSpec — only the wire messages went), and still nothing
+    // about it reaches the browser. A test against an ORDINARY turn (the
+    // tool never called) would pass for the wrong reason — there'd be
+    // nothing to suppress in the first place.
     await signIn(false)
     behaviour.value = 'propose-ok'
 
     const res = await post({ body: 'help me build a dashboard' })
     const seen = await lines(res)
-    expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual([
-      't',
-      // Ahead of `authoring`, and that order is load-bearing: authoring is the
-      // window where the connection dies, so the browser has to already know
-      // the reply was saved by the time it opens.
-      'saved',
-      'authoring',
-      'proposal',
-      'done',
-    ])
 
-    const proposalLine = seen.find((l) => 'proposal' in (l as object)) as {
-      proposal: { version: number }
-    }
-    expect(proposalLine.proposal.version).toBe(1)
-  })
+    // authorSpec really was invoked for this turn — the absence below is a
+    // suppression, not an accident of nothing happening.
+    expect(authoringSignals).toHaveLength(1)
 
-  it('forwards the mockup stage as its own line, between authoring and proposal', async () => {
-    // THE SERVER HALF OF "WHICH HALF OF THE WAIT ARE WE IN".
-    //
-    // tests/chat/panelWiring.test.tsx proves the panel advances when a stage
-    // line arrives — by pushing one in by hand, through a fake fetch that no
-    // route code runs. Nothing asked the ROUTE to produce one. Deleting
-    // `onStage:` from app/api/chat/route.ts left the entire suite green while
-    // the friend watched one unchanging sentence for the whole minute.
-    //
-    // The ORDER is asserted, not just the presence: a stage line ahead of the
-    // authoring line is dropped by applyLine (a stray stage with no wait in
-    // flight must not conjure one), so arriving in the wrong place is the same
-    // as not arriving.
-    await signIn(false)
-    behaviour.value = 'propose-staged'
-
-    const res = await post({ body: 'help me build a dashboard' })
-    const seen = await lines(res)
-
-    expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual([
-      't',
-      'saved',
-      'authoring',
-      'stage',
-      'proposal',
-      'done',
-    ])
-    expect(seen).toContainEqual({ stage: 'mockup' })
-  })
-
-  it('emits proposal_error when authoring fails, and STILL emits done', async () => {
-    // A completed chat turn whose preview failed is still a completed chat
-    // turn: the assistant row for it exists, and the friend really did
-    // receive that reply. done must not be suppressed.
-    await signIn(false)
-    behaviour.value = 'propose-fail'
-
-    const res = await post({ body: 'help me build a dashboard' })
-    const seen = await lines(res)
-    expect(seen).toContainEqual({ authoring: true })
-    expect(seen).toContainEqual({ proposal_error: true })
-    expect(seen).toContainEqual({ done: true })
+    expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual(['t', 'saved', 'done'])
+    expect(seen.some((l) => 'authoring' in (l as object))).toBe(false)
+    expect(seen.some((l) => 'stage' in (l as object))).toBe(false)
     expect(seen.some((l) => 'proposal' in (l as object))).toBe(false)
+    expect(seen.some((l) => 'proposal_error' in (l as object))).toBe(false)
   })
 
   it('emits neither authoring nor proposal lines on an ordinary turn', async () => {
@@ -583,6 +535,22 @@ describe('POST /api/chat — the proposal lines', () => {
     expect(
       seen.some((l) => 'authoring' in (l as object) || 'proposal' in (l as object) || 'proposal_error' in (l as object)),
     ).toBe(false)
+  })
+
+  it('still emits done when authoring fails — a completed chat turn is still a completed chat turn', async () => {
+    // The assistant row for it exists, and the friend really did receive
+    // that reply; a failed proposal must not suppress it. There is no more
+    // `proposal_error` line to check for — nothing on the friend's screen
+    // ever reported that failure to begin with.
+    await signIn(false)
+    behaviour.value = 'propose-fail'
+
+    const res = await post({ body: 'help me build a dashboard' })
+    const seen = await lines(res)
+    expect(seen).toContainEqual({ done: true })
+    expect(seen.some((l) => 'authoring' in (l as object))).toBe(false)
+    expect(seen.some((l) => 'proposal' in (l as object))).toBe(false)
+    expect(seen.some((l) => 'proposal_error' in (l as object))).toBe(false)
   })
 })
 

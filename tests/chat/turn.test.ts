@@ -1180,45 +1180,6 @@ describe('the completion rule with propose_spec', () => {
     expect(event).not.toBe('chat_empty_reply')
   })
 
-  it('hands the stage reporter down to authorSpec', async () => {
-    // The middle link in the chain that tells a friend which half of the
-    // minute they are in: the route makes the callback, authorSpec fires it,
-    // and runTurn is the only thing joining them. Dropping `onStage` from the
-    // object built here left the whole suite green — the panel's tests push a
-    // stage line in by hand and never ask the server for one.
-    const seen: 'mockup'[] = []
-    let received: ((stage: 'mockup') => void) | undefined
-    await runTurn(
-      {
-        db,
-        client: toolClient('sure', ['propose_spec']),
-        now: () => 1_000,
-        context: 'interview',
-        alert: noAlert,
-        authorSpec: async (authorInput) => {
-          received = authorInput.onStage
-          return PROPOSAL
-        },
-      },
-      {
-        accountId: 1,
-        sessionId: 's',
-        currentState: null,
-        body: 'hi',
-        signal: new AbortController().signal,
-        authoringSignal: new AbortController().signal,
-        onText: () => {},
-        onStage: (stage) => seen.push(stage),
-      },
-    )
-
-    // The callback the route supplied, not merely some function: a stage
-    // reporter wired to the wrong closure reports into nothing.
-    expect(received).toBeTypeOf('function')
-    received!('mockup')
-    expect(seen).toEqual(['mockup'])
-  })
-
   it('still records the missing arm even when the reply text was truncated, not merely absent', async () => {
     // The other trigger the reviewer named: a tool-calling turn whose
     // stop_reason is not end_turn/tool_use (e.g. max_tokens) is `proposed
