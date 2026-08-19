@@ -94,6 +94,14 @@ architectural changes; do not relitigate decided items).
   build — this section, the step-5 design, the step-6a and friend-timezone
   ledgers — with a citation on each line. It is an index, not a second copy:
   where it disagrees with a source, the source wins.
+- **How a dashboard should LOOK is docs/dashboard-ui-ux-guidelines.md** — the
+  default stack (shadcn on Tailwind, Recharts for charts), the fluid
+  375–1200px container, the four non-happy panel states every panel owes,
+  formatting, and the rule that animation responds to the user and never
+  impersonates the system. Those are DEFAULTS: a friend's own UI request
+  outranks them unless it needs an external fetch, restyles platform chrome,
+  or cannot be built — and then it escalates to Nico rather than being
+  quietly adjusted.
 - A user dashboard lives entirely in `users/<slug>/`. Six entries are
   required; `tests/users/conventions.test.ts` sweeps every folder and fails
   if one is missing:

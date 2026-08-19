@@ -24,6 +24,7 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 | `users/devone/` | The worked reference. Its README: "Copy this folder's shape when building a real dashboard." |
 | `users/<slug>/spec.md`, `current.md` and the conversation | The build contract for this friend. No mockup — §8. |
 | `docs/runbook.md` | The operator sequence around the build — step 7 is the commands, in order. This file is why they are what they are; that one does not repeat it. |
+| `docs/dashboard-ui-ux-guidelines.md` | How a dashboard should LOOK and behave: the default stack (shadcn on Tailwind, Recharts), the fluid 375–1200px container, the four non-happy panel states, formatting, and what animation may and may not imply. Defaults — a friend's own request outranks them, subject to the three limits that file names. |
 
 ---
 
