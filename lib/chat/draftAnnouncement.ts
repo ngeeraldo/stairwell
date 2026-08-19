@@ -37,7 +37,7 @@ export const ANNOUNCE_JSON_SCHEMA = {
 
 export type DraftInput = {
   notes: FriendFacingNotes
-  /** The confirmed version's change_summary — what they asked for. */
+  /** The shipped version's change_summary — what they asked for. */
   changeSummary: string
   /** The tail of their conversation, so the draft can omit what they know. */
   recent: ChatMessage[]
@@ -67,7 +67,7 @@ export class AnnouncementDraftError extends Error {
  */
 function userContent(input: DraftInput): string {
   return (
-    'The version they confirmed, in their words:\n\n' +
+    'The change summary from the version that shipped, in their own words:\n\n' +
     `${input.changeSummary}\n\n` +
     "The builder's notes on what actually shipped:\n\n" +
     `${JSON.stringify(input.notes, null, 2)}\n\n` +

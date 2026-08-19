@@ -87,6 +87,22 @@ describe('draftAnnouncement', () => {
     expect(sent).not.toContain('SENTINEL_NEXT_BUILD_MUST_NOT_LEAK')
   })
 
+  // Task 9 fix: the user message used to label changeSummary "The version
+  // they confirmed" while announce-v2.md's system prompt now tells the model
+  // nothing was confirmed in advance and there is no preview — the same
+  // false premise the prompt fix removed, still live one layer down in the
+  // payload. Asserting the literal wording (not just "no 'confirmed'
+  // anywhere," which the notes JSON or a future changeSummary value could
+  // accidentally satisfy or violate either way) pins that this specific
+  // label agrees with the prompt it accompanies.
+  it('labels the change summary without claiming it was confirmed', async () => {
+    const client = clientReturning({ message: 'ok' })
+    await draftAnnouncement({ client }, INPUT)
+    const sent = JSON.stringify((client.propose as ReturnType<typeof vi.fn>).mock.calls[0]![0])
+    expect(sent).toContain('The change summary from the version that shipped')
+    expect(sent).not.toContain('they confirmed')
+  })
+
   it('throws on an empty message rather than returning a blank body', async () => {
     const client = clientReturning({ message: '   ' })
     await expect(draftAnnouncement({ client }, INPUT)).rejects.toThrow(/empty/)
