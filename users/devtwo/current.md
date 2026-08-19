@@ -16,8 +16,12 @@ One screen, `morning`, titled "Daily walk". It carries all four panels below.
 shown beneath. When the day is not yet marked it offers the tap control; once
 marked it says so instead of offering the control again.
 
-**Current streak.** Consecutive days ending today, with the label agreeing in
-number — "day in a row" at one, "days in a row" otherwise.
+**Current streak.** Consecutive days ending today OR yesterday, with a grace day
+that is spec-confirmed: if today has not been marked yet but yesterday was, the
+streak still counts rather than resetting to zero. The grace day exists to avoid
+punishing the user for the day not having happened yet — a streak that broke at
+00:01 would read as "you failed today" when most of today has not occurred. The
+label agrees in number — "day in a row" at one, "days in a row" otherwise.
 
 **Last 30 days.** A percentage, with the count it came from underneath.
 

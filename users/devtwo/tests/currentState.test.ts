@@ -25,4 +25,15 @@ describe('devtwo current.md', () => {
     // agent proposes an undo control that was deliberately never built.
     expect(readCurrentState('devtwo')!.body).toMatch(/Un-marking a day/)
   })
+
+  it('documents the grace day in the streak calculation', () => {
+    // The grace day is spec-confirmed behaviour that is completely invisible
+    // in dashboard.tsx and only visible in queries.ts. Without this description
+    // the agent could propose changes to a behaviour already confirmed, or
+    // misunderstand when the streak resets.
+    const body = readCurrentState('devtwo')!.body
+    expect(body).toMatch(/grace day/)
+    expect(body).toMatch(/today OR yesterday/)
+    expect(body).toMatch(/spec-confirmed/)
+  })
 })
