@@ -1,8 +1,15 @@
 // scripts/export-spec.ts
 //
 // Prints one account's current spec (the newest one — nothing confirms any
-// more) as JSON on stdout. Runs ON THE DROPLET, invoked by
+// more) as JSON on stdout, together with the CONVERSATION that produced it:
+// `{ spec_md, conversation_md }`. A change-only spec says what changed, not
+// what the friend meant, so the transcript slice behind it travels with it
+// (lib/spec/conversation.ts). Runs ON THE DROPLET, invoked by
 // scripts/pull-spec.sh over ssh.
+//
+// That makes the JSON on stdout potentially LARGE — a whole conversation, not
+// a page of markdown — which is why pull-spec.sh pipes it into
+// write-spec-pair.ts on stdin rather than passing it as an argv argument.
 //
 // THIS READS A NON-SYNTHETIC DATABASE BY DESIGN, on the server, run by Nico.
 // That is consistent with CLAUDE.md: the platform database is not encrypted
@@ -24,14 +31,16 @@
 import { resolve } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { findAccountBySlug } from '@/lib/auth/accounts'
-import { currentSpec } from '@/lib/db/specs'
+import { readTranscript } from '@/lib/db/appendOnly'
+import { currentSpec, readSpecs } from '@/lib/db/specs'
 import { readStoredSpec } from '@/lib/spec/stored'
+import { conversationRows, renderConversationMarkdown } from '@/lib/spec/conversation'
 import { renderChangeMarkdown, renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 
 export function exportSpec(
   db: PlatformDb,
   slug: string,
-): { spec_md: string } {
+): { spec_md: string; conversation_md: string } {
   const account = findAccountBySlug(db, slug)
   if (!account) throw new Error(`no account with slug '${slug}'`)
 
@@ -52,10 +61,12 @@ export function exportSpec(
   // forever, because spec.md is a build contract and re-pulling one must not
   // produce a diff nobody asked for.
   // confirmed_at can genuinely be null now — currentSpec no longer requires
-  // a confirmation — so fall back to the spec's own timestamp, the same
-  // fallback lib/spec/author.ts's currentVersionBlock already uses. Without
-  // it, `new Date(null)` renders as 1970-01-01 in spec.md — exactly the
-  // silent-garbage-date failure this project guards against elsewhere.
+  // a confirmation — so fall back to the spec's own timestamp. (This used to
+  // cite lib/spec/author.ts's currentVersionBlock as the place the same
+  // fallback already lived; that function is gone, and nothing else pairs
+  // confirmed_at with a fallback any more, so this line is the only site.)
+  // Without it, `new Date(null)` renders as 1970-01-01 in spec.md — exactly
+  // the silent-garbage-date failure this project guards against elsewhere.
   const meta = { slug, version: spec.version, confirmedAt: spec.confirmed_at ?? spec.at }
   const stored = readStoredSpec(spec.payload)
   const spec_md =
@@ -65,7 +76,17 @@ export function exportSpec(
         ? renderSpecMarkdown(stored.version, meta)
         : renderLegacyMarkdown(stored.payload, meta)
 
-  return { spec_md }
+  // The conversation that produced THIS version, not the whole history: the
+  // builder needs what they meant this time. See lib/spec/conversation.ts.
+  // readSpecs is re-read rather than re-derived — currentSpec already walks
+  // it, so this is one extra read of a small table on an operator CLI, and it
+  // keeps the version derivation (row position, never stored) in one place.
+  const conversation_md = renderConversationMarkdown(
+    conversationRows(readTranscript(db, account.id), spec, readSpecs(db, account.id)),
+    { slug, version: spec.version },
+  )
+
+  return { spec_md, conversation_md }
 }
 
 /**

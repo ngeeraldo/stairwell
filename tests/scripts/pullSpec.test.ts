@@ -16,6 +16,13 @@
 // could not reliably tell two adjacent guards apart — round 3 of the
 // step-4 review caught a case where a test named for the commit-rename
 // guard was, in fact, only ever reaching the guard before it.
+//
+// It writes a PAIR again — spec.md and conversation.md (plan
+// 2026-08-19-change-only-specs, Task 7) — and the JSON reaches
+// write-spec-pair.ts on STDIN rather than as an argv argument, because a
+// whole conversation can exceed ARG_MAX. That is not a detail a static scan
+// can prove, so there is a test below that pushes a payload past the limit
+// and asserts the pull still succeeds.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -24,6 +31,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { openPlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { insertSpec } from '@/lib/db/specs'
+import { appendTranscript } from '@/lib/db/appendOnly'
 import type { LegacySpecPayload } from '@/lib/spec/legacy'
 
 const REPO = resolve(__dirname, '..', '..')
@@ -87,7 +95,13 @@ const PANEL: LegacySpecPayload['panels'][number] = {
  * 2026-08-19-remove-the-mockup-loop, Task 6), so a per-test value would only
  * be dead configuration.
  */
-async function makeDb(opts: { slug: string; title: string; confirmedAt?: number }): Promise<string> {
+async function makeDb(opts: {
+  slug: string
+  title: string
+  confirmedAt?: number
+  /** Transcript rows to sit BEFORE the spec, so they land in its slice. */
+  transcript?: { role: string; body: string }[]
+}): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), 'stairwell-pull-spec-db-'))
   tempDirs.push(dir)
   const path = join(dir, 'synthetic.db')
@@ -112,6 +126,19 @@ async function makeDb(opts: { slug: string; title: string; confirmedAt?: number 
     mockupHtml: '',
     at: 1_000,
   })
+  // Written at `at: 900`, before the spec's own 1_000, so conversationRows'
+  // `prev.at < at <= spec.at` slice picks them up (lib/spec/conversation.ts).
+  for (const [index, row] of (opts.transcript ?? []).entries()) {
+    appendTranscript(db, {
+      accountId,
+      sessionId: 'sess-1',
+      conversationId: 'conv-1',
+      promptSha: 'sha-pull-0001',
+      role: row.role,
+      body: row.body,
+      at: 900 + index,
+    })
+  }
   if (opts.confirmedAt !== undefined) {
     db.prepare(
       'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
@@ -238,6 +265,34 @@ describe('scripts/pull-spec.sh droplet path', () => {
   })
 })
 
+/**
+ * The payload handoff, by static scan. The runtime test above proves a
+ * 1.5MB payload arrives; this pins WHY it can — that the JSON is piped rather
+ * than handed to write-spec-pair.ts as an argument. Both branches (--local
+ * and ssh) join at the same single invocation, so one scan covers both.
+ */
+describe('scripts/pull-spec.sh payload handoff', () => {
+  const code = readFileSync('scripts/pull-spec.sh', 'utf8')
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n')
+
+  it('pipes the JSON into write-spec-pair.ts on stdin', () => {
+    expect(code).toMatch(/printf '%s' "\$json" \| npx tsx scripts\/write-spec-pair\.ts "users\/\$user"/)
+  })
+
+  it('never passes the JSON as an argv argument', () => {
+    // A whole transcript can exceed ARG_MAX; that failure comes from execve,
+    // before the script under test gets a chance to report anything.
+    const invocation = code.slice(code.indexOf('write-spec-pair.ts'))
+    expect(invocation.split('\n')[0]).not.toContain('$json"')
+  })
+
+  it('invokes write-spec-pair.ts exactly once, so both branches share the pipe', () => {
+    expect(code.match(/npx tsx scripts\/write-spec-pair\.ts/g)).toHaveLength(1)
+  })
+})
+
 describe('scripts/pull-spec.sh --local', () => {
   it('writes spec.md from the current spec', async () => {
     const sandbox = makeSandbox()
@@ -255,12 +310,68 @@ describe('scripts/pull-spec.sh --local', () => {
     )
   }, SUBPROCESS_TIMEOUT_MS)
 
+  it('writes conversation.md beside it, carrying the transcript verbatim', async () => {
+    const sandbox = makeSandbox()
+    const dbPath = await makeDb({
+      slug: CONFIRMED_SLUG,
+      confirmedAt: 1_500,
+      title: 'Pulled with a conversation TEST',
+      transcript: [
+        // A line-leading '#' on purpose: spec.md neutralises those because it
+        // is a designed document; a transcript must survive untouched.
+        { role: 'user', body: '# COFFEE PALACE TEST wants a spend panel' },
+        { role: 'assistant', body: 'Noted, COFFEE PALACE TEST.' },
+      ],
+    })
+
+    const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], dbPath)
+
+    expect(status).toBe(0)
+    const conversation = readFileSync(
+      join(userDir(sandbox, CONFIRMED_SLUG), 'conversation.md'),
+      'utf8',
+    )
+    expect(conversation).toContain('## user')
+    expect(conversation).toContain('# COFFEE PALACE TEST wants a spend panel')
+    expect(conversation).toContain('Noted, COFFEE PALACE TEST.')
+  }, SUBPROCESS_TIMEOUT_MS)
+
+  it('delivers a payload far past ARG_MAX, which only stdin can carry', async () => {
+    // THE POINT OF THE PIPE. Passed as argv this fails at execve before
+    // write-spec-pair.ts runs at all — E2BIG on macOS (ARG_MAX ~1MB for the
+    // whole argument vector) and E2BIG on Linux too (MAX_ARG_STRLEN caps a
+    // SINGLE argument at 128KB). Either way the operator gets a shell error
+    // with nothing naming the length of the transcript as the cause. 1.5MB of
+    // transcript body is comfortably past both limits.
+    const sandbox = makeSandbox()
+    const HUGE = `COFFEE PALACE TEST ${'x'.repeat(1_500_000)} END COFFEE PALACE TEST`
+    const dbPath = await makeDb({
+      slug: CONFIRMED_SLUG,
+      confirmedAt: 1_500,
+      title: 'Pulled with a very long conversation TEST',
+      transcript: [{ role: 'user', body: HUGE }],
+    })
+
+    const { status, output } = run(sandbox, [CONFIRMED_SLUG, '--local'], dbPath)
+
+    expect(output).not.toMatch(/Argument list too long|E2BIG/)
+    expect(status).toBe(0)
+    const conversation = readFileSync(
+      join(userDir(sandbox, CONFIRMED_SLUG), 'conversation.md'),
+      'utf8',
+    )
+    // Not just "it ran" — the whole body arrived, start and end.
+    expect(conversation.length).toBeGreaterThan(1_500_000)
+    expect(conversation).toContain('END COFFEE PALACE TEST')
+  }, SUBPROCESS_TIMEOUT_MS)
+
   it('overwrites the file on a second pull, as documented', async () => {
     const sandbox = makeSandbox()
     const first = await makeDb({
       slug: CONFIRMED_SLUG,
       confirmedAt: 1_500,
       title: 'First pull TEST',
+      transcript: [{ role: 'user', body: 'First conversation TEST' }],
     })
     run(sandbox, [CONFIRMED_SLUG, '--local'], first)
 
@@ -268,6 +379,7 @@ describe('scripts/pull-spec.sh --local', () => {
       slug: CONFIRMED_SLUG,
       confirmedAt: 1_500,
       title: 'Second pull, meant to replace the first file TEST',
+      transcript: [{ role: 'user', body: 'Second conversation TEST' }],
     })
     const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], second)
 
@@ -275,15 +387,23 @@ describe('scripts/pull-spec.sh --local', () => {
     const specMd = readFileSync(join(userDir(sandbox, CONFIRMED_SLUG), 'spec.md'), 'utf8')
     expect(specMd).toContain('# Second pull, meant to replace the first file TEST')
     expect(specMd).not.toContain('First pull TEST')
+    // Both halves of the pair move together, or the build contract and the
+    // conversation behind it would describe different pulls.
+    const conversation = readFileSync(
+      join(userDir(sandbox, CONFIRMED_SLUG), 'conversation.md'),
+      'utf8',
+    )
+    expect(conversation).toContain('Second conversation TEST')
+    expect(conversation).not.toContain('First conversation TEST')
   }, SUBPROCESS_TIMEOUT_MS)
 
   it('writes nothing and exits non-zero when the account has no spec at all', async () => {
     // The partial-write hazard write-spec-pair.ts's guards defend against: a
     // spec.md left half-written by a failure partway through the rename
-    // sequence. There is only one file now (as of the mockup-loop removal,
-    // plan 2026-08-19-remove-the-mockup-loop, Task 6), but the outcome this
-    // test pins is the same as before — a refusal upstream must reach here
-    // as "wrote nothing", not "wrote a stale file".
+    // sequence — or, now that there are two files again, a spec.md written
+    // beside a stale conversation.md. The outcome this test pins is the same
+    // as it always was: a refusal upstream must reach here as "wrote
+    // nothing", not "wrote a stale file".
     //
     // Nothing confirms any more (lib/db/specs.ts's currentSpec is the newest
     // spec, full stop), so the only account left that exportSpec refuses is

@@ -480,9 +480,10 @@ export default async function TranscriptPane({
                 {/* currentSpec (lib/db/specs.ts) now returns the newest spec
                     whether or not it was ever confirmed, so confirmed_at can
                     genuinely be null — fall back to the spec's own authored
-                    timestamp, same as lib/spec/author.ts's
-                    currentVersionBlock and scripts/export-spec.ts. Worded "as
-                    of", not "confirmed": nothing confirms any more. */}
+                    timestamp, same as scripts/export-spec.ts. (This used to
+                    cite lib/spec/author.ts's currentVersionBlock as well;
+                    that function no longer exists.) Worded "as of", not
+                    "confirmed": nothing confirms any more. */}
                 {`v${current.version} — as of ${new Date(current.confirmed_at ?? current.at).toISOString()}`}
               </p>
               {/*

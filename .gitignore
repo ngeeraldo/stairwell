@@ -18,6 +18,15 @@
 .env
 .env.*
 
+# A friend's raw transcript, pulled beside spec.md by scripts/pull-spec.sh so
+# the builder can read what they meant. NEVER committed: spec.md is a designed
+# artifact describing a dashboard, and this is everything they said, including
+# whatever they said around it. The record of record is the append-only
+# `transcripts` table on the droplet. The guard hook denies .db and .env, not
+# markdown — this line and tests/repo/gitignore.test.ts are the whole defence.
+# See CLAUDE.md > Data safety.
+users/*/conversation.md
+
 # Dependencies
 node_modules/
 

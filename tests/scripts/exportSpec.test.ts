@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
 import { insertSpec } from '@/lib/db/specs'
+import { appendTranscript } from '@/lib/db/appendOnly'
 import { SpecShapeError, type SpecVersion } from '@/lib/spec/schema'
 import { type LegacySpecPayload } from '@/lib/spec/legacy'
 import { parseSpecChangeDraft, sealChange } from '@/lib/spec/change'
@@ -182,6 +183,18 @@ beforeAll(async () => {
   db.prepare(
     'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
   ).run(devtwoSpecId, devtwoId, 1_500)
+  // The conversation behind devtwo's only spec. A line-leading '#' on
+  // purpose: spec.md neutralises those (lib/spec/render.ts) because it is a
+  // designed document; conversation.md must carry them through untouched.
+  appendTranscript(db, {
+    accountId: devtwoId,
+    sessionId: 'sess-devtwo',
+    conversationId: 'conv-devtwo',
+    promptSha: 'sha-devtwo-0001',
+    role: 'user',
+    body: '# COFFEE PALACE TEST — what I actually meant',
+    at: 900,
+  })
 
   // devthree: a spec whose stored payload is corrupt JSON, with a historical
   // confirmation. Task 3 finding: parseLegacySpecPayload throws
@@ -251,6 +264,23 @@ beforeAll(async () => {
     mockupHtml: '<!doctype html><html><body>NEWER MOCKUP TEST</body></html>',
     at: DEVFIVE_NEWER_AT,
   })
+  // Two conversations, one on either side of devfive's older spec. The export
+  // must carry only the SECOND — the conversation behind the version it is
+  // exporting, not the account's whole history (lib/spec/conversation.ts).
+  for (const row of [
+    { body: 'OLD CONVERSATION COFFEE PALACE TEST', at: DEVFIVE_OLDER_AT - 1_000 },
+    { body: 'NEW CONVERSATION COFFEE PALACE TEST', at: DEVFIVE_OLDER_AT + 1_000 },
+  ]) {
+    appendTranscript(db, {
+      accountId: devfiveId,
+      sessionId: 'sess-devfive',
+      conversationId: 'conv-devfive',
+      promptSha: 'sha-devfive-0002',
+      role: 'user',
+      body: row.body,
+      at: row.at,
+    })
+  }
 
   // devsix: a spec in the change-only shape. Same rationale as devfour above,
   // one shape later — nothing writes this yet, but the export must already
@@ -371,6 +401,31 @@ _None._
     expect(out.spec_md).toContain('Weekly average TEST')
   })
 
+  it('exports the conversation behind the spec, verbatim', () => {
+    const out = exportSpec(db, 'devtwo')
+    expect(out.conversation_md).toContain('devtwo')
+    expect(out.conversation_md).toContain('## user')
+    // Untouched — no escaping, no reflow. See lib/spec/conversation.ts.
+    expect(out.conversation_md).toContain('# COFFEE PALACE TEST — what I actually meant')
+  })
+
+  it('slices the conversation to THIS version, not the whole history', () => {
+    // devfive has two specs and one conversation on either side of the older
+    // one. Exporting v2 must carry the second and not the first: a
+    // change-only spec is read against what the friend said THIS time.
+    const out = exportSpec(db, 'devfive')
+    expect(out.conversation_md).toContain('NEW CONVERSATION COFFEE PALACE TEST')
+    expect(out.conversation_md).not.toContain('OLD CONVERSATION COFFEE PALACE TEST')
+    expect(out.conversation_md).toContain('v2')
+  })
+
+  it('says so, rather than emitting nothing, when a version has no conversation rows', () => {
+    // devfour has a spec and no transcript at all. An empty file with no
+    // explanation reads as a failed pull; this reads as "there was nothing".
+    const out = exportSpec(db, 'devfour')
+    expect(out.conversation_md).toContain('No conversation')
+  })
+
   it('names the failure instead of crashing when the stored payload is corrupt', () => {
     expect(() => exportSpec(db, 'devthree')).toThrow(SpecShapeError)
     expect(() => exportSpec(db, 'devthree')).toThrow(/spec payload/)
@@ -426,7 +481,10 @@ describe('scripts/export-spec.ts (CLI)', () => {
   it('exports the current spec to stdout as JSON once PLATFORM_DB is set', () => {
     const { status, output } = run(['devtwo'], { PLATFORM_DB: join(dir, 'synthetic.db') })
     expect(status).toBe(0)
-    const parsed = JSON.parse(output) as { spec_md: string }
+    const parsed = JSON.parse(output) as { spec_md: string; conversation_md: string }
     expect(parsed.spec_md).toContain('# Eating out and the car fund')
+    // Both halves cross the process boundary — pull-spec.sh pipes this exact
+    // JSON into write-spec-pair.ts, which needs both keys.
+    expect(parsed.conversation_md).toContain('# COFFEE PALACE TEST — what I actually meant')
   })
 })

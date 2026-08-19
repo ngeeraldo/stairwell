@@ -23,6 +23,17 @@ architectural changes; do not relitigate decided items).
   Gate F alike, and that sweep is the only thing that would notice.
 - Never log, commit, or write real user data, Plaid tokens, or secrets to
   code, fixtures, tests, or debug output.
+- **`users/<slug>/conversation.md` is NEVER committed.** `./scripts/pull-spec.sh`
+  writes it beside `spec.md` so the builder can read what the friend meant, and
+  the two files are not the same kind of thing: `spec.md` is a designed artifact
+  describing a dashboard and has always been tracked; `conversation.md` is
+  everything they said, including whatever they said around the dashboard. The
+  guard hook denies `.db` and `.env`, NOT markdown, so the `users/*/conversation.md`
+  line in `.gitignore` and `tests/repo/gitignore.test.ts` are the whole defence —
+  the test asserts the pattern catches a folder that does not exist yet and does
+  not catch `spec.md`. The record of record stays the append-only `transcripts`
+  table on the droplet; the file is a working input, pulled fresh when needed and
+  overwritten by the next pull.
 - Derived keys exist only in the in-process TTL map — never serialized,
   persisted, logged, or written to the sessions table. Passwords and keys
   never appear in cookies, localStorage, URLs, or any persisted artifact.
@@ -163,7 +174,12 @@ architectural changes; do not relitigate decided items).
   value, or a merchant. `version: 0` means "predates the spec loop" —
   `devone` and `devtwo` are hand-written and never had a spec version.
 - `spec.md` is written by `./scripts/pull-spec.sh <slug>` and is absent until
-  an account has any spec at all. `synthetic.db` is generated and gitignored.
+  an account has any spec at all. That pull writes a PAIR:
+  `conversation.md` lands beside it, holding the transcript slice that
+  produced that spec version (`lib/spec/conversation.ts`) — a change-only spec
+  says what changed, not what the friend meant. **`conversation.md` is
+  gitignored and that is a data-safety line, not housekeeping**, see Data
+  safety above. `synthetic.db` is generated and gitignored.
   `<slug>.db` arrived in step 6a and is described next.
 - A spec **version** is whole-surface — it describes the user's entire
   dashboard, not just one conversation's worth of changes. `specs.payload`
