@@ -27,17 +27,20 @@
 # This script is a thin wrapper and does no file writing itself: fetch the
 # confirmed spec as JSON from export-spec.ts, hand it to write-spec-pair.ts.
 #
-# export-spec.ts prints nothing on stdout unless it has BOTH strings ready
-# (it refuses an account with no CONFIRMED spec, and a corrupt stored payload
-# throws before anything is printed). Combined with `set -euo pipefail`
-# below, a failure there aborts this script before write-spec-pair.ts ever
-# runs — no half-written spec.md/mockup.html pair.
+# export-spec.ts prints nothing on stdout unless it has a result ready (it
+# refuses an account with no spec at all, and a corrupt stored payload throws
+# before anything is printed). Combined with `set -euo pipefail` below, a
+# failure there aborts this script before write-spec-pair.ts ever runs — no
+# half-written spec.md.
 #
 # write-spec-pair.ts is where the atomic-write guarantee actually lives —
-# temp-write, move any existing pair aside, commit by rename, roll back to
-# the original pair on any ordinary catchable failure — as a plain,
-# directly-testable module rather than shell-embedded JS. See that file's
-# own comments for exactly what is and is not covered, and
+# temp-write, move any existing file aside, commit by rename, roll back to
+# the original on any ordinary catchable failure — as a plain,
+# directly-testable module rather than shell-embedded JS. It used to write a
+# PAIR (spec.md and mockup.html); it writes spec.md alone now, as of the
+# mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop, Task 6) —
+# nothing composes or serves mockup HTML any more. See that file's own
+# comments for exactly what is and is not covered, and
 # tests/scripts/writeSpecPair.test.ts for how each guard is verified.
 set -euo pipefail
 
@@ -71,7 +74,7 @@ main() {
 
   npx tsx scripts/write-spec-pair.ts "users/$user" "$json"
 
-  echo "Both are Gate B exempt — commit them when you are ready."
+  echo "spec.md is Gate B exempt — commit it when you are ready."
 }
 
 main "$@"

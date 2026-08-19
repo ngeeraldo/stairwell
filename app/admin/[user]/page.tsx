@@ -15,7 +15,6 @@ import { readStoredSpec, type StoredSpec } from '@/lib/spec/stored'
 import { diffVersions, type SpecDiff } from '@/lib/spec/diff'
 import { renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 import { buildTimeline } from '@/lib/chat/timeline'
-import { MockupDialog } from '@/app/[user]/MockupDialog'
 import { AdminTabs } from './AdminTabs'
 
 /**
@@ -237,29 +236,22 @@ function readOrUndefined(payload: string): StoredSpec | undefined {
  * point in the conversation, read-only by a standing rule
  * (lib/auth/authorize.ts), unaffected by whatever the friend's own screen
  * currently shows. What it shares with the old friend-facing card is the
- * SHAPE — version label, title, what changed, the mockup — and, through
- * MockupDialog, the same full-screen affordance the friend used to get.
+ * SHAPE — version label, title, what changed. It no longer shows the mockup:
+ * MockupDialog and the route it read from are gone as of the mockup-loop
+ * removal (plan 2026-08-19-remove-the-mockup-loop, Task 6) — nothing composes
+ * or serves mockup HTML any more.
  */
 function InlineCard({
-  slug,
   version,
   stored,
   openQuestions,
   comparison,
 }: {
-  slug: string
   version: number
   stored: StoredSpec | undefined
   openQuestions: string[]
   comparison: BaseComparison | undefined
 }) {
-  const title =
-    stored === undefined
-      ? 'Unreadable proposal'
-      : stored.kind === 'version'
-        ? stored.version.title
-        : stored.payload.title
-
   return (
     <li data-spec-version={version} className="rounded-lg border bg-card p-4">
       <p className="text-xs font-medium text-muted-foreground">v{version}</p>
@@ -286,9 +278,6 @@ function InlineCard({
             <LegacyBody payload={stored.payload} />
           )}
           {comparison && <BaseComparisonView comparison={comparison} />}
-          <div className="mt-3">
-            <MockupDialog src={`/admin/mockup/${slug}/${version}`} title={title} />
-          </div>
         </>
       )}
     </li>
@@ -368,7 +357,6 @@ export default async function TranscriptPane({
                   return (
                     <InlineCard
                       key={`spec-${item.proposal.id}`}
-                      slug={user}
                       version={item.proposal.version}
                       stored={stored}
                       openQuestions={
@@ -472,29 +460,6 @@ export default async function TranscriptPane({
                   )}
                 </ReactMarkdown>
               </div>
-            </div>
-          )
-        }
-        mockup={
-          current === undefined ? (
-            <p className="py-4 text-sm text-muted-foreground">No mockup yet.</p>
-          ) : (
-            <div className="space-y-3 py-4">
-              <MockupDialog
-                src={`/admin/mockup/${user}/${current.version}`}
-                title={`v${current.version}`}
-              />
-              {/* Sealed off exactly like the friend's own preview. An empty
-                  sandbox grants nothing — no scripts, no same-origin, no
-                  forms, no top-level navigation. The admin portal is not a
-                  softer target than the chat surface it is reviewing.
-                  tests/spec/sandbox.test.ts pins this. */}
-              <iframe
-                title={`Preview of v${current.version}`}
-                src={`/admin/mockup/${user}/${current.version}`}
-                sandbox=""
-                className="h-[70vh] w-full rounded-md border bg-background"
-              />
             </div>
           )
         }

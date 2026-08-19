@@ -31,7 +31,7 @@ import { renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 export function exportSpec(
   db: PlatformDb,
   slug: string,
-): { spec_md: string; mockup_html: string } {
+): { spec_md: string } {
   const account = findAccountBySlug(db, slug)
   if (!account) throw new Error(`no account with slug '${slug}'`)
 
@@ -42,12 +42,10 @@ export function exportSpec(
   if (!spec) throw new Error(`no spec for '${slug}'`)
 
   // readStoredSpec throws SpecShapeError on a corrupt stored payload. Let it
-  // propagate: exportSpec must build BOTH output strings or return NEITHER,
-  // never a spec_md from a half-parsed payload paired with a mockup_html from
-  // nowhere. Computing spec_md first, before the return object is
-  // constructed, is what guarantees that — a throw here means the caller (the
-  // CLI entry point below, then pull-spec.sh) never sees a result to write at
-  // all.
+  // propagate: exportSpec must build the output string or return nothing at
+  // all, never a spec_md from a half-parsed payload. A throw here means the
+  // caller (the CLI entry point below, then pull-spec.sh) never sees a result
+  // to write at all.
   //
   // The renderer is chosen by the row's ACTUAL shape, never by which one is
   // current: a pre-unification row exports through the frozen renderer
@@ -65,7 +63,7 @@ export function exportSpec(
       ? renderSpecMarkdown(stored.version, meta)
       : renderLegacyMarkdown(stored.payload, meta)
 
-  return { spec_md, mockup_html: spec.mockup_html }
+  return { spec_md }
 }
 
 /**

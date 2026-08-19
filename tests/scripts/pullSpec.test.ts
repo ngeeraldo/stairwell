@@ -79,13 +79,15 @@ const PANEL: LegacySpecPayload['panels'][number] = {
  * moment it exists. Inserted directly into spec_confirmations, the way
  * tests/db/specs.test.ts's own fixtures now do, so a caller that wants a
  * HISTORICAL confirmation on the row can still add one.
+ *
+ * `mockupHtml` is still a required insertSpec argument — specs.mockup_html
+ * stays a NOT NULL column (Data safety, CLAUDE.md) — but it is fixed rather
+ * than caller-supplied: nothing reads it back through this wrapper any more
+ * (export-spec.ts stopped emitting it as of the mockup-loop removal, plan
+ * 2026-08-19-remove-the-mockup-loop, Task 6), so a per-test value would only
+ * be dead configuration.
  */
-async function makeDb(opts: {
-  slug: string
-  title: string
-  mockupHtml: string
-  confirmedAt?: number
-}): Promise<string> {
+async function makeDb(opts: { slug: string; title: string; confirmedAt?: number }): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), 'stairwell-pull-spec-db-'))
   tempDirs.push(dir)
   const path = join(dir, 'synthetic.db')
@@ -107,7 +109,7 @@ async function makeDb(opts: {
       manual_logging: [],
       open_questions: [],
     },
-    mockupHtml: opts.mockupHtml,
+    mockupHtml: '',
     at: 1_000,
   })
   if (opts.confirmedAt !== undefined) {
@@ -237,13 +239,12 @@ describe('scripts/pull-spec.sh droplet path', () => {
 })
 
 describe('scripts/pull-spec.sh --local', () => {
-  it('writes spec.md and mockup.html from the current spec', async () => {
+  it('writes spec.md from the current spec', async () => {
     const sandbox = makeSandbox()
     const dbPath = await makeDb({
       slug: CONFIRMED_SLUG,
       confirmedAt: 1_500,
       title: 'Pulled via pull-spec.sh TEST',
-      mockupHtml: '<!doctype html><html><body>PULL SPEC TEST</body></html>',
     })
 
     const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], dbPath)
@@ -252,18 +253,14 @@ describe('scripts/pull-spec.sh --local', () => {
     expect(readFileSync(join(userDir(sandbox, CONFIRMED_SLUG), 'spec.md'), 'utf8')).toContain(
       '# Pulled via pull-spec.sh TEST',
     )
-    expect(readFileSync(join(userDir(sandbox, CONFIRMED_SLUG), 'mockup.html'), 'utf8')).toBe(
-      '<!doctype html><html><body>PULL SPEC TEST</body></html>',
-    )
   }, SUBPROCESS_TIMEOUT_MS)
 
-  it('overwrites both files on a second pull, as documented', async () => {
+  it('overwrites the file on a second pull, as documented', async () => {
     const sandbox = makeSandbox()
     const first = await makeDb({
       slug: CONFIRMED_SLUG,
       confirmedAt: 1_500,
       title: 'First pull TEST',
-      mockupHtml: '<!doctype html><html><body>FIRST PULL TEST</body></html>',
     })
     run(sandbox, [CONFIRMED_SLUG, '--local'], first)
 
@@ -271,7 +268,6 @@ describe('scripts/pull-spec.sh --local', () => {
       slug: CONFIRMED_SLUG,
       confirmedAt: 1_500,
       title: 'Second pull, meant to replace the first file TEST',
-      mockupHtml: '<!doctype html><html><body>SECOND PULL TEST</body></html>',
     })
     const { status } = run(sandbox, [CONFIRMED_SLUG, '--local'], second)
 
@@ -279,14 +275,15 @@ describe('scripts/pull-spec.sh --local', () => {
     const specMd = readFileSync(join(userDir(sandbox, CONFIRMED_SLUG), 'spec.md'), 'utf8')
     expect(specMd).toContain('# Second pull, meant to replace the first file TEST')
     expect(specMd).not.toContain('First pull TEST')
-    expect(readFileSync(join(userDir(sandbox, CONFIRMED_SLUG), 'mockup.html'), 'utf8')).toBe(
-      '<!doctype html><html><body>SECOND PULL TEST</body></html>',
-    )
   }, SUBPROCESS_TIMEOUT_MS)
 
-  it('writes NEITHER file and exits non-zero when the account has no spec at all', async () => {
-    // The partial-write hazard this guards against: a spec.md from one
-    // proposal sitting next to a mockup.html from nowhere.
+  it('writes nothing and exits non-zero when the account has no spec at all', async () => {
+    // The partial-write hazard write-spec-pair.ts's guards defend against: a
+    // spec.md left half-written by a failure partway through the rename
+    // sequence. There is only one file now (as of the mockup-loop removal,
+    // plan 2026-08-19-remove-the-mockup-loop, Task 6), but the outcome this
+    // test pins is the same as before — a refusal upstream must reach here
+    // as "wrote nothing", not "wrote a stale file".
     //
     // Nothing confirms any more (lib/db/specs.ts's currentSpec is the newest
     // spec, full stop), so the only account left that exportSpec refuses is

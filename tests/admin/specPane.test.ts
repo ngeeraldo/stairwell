@@ -316,12 +316,6 @@ describe('the spec pane', () => {
     )
   })
 
-  it('renders the mockup with an empty sandbox', async () => {
-    const html = await render('devone')
-    expect(html).toContain('sandbox=""')
-    expect(html).not.toContain('allow-scripts')
-  })
-
   it('says so plainly when there are no proposals yet', async () => {
     // Two different absences now, and they are worth distinguishing: an empty
     // conversation, and a conversation with no spec at all. The Spec tab
@@ -329,7 +323,6 @@ describe('the spec pane', () => {
     // more), so it is the second one that decides what that tab says.
     const html = await render('devtwo')
     expect(html).toContain('No spec yet.')
-    expect(html).toContain('No mockup yet.')
   })
 
   it('still 404s a non-admin session', async () => {

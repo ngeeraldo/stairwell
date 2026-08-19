@@ -67,19 +67,6 @@ export type AuthorInput = {
   accountId: number
   conversationId: string
   signal: AbortSignal
-  /**
-   * HISTORICAL as of the mockup-loop removal (plan
-   * 2026-08-19-remove-the-mockup-loop, Task 4): no production code calls this
-   * anymore. It used to fire when authoring crossed from writing the spec to
-   * drawing the mockup — a real boundary, because the two halves took nothing
-   * like the same time and a friend watching needed to know which one they
-   * were in. There is only one model call now, so there is no crossing left
-   * to report. Kept, not deleted: a test double elsewhere in the suite still
-   * types its mock against `AuthorInput` and calls this field (out of this
-   * task's scope — a later task removes it), so removing the field here would
-   * be a needless compile break for that file.
-   */
-  onStage?: (stage: 'mockup') => void
 }
 
 /**

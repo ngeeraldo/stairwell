@@ -233,11 +233,10 @@ afterAll(() => {
 })
 
 describe('exportSpec', () => {
-  it('renders the current spec and returns its mockup verbatim', () => {
+  it('renders the current spec', () => {
     const out = exportSpec(db, 'devtwo')
     expect(out.spec_md).toContain('# Eating out and the car fund')
     expect(out.spec_md).toContain('v1')
-    expect(out.mockup_html).toBe(MOCKUP)
   })
 
   it('exports the newest spec, confirmed or not — nothing confirms any more', () => {
@@ -246,7 +245,6 @@ describe('exportSpec', () => {
     // its newer one does not — the newer one still wins.
     const out = exportSpec(db, 'devfive')
     expect(out.spec_md).toContain('A newer spec on top TEST')
-    expect(out.mockup_html).toBe('<!doctype html><html><body>NEWER MOCKUP TEST</body></html>')
     // The older, historically-confirmed spec must not be what gets exported
     // once something newer exists.
     expect(out.spec_md).not.toContain('An older, once-confirmed spec TEST')
@@ -381,8 +379,7 @@ describe('scripts/export-spec.ts (CLI)', () => {
   it('exports the current spec to stdout as JSON once PLATFORM_DB is set', () => {
     const { status, output } = run(['devtwo'], { PLATFORM_DB: join(dir, 'synthetic.db') })
     expect(status).toBe(0)
-    const parsed = JSON.parse(output) as { spec_md: string; mockup_html: string }
+    const parsed = JSON.parse(output) as { spec_md: string }
     expect(parsed.spec_md).toContain('# Eating out and the car fund')
-    expect(parsed.mockup_html).toBe(MOCKUP)
   })
 })

@@ -259,7 +259,7 @@ export const SCREENS: Screen[] = [
     live: false,
     assertions: [
       'RETIRED — the scoped small preview this screen photographed lived on the proposal card, which no longer renders.',
-      'The scoping mechanism itself (composeMockup + affectedScreens) still exists server-side; nothing on the friend\'s screen shows its output any more.',
+      'RETIRED twice over — the scoping mechanism itself (composeMockup + affectedScreens) is deleted too, as of the mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop, Task 6): nothing composes or serves mockup HTML any more.',
     ],
   },
   {
@@ -294,10 +294,12 @@ export const SCREENS: Screen[] = [
   },
   {
     // RETIRED. "View full screen" was the card's own control, opening the
-    // SAME session-authed /mockup/<version> route the admin portal's
-    // MockupDialog still reads from (see admin-mockup below, which keeps
-    // covering that route and that dialog component). With no card there is
-    // no friend-facing control left that opens it.
+    // session-authed /mockup/<version> route. That route (and the dialog
+    // component it fed, and the admin portal's own use of both — formerly
+    // admin-mockup, below) is gone too, as of the mockup-loop removal (plan
+    // 2026-08-19-remove-the-mockup-loop, Task 6): nothing composes or serves
+    // mockup HTML any more. With no card there is no friend-facing control
+    // left that opens it, and nothing left for it to open.
     id: 'card-fullscreen',
     path: '/SLUG',
     routeFile: 'app/[user]/page.tsx',
@@ -306,38 +308,27 @@ export const SCREENS: Screen[] = [
     live: false,
     assertions: [
       'RETIRED — "View full screen" was a control on the proposal card, which no longer renders.',
-      'The dialog component and the route it reads from are unchanged and still covered by admin-mockup, the admin portal\'s own use of the same affordance.',
+      'RETIRED twice over — the dialog component and the route it read from are gone as of the mockup-loop removal (Task 6).',
     ],
   },
   {
-    // The mockup document on its own, without the dialog around it — the only
-    // shot where a container defect has nowhere to hide. mockup-v1 told the
-    // model to render "on a phone-width screen" and got exactly that: a ~430px
-    // column centred on a 1440px monitor; mockup-v2 replaces it with a fluid
-    // contract.
-    //
-    // WHAT THIS SHOT CANNOT TELL YOU, stated so nobody over-trusts it: the
-    // HTML here is the SEED FIXTURE from scripts/shots.ts, not model output.
-    // The harness never calls the live API (CLAUDE.md > Testing), so no
-    // screenshot in this repo can verify that the model obeys mockup-v2. This
-    // guards the route, the iframe, and the fixture's own responsiveness — a
-    // real container regression in generated HTML shows up only in a live
-    // walkthrough, or in a mockup pulled by scripts/pull-spec.sh and opened by
-    // hand. Read the assertions below as "what a correct document looks like",
-    // and check them against a REAL generated mockup at least once per prompt
-    // version.
+    // RETIRED as of the mockup-loop removal (plan
+    // 2026-08-19-remove-the-mockup-loop, Task 6): app/mockup/[version]/route.ts
+    // is deleted — nothing composes or serves mockup HTML any more, so there
+    // is no document left for this screen to photograph.
     id: 'mockup-document',
     path: '/mockup/1',
+    // The file that used to serve this screen — deleted, along with the
+    // route, as of the mockup-loop removal (Task 6). Left naming it rather
+    // than repointed at an unrelated file: `routeFile` is only checked for
+    // `live: true` screens (tests/scripts/shots.test.ts), and a deleted path
+    // is a more honest historical record than a plausible-looking live one.
     routeFile: 'app/mockup/[version]/route.ts',
     state: 'friend-new',
-    live: true,
+    live: false,
     assertions: [
-      'AT 1440 the layout is composed for the width — several panels across where the content allows, not one narrow column with empty margins either side.',
-      'AT 1440 no line of prose runs the entire window width; measure stays readable.',
-      'AT 375 it is a single comfortable column: nothing clipped, no horizontal scrolling.',
-      'It is ONE document behaving differently at the two widths — not two different layouts and not a fixed-width card.',
-      'No annotation furniture: no "also appears as", no "other one-line answers this shows", no caption explaining what a panel is for. Panels show data, not commentary about themselves.',
-      'Every value is loudly fake (TEST merchants, £000.00) — nothing that could be mistaken for real money.',
+      'RETIRED — the route this screen photographed (app/mockup/[version]/route.ts) is deleted; nothing composes or serves mockup HTML any more.',
+      'What used to be checked here — a fluid, responsive mockup document with no annotation furniture — has no surface left to check it against.',
     ],
   },
   {
@@ -378,16 +369,20 @@ export const SCREENS: Screen[] = [
     ],
   },
   {
+    // RETIRED. The Mockup tab this screen photographed is gone from
+    // AdminTabs — two tabs now, Transcript and Spec — as of the mockup-loop
+    // removal (plan 2026-08-19-remove-the-mockup-loop, Task 6): its serving
+    // route (app/admin/mockup/[user]/[version]/route.ts) is deleted, and
+    // nothing composes or serves mockup HTML any more.
     id: 'admin-mockup',
     path: '/admin/SLUG',
     routeFile: 'app/admin/[user]/page.tsx',
     state: 'admin',
     act: 'tab-mockup',
-    live: true,
+    live: false,
     assertions: [
-      'The mockup renders in an iframe with a full-screen control — the same affordance the friend gets.',
-      'The iframe shows the mockup itself, not a blank box or an error page: the admin route must be serving it.',
-      'Nothing here offers an edit control. The admin portal is read-only.',
+      'RETIRED — the Mockup tab this screen photographed no longer exists; the admin pane is Transcript/Spec, two tabs.',
+      'The route it read from (app/admin/mockup/[user]/[version]/route.ts) is deleted, along with the friend-facing route beside it.',
     ],
   },
 ]

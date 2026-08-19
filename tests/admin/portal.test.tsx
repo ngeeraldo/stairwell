@@ -1,8 +1,11 @@
 // tests/admin/portal.test.tsx
 //
 // What the onboarding build added to the admin portal: a user list ordered by
-// activity, three tabs, proposal cards inline in the conversation, the spec as
-// real markdown, and a read-only mockup route.
+// activity, tabs, proposal cards inline in the conversation, and the spec as
+// real markdown. It used to also add a read-only mockup route and a Mockup
+// tab; both are gone as of the mockup-loop removal (plan
+// 2026-08-19-remove-the-mockup-loop, Task 6) — nothing composes or serves
+// mockup HTML any more, and the admin pane is Transcript/Spec, two tabs.
 //
 // The existing tests/admin/{specPane,transcriptPane}.test.ts still cover the
 // spec bodies and the authorization rules; this file covers what is new.
@@ -13,7 +16,6 @@ import { join } from 'node:path'
 import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PlatformDb } from '@/lib/db/platform'
-import { BANNER_MARKER } from '@/lib/spec/banner'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
 vi.mock('next/headers', () => ({
@@ -312,102 +314,5 @@ describe('the spec tab', () => {
     // requirement.
     expect(html).not.toMatch(/<img\b/)
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
-  })
-})
-
-describe('the admin mockup route', () => {
-  async function get(slug: string, version: string): Promise<Response> {
-    const { GET } = await import('@/app/admin/mockup/[user]/[version]/route')
-    return GET(new Request(`http://localhost/admin/mockup/${slug}/${version}`), {
-      params: Promise.resolve({ user: slug, version }),
-    })
-  }
-
-  it('serves any user’s version to an admin, read-only', async () => {
-    const { devone } = await seed()
-    const { insertSpec } = await import('@/lib/db/specs')
-    insertSpec(db!, {
-      accountId: devone,
-      conversationId: 'c',
-      promptSha: 'sha',
-      payload: { title: 'x' },
-      mockupHtml: MOCKUP,
-      at: 100,
-    })
-
-    const response = await get('devone', '1')
-    expect(response.status).toBe(200)
-    const html = await response.text()
-    // Banner included here too: Nico reading a friend's mockup should see the
-    // same label the friend sees. A preview that looks like a dashboard is
-    // exactly as misleading in the admin portal.
-    expect(html).toContain(BANNER_MARKER)
-    expect(html).toContain('COFFEE PALACE TEST')
-    // Task 25: `sandbox` restricts scripts/forms/navigation; the three
-    // directives after it are the fetch-blocking half — see
-    // app/admin/mockup/[user]/[version]/route.ts for the full rationale.
-    expect(response.headers.get('content-security-policy')).toBe(
-      "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
-    )
-  })
-
-  // Task 25's red test, admin side: a fixture shaped exactly like the leak
-  // this guard exists for — a stored mockup whose HTML carries a real
-  // outbound reference. Nico read this route's response over reading the
-  // route source, so the fixture has to be the thing that would actually
-  // fetch in a browser, not a synthetic assertion about the route's code.
-  it('forbids the CSP from allowing an external image the stored mockup carries', async () => {
-    const { devone } = await seed()
-    const { insertSpec } = await import('@/lib/db/specs')
-    insertSpec(db!, {
-      accountId: devone,
-      conversationId: 'c',
-      promptSha: 'sha',
-      payload: { title: 'x' },
-      mockupHtml:
-        '<!doctype html><html><body><img src="https://cdn.example.test/leak.png"></body></html>',
-      at: 100,
-    })
-
-    const response = await get('devone', '1')
-    const csp = response.headers.get('content-security-policy')
-    expect(csp).toContain("default-src 'none'")
-    expect(csp).toContain('img-src data:')
-    // The negative half of the assertion, and the one that would actually
-    // catch a regression: `img-src data:` alone does not forbid `https:` if
-    // the directive were ever loosened to `img-src data: https:` or similar.
-    expect(csp).not.toContain('https:')
-    expect(csp).not.toContain('http:')
-  })
-
-  it('404s a non-admin, telling them nothing about whether it exists', async () => {
-    const { getDb } = await import('@/lib/db/instance')
-    const { createAccount } = await import('@/lib/auth/accounts')
-    const { createSession } = await import('@/lib/session/store')
-    const { insertSpec } = await import('@/lib/db/specs')
-    db = getDb()
-    const id = await createAccount(db, {
-      slug: 'devone',
-      role: 'user',
-      password: 'TEST-NOT-A-REAL-PASSWORD',
-    })
-    insertSpec(db, {
-      accountId: id,
-      conversationId: 'c',
-      promptSha: 'sha',
-      payload: { title: 'x' },
-      mockupHtml: MOCKUP,
-      at: 100,
-    })
-    cookieSlot.value = { value: createSession(db, id) }
-
-    expect((await get('devone', '1')).status).toBe(404)
-  })
-
-  it('404s an unknown user and an unknown version', async () => {
-    await seed()
-    expect((await get('nobody', '1')).status).toBe(404)
-    expect((await get('devone', '99')).status).toBe(404)
-    expect((await get('devone', 'abc')).status).toBe(404)
   })
 })
