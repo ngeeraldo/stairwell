@@ -18,6 +18,7 @@ import type { DashboardScreen } from '@/lib/dashboard/contract'
 import { declaredObjects } from '@/tests/support/declaredObjects'
 import { verifyManifest } from '@/lib/db/migrationFiles'
 import { readBuildNotes } from '@/lib/build/notes'
+import { readCurrentState } from '@/lib/build/currentState'
 
 /**
  * Governs a screen id — NOT lib/auth/slug.ts's SLUG_PATTERN, despite both
@@ -324,6 +325,41 @@ describe('users/ folder conventions', () => {
       // therefore declare its checksums too.
       expect(existsSync(join(dir, 'migrations', 'manifest.json'))).toBe(true)
       expect(() => verifyManifest(slug)).not.toThrow()
+    })
+
+    whenBuilt('has a current.md that parses', () => {
+      // PRESENCE, unlike notes/ — and the difference is that this sweep CAN
+      // know. Which v<n>.md files should exist depends on which versions were
+      // built, which lives in the platform database; current.md is exactly one
+      // file per built dashboard, and a built dashboard the agent cannot see
+      // is the whole defect this artifact exists to fix.
+      const state = readCurrentState(slug, USERS)
+      expect(state, `${slug} is built but has no current.md`).not.toBeNull()
+      expect(state!.slug).toBe(slug)
+    })
+
+    whenBuilt('current.md names the newest version that was built', () => {
+      // THE STALENESS GATE, and it needs no database — notes/v<n>.md exists
+      // on disk for exactly the versions that were built, so the newest note
+      // is what current.md must describe.
+      //
+      // This matters because nothing else catches it: `*.md` is exempt from
+      // Gate B (.githooks/pre-commit:152), so a build that edits dashboard.tsx
+      // and forgets to rewrite current.md commits green. Without this check
+      // the file rots into a description of some earlier version, which is the
+      // exact failure the artifact exists to prevent, just slower.
+      const versions = readdirSync(join(dir, 'notes'))
+        .map((f) => /^v(\d+)\.md$/.exec(f))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => Number(m[1]))
+      const state = readCurrentState(slug, USERS)!
+      // No notes at all means the folder predates the spec loop — devone and
+      // devtwo, hand-written, never had a version. Version 0 says so.
+      const expected = versions.length === 0 ? 0 : Math.max(...versions)
+      expect(
+        state.version,
+        `${slug}/current.md says version ${state.version}, newest note is v${expected}`,
+      ).toBe(expected)
     })
 
     whenComplete('has at least one test of its own', () => {

@@ -1,0 +1,42 @@
+---
+slug: __SLUG__
+version: 1
+---
+
+## What this is for
+One paragraph, in __SLUG__'s own terms. What they open this to find out.
+
+## Screens
+Each screen: its id, its title, and what is on it. The platform draws the tab
+strip from dashboard.tsx's own `screens` export — say what the screens ARE,
+not how they are drawn.
+
+## Panels
+Each panel: what it shows, how it behaves, and the edges that were decided.
+The edges are the part that matters and the part a spec never has — where a
+count stops, which days are blank rather than zero, what an empty state says.
+
+WRITE THIS FROM queries.ts, NOT FROM dashboard.tsx. A panel's real behaviour
+usually lives in its query, not in the component that renders it: a streak with
+a one-day grace period, a total that counts only logged days, a window that
+starts on Monday. The component shows you a number; the query is what decides
+what the number MEANS. Describing only what you can see rendered is how this
+file ends up confidently wrong.
+
+## What can be entered
+Every control that writes, and what it writes. "Nothing" is a real answer for
+a read-only dashboard.
+
+## Deliberately not included
+What was considered and turned down, and why. This is the only place a refusal
+survives: without it the agent proposes the same thing again next month.
+
+<!--
+  OVERWRITE THIS FILE ON EVERY BUILD. It describes what the dashboard IS, not
+  what changed — notes/v<n>.md is the changelog and is added, never edited.
+  Bump `version` to the spec version you just built.
+
+  Never put __SLUG__'s data in here. This file is committed to the repo:
+  describe shape — a panel, a computation, a rule — never a row, a value, or a
+  merchant. The same bound notes/ carries.
+-->
