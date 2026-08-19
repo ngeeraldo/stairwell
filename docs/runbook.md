@@ -389,6 +389,11 @@ npx vitest run tests/users/conventions.test.ts   # first run where the sweep
                                                  # treats this folder as BUILT
 ```
 
+Two of the sweep's built-only checks stay red here on purpose: they want
+`current.md`, and that file is not written until step 7.5. Re-sweeping "goes
+green everywhere else" between here and there, not "all green" — expected,
+not a sign the migration is wrong.
+
 `npm run synthetic` prints each `seed.py`'s own line. **If `$FRIEND`'s says
 `no shape yet, empty database`, the migration did not land and the tests that
 just passed proved nothing** — they build their fixture from the migration
@@ -480,13 +485,39 @@ before they started rendered as a day they failed, with every test green
 If a login under `npm run dev` looks like it did not stick, reload — it is the
 cold-route artifact described in `docs/local-dev.md`, not your code.
 
-### 7.5 Write the build notes
+### 7.5 Write the build notes, and rewrite `current.md`
 
-Before you ship, write `users/$FRIEND/notes/v$V.md`. `notes/README.md` in their
-folder holds the template and says which sections the friend sees.
+Two files, and they answer different questions. Write both before you ship.
 
-Step 9 speaks from this file and refuses without it. Never put their data in it
-— it is committed to the repo (build-rules §2).
+**`users/$FRIEND/notes/v$V.md`** — what shipped in THIS version. Added, never
+edited: step 9 speaks from it, and editing one changes what an already-sent,
+permanent announcement was based on. `notes/README.md` in their folder holds
+the template and says which sections the friend sees.
+
+**`users/$FRIEND/current.md`** — what the dashboard IS now, after this build.
+**Overwritten every time**, because it is the agent's whole picture of what
+exists and a changelog is not a picture. If the file is not there yet:
+
+```bash
+sed 's/__SLUG__/'"$FRIEND"'/g' platform/templates/dashboard/current.md.tmpl \
+  > users/$FRIEND/current.md
+```
+
+Then edit it to describe what you actually built, and set `version: $V`.
+Write the panel descriptions from `queries.ts`, not from `dashboard.tsx` — a
+panel's real behaviour usually lives in its query (a grace day, a window, what
+counts as a logged day), and a description written from the component alone
+describes a simpler dashboard than the one that shipped.
+`tests/users/conventions.test.ts` fails if it is missing, or if its version is
+not the newest `notes/v<n>.md` — that check is what stops it rotting, since
+`*.md` is exempt from Gate B and a commit will not notice.
+
+The section that earns the most care is `## Deliberately not included`. It is
+the only place a refusal survives. Anything the friend considered and turned
+down goes there, or the agent proposes it again next month.
+
+Never put their data in either file — both are committed to the repo
+(build-rules §2).
 
 ### 7.6 Commit the build
 
@@ -503,6 +534,11 @@ and one under `tests/` if you also wrote a platform route. Gate C typechecks.
 Gate F blocks the commit outright while a non-synthetic database sits under
 `users/`, and has no skip. Committing in smaller pieces as you go is fine — the
 only rule is that nothing is left behind when you reach step 8.
+
+`current.md` and the notes are `*.md`, which Gate B exempts — they will not
+force a test, and they will not be noticed if you forget them. The sweep in
+`npx vitest run tests` is what catches a missing or stale `current.md`, so run
+it before you reach step 8.
 
 ---
 
@@ -643,7 +679,8 @@ whole-surface spec in chat, and you run 0 → 4 → 5 → 6 → 7 → 8 → 9 ag
 fresh `<slug>/v<n>` branch. `pull-spec.sh` overwrites the pair, step 6 skips the
 scaffold and step 7 skips the registry line, and everything else is the same
 work as the first time — including a migration, which at v2 is the next number
-rather than `001` (step 7.2).
+rather than `001` (step 7.2), and including a rewritten `current.md`
+(step 7.5). The notes are a new file; `current.md` is the same file, replaced.
 
 The announce script tracks versions, so the second run announces v2 and stays
 quiet about v1.
@@ -664,6 +701,7 @@ is here because getting it wrong is expensive and quiet.
 | Add a new prompt version — `agent-v3.md` | `prompt_sha` is stamped on transcript and spec rows that already exist, so editing `agent-v2.md` changes what an already-written hash points at. Prompts are added, and that is a data-safety property. |
 | Run `announce-deploy.ts` by hand, once per friend, at step 9 | `deploy.sh` deploys the whole service. Calling the announcer from it would post "your dashboard is live" into every account's chat on every push — a permanent line in an append-only transcript. |
 | Write `notes/v<n>.md` before announcing, and never edit one afterwards | It is the only record of what shipped, and step 9 speaks from it. An edited note changes what an already-sent, permanent announcement was based on. |
+| Rewrite `current.md` on every build, and never let it accumulate | It is what the chat agent reads to know what exists. A note is added and never edited because an announcement was based on it; `current.md` is the opposite and must be REPLACED, because an agent that has to replay a changelog to work out the current state is back to guessing. |
 | Read the drafted announcement, then send it back with `--send --body-file` | `transcripts` rejects DELETE. `--send` alone re-drafts — a fresh model sample, not the sentence you read — so reading a draft only gates what gets written when `--body-file` sends that exact draft back verbatim, with no model call. |
 | Leave every `deploy_announced` and `first_session_start` metric row in place | Both are read for correctness, not observed. Losing one makes a weeks-old build re-announce itself, or a months-old account report a first session again. They look like telemetry and are not. |
 | Build locally with `scripts/create-local-account.ts` + `npm run dev` | `npm start` sets `NODE_ENV=production`, the only switch `lib/db/userData.ts` has, so a login there takes the production branch and `lib/db/migrate.ts` writes a real `users/<slug>/<slug>.db` onto your laptop. Gate F blocks your next commit until it is removed. |
