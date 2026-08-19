@@ -7,6 +7,7 @@ import type { PlatformDb } from '@/lib/db/platform'
 import { CHAT_EFFORT, CHAT_MODEL } from '@/lib/chat/client'
 import { AGENT_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import { CURRENT_STATE_BLOCK } from '@/lib/chat/turn'
+import type { Proposal } from '@/lib/spec/author'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
 let sessionCookieName = 'sid'
@@ -103,19 +104,19 @@ const slowAuthoring: { release?: () => void; onEnter?: () => void } = {}
 /** Every signal the route has handed to authorSpec, newest last. */
 const authoringSignals: AbortSignal[] = []
 
-const PROPOSAL_FIXTURE = {
+/**
+ * EXACTLY lib/spec/author.ts's Proposal — `{ id, version, at }` and nothing
+ * else. It used to carry a `payload` and a `mockup_html` that the type has
+ * never had on this branch; vi.mock's factory return is untyped, so those
+ * extra keys typechecked happily and read as evidence a proposal still
+ * carries a spec payload. It does not: the card that rendered one is gone
+ * (mockup-loop removal), and a fixture wider than the type is a claim about
+ * the shape that nothing checks.
+ */
+const PROPOSAL_FIXTURE: Proposal = {
   id: 7,
   version: 1,
   at: 1_000_001,
-  payload: {
-    title: 'T',
-    summary: 's',
-    background: 'b',
-    panels: [{ name: 'n', shows: 's', why: 'w', source: 'plaid' as const }],
-    manual_logging: [],
-    open_questions: [],
-  },
-  mockup_html: '<!doctype html>',
 }
 
 vi.mock('@/lib/spec/author', async (importOriginal) => {

@@ -80,9 +80,17 @@ export type DashboardComponent = (
 ) => ReactElement | Promise<ReactElement>
 
 /**
- * A place in the app, per the spec prompt's own words. `id`/`title`/`order`
- * mirror lib/spec/schema.ts's `Screen` fields exactly — never a second
- * source that could drift from what the spec promised.
+ * A place in the app. `id`/`title`/`order` mirror lib/spec/schema.ts's
+ * `Screen` fields exactly — but that type is a FROZEN reader now, describing
+ * the whole-surface rows already in `specs`, not what a spec says today.
+ *
+ * A change-only spec (lib/spec/change.ts) carries no ids at all: it names a
+ * screen the way the friend does. So a `title` still comes from what the
+ * spec asked for, while `id` and `order` are the BUILDER's — chosen at build
+ * time and written down in users/<slug>/current.md's `## Screens`, which is
+ * what the next build and the chat agent both read. The field triple stays
+ * aligned with `Screen` so a dashboard built against an older whole-surface
+ * spec still means exactly what it meant then.
  */
 export type DashboardScreen = { id: string; title: string; order: number }
 

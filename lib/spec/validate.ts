@@ -1,18 +1,21 @@
 // lib/spec/validate.ts
 //
+// FROZEN. parseSpecVersion re-validates a STORED whole-surface payload on the
+// way out of the database — a shape nothing authors any more. The model-output
+// validator that lived here (parseSpecDraft, re-exported from ./fields) is
+// gone with the schema it guarded; lib/spec/change.ts owns validating what is
+// written now.
+//
 // A schema-constrained REQUEST is not a guarantee about the row that reaches
-// an append-only table. This module is the last gate, and its error messages
-// are fed back to the model on the retry attempt (lib/spec/author.ts) — so
-// they name the exact path that failed, not just the fact of failure.
+// an append-only table, and that reasoning still holds for the live shape —
+// it just lives next door.
 //
 // Field-level validation lives in ./fields — this module validates a whole
-// emitted or stored document.
+// stored document.
 import { SpecShapeError, type SpecDraft, type SpecVersion } from './schema'
 import { arrayField, draftFrom, record, text } from './fields'
 import { parseOp, type SpecPatchOp } from './patch'
 import type { ScreenFragment } from '@/lib/db/screenMockups'
-
-export { parseSpecDraft } from './fields'
 
 /** Attach the lineage pointer and the ops that produced this version. The
  * only place a SpecVersion is constructed. */

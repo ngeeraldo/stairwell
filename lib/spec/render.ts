@@ -1,5 +1,6 @@
 import type { LegacySpecPayload } from './legacy'
 import type { DataRequirement, EntryWidget, Panel, Screen, SpecVersion, ValueSpec } from './schema'
+import type { ChangeAction, SpecChange, SpecChangeEntry } from './change'
 
 /** The metadata both renderers stamp below the title: who this build contract
  * is for, which version it is, and the version's date — a historical
@@ -221,7 +222,13 @@ function collectEnteredValues(screensInOrder: Screen[]): ValueSpec[] {
 }
 
 /**
- * The new whole-surface spec, as the build contract on disk.
+ * FROZEN, in the same sense renderLegacyMarkdown above is. It renders
+ * whole-surface rows, which nothing authors any more (renderChangeMarkdown
+ * below is the live renderer). Its behaviour must not move: spec.md is a
+ * build contract, and re-pulling an old spec must not produce a diff nobody
+ * asked for.
+ *
+ * The whole-surface spec, as the build contract on disk.
  *
  * Emits, in a fixed order: an H1 title with the generated-file banner; the
  * slug/version/date metadata list; `## What changed`; `## Summary`;
@@ -278,5 +285,71 @@ ${dataRequirementsSection}
 ## Open questions
 
 ${list(version.open_questions)}
+`
+}
+
+/** Sentence-case labels for the three actions, so a heading reads as an
+ *  instruction to the builder rather than as an enum. */
+const ACTION_LABEL: Record<ChangeAction, string> = {
+  add: 'Add',
+  change: 'Change',
+  remove: 'Remove',
+}
+
+/** One change: a heading naming what to do to what, then the description. The
+ *  heading carries `name` unescaped-looking but escaped — a name is
+ *  model-authored free text like everything else on this shape, unlike the
+ *  validated slug ids the frozen renderer above could safely inline. */
+function renderChange(change: SpecChangeEntry): string {
+  return (
+    `### ${ACTION_LABEL[change.action]} ${change.target} — ${safeMarkdown(change.name)}\n\n` +
+    safeMarkdown(change.description)
+  )
+}
+
+/**
+ * A change-only spec, as the build contract on disk.
+ *
+ * The H1 is the slug and the version, not a title: this shape has no `title`
+ * (design §5.0.1). That is deliberate rather than a gap — the whole dashboard's
+ * name and purpose live in users/<slug>/current.md, and a model-authored title
+ * re-emitted on every change is exactly the whole-surface habit this shape
+ * removes.
+ *
+ * Deterministic: a pure function of `change` and `meta`, so a re-pull produces
+ * no spurious diff.
+ */
+export function renderChangeMarkdown(change: SpecChange, meta: RenderMeta): string {
+  const changes = change.changes.map(renderChange).join('\n\n')
+  const dataRequirements =
+    change.data_requirements.length === 0
+      ? '_None._'
+      : change.data_requirements.map(dataRequirementLine).join('\n')
+
+  return `# ${safeMarkdown(meta.slug)} — spec v${meta.version}
+
+<!-- Generated from the spec record by scripts/pull-spec.sh.
+     Do not hand-edit: the next pull overwrites this file. -->
+
+- **User:** ${meta.slug}
+- **Spec version:** v${meta.version}
+- **Version date:** ${new Date(meta.confirmedAt).toISOString()}
+- **Based on:** ${change.based_on_version === null ? 'nothing — this is the first version' : `v${change.based_on_version}`}
+
+## What changed
+
+${safeMarkdown(change.change_summary)}
+
+## Changes
+
+${changes}
+
+## Data requirements
+
+${dataRequirements}
+
+## Open questions
+
+${list(change.open_questions)}
 `
 }

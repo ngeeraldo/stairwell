@@ -16,6 +16,7 @@ import {
 } from '@/lib/chat/announce'
 import type { SpecVersion } from '@/lib/spec/schema'
 import type { LegacySpecPayload } from '@/lib/spec/legacy'
+import { parseSpecChangeDraft, sealChange } from '@/lib/spec/change'
 
 let dir: string
 let db: PlatformDb
@@ -234,6 +235,47 @@ describe('announceTarget', () => {
     expect(target.ok).toBe(true)
     if (!target.ok) return
     expect(target.headline).toBe('A legacy dashboard TEST')
+  })
+
+  // Own account, same reasoning as the legacy case above: a change-shaped row
+  // is a different SHAPE of spec, not just another version of devtwo's
+  // history. Nothing writes this shape yet (Task 5 switches authoring over),
+  // but the announcer has to be ready the moment something does.
+  it('reads a change-shaped spec\'s change_summary as the headline', async () => {
+    const changeAccountId = await createAccount(db, {
+      slug: 'changeannounce',
+      role: 'user',
+      password: 'TEST-changeannounce',
+    })
+    insertSpec(db, {
+      accountId: changeAccountId,
+      conversationId: 'conv-changeannounce',
+      promptSha: 'sha-changeannounce-0001',
+      payload: sealChange(
+        parseSpecChangeDraft({
+          change_summary: 'Added a weekly average TEST.',
+          changes: [
+            {
+              action: 'add',
+              target: 'panel',
+              name: 'Weekly average TEST',
+              description: 'Mean of the last seven logged days TEST.',
+            },
+          ],
+          data_requirements: [],
+          open_questions: [],
+        }),
+        null,
+      ),
+      mockupHtml: MOCKUP,
+      at: 1_000,
+    })
+    writeNote(dir, 'changeannounce', 1)
+
+    const target = announceTarget(db, 'changeannounce', dir)
+    expect(target.ok).toBe(true)
+    if (!target.ok) return
+    expect(target.headline).toBe('Added a weekly average TEST.')
   })
 
   // Ledger D9: a promise made to a person, gotten wrong before. A SECOND

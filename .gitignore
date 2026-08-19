@@ -18,6 +18,31 @@
 .env
 .env.*
 
+# A friend's raw transcript, pulled beside spec.md by scripts/pull-spec.sh so
+# the builder can read what they meant. NEVER committed: spec.md is a designed
+# artifact describing a dashboard, and this is everything they said, including
+# whatever they said around it. The record of record is the append-only
+# `transcripts` table on the droplet. The guard hook denies .db and .env, not
+# markdown — these two lines and tests/repo/gitignore.test.ts are the whole
+# defence. See CLAUDE.md > Data safety.
+#
+# TWO LINES, because the transcript exists at more than one path. The second
+# covers the sidecars scripts/write-spec-pair.ts writes next to it —
+# `.conversation.md.tmp`, which holds the transcript byte-for-byte during every
+# single pull, and `.conversation.md.bak`, which that file's rollback
+# DELIBERATELY leaves behind when a restore fails (a named residual: at that
+# moment the .bak is the only surviving copy). Git does not ignore dotfiles, so
+# without the second line `git add -A` stages a whole transcript at a perfectly
+# ordinary path. Keep the two in step with the `.${name}.tmp` / `.${name}.bak`
+# names in scripts/write-spec-pair.ts, which points back at this block.
+#
+# Deliberately NOT `users/*/*conversation.md*` or anything wider: spec.md is
+# tracked, and users/<slug>/notes/conversation.md is a note somebody wrote by
+# hand and may well want committed. `*` does not cross a `/`, which is what
+# keeps the second one out of these patterns.
+users/*/conversation.md
+users/*/.conversation.md.*
+
 # Dependencies
 node_modules/
 

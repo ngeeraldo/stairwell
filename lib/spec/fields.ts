@@ -1,13 +1,21 @@
 // lib/spec/fields.ts
 //
 // How ONE spec field is validated. Extracted out of validate.ts to break a
-// runtime import cycle: Task 11 has validate.ts import parseOp (a value)
-// from patch.ts, while patch.ts imports parsePanel, parseScreen, and
-// parseSpecDraft (values) from here. Import directions, one way only:
+// runtime import cycle: validate.ts imports parseOp (a value) from patch.ts,
+// while patch.ts imports parsePanel and parseScreen (values) from here.
+// Import directions, one way only:
 //
 //   fields.ts   -> schema.ts
 //   patch.ts    -> fields.ts, schema.ts
 //   validate.ts -> fields.ts, patch.ts
+//
+// FROZEN, with one live edge. Every parser below reads the whole-surface
+// shape, which nothing authors any more — they run on the way OUT of the
+// database, from parseSpecVersion. The live edge is the EIGHT helpers
+// exported at the bottom, seven of which lib/spec/change.ts reuses — record,
+// text, textList, arrayField, oneOf, nonEmptyArray and requirement — rather
+// than writing a second copy of "is this status valid". The eighth, integer,
+// is exported alongside them but has no reader outside this file today.
 import {
   FIELD_TYPES,
   REQUIREMENT_STATUSES,
@@ -104,8 +112,10 @@ function arrayField(src: Record<string, unknown>, key: string, at: string): unkn
 
 function nonEmptyArray(src: Record<string, unknown>, key: string, at: string): unknown[] {
   const value = arrayField(src, key, at)
-  // Enforced HERE, not in SPEC_JSON_SCHEMA: minItems is outside the supported
-  // structured-output subset and would be silently ignored there.
+  // Enforced HERE, not in the JSON schema a model was constrained by:
+  // minItems is outside the supported structured-output subset and would be
+  // silently ignored there. The rule outlived the schema — lib/spec/change.ts
+  // says the same thing about its own `changes` array.
   if (value.length === 0) throw new SpecShapeError(`${at}.${key} is empty`)
   return value
 }
@@ -260,24 +270,19 @@ export function draftFrom(src: Record<string, unknown>): SpecDraft {
   return parsed
 }
 
-/** Validate MODEL output. Rejects a model-authored based_on_version outright. */
-export function parseSpecDraft(raw: unknown): SpecDraft {
-  const src = record(raw, 'spec')
-  if ('based_on_version' in src) {
-    throw new SpecShapeError('based_on_version is supplied by the server and must not be authored')
-  }
-  if ('ops' in src) {
-    throw new SpecShapeError('ops is supplied by the server and must not be authored')
-  }
-  return draftFrom(src)
-}
-
 // Exported because validate.ts still needs them directly (record/text for
 // parseMockupInput and parseSpecVersion's based_on_version check; draftFrom
-// for re-validating a stored payload without re-checking based_on_version;
-// arrayField for parseScreenMockups' `screens` array, which has no minimum —
-// zero affected screens is legitimate, see lib/spec/mockupCompose.ts).
-// textList and integer are exported for lib/spec/patch.ts, which reuses them
-// for its own open_questions and update_screen.order fields rather than
-// re-implementing the same rule a second time.
-export { record, text, textList, integer, arrayField }
+// for re-validating a stored payload — the whole of parseSpecDraft, the
+// model-output validator that used to sit above it, is gone with the schema
+// it guarded; arrayField for parseScreenMockups' `screens` array, which has
+// no minimum — zero affected screens is legitimate).
+// integer is exported for lib/spec/patch.ts's parseOp, which reuses it for
+// update_screen.order rather than re-implementing the same rule a second
+// time.
+//
+// oneOf, nonEmptyArray and requirement are exported for lib/spec/change.ts —
+// the LIVE shape. This file is otherwise a frozen reader (see its header),
+// and handing out a string-validation helper is not authoring a new shape.
+// `requirement` in particular must not be copied: two implementations of the
+// data_requirements parser would be two answers to "is this status valid".
+export { record, text, textList, integer, arrayField, oneOf, nonEmptyArray, requirement }

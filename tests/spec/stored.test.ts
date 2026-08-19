@@ -67,3 +67,52 @@ describe('readStoredSpec', () => {
     expect(() => readStoredSpec('{"nonsense": true}')).toThrow(SpecShapeError)
   })
 })
+
+const CHANGE = JSON.stringify({
+  shape: 'change',
+  based_on_version: 2,
+  change_summary: 'Added a weekly average.',
+  changes: [
+    {
+      action: 'add',
+      target: 'panel',
+      name: 'Weekly average',
+      description: 'Mean of the last seven logged days.',
+    },
+  ],
+  data_requirements: [],
+  open_questions: [],
+})
+
+describe('readStoredSpec, three arms', () => {
+  it('reads a tagged row as a change', () => {
+    const stored = readStoredSpec(CHANGE)
+    expect(stored.kind).toBe('change')
+    if (stored.kind !== 'change') throw new Error('unreachable')
+    expect(stored.change.changes[0]!.name).toBe('Weekly average')
+    expect(stored.change.based_on_version).toBe(2)
+  })
+
+  it('checks the tag BEFORE the screens array', () => {
+    // Belt and braces against a payload carrying both. The tag is explicit
+    // and a `screens` key on a change row could only be model junk that got
+    // past additionalProperties — the tag is the stronger claim, and `specs`
+    // rejects UPDATE so whichever arm this picks, it picks forever.
+    const both = { ...JSON.parse(CHANGE), screens: [] }
+    expect(readStoredSpec(JSON.stringify(both)).kind).toBe('change')
+  })
+
+  it('reports a malformed CHANGE row as a change-shape error, not a legacy one', () => {
+    const broken = JSON.parse(CHANGE)
+    broken.changes = []
+    expect(() => readStoredSpec(JSON.stringify(broken))).toThrow(/changes is empty/)
+  })
+
+  it('still reads an untagged whole-surface row as a version', () => {
+    expect(readStoredSpec(CURRENT).kind).toBe('version')
+  })
+
+  it('still reads a pre-unification row as legacy', () => {
+    expect(readStoredSpec(LEGACY).kind).toBe('legacy')
+  })
+})

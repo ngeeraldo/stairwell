@@ -495,6 +495,11 @@ export async function runTurn(
         // NOT input.signal — see authoringSignal's docstring. Passing the
         // request's signal here is what made a wifi hop destroy a proposal.
         signal: input.authoringSignal,
+        // The SAME value the system prompt was built from a few lines above
+        // (CURRENT_STATE_BLOCK). One read in the route, two consumers here:
+        // the agent and the spec writer cannot disagree about what the
+        // dashboard currently is.
+        currentState: input.currentState,
       })
     } catch {
       // Defense in depth. authorSpec's own contract (lib/spec/author.ts) is

@@ -1,6 +1,11 @@
 # The built dashboard is the truth — design
 
-**Status:** proposed, 2026-08-18. Not yet built.
+**Status:** built. All three plans are done — plan 1 (`current.md`) and plan 2
+(mockup-loop removal) merged to `main`, and plan 3 (change-only specs and
+`conversation.md`) completed on 2026-08-19, its resolutions recorded in §5,
+§5.1 and §9. `CLAUDE.md`, `architecture-overview.md`, `docs/runbook.md`,
+`docs/dashboard-build-rules.md` and `docs/local-dev.md` were rewritten to
+match in plan 3's last task.
 
 **Supersedes:** the 2026-08-17 scoped-specs design in full (Parts A/B/C — the
 patch, the applier, the per-screen preview), and the unified-proposal-loop
@@ -239,22 +244,117 @@ without `notes/v<n>.md` — a build that skipped the rewrite cannot announce.
 
 ## 5. The spec, reshaped
 
-Change-only. The fields:
+Change-only. **Resolved 2026-08-19**, when plan 3 was written: this section
+named four fields without saying what they validate as, and left the stored
+discriminator unaddressed. Both are settled below.
 
-- `change_summary` — what is changing, in plain words. Becomes the
-  announcement's headline, as today.
-- The change itself — screens and panels added, changed or removed, described in
-  product language. No ids, no whole-surface restatement.
-- `data_requirements` — what the build needs to store or fetch.
-- `open_questions` — anything genuinely unresolvable in conversation.
+### 5.0 The shape
 
-Kept as validated structure rather than prose for three specific reasons: the
-announcement's headline, the non-empty-`## Open` routing warning, and a
-validator standing between a rambling model and a permanent row in a table that
-rejects UPDATE.
+```ts
+type SpecChangeEntry = {
+  action: 'add' | 'change' | 'remove'
+  target: 'screen' | 'panel'
+  name: string         // what the friend calls it — never an id
+  description: string  // what it shows and how it behaves, what changes about
+                       // it, or why it goes
+}
 
-`lib/spec/schema.ts` and `validate.ts` shrink to this shape. `lib/spec/patch.ts`,
-`applyPatch`, `PATCH_JSON_SCHEMA` and the three authoring paths go entirely.
+type SpecChangeDraft = {
+  change_summary: string           // the announcement's headline, as today
+  changes: SpecChangeEntry[]       // at least one
+  data_requirements: DataRequirement[]
+  open_questions: string[]
+}
+
+/** What is stored. `shape` and `based_on_version` are server-written; the
+ *  draft parser rejects either one authored by the model, exactly as it
+ *  already rejects an authored `based_on_version` or `ops`. */
+type SpecChangeVersion = SpecChangeDraft & {
+  shape: 'change'
+  based_on_version: number | null
+}
+```
+
+A panel's detail is PROSE inside `description`, not a typed sub-object. There
+are no ids, so `values[]` would be a list of descriptions and `inputs` /
+`annotates` would have nothing to point at — the cross-field invariants
+`lib/spec/fields.ts` enforces (`checkInvariants`) exist to protect the diff,
+and a change-only spec IS the diff. `data_requirements` remains the structured
+answer to "what does the build need to store", which is the part a validator
+can still usefully hold.
+
+Kept as validated structure rather than free prose for three specific reasons,
+unchanged: the announcement's headline, the non-empty-`## Open` routing
+warning, and a validator standing between a rambling model and a permanent row
+in a table that rejects UPDATE.
+
+### 5.0.1 Three fields are dropped, and one of them is a real loss
+
+`title`, `summary` and `background` do not survive. `change_summary` is the
+headline; `current.md`'s `## What this is for` is the summary; `spec.md`'s H1
+becomes the slug and version rather than a model-authored name.
+
+**`background` is the loss, and it is accepted rather than unnoticed.** It
+carried the residue about the PERSON that never became a panel — what they
+already check and how often, what they worry about between checks, what they
+turned down, constraints they mentioned. `current.md` has no section for any of
+that except refusals (`## Deliberately not included`). After this it survives
+only as raw transcript in `conversation.md` (§5.1), which a builder must read
+and re-derive on every build instead of being handed it. The alternative —
+keeping `background` alone — was considered and declined: it is the one field
+whose absence should be revisited if a build goes wrong for want of it.
+
+A second consequence, named for the same reason: **`spec.md` stops describing
+the dashboard.** Opening a friend's folder today shows the whole surface; after
+this it shows a changelog entry, and the surface is only in `current.md`. That
+puts a second load-bearing job on `current.md` being accurate.
+
+### 5.0.2 The stored discriminator — three arms, not two
+
+`lib/spec/stored.ts` decides today by asking whether `payload.screens` is an
+array. A change-only spec has no `screens`, so every new row would be read as a
+LEGACY row and fail the frozen six-field parser. The explicit `shape: 'change'`
+tag above is what closes that, following the same "absent reads as the old
+shape" pattern `ops` already uses (`lib/spec/validate.ts`):
+
+```
+parsed.shape === 'change'       → { kind: 'change',  change:  parseStoredChange(json) }
+Array.isArray(parsed.screens)   → { kind: 'version', version: parseSpecVersion(json) }
+otherwise                       → { kind: 'legacy',  payload: parseLegacySpecPayload(json) }
+```
+
+**The tag is checked FIRST**, and it is unambiguous in both directions: no row
+written before this exists carries `shape`, no row written after it carries
+`screens`, and `specs` rejects UPDATE so neither set can ever move. As today,
+the reader COMMITS to an arm and reports that arm's own error rather than
+falling through — a reader chasing the wrong schema for a row nobody can edit
+is worse than a precise failure.
+
+Every consumer handles all three: `app/admin/[user]/page.tsx`,
+`scripts/export-spec.ts`, `lib/chat/announce.ts` (whose `headline` reads
+`change_summary` on both non-legacy arms), and `lib/spec/author.ts`.
+
+### 5.0.3 What the writer is given, and what dies with it
+
+`currentVersionBlock` (`lib/spec/author.ts`) renders the current SPEC ROW as
+the writer's base. The base is now `current.md`, so it goes, and with it the
+whole patch/whole mode split: there is one authoring path.
+
+`authorSpec` is handed an `accountId`, not a slug, and has no business reading
+the filesystem — so the current-state body is threaded in as a field on
+`AuthorInput`, supplied by `app/api/chat/route.ts`, which already reads it for
+the chat call itself. **One read, two consumers**: the agent and the spec
+writer cannot disagree about what the dashboard currently is.
+
+`based_on_version` is still re-read at write time from
+`currentSpec(db, accountId)?.version` — the concurrency reasoning behind that
+second read is unchanged. But nothing in the authoring path reads a stored
+PAYLOAD any more, which removes a failure mode: a stored row that no longer
+validates can no longer take out authoring.
+
+Metrics keep `authoring_mode`, now constantly `'change'` — one series legible
+across all three eras, the same reasoning as D10 — and replace `ops_count`
+with `changes_count`. Still a count, never an op and never a name.
 
 ### 5.1 What `pull-spec.sh` writes
 
@@ -279,6 +379,34 @@ a friend's conversation in every clone of this repo forever.
 The guard hook does not cover it — the hook denies `.db` and `.env` files, not
 markdown — so the gitignore entry and this paragraph are the whole defence,
 which is exactly why it is written down here.
+
+**Two mechanisms plan 3 settles.** `pull-spec.sh` passes `export-spec.ts`'s
+JSON to `write-spec-pair.ts` as a shell ARGUMENT today; a whole transcript can
+exceed `ARG_MAX`, so it moves to stdin. And the gitignore entry gains a test:
+`git check-ignore -q users/<slug>/conversation.md`, which fails if a later
+`.gitignore` edit ever reorders or negates the pattern. The paragraph above
+said the entry and the reason were "the whole defence" — a rule with a gate
+behind it is better, and this one costs a single shelling-out test.
+
+**The slice, precisely.** Transcript rows with `prev.at < at <= spec.at`,
+oldest first, where `prev` is the spec row one version below (absent for a
+first spec, which takes everything up to `spec.at`). One block per row: the
+role and the row's ISO timestamp as a heading, then the body verbatim.
+
+**Resolved in plan 3's final review: `prev` is the last BUILT version, not the
+row one version below.** The paragraph above disagreed with §7's own
+superseded-spec rule. `spec.md` is a change against `current.md`, and
+`current.md` describes what was last BUILT — so with v2 built, v3 superseded
+and v4 pulled, `spec.md` covers v2 -> v4 while a version-1-below slice covered
+only v3 -> v4. Everything the friend said before v3 would then be in neither
+file, and §5.0.1 dropped `background` on the explicit promise that exactly
+that residue survives here. `prev` is therefore the newest version with a
+`notes/v<n>.md` on disk — the same marker `announceTarget` keys off, for the
+same reason: a spec existing proves someone asked for it, never that it was
+built. No notes file anywhere means nothing has shipped, which is a first
+build and takes everything up to `spec.at`. `conversationRows`
+(`lib/spec/conversation.ts`) stays pure and filesystem-free — it is handed the
+boundary row; `scripts/export-spec.ts` is what looks on disk.
 
 ---
 
@@ -358,31 +486,51 @@ the only record is a metric row nobody reads.
 
 ## 9. What is deleted
 
-- `lib/spec/mockupCompose.ts` (1,038 lines) — `composeMockup`,
-  `affectedScreens`, `stripExternalReferences`, the shared stylesheet, the
-  per-screen `#screen-<id>` scoping.
-- `lib/spec/patch.ts` (403 lines) and `applyPatch`.
-- Most of `lib/spec/author.ts` (990 lines): the patch arm, the mockup call, the
-  carry-forward and its `missingCarried` healing, `currentVersionBlock`,
-  `Proposal.preview_html`.
-- `platform/prompts/mockup-v1..v4.md` and `spec-v3.md` stop being loaded. The
-  FILES stay on disk — prompts are added, never edited, and never deleted:
-  `prompt_sha` is stamped on transcript and spec rows that already exist, and
-  removing the file it names would orphan them.
-- `app/mockup/[version]/route.ts` and `app/admin/mockup/[user]/[version]/route.ts`,
-  and the admin Mockup tab.
-- `users/<slug>/mockup.html` and the mockup half of `write-spec-pair.ts` /
-  `pull-spec.sh`.
-- The mockup CSP guard in both its forms — the route headers and the
-  `<meta http-equiv>` written into composed documents — because there is no
-  generated HTML left to serve.
-- `ChatPanel.tsx`'s proposal card, confirmation buttons, and progress bar.
+**Corrected 2026-08-19.** This list was written before the readers were traced
+and it over-promised. The rule that actually holds: **the AUTHORING surface is
+deleted; every READER of a shape already in the table is frozen, not removed.**
+`specs` rejects UPDATE, so a row written in any past shape must keep rendering
+forever — the same reason `lib/spec/legacy.ts` exists.
+
+Deleted outright:
+
+- `lib/spec/mockupCompose.ts`, the mockup routes, the admin Mockup tab,
+  `users/<slug>/mockup.html` and the mockup CSP guard in both its forms —
+  all done in plan 2 (mockup-loop removal).
+- `SPEC_JSON_SCHEMA` and `parseSpecDraft` — the whole-surface AUTHORING
+  contract.
+- `PATCH_JSON_SCHEMA`, `parsePatch` and `applyPatch` (`lib/spec/patch.ts`), and
+  their tests.
+- `currentVersionBlock`, the patch/whole mode selection, and the
+  `SPEC_PATCH_PROMPT` constant. `Proposal.preview_html` went in plan 2.
+
+FROZEN, not deleted — readers for rows already in the table:
+
+- `lib/spec/schema.ts`'s `Screen`, `Panel`, `ValueSpec`, `EntryWidget`,
+  `SpecDraft`, `SpecVersion`.
+- ALL of `lib/spec/fields.ts`. `parseSpecVersion` re-validates a stored row
+  through `draftFrom` → `parseScreen` → `parsePanel` → `checkInvariants`, so
+  none of it can go; only `parseSpecDraft`, the model-output wrapper, does.
+- `lib/spec/patch.ts`'s `parseOp`, `SpecPatchOp` and `OP_NAMES` —
+  `parseSpecVersion` reads the `ops` key on stored rows through them.
+- `lib/spec/diff.ts` and `renderSpecMarkdown` — the admin pane still diffs and
+  renders current-shape rows, and re-pulling an old spec must not produce a
+  diff nobody asked for.
+- `lib/spec/legacy.ts` and `renderLegacyMarkdown`, unchanged.
+
+`platform/prompts/*` files are never deleted, only de-referenced:
+`mockup-v1..v4.md`, `spec-v2.md` and `spec-v3.md` stay on disk, because
+`prompt_sha` is stamped on transcript and spec rows that already exist.
+
+The new live shape lives in its own file, `lib/spec/change.ts`, so the
+boundary between "what is authored now" and "what is only ever read" is a file
+boundary rather than a comment.
 
 **On the tabs question.** Nearly all the complexity that made screens feel
 complicated was the per-screen mockup machinery: `spec_screen_mockups` keyed by
 `(spec_id, screen_id)`, `affectedScreens`, fragment scoping, selector
-prefixing. It all goes here. What remains is the `screens` export, `?screen=`,
-and `tabStrip` — roughly forty lines, deliberately left alone.
+prefixing. It all went in plan 2. What remains is the `screens` export,
+`?screen=`, and `tabStrip` — roughly forty lines, deliberately left alone.
 
 ---
 
@@ -425,7 +573,10 @@ and `tabStrip` — roughly forty lines, deliberately left alone.
 
 **New:** `platform/prompts/agent-v6.md`, `users/<slug>/current.md` per built
 dashboard, a `current.md` template in `platform/templates/dashboard/`,
-`lib/build/currentState.ts` (frontmatter + section parser).
+`lib/build/currentState.ts` (frontmatter + section parser),
+`platform/prompts/spec-v4.md`, `lib/spec/change.ts` (the change shape, its
+JSON schema, its parser and `sealChange`), `users/<slug>/conversation.md`
+(gitignored).
 
 **Changed:** `lib/spec/author.ts`, `lib/spec/schema.ts`, `lib/spec/validate.ts`,
 `lib/spec/stored.ts`, `lib/chat/prompt.ts`, `lib/chat/turn.ts`,
@@ -443,6 +594,16 @@ Announce refuses a frontmatter version mismatch. The chat call includes
 and no mockup. The alert fires on an authoring failure. The `screenshots/`
 fixtures that seed proposal cards need reworking — `scripts/shots.ts` calls
 `insertSpec` and `insertScreenMockups` in three places.
+
+Plan 3 adds, on top of those: `readStoredSpec` returns the `change` arm for a
+tagged row, `version` for a row with `screens`, and `legacy` for neither —
+with a stored row of each shape as a fixture, since a two-arm reader passed its
+own tests right up until a third shape existed. The authoring path writes a
+change payload carrying a server-supplied `shape` and `based_on_version`, and
+rejects both when the model authors them. `export-spec.ts` emits the right
+transcript slice at a version boundary and for a first spec. `write-spec-pair`
+writes both files or neither. And `users/<slug>/conversation.md` is proven
+ignored by shelling out to `git check-ignore` (§5.1).
 
 ---
 

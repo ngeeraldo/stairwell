@@ -27,6 +27,12 @@
 # This script is a thin wrapper and does no file writing itself: fetch the
 # current spec as JSON from export-spec.ts, hand it to write-spec-pair.ts.
 #
+# The JSON goes over STDIN, not as an argv argument. It now carries the whole
+# conversation behind the spec version as well as the spec itself, and a whole
+# conversation can exceed ARG_MAX — which would fail as an exec error from
+# this shell, before write-spec-pair.ts ran at all, with nothing naming the
+# length of the transcript as the cause.
+#
 # export-spec.ts prints nothing on stdout unless it has a result ready (it
 # refuses an account with no spec at all, and a corrupt stored payload throws
 # before anything is printed). Combined with `set -euo pipefail` below, a
@@ -36,12 +42,19 @@
 # write-spec-pair.ts is where the atomic-write guarantee actually lives —
 # temp-write, move any existing file aside, commit by rename, roll back to
 # the original on any ordinary catchable failure — as a plain,
-# directly-testable module rather than shell-embedded JS. It used to write a
-# PAIR (spec.md and mockup.html); it writes spec.md alone now, as of the
-# mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop, Task 6) —
-# nothing composes or serves mockup HTML any more. See that file's own
-# comments for exactly what is and is not covered, and
-# tests/scripts/writeSpecPair.test.ts for how each guard is verified.
+# directly-testable module rather than shell-embedded JS. It writes a PAIR
+# again: spec.md, the build contract, TRACKED in git; and conversation.md, the
+# transcript slice that produced that spec version, GITIGNORED on purpose —
+# spec.md is a designed artifact describing a dashboard, and conversation.md
+# is everything the friend said, including whatever they said around it (see
+# .gitignore and CLAUDE.md > Data safety). It briefly wrote spec.md alone,
+# between the mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop,
+# Task 6) and change-only specs (plan 2026-08-19-change-only-specs, Task 7).
+# Because it is a pair again, the atomicity actually matters: a new spec.md
+# beside a stale conversation.md is two files that disagree with nothing on
+# disk saying so. See that file's own comments for exactly what is and is not
+# covered, and tests/scripts/writeSpecPair.test.ts for how each guard is
+# verified.
 set -euo pipefail
 
 main() {
@@ -72,9 +85,10 @@ main() {
       'cd /home/deploy/stairwell && set -a && . ./.env && set +a && npx tsx scripts/export-spec.ts '"$user")
   fi
 
-  npx tsx scripts/write-spec-pair.ts "users/$user" "$json"
+  printf '%s' "$json" | npx tsx scripts/write-spec-pair.ts "users/$user"
 
   echo "spec.md is Gate B exempt — commit it when you are ready."
+  echo "conversation.md is gitignored on purpose — it is a raw transcript."
 }
 
 main "$@"

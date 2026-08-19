@@ -11,9 +11,10 @@ import { readTranscript } from '@/lib/db/appendOnly'
 import { currentSpec, readConfirmations, readSpecs, specByVersion } from '@/lib/db/specs'
 import { SpecShapeError, type SpecVersion } from '@/lib/spec/schema'
 import type { LegacySpecPayload } from '@/lib/spec/legacy'
+import type { SpecChange } from '@/lib/spec/change'
 import { readStoredSpec, type StoredSpec } from '@/lib/spec/stored'
 import { diffVersions, type SpecDiff } from '@/lib/spec/diff'
-import { renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
+import { renderChangeMarkdown, renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 import { buildTimeline } from '@/lib/chat/timeline'
 import { AdminTabs } from './AdminTabs'
 
@@ -59,6 +60,23 @@ function compareToBase(
 
   if (stored.kind === 'legacy') {
     return { kind: 'note', base, note: 'first structured version' }
+  }
+  // A change-shaped base is unreachable, and the reason is ordering rather
+  // than "nothing writes that shape" (something does now — it is the only
+  // shape authored). This function is only ever called with a VERSION-shaped
+  // row, and it looks at a row BELOW it. Every version-shaped row was written
+  // before change-only authoring existed, and nothing has authored a
+  // whole-surface row since, so no row beneath a version row can be
+  // change-shaped. The union is exhausted anyway, the same way it is
+  // everywhere else that reads a StoredSpec: an unreachable arm that is
+  // spelled out cannot become a silent fallthrough later. A change spec IS a
+  // diff, so there is structurally nothing on it to diff AGAINST.
+  if (stored.kind === 'change') {
+    return {
+      kind: 'note',
+      base,
+      note: 'that version is a change-only spec, so there is nothing to diff against',
+    }
   }
   return { kind: 'diff', base, diff: diffVersions(stored.version, version) }
 }
@@ -185,6 +203,42 @@ function LegacyBody({ payload }: { payload: LegacySpecPayload }) {
 }
 
 /**
+ * A change-only proposal: what the friend asked to change, and nothing about
+ * what already exists. The whole surface is users/<slug>/current.md, which
+ * this pane deliberately does not duplicate — a second copy of the current
+ * state is a second thing that can be out of date.
+ */
+function ChangeBody({ change }: { change: SpecChange }) {
+  return (
+    <>
+      <p>{change.change_summary}</p>
+      <ul className="mt-2 space-y-1">
+        {change.changes.map((entry, index) => (
+          <li key={`${entry.target}-${entry.name}-${index}`}>
+            <strong>
+              {entry.action} {entry.target} — {entry.name}
+            </strong>
+            <p className="text-muted-foreground">{entry.description}</p>
+          </li>
+        ))}
+      </ul>
+      {change.data_requirements.length > 0 && (
+        <>
+          <h4 className="mt-2 font-medium">Data requirements</h4>
+          <ul>
+            {change.data_requirements.map((requirement) => (
+              <li key={requirement.table}>
+                <code>{requirement.table}</code> — {requirement.status} — {requirement.purpose}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </>
+  )
+}
+
+/**
  * The spec markdown, without the banner that belongs to the FILE.
  *
  * `renderSpecMarkdown` leads with an HTML comment — "Generated from the
@@ -272,7 +326,9 @@ function InlineCard({
               </ul>
             </>
           )}
-          {stored.kind === 'version' ? (
+          {stored.kind === 'change' ? (
+            <ChangeBody change={stored.change} />
+          ) : stored.kind === 'version' ? (
             <VersionBody version={stored.version} />
           ) : (
             <LegacyBody payload={stored.payload} />
@@ -362,9 +418,11 @@ export default async function TranscriptPane({
                       openQuestions={
                         stored === undefined
                           ? []
-                          : stored.kind === 'version'
-                            ? stored.version.open_questions
-                            : stored.payload.open_questions
+                          : stored.kind === 'change'
+                            ? stored.change.open_questions
+                            : stored.kind === 'version'
+                              ? stored.version.open_questions
+                              : stored.payload.open_questions
                       }
                       comparison={
                         stored?.kind === 'version'
@@ -428,9 +486,10 @@ export default async function TranscriptPane({
                 {/* currentSpec (lib/db/specs.ts) now returns the newest spec
                     whether or not it was ever confirmed, so confirmed_at can
                     genuinely be null — fall back to the spec's own authored
-                    timestamp, same as lib/spec/author.ts's
-                    currentVersionBlock and scripts/export-spec.ts. Worded "as
-                    of", not "confirmed": nothing confirms any more. */}
+                    timestamp, same as scripts/export-spec.ts. (This used to
+                    cite lib/spec/author.ts's currentVersionBlock as well;
+                    that function no longer exists.) Worded "as of", not
+                    "confirmed": nothing confirms any more. */}
                 {`v${current.version} — as of ${new Date(current.confirmed_at ?? current.at).toISOString()}`}
               </p>
               {/*
@@ -445,19 +504,20 @@ export default async function TranscriptPane({
               */}
               <div className="prose-sm space-y-2 [&_code]:text-xs [&_h1]:mt-4 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:mt-4 [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-medium [&_li]:ml-4 [&_li]:list-disc [&_ul]:my-2">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {withoutFileBanner(
-                    currentStored.kind === 'version'
-                      ? renderSpecMarkdown(currentStored.version, {
-                          slug: user,
-                          version: current.version,
-                          confirmedAt: current.confirmed_at ?? current.at,
-                        })
-                      : renderLegacyMarkdown(currentStored.payload, {
-                          slug: user,
-                          version: current.version,
-                          confirmedAt: current.confirmed_at ?? current.at,
-                        }),
-                  )}
+                  {(() => {
+                    const specMeta = {
+                      slug: user,
+                      version: current.version,
+                      confirmedAt: current.confirmed_at ?? current.at,
+                    }
+                    return withoutFileBanner(
+                      currentStored.kind === 'change'
+                        ? renderChangeMarkdown(currentStored.change, specMeta)
+                        : currentStored.kind === 'version'
+                          ? renderSpecMarkdown(currentStored.version, specMeta)
+                          : renderLegacyMarkdown(currentStored.payload, specMeta),
+                    )
+                  })()}
                 </ReactMarkdown>
               </div>
             </div>

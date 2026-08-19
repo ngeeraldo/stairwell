@@ -1,22 +1,30 @@
 // scripts/write-spec-pair.ts
 //
-// Writes a confirmed spec's output file (spec.md) into a directory. Used by
-// scripts/pull-spec.sh, which is a thin wrapper: fetch the JSON from
-// export-spec.ts, hand it to this module.
+// Writes a pulled spec's output files into a directory, as a single atomic
+// unit. Used by scripts/pull-spec.sh, which is a thin wrapper: fetch the JSON
+// from export-spec.ts, hand it to this module.
 //
-// USED TO WRITE TWO FILES — spec.md and mockup.html, as a single atomic unit
-// — before the mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop,
-// Task 6): nothing composes or serves mockup HTML any more, so
-// export-spec.ts stopped emitting it and this module dropped the second
-// file. The name (`writeSpecPair`, this file's own) is unchanged — renaming
-// it was not part of that task, and a "pair" now reads as "the pair of
-// temp-write and commit-rename", not "two files".
+// TWO FILES AGAIN, and so the name is right again:
+//   - spec.md         — the build contract, TRACKED in git.
+//   - conversation.md — the transcript slice behind that spec version,
+//                       GITIGNORED (see .gitignore, lib/spec/conversation.ts,
+//                       CLAUDE.md > Data safety).
+// It wrote spec.md and mockup.html until the mockup-loop removal (plan
+// 2026-08-19-remove-the-mockup-loop, Task 6), then spec.md alone, and now
+// spec.md beside the conversation that produced it (plan
+// 2026-08-19-change-only-specs, Task 7) — a change-only spec says what
+// changed, not what the friend meant.
 //
-// The atomicity GUARANTEE is weaker with one file — there is no longer a
-// second file whose absence or staleness could make a half-written pair look
-// wrong — but the ROLLBACK behaviour is still worth keeping: a half-written
-// spec.md (a partial write, or a commit rename that fails partway) is worse
-// than an untouched one.
+// THE ATOMICITY GUARANTEE IS LOAD-BEARING AGAIN rather than vestigial. With
+// one file, rollback only protected against a half-written file. With two,
+// there is a second failure mode that matters more: spec.md committed and
+// conversation.md not, leaving a NEW contract beside the OLD conversation —
+// two files that disagree, both looking perfectly well-formed, with nothing
+// on disk saying which pull each came from. Either both are new or both are
+// old; a builder never reads a mismatched pair. The guards below are written
+// over a LIST for exactly that reason, and the commit-rollback case is
+// pinned by a test that fails the SECOND file's commit and asserts the first
+// is restored (tests/scripts/writeSpecPair.test.ts).
 //
 // This used to be a `node -e` string embedded in pull-spec.sh. It moved out
 // specifically so the atomic-write guarantee below is a plain, directly
@@ -26,12 +34,13 @@
 // review) too imprecise to prove that the guard meant to cover a given
 // failure is the one that actually catches it. See
 // tests/scripts/writeSpecPair.test.ts: each guard below is verified by
-// injecting a fake `renameSync` (or `statSync`) that fails for exactly the
-// call the guard is meant to catch, nothing else — and by deleting each
-// guard in turn and confirming only its own test goes red.
+// injecting a fake `renameSync` (or `statSync`, or `writeFileSync`) that
+// fails for exactly the call the guard is meant to catch, nothing else — and
+// by deleting each guard in turn and confirming only its own test goes red.
 import {
   existsSync as realExistsSync,
   mkdirSync as realMkdirSync,
+  readFileSync,
   renameSync as realRenameSync,
   statSync as realStatSync,
   unlinkSync as realUnlinkSync,
@@ -39,7 +48,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 
-export type SpecContent = { spec_md: string }
+export type SpecContent = { spec_md: string; conversation_md: string }
 
 /**
  * The filesystem operations writeSpecPair needs, as an injectable seam —
@@ -68,29 +77,113 @@ export const REAL_FS_OPS: FsOps = {
 }
 
 /**
- * Write `content` into `dir/spec.md`. Four guards, in order, each
- * independently fault-injectable and independently tested:
+ * One output file, mid-write.
  *
- *   1. Precondition — refuse upfront if the final path exists and is not a
- *      plain file (most plausibly: a stray directory). Nothing is touched
- *      if this fires.
- *   2. Write — the payload goes to a same-directory temp file first. If the
- *      write throws, the temp file (if it landed at all) is removed before
- *      the error propagates.
- *   3. Move-aside — an EXISTING final file is renamed to a `.bak` path
- *      before the new one is committed. If that rename throws, nothing has
- *      been committed yet — the temp file is cleaned up and the original is
- *      left exactly where it was.
- *   4. Commit — the temp file is renamed into its final path. If that
- *      rename throws, the backup (if there was one) is restored, so an
- *      ordinary failure here never leaves spec.md missing or half-written.
+ * THE `.tmp` AND `.bak` NAMES BELOW ARE MIRRORED IN `.gitignore`, and that
+ * coupling is load-bearing rather than incidental. `.conversation.md.tmp`
+ * holds a friend's raw transcript byte-for-byte on every single pull, and
+ * `.conversation.md.bak` is left on disk ON PURPOSE when a rollback restore
+ * fails (see rethrow below) — at that moment it is the only surviving copy.
+ * Git does not ignore dotfiles. The sidecar line in `.gitignore` — the one
+ * globbing every dotfile whose name starts `.conversation.md.` under a user
+ * folder — is what keeps both out of the repo; it names this file, and
+ * tests/repo/gitignore.test.ts asserts all three paths. Renaming the scheme
+ * here without changing it there stages a transcript. (The glob is described
+ * rather than quoted: it ends in the two characters that close this comment.)
+ */
+type Target = {
+  path: string
+  tmp: string
+  backup: string
+  body: string
+  backedUp: boolean
+}
+
+/**
+ * Best-effort cleanup inside a rollback. A temp or a stale landed file that
+ * cannot be removed is untidy; it is not a correctness failure, and throwing
+ * from a rollback would replace the real error with a cosmetic one.
+ */
+function quietly(fn: () => void): void {
+  try {
+    fn()
+  } catch {}
+}
+
+/**
+ * Put every moved-aside original back where it was.
+ *
+ * Every target is attempted even if one throws — with two files, abandoning
+ * the loop on the first failure would leave the OTHER file missing as well,
+ * which is the exact state this module exists to prevent. Failures are
+ * returned rather than thrown so the caller can report the ORIGINAL error
+ * (the thing that actually went wrong) alongside them.
+ */
+function restoreBackups(fs: FsOps, targets: Target[]): string[] {
+  const failures: string[] = []
+  for (const target of targets) {
+    if (!target.backedUp) continue
+    try {
+      fs.renameSync(target.backup, target.path)
+      target.backedUp = false
+    } catch (err) {
+      failures.push(
+        `${target.path} could not be restored (its previous contents are at ${target.backup}): ` +
+          `${(err as Error).message}`,
+      )
+    }
+  }
+  return failures
+}
+
+/**
+ * Rethrow the original failure — or, if the rollback ALSO failed, a single
+ * error naming both. A rollback failure is a named residual (see the guard
+ * doc below), and the one thing it must never be is silent: it is the case
+ * where a `.bak` file on disk is the only copy of something.
+ */
+function rethrow(err: unknown, rollbackFailures: string[]): never {
+  if (rollbackFailures.length === 0) throw err
+  throw new Error(
+    `${(err as Error).message}\n\n` +
+      'AND the rollback that followed did not complete:\n' +
+      rollbackFailures.map((f) => `  - ${f}`).join('\n'),
+  )
+}
+
+/**
+ * Write `content` into `dir/spec.md` and `dir/conversation.md`. Four guards,
+ * in order, each independently fault-injectable and independently tested, and
+ * each now covering the LIST of targets rather than a single file:
+ *
+ *   1. Precondition — refuse upfront if ANY final path exists and is not a
+ *      plain file (most plausibly: a stray directory). Nothing is touched if
+ *      this fires for any of them.
+ *   2. Write — every payload goes to a same-directory temp file first. If any
+ *      write throws, every temp file written so far is removed before the
+ *      error propagates; no final path has been touched.
+ *   3. Move-aside — every EXISTING final file is renamed to its `.bak` path
+ *      before anything is committed, recorded per target. If a rename throws,
+ *      any already-moved originals go straight back, the temps are cleaned
+ *      up, and every final file is exactly where it was.
+ *   4. Commit — every temp file is renamed into its final path. If a rename
+ *      throws, whatever landed is unlinked, every backup is restored, and
+ *      every remaining temp is removed. This is the case that matters most:
+ *      the first file committing and the second failing would otherwise leave
+ *      a new spec.md beside an old conversation.md, and nothing on disk would
+ *      say so.
+ *
+ * Unlinking EVERY final path in step 4's rollback is correct rather than
+ * over-broad: step 3 has already moved every pre-existing file to its `.bak`,
+ * so at that point a final path exists only if this run just committed it.
  *
  * What none of the four can cover, and no amount of code here can close: a
  * kill signal (SIGKILL) landing anywhere in this sequence — the process is
  * dead before any catch block runs, no matter how this is written — and an
  * ordinary failure striking AGAIN during a rollback that is already in
- * progress. Both are accepted, named residuals, not silently pretended
- * away as covered.
+ * progress, which is reported (see rethrow above) but cannot be repaired from
+ * here. Both are accepted, named residuals, not silently pretended away as
+ * covered.
  */
 export function writeSpecPair(
   dir: string,
@@ -100,88 +193,93 @@ export function writeSpecPair(
   const fs = fsOps
   fs.mkdirSync(dir, { recursive: true })
 
-  const specPath = join(dir, 'spec.md')
-  const specTmp = join(dir, '.spec.md.tmp')
-  const specBackup = join(dir, '.spec.md.bak')
+  const targets: Target[] = [
+    { name: 'spec.md', body: content.spec_md },
+    { name: 'conversation.md', body: content.conversation_md },
+  ].map(({ name, body }) => ({
+    path: join(dir, name),
+    tmp: join(dir, `.${name}.tmp`),
+    backup: join(dir, `.${name}.bak`),
+    body,
+    backedUp: false,
+  }))
 
-  // 1. Precondition.
-  if (fs.existsSync(specPath) && !fs.statSync(specPath).isFile()) {
-    throw new Error(`${specPath} exists and is not a regular file — refusing to write`)
+  // 1. Precondition. Checked for EVERY target before anything is written, so
+  // a stray directory at conversation.md cannot be discovered halfway
+  // through, after spec.md has already been rewritten.
+  for (const target of targets) {
+    if (fs.existsSync(target.path) && !fs.statSync(target.path).isFile()) {
+      throw new Error(`${target.path} exists and is not a regular file — refusing to write`)
+    }
   }
 
-  // 2. Write the payload to a temp file before touching the final path. If
-  // the write throws (disk full, a permission change, the process killed
-  // mid-write), clean up whatever was already written and exit — spec.md is
-  // untouched either way.
+  // 2. Write every payload to a temp file before touching any final path. If
+  // a write throws (disk full, a permission change, the process killed
+  // mid-write), clean up every temp and exit — the final files are untouched
+  // either way.
   try {
-    fs.writeFileSync(specTmp, content.spec_md)
+    for (const target of targets) fs.writeFileSync(target.tmp, target.body)
   } catch (err) {
-    try {
-      fs.unlinkSync(specTmp)
-    } catch {}
+    for (const target of targets) quietly(() => fs.unlinkSync(target.tmp))
     throw err
   }
 
-  // 3. Move an EXISTING file aside before committing the new one, so a
-  // failure below can put it straight back. Tracked with a boolean, not
+  // 3. Move EXISTING files aside before committing anything, so a failure
+  // below can put them straight back. Tracked with a boolean per target, not
   // existsSync on the backup path afterward — a backup path can exist for
   // reasons unrelated to whether the rename onto it, this run, actually
   // succeeded.
-  const hadSpec = fs.existsSync(specPath)
-  let specBackedUp = false
-
   try {
-    if (hadSpec) {
-      fs.renameSync(specPath, specBackup)
-      specBackedUp = true
+    for (const target of targets) {
+      if (fs.existsSync(target.path)) {
+        fs.renameSync(target.path, target.backup)
+        target.backedUp = true
+      }
     }
   } catch (err) {
-    // Nothing new has been committed yet — just clean up the temp file and
-    // fail. The original spec.md is exactly where it was: this rename never
-    // reached the point of moving it.
-    try {
-      fs.unlinkSync(specTmp)
-    } catch {}
-    throw err
+    // Nothing new has been committed yet. Put back any original this loop
+    // already moved, clean up the temps, and fail.
+    const failures = restoreBackups(fs, targets)
+    for (const target of targets) quietly(() => fs.unlinkSync(target.tmp))
+    rethrow(err, failures)
   }
 
-  // 4. Commit: rename the temp file into place. A single, near-instant
-  // same-directory syscall (no data copy) — about as small a window as fs
-  // gives without hand-rolled two-phase-commit machinery this
-  // single-operator tool does not need. If it throws for an ordinary,
-  // catchable reason (ENOENT, EPERM, a quota error), restore the old file
-  // from its backup — an ordinary failure here must not leave spec.md
-  // missing, which is worse than either the old or the new content.
+  // 4. Commit: rename each temp file into place. A single, near-instant
+  // same-directory syscall each (no data copy) — about as small a window as
+  // fs gives without hand-rolled two-phase-commit machinery this
+  // single-operator tool does not need. It is still TWO syscalls, though, and
+  // the gap between them is the whole reason the rollback below exists: if it
+  // throws for an ordinary, catchable reason (ENOENT, EPERM, a quota error),
+  // undo whatever landed and restore the old files, so the pair on disk is
+  // either entirely new or entirely old and never one of each.
   try {
-    fs.renameSync(specTmp, specPath)
+    for (const target of targets) fs.renameSync(target.tmp, target.path)
   } catch (err) {
-    try {
-      fs.unlinkSync(specPath)
-    } catch {}
-    if (specBackedUp) fs.renameSync(specBackup, specPath)
-    // A failed rename() never moves its source: specTmp is still sitting
-    // here and must not be left behind next to a restored file.
-    try {
-      fs.unlinkSync(specTmp)
-    } catch {}
-    throw err
+    for (const target of targets) quietly(() => fs.unlinkSync(target.path))
+    const failures = restoreBackups(fs, targets)
+    // A failed rename() never moves its source: the remaining temps are still
+    // sitting here and must not be left behind next to restored files.
+    for (const target of targets) quietly(() => fs.unlinkSync(target.tmp))
+    rethrow(err, failures)
   }
 
   // Success: nothing left to restore.
-  if (specBackedUp) {
-    try {
-      fs.unlinkSync(specBackup)
-    } catch {}
+  for (const target of targets) {
+    if (target.backedUp) quietly(() => fs.unlinkSync(target.backup))
   }
 }
 
 if (process.argv[1]?.endsWith('write-spec-pair.ts')) {
   const dir = process.argv[2]
-  const json = process.argv[3]
-  if (!dir || !json) {
-    console.error('usage: tsx scripts/write-spec-pair.ts <dir> <json>')
+  if (!dir) {
+    console.error('usage: tsx scripts/write-spec-pair.ts <dir> < payload.json')
     process.exit(2)
   }
+  // STDIN, not argv. A whole transcript can exceed ARG_MAX, and the failure
+  // would be an exec error from the shell rather than anything this script
+  // could report — no message, no partial write, nothing pointing at the
+  // conversation being long as the cause.
+  const json = readFileSync(0, 'utf8')
   writeSpecPair(dir, JSON.parse(json) as SpecContent)
-  console.log(`Wrote ${dir}/spec.md`)
+  console.log(`Wrote ${dir}/spec.md and ${dir}/conversation.md`)
 }

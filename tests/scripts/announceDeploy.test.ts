@@ -116,6 +116,62 @@ function writeNotes(slug: string, version: number, opts: { open?: string } = {})
   writeFileSync(join(usersDir, slug, 'notes', `v${version}.md`), text)
 }
 
+/**
+ * A second spec version for 'sam' (the beforeEach above only inserts one), so
+ * a test can put notes/v2.md on disk with a real spec version 2 behind it —
+ * announceTarget walks specs newest first and only finds a version notes
+ * actually exist for, so "stale current.md" scenarios need this to make v2
+ * the resolved target at all, not just a file on disk.
+ */
+function insertSecondSpec(): void {
+  insertSpec(db, {
+    accountId,
+    conversationId: 'conv-sam-2',
+    promptSha: 'sha-sam-0002',
+    payload: currentPayload({ change_summary: 'Second build, a total TEST.' }),
+    mockupHtml: MOCKUP,
+    at: 3_000,
+  })
+}
+
+/**
+ * users/sam/current.md, written fresh for each test that needs to get past
+ * the current.md gate. Mirrors writeNotes' style: closes over the outer
+ * `usersDir`, minimal frontmatter, all five headings and nothing else — the
+ * shape lib/build/currentState.ts's parseCurrentState accepts.
+ */
+function writeCurrentState(slug: string, version: number): void {
+  mkdirSync(join(usersDir, slug), { recursive: true })
+  const text = [
+    '---',
+    `slug: ${slug}`,
+    `version: ${version}`,
+    '---',
+    '',
+    '## What this is for',
+    '',
+    'Seeing a takeaway total TEST.',
+    '',
+    '## Screens',
+    '',
+    'One screen TEST.',
+    '',
+    '## Panels',
+    '',
+    'A takeaway total panel TEST.',
+    '',
+    '## What can be entered',
+    '',
+    'Nothing TEST.',
+    '',
+    '## Deliberately not included',
+    '',
+    'Nothing yet TEST.',
+    '',
+  ].join('\n')
+  writeFileSync(join(usersDir, slug, 'current.md'), text)
+}
+
 function transcriptCount(database: PlatformDb): number {
   return readTranscript(database, accountId).length
 }
@@ -187,6 +243,7 @@ describe('runAnnounce', () => {
 
   it('drafts and prints without writing, by default', async () => {
     writeNotes('sam', 1)
+    writeCurrentState('sam', 1)
     const out = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
     expect(out.kind).toBe('drafted')
     expect(out.body).toBe('Your takeaway total is up now.')
@@ -197,6 +254,7 @@ describe('runAnnounce', () => {
 
   it('sends on --send', async () => {
     writeNotes('sam', 1)
+    writeCurrentState('sam', 1)
     const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
     expect(out.kind).toBe('announced')
     expect(transcriptCount(db)).toBe(1)
@@ -204,6 +262,7 @@ describe('runAnnounce', () => {
 
   it('warns when ## Open is non-empty, and never sends it to the drafting call', async () => {
     writeNotes('sam', 1, { open: 'The investment tile needs a connection.' })
+    writeCurrentState('sam', 1)
     const client = clientReturning('Your takeaway total is up now.')
     const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: false })
     expect(out.kind).toBe('announced')
@@ -223,6 +282,7 @@ describe('runAnnounce', () => {
 
   it('--plain sends the fixed sentence and makes no model call', async () => {
     writeNotes('sam', 1)
+    writeCurrentState('sam', 1)
     const client = failingClient()
     const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: true })
     expect(out.kind).toBe('announced')
@@ -232,6 +292,7 @@ describe('runAnnounce', () => {
 
   it('refuses rather than silently falling back when drafting fails', async () => {
     writeNotes('sam', 1)
+    writeCurrentState('sam', 1)
     const out = await runAnnounce(
       { ...deps, client: failingClient() },
       { slug: 'sam', send: true, plain: false },
@@ -242,6 +303,7 @@ describe('runAnnounce', () => {
 
   it('reports already_announced without drafting again', async () => {
     writeNotes('sam', 1)
+    writeCurrentState('sam', 1)
     await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
     const client = failingClient()
     const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: false })
@@ -261,6 +323,7 @@ describe('runAnnounce', () => {
     // test here.
     beforeEach(() => {
       writeNotes('sam', 1)
+      writeCurrentState('sam', 1)
     })
 
     function writeBody(text: string): string {
@@ -373,6 +436,7 @@ describe('runAnnounce', () => {
   describe('the re-draft warning', () => {
     it('warns on --send when no --body-file was given', async () => {
       writeNotes('sam', 1)
+      writeCurrentState('sam', 1)
       const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
       expect(out.kind).toBe('announced')
       expect(out.warnings.join(' ')).toMatch(/fresh|new model sample/i)
@@ -381,6 +445,7 @@ describe('runAnnounce', () => {
 
     it('does not warn on a dry run — nothing is written yet to disagree with', async () => {
       writeNotes('sam', 1)
+      writeCurrentState('sam', 1)
       const out = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
       expect(out.kind).toBe('drafted')
       expect(out.warnings).toEqual([])
@@ -388,6 +453,7 @@ describe('runAnnounce', () => {
 
     it('does not warn on --send --plain — the fixed sentence never varies', async () => {
       writeNotes('sam', 1)
+      writeCurrentState('sam', 1)
       const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: true })
       expect(out.kind).toBe('announced')
       expect(out.warnings).toEqual([])
@@ -395,6 +461,7 @@ describe('runAnnounce', () => {
 
     it('does not warn on --send --body-file — nothing was redrafted', async () => {
       writeNotes('sam', 1)
+      writeCurrentState('sam', 1)
       const path = join(dir, 'reviewed.txt')
       writeFileSync(path, 'Reviewed text.')
       const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false, bodyFile: path })
@@ -409,6 +476,7 @@ describe('runAnnounce', () => {
   // test that actually puts an unanswered user turn on the account first.
   it('never sends two consecutive user messages, even when the account’s last turn was an unanswered user message (D17)', async () => {
     writeNotes('sam', 1)
+    writeCurrentState('sam', 1)
     // A real conversation: friend asks, agent replies, friend asks again and
     // gets no reply before Nico runs this script — readTranscript makes no
     // promise otherwise.
@@ -456,6 +524,60 @@ describe('runAnnounce', () => {
     // user turn, not two of them back to back.
     expect(roles.at(-1)).toBe('user')
     expect(roles.at(-2)).toBe('assistant')
+  })
+})
+
+describe('the current.md gate', () => {
+  it('refuses when current.md names an older version', async () => {
+    // The failure this exists to catch: a build that shipped and forgot to
+    // rewrite current.md. The friend is not announced to, and Nico finds out.
+    insertSecondSpec()
+    writeNotes('sam', 2)
+    writeCurrentState('sam', 1)
+    const outcome = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
+    expect(outcome.kind).toBe('current_state_stale')
+    expect(outcome.message).toContain('v1')
+    expect(outcome.message).toContain('v2')
+  })
+
+  it('refuses when current.md is absent', async () => {
+    writeNotes('sam', 1)
+    const outcome = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
+    expect(outcome.kind).toBe('current_state_missing')
+  })
+
+  it('refuses when current.md exists but does not parse', async () => {
+    writeNotes('sam', 1)
+    mkdirSync(join(usersDir, 'sam'), { recursive: true })
+    writeFileSync(join(usersDir, 'sam', 'current.md'), 'not a current state')
+    const outcome = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
+    // Distinct from current_state_missing (absent): "write one" and "you
+    // wrote it wrong" are different operator actions, same split as
+    // notes_missing/notes_invalid.
+    expect(outcome.kind).toBe('current_state_invalid')
+    expect(outcome.message).toContain('frontmatter')
+  })
+
+  it('proceeds when the versions match', async () => {
+    writeNotes('sam', 1)
+    writeCurrentState('sam', 1)
+    const outcome = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
+    expect(outcome.kind).toBe('drafted')
+  })
+
+  it('costs no model call when it refuses', async () => {
+    // Same reasoning as the target check: a refusal must not pay for a draft.
+    insertSecondSpec()
+    writeNotes('sam', 2)
+    writeCurrentState('sam', 1)
+    await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
+    expect(deps.client.propose).not.toHaveBeenCalled()
+  })
+
+  it('exits non-zero on all three refusal kinds', () => {
+    expect(exitCodeFor('current_state_stale')).toBe(1)
+    expect(exitCodeFor('current_state_missing')).toBe(1)
+    expect(exitCodeFor('current_state_invalid')).toBe(1)
   })
 })
 
@@ -535,6 +657,9 @@ describe('exitCodeFor', () => {
       'draft_failed',
       'no_build_notes',
       'body_file_invalid',
+      'current_state_missing',
+      'current_state_invalid',
+      'current_state_stale',
     ]
     const ok: AnnounceOutcome['kind'][] = ['drafted', 'announced', 'already_announced']
     for (const kind of refusals) expect(exitCodeFor(kind)).not.toBe(0)
@@ -666,6 +791,18 @@ describe('scripts/announce-deploy.ts (CLI)', () => {
         '## Built differently\n\n' +
         '## Open\n\n' +
         '## Notes for the next build\n',
+    )
+    // The current.md gate runs before --body-file is ever read — without a
+    // matching current.md this CLI invocation would refuse with
+    // current_state_missing instead of reaching the code under test here.
+    writeFileSync(
+      join(dir, 'clitest', 'current.md'),
+      '---\nslug: clitest\nversion: 1\n---\n\n' +
+        '## What this is for\nA panel TEST.\n\n' +
+        '## Screens\nOne screen TEST.\n\n' +
+        '## Panels\nA panel TEST.\n\n' +
+        '## What can be entered\nNothing TEST.\n\n' +
+        '## Deliberately not included\nNothing yet TEST.\n',
     )
 
     const { stdout, stderr } = runSplit(['clitest', '--body-file', bodyPath], {

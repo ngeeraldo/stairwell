@@ -3,7 +3,6 @@ import { SpecShapeError } from '@/lib/spec/schema'
 import {
   parseMockupInput,
   parseScreenMockups,
-  parseSpecDraft,
   parseSpecVersion,
   sealVersion,
 } from '@/lib/spec/validate'
@@ -49,22 +48,53 @@ const omit = (o: Record<string, unknown>, key: string) => {
   return copy
 }
 
-describe('parseSpecDraft', () => {
-  it('accepts a well-formed draft', () => {
-    const parsed = parseSpecDraft(draft())
+/**
+ * The whole-surface shape is only ever READ now: parseSpecDraft, the
+ * model-output validator these cases used to go through, is gone with the
+ * schema it guarded (lib/spec/validate.ts's header). Every fixture below
+ * therefore goes in as a STORED row and comes back through parseSpecVersion,
+ * which is the only door left into draftFrom/parseScreen/parsePanel/
+ * checkInvariants — and the one `specs` rejecting UPDATE makes permanent.
+ */
+function stored(raw: unknown, based: number | null = null, ops?: unknown): string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return JSON.stringify(raw)
+  const row: Record<string, unknown> = { ...(raw as Record<string, unknown>), based_on_version: based }
+  if (ops !== undefined) row.ops = ops
+  return JSON.stringify(row)
+}
+
+const read = (raw: unknown, based: number | null = null) => parseSpecVersion(stored(raw, based))
+
+describe('draftFrom, reached through parseSpecVersion', () => {
+  it('accepts a well-formed stored row', () => {
+    const parsed = read(draft())
     expect(parsed.screens[0]!.panels[0]!.id).toBe('walked_today')
     expect(parsed.screens[0]!.panels[0]!.values[0]!.kind).toBe('entered')
   })
 
   it('trims strings and drops blank list entries', () => {
-    const parsed = parseSpecDraft(draft({ title: '  Spaced  ', open_questions: ['a', '  ', 'b'] }))
+    const parsed = read(draft({ title: '  Spaced  ', open_questions: ['a', '  ', 'b'] }))
     expect(parsed.title).toBe('Spaced')
     expect(parsed.open_questions).toEqual(['a', 'b'])
   })
 
-  it('rejects a draft carrying based_on_version', () => {
-    // The server supplies it. A model-authored one is a permanent wrong row.
-    expect(() => parseSpecDraft(draft({ based_on_version: 3 }))).toThrow(SpecShapeError)
+  // The blank-entry case above is the LAUNDERING side of textList
+  // (lib/spec/fields.ts): a blank string is dropped, deliberately. This is
+  // the throwing side, and the two must be tested together or the first one
+  // reads as permission for the second.
+  //
+  // It lived in tests/spec/patch.test.ts until the whole-surface authoring
+  // path was deleted, where it was written as a parsePatch case — but the
+  // rule it pins is textList's, not parsePatch's, and textList is live on two
+  // paths: draftFrom's open_questions for every stored whole-surface row (this
+  // one) and lib/spec/change.ts. A hand-rolled filter would drop 42 and let
+  // this pass, which is the "the answer became none" laundering arrayField's
+  // own comment warns against — in a row `specs` will never let anyone
+  // correct. legacy.test.ts covers lib/spec/legacy.ts's SEPARATE textList,
+  // not this one.
+  it('rejects a non-string open_questions entry rather than silently dropping it', () => {
+    expect(() => read(draft({ open_questions: ['keep', 42] }))).toThrow(SpecShapeError)
+    expect(() => read(draft({ open_questions: ['keep', 42] }))).toThrow(/open_questions/)
   })
 
   it.each([
@@ -97,12 +127,12 @@ describe('parseSpecDraft', () => {
       draft(screensWith(panel({ entry: { description: 'd', annotates: null } }))),
     ],
   ])('rejects %s', (_label, raw) => {
-    expect(() => parseSpecDraft(raw)).toThrow(SpecShapeError)
+    expect(() => parseSpecVersion(stored(raw))).toThrow(SpecShapeError)
   })
 
   it('rejects duplicate panel ids across different screens', () => {
     expect(() =>
-      parseSpecDraft(
+      read(
         draft({
           screens: [
             { id: 'a', title: 'A', order: 1, panels: [panel()] },
@@ -115,7 +145,7 @@ describe('parseSpecDraft', () => {
 
   it('rejects duplicate value ids across different panels', () => {
     expect(() =>
-      parseSpecDraft(draft(screensWith(panel(), panel({ id: 'other' })))),
+      read(draft(screensWith(panel(), panel({ id: 'other' })))),
     ).toThrow(/duplicate value id/)
   })
 
@@ -125,7 +155,7 @@ describe('parseSpecDraft', () => {
       values: [{ kind: 'derived', id: 'streak_days', description: 'Consecutive days.', inputs: ['nope'] }],
       entry: null,
     })
-    expect(() => parseSpecDraft(draft(screensWith(panel(), derived)))).toThrow(/unknown value/)
+    expect(() => read(draft(screensWith(panel(), derived)))).toThrow(/unknown value/)
   })
 
   it('accepts a derived input naming a value in another panel', () => {
@@ -134,13 +164,13 @@ describe('parseSpecDraft', () => {
       values: [{ kind: 'derived', id: 'streak_days', description: 'Consecutive days.', inputs: ['walk_flag'] }],
       entry: null,
     })
-    expect(() => parseSpecDraft(draft(screensWith(panel(), derived)))).not.toThrow()
+    expect(() => read(draft(screensWith(panel(), derived)))).not.toThrow()
   })
 
   it('rejects annotates pointing at a non-synced value', () => {
     // walk_flag is `entered`. Annotation only makes sense against synced rows.
     expect(() =>
-      parseSpecDraft(draft(screensWith(panel({ entry: { description: 'd', fields: [], annotates: 'walk_flag' } })))),
+      read(draft(screensWith(panel({ entry: { description: 'd', fields: [], annotates: 'walk_flag' } })))),
     ).toThrow(/annotates/)
   })
 
@@ -150,21 +180,24 @@ describe('parseSpecDraft', () => {
       values: [{ kind: 'synced', id: 'eating_out_txns', module: 'plaid', description: 'Restaurant transactions.' }],
       entry: { description: 'Tag a meal.', fields: [{ name: 'tag', type: 'text', choices: [] }], annotates: 'eating_out_txns' },
     })
-    expect(() => parseSpecDraft(draft(screensWith(synced)))).not.toThrow()
+    expect(() => read(draft(screensWith(synced)))).not.toThrow()
   })
 })
 
 describe('sealVersion', () => {
   it('attaches the server-supplied lineage pointer', () => {
-    expect(sealVersion(parseSpecDraft(draft()), 4, null).based_on_version).toBe(4)
-    expect(sealVersion(parseSpecDraft(draft()), null, null).based_on_version).toBeNull()
+    // The draft comes back out of parseSpecVersion rather than out of a
+    // model-output validator: nothing authors this shape any more, and
+    // sealVersion is still what parseSpecVersion itself constructs through.
+    const base = read(draft())
+    expect(sealVersion(base, 4, null).based_on_version).toBe(4)
+    expect(sealVersion(base, null, null).based_on_version).toBeNull()
   })
 })
 
 describe('parseSpecVersion', () => {
   it('round-trips a sealed version', () => {
-    const sealed = sealVersion(parseSpecDraft(draft()), 2, null)
-    expect(parseSpecVersion(JSON.stringify(sealed)).based_on_version).toBe(2)
+    expect(read(draft(), 2).based_on_version).toBe(2)
   })
 
   it('rejects a stored row with no based_on_version key', () => {
@@ -188,31 +221,24 @@ describe('parseSpecVersion', () => {
 
 describe('ops on a stored version', () => {
   it('round-trips through parseSpecVersion', () => {
-    const sealed = sealVersion(parseSpecDraft(draft()), 3, [{ op: 'remove_panel', id: 'walks' }])
-    const read = parseSpecVersion(JSON.stringify(sealed))
-    expect(read.ops).toEqual([{ op: 'remove_panel', id: 'walks' }])
+    const version = parseSpecVersion(stored(draft(), 3, [{ op: 'remove_panel', id: 'walks' }]))
+    expect(version.ops).toEqual([{ op: 'remove_panel', id: 'walks' }])
   })
 
   // Null means "authored whole-surface". An empty array would claim it was
   // produced by a patch that changed nothing, which is a different and
   // impossible thing.
   it('is null, not [], for a whole-surface version', () => {
-    const read = parseSpecVersion(JSON.stringify(sealVersion(parseSpecDraft(draft()), null, null)))
-    expect(read.ops).toBeNull()
+    expect(parseSpecVersion(stored(draft(), null, null)).ops).toBeNull()
   })
 
   it('reads a pre-patch stored row, which has no ops key, as null', () => {
-    const { ops, ...withoutOps } = sealVersion(parseSpecDraft(draft()), 1, null)
-    expect(parseSpecVersion(JSON.stringify(withoutOps)).ops).toBeNull()
-  })
-
-  it('rejects a model-authored ops key on the whole-surface path', () => {
-    expect(() => parseSpecDraft(draft({ ops: [] }))).toThrow(/ops/)
+    // stored() omits `ops` entirely when it is not passed — absence, not null.
+    expect(parseSpecVersion(stored(draft(), 1)).ops).toBeNull()
   })
 
   it('throws on a stored ops value that is not an array or null', () => {
-    const bad = JSON.stringify({ ...sealVersion(parseSpecDraft(draft()), 1, null), ops: 'nope' })
-    expect(() => parseSpecVersion(bad)).toThrow(SpecShapeError)
+    expect(() => parseSpecVersion(stored(draft(), 1, 'nope'))).toThrow(SpecShapeError)
   })
 
   // Final review, Minor 10. The top-level "ops is not an array" case above
@@ -222,10 +248,7 @@ describe('ops on a stored version', () => {
   // a row with one malformed op, once written, can never be edited, only
   // read forever after by exactly this function.
   it('throws on a stored ops array containing one malformed element', () => {
-    const bad = JSON.stringify({
-      ...sealVersion(parseSpecDraft(draft()), 1, null),
-      ops: [{ op: 'remove_panel', id: 'walks' }, { op: 'not_a_real_op' }],
-    })
+    const bad = stored(draft(), 1, [{ op: 'remove_panel', id: 'walks' }, { op: 'not_a_real_op' }])
     expect(() => parseSpecVersion(bad)).toThrow(SpecShapeError)
     // Names WHICH element and why, the same diagnosability the top-level
     // "not an array" case gets — not just "something in here is wrong".

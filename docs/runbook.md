@@ -93,8 +93,8 @@ The build itself happens on a branch named for the spec version —
 `sam/v1`, `sam/v2` — created at **step 6**, which is the first moment that
 number exists on the laptop. One branch per version: merged to main at step 8,
 deleted at step 9. A version is already the atomic unit everywhere else in this
-system (whole-surface, a permanent `specs` row, announced exactly once), so the
-branch is named after the thing that gets announced.
+system (a permanent `specs` row, announced exactly once), so the branch is named
+after the thing that gets announced.
 
 **Always include the version in the branch name — `sam/v1`, never a bare
 `sam`.** Git stores `sam` as a *file* under `refs/heads/`, and a file cannot
@@ -274,12 +274,20 @@ asked for a build, and writing the spec failed`) — see Step 4. A `spec_failed`
 push means there is nothing to pull yet: read the transcript in `/admin` for
 what the friend actually asked, and let the conversation continue.
 
-Two properties worth holding in your head when you read a spec in `/admin`:
+Three properties worth holding in your head when you read a spec in `/admin`:
 
-- A spec version is **whole-surface** — it describes their entire dashboard,
-  not one conversation's worth of changes. v3 supersedes v2 completely.
-- `specs` rejects UPDATE. A version is a permanent row. `based_on_version` is
-  supplied by the server, never authored by the model.
+- A spec version is **change-only** — it describes what changes against
+  `users/<slug>/current.md`, the dashboard as it was actually built, not their
+  entire dashboard. v3 does not supersede v2's content; it is written on top of
+  what v2's build left behind. So `current.md` being right is what makes the
+  next spec right (`lib/spec/change.ts`, `lib/spec/author.ts`).
+- It carries no ids and no `title`, `summary` or `background`. A panel's detail
+  is prose in its `description`. What used to sit in `background` — what they
+  already check, what they worry about, what they turned down — now reaches you
+  only through `conversation.md` (step 6) and `current.md`'s
+  `## Deliberately not included`.
+- `specs` rejects UPDATE. A version is a permanent row. `based_on_version` and
+  the `shape` tag are supplied by the server, never authored by the model.
 
 ---
 
@@ -305,18 +313,29 @@ Then pull, in both flows:
 ./scripts/pull-spec.sh "$FRIEND"
 ```
 
-This ssh's to the droplet, reads the real spec, and writes one file:
+This ssh's to the droplet, reads the real spec, and writes a PAIR:
 
-- `users/<slug>/spec.md`
+- `users/<slug>/spec.md` — the change they asked for. **Tracked**, and Gate B
+  exempt.
+- `users/<slug>/conversation.md` — the transcript slice that produced that spec
+  version, oldest first. **Gitignored, permanently and on purpose**: `spec.md`
+  is a designed artifact describing a dashboard, and this is everything the
+  friend said, including whatever they said around it (CLAUDE.md > Data
+  safety). `git add "users/$FRIEND"` below skips it because it is ignored, and
+  `tests/repo/gitignore.test.ts` is what keeps it that way.
 
-**It overwrites `spec.md` on every pull**, because it is a projection of a
-database record rather than a source. Treat it as read-only: when the spec is
+Read both. A change-only spec says what to build; the conversation says what
+they meant, and since the spec shape dropped `background` it is the only place
+the residue about the person survives.
+
+**Both files are overwritten on every pull**, because they are projections of
+database records rather than sources. Treat them as read-only: when the spec is
 wrong, have the friend ask for a change in chat and pull again. `mockup.html`
-is gone — nothing composes or serves mockup HTML any more, so there is no
-second file to write or to keep in sync with the first.
+is gone — nothing composes or serves mockup HTML any more.
 
-The write is atomic: a temp-write-then-rename, so a failure partway through
-never leaves a half-written `spec.md` behind.
+The write is atomic across BOTH files — `scripts/write-spec-pair.ts` temp-writes,
+moves any existing file aside, and commits by rename, rolling back if either
+step fails — so you never get a new `spec.md` beside a stale `conversation.md`.
 
 Now branch. **The pull comes first and the branch second**, because the version
 number you need for the branch name is written *by* the pull — `lib/spec/render.ts`
@@ -430,10 +449,14 @@ human saw it" are different claims.
 
 ### 7.3 Build toward the spec
 
-There is no mockup. The build contract is `spec.md`, `current.md` (what the
-dashboard already is, if this is not its first version), and the code —
-nothing pulls the conversation itself into the repo; read it live in `/admin`
-if `spec.md` alone leaves a question. Feasibility doubts go back to the
+There is no mockup. The build contract is four things, each answering a
+different question: `spec.md` (what changes), `conversation.md` (what they
+meant — pulled beside it at step 6, gitignored), `current.md` (what the
+dashboard already is, if this is not its first version), and the code.
+`spec.md` is change-only, so it deliberately does not describe the whole
+surface — read it *against* `current.md`, and read `conversation.md` when the
+change alone leaves a question. `/admin` still shows the live transcript if you
+want more than the slice behind this version. Feasibility doubts go back to the
 friend rather than into a guess — `scripts/ask-user.ts`, step 4 — and you
 build on their answer.
 
@@ -528,6 +551,12 @@ sed 's/__SLUG__/'"$FRIEND"'/g' platform/templates/dashboard/current.md.tmpl \
 ```
 
 Then edit it to describe what you actually built, and set `version: $V`.
+**Step 9 refuses to announce if you don't.** `announce-deploy.ts` compares
+`current.md`'s frontmatter `version` against the version being announced and
+exits 1 on a mismatch (`current_state_stale`), on a missing file
+(`current_state_missing`) and on one that does not parse
+(`current_state_invalid`) — before it makes any model call. Rewriting this file
+is part of the build, not a follow-up.
 Write the panel descriptions from `queries.ts`, not from `dashboard.tsx` — a
 panel's real behaviour usually lives in its query (a grace day, a window, what
 counts as a logged day), and a description written from the component alone
@@ -661,7 +690,15 @@ assuming they have already seen it (`platform/prompts/announce-v2.md`).
 `transcripts` rejects DELETE; this is the first generated sentence this system
 puts in there, and a bad one is permanent.
 
-It refuses, loudly and with exit 1, if `notes/v$V.md` is missing or malformed.
+It refuses, loudly and with exit 1, if `notes/v$V.md` is missing or malformed —
+and, for the same reason and at the same point (after the target is resolved,
+before any drafting call, so it applies to `--plain` and `--body-file` too), if
+`users/$FRIEND/current.md` is missing (`current_state_missing`), does not parse
+(`current_state_invalid`), or names a different version than the one being
+announced (`current_state_stale`). All three mean step 7.5 is unfinished: write
+or fix `current.md`, commit, and run this again. It compares versions, never
+mtimes — a fresh clone rewrites every mtime, so an mtime check would pass on the
+laptop and fail on the droplet.
 If it warns that `## Open` is non-empty, the announcement is still correct —
 but you owe them a chat about the part that did not land, via
 `scripts/ask-user.ts` (step 4) or a new proposal.
@@ -702,8 +739,9 @@ git branch -d "$FRIEND/v$V"     # -d: git refuses the delete if the merge never 
 ## Step 10 — The next version
 
 Versions 2, 3, … are **Flow B** in the table at the top: the agent authors a
-new whole-surface spec in chat, and you run 0 → 4 → 5 → 6 → 7 → 8 → 9 again on
-a fresh `<slug>/v<n>` branch. `pull-spec.sh` overwrites `spec.md`, step 6 skips
+new spec in chat — change-only, written against the `current.md` your last
+build left behind — and you run 0 → 4 → 5 → 6 → 7 → 8 → 9 again on
+a fresh `<slug>/v<n>` branch. `pull-spec.sh` overwrites both pulled files, step 6 skips
 the scaffold and step 7 skips the registry line, and everything else is the
 same work as the first time — including a migration, which at v2 is the next number
 rather than `001` (step 7.2), and including a rewritten `current.md`
@@ -724,11 +762,12 @@ is here because getting it wrong is expensive and quiet.
 | Tell every friend at step 3 that a forgotten password is unrecoverable | The password *is* the key; there is nothing to reset to. `/forgot` says exactly this and offers no form, and `tests/routing/forgotPage.test.tsx` keeps it that way — including against a "temporary, just for dev" one. |
 | Leave `devone`, `devtwo` and `nico` deriving their key directly, forever | Their wrapped `account_keys` row cannot be computed without their password. Inventing one locks a real person out of real data. |
 | Fix a wrong spec by asking for a change in chat, then re-running `pull-spec.sh` | `spec.md` is a projection of the record, not a source, and the next pull overwrites it. The source is the record. |
+| Never commit `users/<slug>/conversation.md`, and never widen the `.gitignore` patterns that hold it | It is a friend's raw transcript, not a designed artifact. The guard hook denies `.db` and `.env`, not markdown, so two `.gitignore` lines and `tests/repo/gitignore.test.ts` are the whole defence — and the transcript exists at three paths, the `.tmp` and `.bak` sidecars included. A committed copy is in every clone forever. |
 | Ship every shape change as a new numbered migration — `002_…`, then `003_…` | A friend's database records only which NUMBER it reached, so editing an applied file silently changes what that number means. The manifest's checksum refuses the session rather than letting it through. |
 | Add a new prompt version — `agent-v3.md` | `prompt_sha` is stamped on transcript and spec rows that already exist, so editing `agent-v2.md` changes what an already-written hash points at. Prompts are added, and that is a data-safety property. |
 | Run `announce-deploy.ts` by hand, once per friend, at step 9 | `deploy.sh` deploys the whole service. Calling the announcer from it would post "your dashboard just updated" into every account's chat on every push — a permanent line in an append-only transcript. |
 | Write `notes/v<n>.md` before announcing, and never edit one afterwards | It is the only record of what shipped, and step 9 speaks from it. An edited note changes what an already-sent, permanent announcement was based on. |
-| Rewrite `current.md` on every build, and never let it accumulate | It is what the chat agent reads to know what exists. A note is added and never edited because an announcement was based on it; `current.md` is the opposite and must be REPLACED, because an agent that has to replay a changelog to work out the current state is back to guessing. |
+| Rewrite `current.md` on every build, and never let it accumulate | It is what the chat agent reads to know what exists, and the base the NEXT spec is written against — a change-only spec restates nothing, so a stale `current.md` corrupts every later version. A note is added and never edited because an announcement was based on it; `current.md` is the opposite and must be REPLACED, because an agent that has to replay a changelog to work out the current state is back to guessing. Step 9 refuses to announce a version it does not name. |
 | Read the drafted announcement, then send it back with `--send --body-file` | `transcripts` rejects DELETE. `--send` alone re-drafts — a fresh model sample, not the sentence you read — so reading a draft only gates what gets written when `--body-file` sends that exact draft back verbatim, with no model call. |
 | Leave every `deploy_announced` and `first_session_start` metric row in place | Both are read for correctness, not observed. Losing one makes a weeks-old build re-announce itself, or a months-old account report a first session again. They look like telemetry and are not. |
 | Build locally with `scripts/create-local-account.ts` + `npm run dev` | `npm start` sets `NODE_ENV=production`, the only switch `lib/db/userData.ts` has, so a login there takes the production branch and `lib/db/migrate.ts` writes a real `users/<slug>/<slug>.db` onto your laptop. Gate F blocks your next commit until it is removed. |
@@ -779,6 +818,7 @@ harness: `docs/local-dev.md`.
 |---|---|
 | `no spec for '<slug>'` on pull | The agent has never had enough to call `propose_spec` for this account yet. Correct refusal — check the transcript in `/admin`, or wait for a `spec_authored` push. |
 | Pull fails with `Refusing to run: PLATFORM_DB is not set` | `.env` on the far side doesn't set it — `pull-spec.sh` sources `.env` itself before calling `export-spec.ts`, so this points at `.env`, not at the command you typed. `export-spec.ts` has no fallback (see its header): it refuses rather than guessing, so this can no longer come back as a spec that quietly *looks* synthetic — only as a loud failure naming the variable. |
+| Announce exits 1 with `current.md` in the message | Step 7.5's `current.md` rewrite is missing (`current_state_missing`), unparseable (`current_state_invalid`), or names a different version than the one being announced (`current_state_stale`). Nothing was posted and no model call was paid for. Write or fix the file, commit, and re-run — the check is on `version` in the frontmatter, never on mtimes. |
 | Their dashboard says **Under construction** | The folder was scaffolded but `migrations/001_initial.sql` has not been written. Expected between step 6's scaffold and step 7.2, and it is what step 7.2 exists to fix. |
 | A friend cannot log in, and ntfy says a migration failed | The session was refused rather than served over a half-migrated shape. The alert carries the slug and migration number; the server log has the error. Their `<slug>.backup.db` holds the pre-migration copy. |
 | "This dashboard failed to load", permanently | Something read *file existence* as *has data*. Existence means **holds at least one table** — every friend has a file from day one. |

@@ -6,6 +6,8 @@
 **Non-goals:** Visual styling (deferred to the taste memo — build clean/unstyled), password *change* UI (envelope encryption supports it; UI comes later), admin-side invite management beyond the minimum to mint a link, any generated-dashboard UI, and shell niceties (resizable panel, animation polish, persistence of panel state across sessions).
 **Applies from:** friend #1 forward. `devtwo` is grandfathered on its dev-set password; do not migrate.
 
+> **Amended 2026-08-19 — scope narrowed; two areas of this doc are SUPERSEDED and must not be built from.** The mockup loop and the confirmation step were deliberately deleted by plan `2026-08-19-remove-the-mockup-loop`, and the spec shape they carried was replaced by plan `2026-08-19-change-only-specs` (design: `docs/superpowers/specs/2026-08-18-built-is-truth-design.md`). Nothing composes or serves mockup HTML any more, no friend confirms anything, and there is no `/mockup/<version>` route, no Mockup tab and no confirm control. Concretely: strike "and mockup preview cards" from the **Scope** line above; treat "## Admin portal" as amended by its own note below; and treat "## Mockup cards in chat" as superseded in full, per the note at its head. **Everything else in this doc stands as approved** — the invite flow, S0–S5, the shell, the viewport rules and the design direction are all live. The original text is left in place unedited, marked rather than rewritten, because the record of what was approved on 2026-08-13 is the reason this file is frozen.
+
 ---
 
 ## Why this flow is shaped the way it is
@@ -211,6 +213,8 @@ Applies to everything Nico-built in this spec: onboarding screens, the shell, th
 
 Same design system as above; the only design goal is reading comfort during monitoring.
 
+> **Amended 2026-08-19 to match what shipped: TWO tabs, not three.** `AdminTabs` (`app/admin/[user]/AdminTabs.tsx`) renders **Transcript** and **Spec**. There is no Mockup tab and no mockup to put in one — `lib/spec/mockupCompose.ts` and every route that served its output were deleted with the rest of the mockup loop (plan `2026-08-19-remove-the-mockup-loop`), so the "Mockup tab" bullet below is void. Two further corrections to the bullets below, both from plan `2026-08-19-change-only-specs`: the Spec tab shows the current spec, not the current *confirmed* spec — nothing confirms any more, so it is labelled "as of" a timestamp rather than "confirmed"; and that spec is **change-only**, so what renders is what the friend asked to change, not their whole dashboard (`lib/spec/render.ts`'s `renderChangeMarkdown`; the whole-surface and legacy renderers are still there for rows already in the table). The structural diff against the base version is drawn on the **Transcript** tab's cards, not on the Spec tab. Everything else in this section — the layout, manual refresh only, admin scoped to `/admin` read-only, no metrics UI — shipped as written and stands.
+
 - **Layout:** user list down the left (name + last-activity timestamp); selecting a user shows tabs: **Transcript / Spec / Mockup**.
 - **Transcript tab:** the full chat log, readable typography (~680px measure), clear user/agent turn distinction, timestamps on hover or muted inline. Newest at bottom, auto-scrolled.
 - **Spec tab:** current confirmed spec rendered as markdown (rendered from the spec payload, per the source-of-truth rule). Version label + confirmation timestamp at top.
@@ -222,6 +226,10 @@ Same design system as above; the only design goal is reading comfort during moni
 ---
 
 ## Mockup cards in chat (proposed-product previews)
+
+> **SUPERSEDED IN FULL, 2026-08-19. Do not build anything in this section.** Every surface it describes was deliberately removed by plan `2026-08-19-remove-the-mockup-loop` and plan `2026-08-19-change-only-specs` (design: `docs/superpowers/specs/2026-08-18-built-is-truth-design.md`, §D3 and §9): the proposal card, the scaled mockup preview, the Details disclosure, the confirm control, the `View full screen` dialog, the `/mockup/<version>` serving route and `spec_confirmations` as something the app writes. What replaced them: the agent asks once whether there is anything else, then calls `propose_spec`, which writes a spec **in the background** — no card, no button, no confirmation event — and the newest spec row is the build contract the moment it exists (`lib/db/specs.ts`'s `currentSpec`). The friend learns what shipped from the announcement (`scripts/announce-deploy.ts`), which is now their first look at it. `mockup` stays a reserved slug (`lib/auth/slug.ts`) and `spec_screen_mockups` / `spec_confirmations` stay as append-only tables holding every row they ever held — deleting them would be a rule change, not a cleanup. The text below is kept unedited as the record of what was approved on 2026-08-13.
+>
+> One line in it is still worth reading, and it is why the amendment note inside it survives: `change_summary` is still the one-line headline of a spec version, and it is what `lib/chat/announce.ts` reads to say what a build was about.
 
 The mockup is the build contract, so the user must be able to actually *look* at it — but full-screen viewing must not cost a modal system.
 
