@@ -585,8 +585,11 @@ One screen, `morning`, titled "Daily walk". It carries all four panels below.
 shown beneath. When the day is not yet marked it offers the tap control; once
 marked it says so instead of offering the control again.
 
-**Current streak.** Consecutive days ending today, with the label agreeing in
-number — "day in a row" at one, "days in a row" otherwise.
+**Current streak.** Consecutive days walked, ending today or yesterday. The
+one-day grace is deliberate and comes from the confirmed spec: a streak that
+broke at 00:01 would punish someone for a day that has not happened yet, so
+today being unmarked does not reset it. The label agrees in number — "day in a
+row" at one, "days in a row" otherwise.
 
 **Last 30 days.** A percentage, with the count it came from underneath.
 
@@ -775,6 +778,13 @@ not how they are drawn.
 Each panel: what it shows, how it behaves, and the edges that were decided.
 The edges are the part that matters and the part a spec never has — where a
 count stops, which days are blank rather than zero, what an empty state says.
+
+WRITE THIS FROM queries.ts, NOT FROM dashboard.tsx. A panel's real behaviour
+usually lives in its query, not in the component that renders it: a streak with
+a one-day grace period, a total that counts only logged days, a window that
+starts on Monday. The component shows you a number; the query is what decides
+what the number MEANS. Describing only what you can see rendered is how this
+file ends up confidently wrong.
 
 ## What can be entered
 Every control that writes, and what it writes. "Nothing" is a real answer for
@@ -1059,6 +1069,10 @@ sed 's/__SLUG__/'"$FRIEND"'/g' platform/templates/dashboard/current.md.tmpl \
 ```
 
 Then edit it to describe what you actually built, and set `version: $V`.
+Write the panel descriptions from `queries.ts`, not from `dashboard.tsx` — a
+panel's real behaviour usually lives in its query (a grace day, a window, what
+counts as a logged day), and a description written from the component alone
+describes a simpler dashboard than the one that shipped.
 `tests/users/conventions.test.ts` fails if it is missing, or if its version is
 not the newest `notes/v<n>.md` — that check is what stops it rotting, since
 `*.md` is exempt from Gate B and a commit will not notice.
