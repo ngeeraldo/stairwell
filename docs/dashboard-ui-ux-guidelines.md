@@ -101,26 +101,8 @@ When a delta's good-direction is ambiguous, ask in the interview; never
 guess.
 
 **Timezone.** All day-boundary logic (streaks, "today," daily
-rollups) uses the user's timezone — never the server's, and never a
-clock the dashboard reads itself.
-
-A dashboard never resolves this. It is handed `today` (their day, as
-`YYYY-MM-DD`) and `timeZone` (the IANA name), both resolved once per
-request by `app/[user]/page.tsx` from the `stairwell_tz` cookie the
-root layout writes. On the first render of a session that cookie does
-not exist yet, so `timeZone` is `undefined` and `dayKey` degrades to
-UTC. Server and tests stay pinned UTC; the conversion happens at that
-one edge.
-
-This is a data-safety rule wearing a formatting rule's clothes, not a
-preference: the day is a primary key in a database with no migration
-story, so a read and a write that disagree about the calendar write a
-row that is wrong forever. It has happened here once already — see
-`docs/superpowers/ledgers/friend-timezone.md`, and
-`CLAUDE.md` > Dashboard folder conventions for the rule itself.
-`tests/users/noLocalDay.test.ts` enforces it: no `Date.now()`, no
-zero-argument `new Date()`, and no importing `lib/time/dayKey` into a
-`dashboard.tsx`.
+rollups) belongs to the user's day, never the server's. A dashboard is
+handed the day and the zone and never works either out for itself.
 
 ## Delight / Animation
 All interactivy should feel delightful and alive, nothing should feel static.
