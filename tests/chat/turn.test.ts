@@ -995,24 +995,14 @@ describe('the completion rule with propose_spec', () => {
     id: 7,
     version: 1,
     at: 1_000_001,
-    // The tagged union Proposal now carries, so a card streamed mid-turn and
-    // a card rendered on page load have one shape. Legacy arm: that is what
-    // lib/spec/author.ts still produces until the authoring switchover.
-    spec: {
-      kind: 'legacy' as const,
-      payload: {
-        title: 'T', summary: 's', background: 'b',
-        panels: [{ name: 'n', shows: 's', why: 'w', source: 'plaid' as const }],
-        manual_logging: [], open_questions: [],
-      },
-    },
-    // mockup_html, preview_html and first are gone as of the mockup-loop
-    // removal (plan 2026-08-19-remove-the-mockup-loop, Task 4) — this fixture
-    // used to carry all three because it described a Proposal shape that no
-    // longer exists. runTurn only ever passes a Proposal through unopened, so
-    // nothing here depended on their VALUES, but keeping fields the real type
-    // no longer has would describe a shape this fixture is not proving
-    // anything about.
+    // Three fields, and that is the whole type. `spec` carried the payload as
+    // a tagged StoredSpec for the card that rendered it mid-turn; that card is
+    // gone (mockup-loop removal) and the field went with the authoring
+    // switchover, as mockup_html, preview_html and first did before it.
+    // runTurn only ever passes a Proposal through unopened, so nothing here
+    // depended on any of their VALUES — but keeping a field the real type no
+    // longer has would describe a shape this fixture is not proving anything
+    // about.
   }
 
   it('hands authoring a signal the request cannot abort', async () => {
@@ -1049,6 +1039,59 @@ describe('the completion rule with propose_spec', () => {
     expect(outcome.kind).toBe('completed')
     expect(outcome.proposal).toEqual(PROPOSAL)
     expect(outcome.proposalFailed).toBeFalsy()
+  })
+
+  it('hands authoring the SAME current.md the system prompt was built from', async () => {
+    // One read in app/api/chat/route.ts, two consumers: the agent talking to
+    // the friend (CURRENT_STATE_BLOCK, asserted in its own describe below) and
+    // the writer recording what they asked for. If runTurn passed anything
+    // else — or nothing — the two could disagree about what the dashboard
+    // currently is, which is the exact defect the change-only spec design
+    // exists to remove.
+    const body = '## Panels\nA streak, and nothing else.'
+    let seen: string | null | undefined = 'unset' as unknown as string
+
+    await runTurn(
+      {
+        db,
+        client: toolClient('one moment', ['propose_spec']),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async (i) => {
+          seen = i.currentState
+          return PROPOSAL
+        },
+      },
+      input({ currentState: body }),
+    )
+
+    expect(seen).toBe(body)
+  })
+
+  it('hands authoring null when there is no current.md, rather than omitting it', async () => {
+    // null is a real state — an account whose dashboard has not been built —
+    // and lib/spec/author.ts has a distinct prompt arm for it. Losing the
+    // distinction between "not built" and "not passed" would put the writer
+    // on the wrong arm silently.
+    let seen: string | null | undefined = 'unset' as unknown as string
+
+    await runTurn(
+      {
+        db,
+        client: toolClient('one moment', ['propose_spec']),
+        now: () => 1_000,
+        context: 'interview',
+        alert: noAlert,
+        authorSpec: async (i) => {
+          seen = i.currentState
+          return PROPOSAL
+        },
+      },
+      input({ currentState: null }),
+    )
+
+    expect(seen).toBeNull()
   })
 
   it('still cancels authoring when the AUTHORING signal is the one that aborts', async () => {

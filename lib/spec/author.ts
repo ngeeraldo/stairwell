@@ -1,9 +1,9 @@
 // lib/spec/author.ts
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
-import { currentSpec, insertSpec, readSpecs, type SpecRecord } from '@/lib/db/specs'
+import { currentSpec, insertSpec, readSpecs } from '@/lib/db/specs'
 import { toMessages } from '@/lib/chat/history'
-import { SPEC_PATCH_PROMPT, SPEC_PROMPT, loadPrompt } from '@/lib/chat/prompt'
+import { SPEC_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import type { ChatContext } from '@/lib/chat/context'
 import {
   CHAT_EFFORT,
@@ -15,45 +15,32 @@ import {
   type Served,
   type Usage,
 } from '@/lib/chat/client'
-import { SPEC_JSON_SCHEMA, SpecShapeError, type SpecDraft } from './schema'
-import { parseSpecDraft, sealVersion } from './validate'
-import { renderLegacyMarkdown } from './render'
-import { readStoredSpec, type StoredSpec } from './stored'
-import { applyPatch, parsePatch, PATCH_JSON_SCHEMA, type SpecPatch } from './patch'
+import { SpecShapeError } from './schema'
+import {
+  parseSpecChangeDraft,
+  sealChange,
+  SPEC_CHANGE_JSON_SCHEMA,
+  type SpecChangeDraft,
+} from './change'
 
 /**
- * One proposal, as it reaches the card — whichever way it got there.
+ * One authored proposal. Three fields, because that is all anything consumes:
+ * app/api/chat/route.ts fires an alert on its existence, and nothing else
+ * looks at it.
  *
- * `spec` is the SAME tagged union readStoredSpec returns, because this type is
- * what the NDJSON `proposal` line carries (app/api/chat/route.ts) AND what
- * app/[user]/page.tsx builds from the stored row. A card streamed mid-turn and
- * a card rendered on page load must have one shape at every commit; two
- * near-identical unions would be two chances to render the wrong arm.
- *
- * This path now only ever produces the `version` arm: it asks for and
- * validates the whole-surface shape. The `legacy` arm remains reachable from
- * the READERS, for rows written before the unified loop — `specs` rejects
- * UPDATE, so those can never be rewritten (unified-loop ledger, D4).
+ * `spec` used to carry the payload as a StoredSpec, for the card that
+ * rendered it mid-turn. That card is gone (mockup-loop removal), and the
+ * field was read by nothing but this module's own tests. `mockup_html`,
+ * `preview_html` and `first` went with the card in the same removal.
  */
 export type Proposal = {
   id: number
   version: number
   /**
-   * The spec row's own timestamp, so the card can be placed in conversation
-   * order rather than collected at the bottom (onboarding ledger D5).
+   * The spec row's own timestamp, so anything placing this in conversation
+   * order has the row's moment rather than its own (onboarding ledger D5).
    */
   at: number
-  spec: StoredSpec
-  // mockup_html, preview_html and first all lived here through the mockup
-  // loop and are gone as of the mockup-loop removal (plan
-  // 2026-08-19-remove-the-mockup-loop, Task 4): the card that rendered a
-  // preview and read `first` for its delivery promise no longer exists
-  // (Task 2), and this function no longer draws a preview to describe (this
-  // task). `mockup_html` and `preview_html` were the composed document and
-  // the scoped-to-what-changed excerpt of it; `first` was whether this was
-  // the account's first-ever dashboard. specs.mockup_html the COLUMN stays —
-  // see the insertSpec call below — this is only the field that used to
-  // carry its value on the returned proposal.
 }
 
 export type AuthorDeps = {
@@ -67,6 +54,17 @@ export type AuthorInput = {
   accountId: number
   conversationId: string
   signal: AbortSignal
+  /**
+   * users/<slug>/current.md's BODY, or null when the account has no built
+   * dashboard. Passed in rather than read here: this function is handed an
+   * accountId, not a slug, and reading the filesystem is not its job.
+   *
+   * app/api/chat/route.ts performs the one read, for the chat call itself,
+   * and lib/chat/turn.ts hands the same value on. One read, two consumers —
+   * the agent talking to the friend and the writer recording what they asked
+   * for cannot disagree about what the dashboard currently is.
+   */
+  currentState: string | null
 }
 
 /**
@@ -130,102 +128,33 @@ function metricMessage(error: unknown): string {
 }
 
 /**
- * The one pair every metrics row this module writes carries: which shape the
- * writer was asked for, and how many ops it proposed. Factored out narrowly —
- * unified-loop ledger residual 10 predicted this file's five hand-built
- * `appendMetric` sites would need a builder once a sixth arrived, and Task 13
- * added a sixth (`mockup_failed`, for the mockup call's own failure mode).
- * The mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop, Task 4)
- * deleted that site along with the call it reported on, leaving five again.
- * This pair is pure mechanical repetition with no per-site decision in it,
- * so pulling it out costs nothing.
+ * What the writer is shown as the dashboard that exists.
  *
- * Deliberately NOT a wrapper around appendMetric itself: `spec_aborted`
- * reports honest zeros on purpose, `kind` is computed differently at every
- * site, and `message` is present at some and absent at others. Residual 10's
- * own reasoning is that factoring those would either push them back out to
- * the call sites anyway, or quietly make one site's rule the default for all
- * of them — exactly the hiding of distinctions it was written to prevent.
- * This helper stops at the one pair that has no such distinction to hide.
+ * This USED TO render the current spec ROW — model output that no build ever
+ * touched, so a second conversation was written against a prediction rather
+ * than against the dashboard the friend actually has. That is the whole defect
+ * this design exists to remove (design §0). Two arms now, not three: there is
+ * one authoring path, because the base is a description rather than a
+ * structure with ids to stabilise against.
  *
- * `ops_count` is a COUNT, never the ops themselves: `metrics` is append-only
- * and the standing bound is counts, never content — an op carries panel ids
- * derived from what the friend asked for. `patch` must be THIS attempt's
- * parse outcome, not a stale one — see the reset at the top of the attempt
- * loop below.
+ * The absent arm is a real state, not a degraded one: an account whose
+ * dashboard has not been built yet. Saying so explicitly gives the prompt the
+ * same SHAPE on both paths rather than one with a section missing.
  */
-function modeFields(
-  mode: 'patch' | 'whole' | null,
-  patch: SpecPatch | undefined,
-): { authoring_mode: 'patch' | 'whole' | null; ops_count: number | null } {
-  return { authoring_mode: mode, ops_count: patch?.ops.length ?? null }
-}
-
-/**
- * The current confirmed version, as the writer sees it. Three arms, because
- * all three are real states and none may silently look like another:
- *
- *   - none    → an explicit "this is the first version, the spec is empty",
- *               so the v1 prompt has the same SHAPE as every later one rather
- *               than one with a section missing. Behaviour-preserving: the
- *               first-ever conversation is the one thing this branch is not
- *               allowed to change (§7 resolution R3).
- *   - current → JSON, because id stability is the point and the ids have to
- *               be copyable verbatim.
- *   - legacy  → renderLegacyMarkdown's output plus a note that ids must be
- *               assigned fresh. A pre-unification row has no ids to stabilise
- *               against, and it can never gain any (`specs` rejects UPDATE),
- *               so the honest instruction is "start the ids here".
- *
- * Rendered rather than dumped as JSON on the legacy arm so the writer reads
- * the same document a human would read as the build contract, and so a shape
- * the current schema cannot describe never looks like one that it can.
- */
-function currentVersionBlock(current: SpecRecord | undefined): string {
-  if (current === undefined) {
+function currentStateBlock(currentState: string | null): string {
+  if (currentState === null) {
     return (
-      'There is no spec for this account yet. The current spec is ' +
-      'empty and this is version 1: assign every screen, panel, and value id ' +
-      'fresh.'
+      'There is no dashboard for this account yet — nothing has been built. ' +
+      'Everything you describe is new, so every entry in `changes` is an ' +
+      '`add`.'
     )
   }
-
-  const stored = readStoredSpec(current.payload)
-  // UNREACHABLE, and deleted with this whole function by the next task. No
-  // change-shaped row can exist yet, because nothing writes one until
-  // authoring switches over. The arm is here so the compiler can prove the
-  // union is covered; a SpecShapeError so that if it somehow does run, it is
-  // redacted by metricMessage like every other spec-content error.
-  if (stored.kind === 'change') {
-    throw new SpecShapeError('a change-shaped spec has no whole-surface version to show')
-  }
-  if (stored.kind === 'version') {
-    return (
-      `The dashboard's current version is v${current.version}, ` +
-      'below as JSON. Reuse its ids exactly for anything that is still the ' +
-      'same thing, even where you are renaming or reshaping it.\n\n' +
-      JSON.stringify(stored.version, null, 2)
-    )
-  }
-
   return (
-    `The dashboard's current version is v${current.version}. It ` +
-    'predates the current format and carries no ids, so it is written out ' +
-    'below as prose rather than JSON. Treat it as what already exists, and ' +
-    'assign every screen, panel, and value id in your version fresh.\n\n' +
-    renderLegacyMarkdown(stored.payload, {
-      // authorSpec is handed an accountId, not a slug, and the writer has no
-      // use for one — it never names the person. Looking one up would add an
-      // accounts read to a path whose only job is to hand over the content of
-      // a spec. The version and the confirmation time are the real values.
-      slug: 'this account',
-      version: current.version,
-      // currentSpec now returns the newest row whether or not it was ever
-      // confirmed, so confirmed_at CAN genuinely be null here — this
-      // fallback used to be defensive-only (the type said null was possible;
-      // currentSpec never actually produced it) and is now a real path.
-      confirmedAt: current.confirmed_at ?? current.at,
-    })
+    'This is their dashboard as it exists right now, written by the builder ' +
+    'after the last build. It is the truth about what is deployed — trust it ' +
+    'over anything earlier in this conversation. Describe only what changes ' +
+    'against it.\n\n' +
+    currentState
   )
 }
 
@@ -233,7 +162,7 @@ function currentVersionBlock(current: SpecRecord | undefined): string {
  * The retry turn: the validator's own message, handed back so the model can
  * correct the exact thing that failed.
  *
- * Like "Write the spec now." and the current-version block, this is a
+ * Like "Write the change now." and the current-state block, this is a
  * CALL-TIME construct and is never appended to transcripts — it is not a
  * thing the friend said (design spec section 4.4).
  */
@@ -242,8 +171,8 @@ function retryMessage(problem: string): string {
     'That draft was rejected before it could be saved, by the validator that ' +
     'guards the record:\n\n' +
     `    ${problem}\n\n` +
-    'Write the complete next version again, as one object, with that problem ' +
-    'fixed. Do not reply with prose, an apology, or only the part that changed.'
+    'Write the change again, as one object, with that problem fixed. Do not ' +
+    'reply with prose, an apology, or only the part that changed.'
   )
 }
 
@@ -266,10 +195,10 @@ function retryMessage(problem: string): string {
  * turn.ts additionally wraps its own call to this function as a second,
  * belt-and-braces layer.
  *
- * One model call: the spec, retried once on a validation failure. As of the
+ * One model call: the change, retried once on a validation failure. As of the
  * mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop, Task 4) there
  * is no second call drawing a preview from the validated draft — `insertSpec`
- * runs once the spec validates, passing `mockupHtml: ''` for the NOT NULL
+ * runs once the change validates, passing `mockupHtml: ''` for the NOT NULL
  * column that call used to fill (see the insertSpec call below for why the
  * column stays).
  */
@@ -296,102 +225,68 @@ export async function authorSpec(
   // only rows that can carry it are the outer catch's, for a failure that
   // struck before the loop.
   let attempt = 0
-  // WHICH SHAPE THE WRITER WAS ASKED FOR, and read by the outer catch too —
-  // same reason as promptSha. null is a real, meaningful third value here,
-  // not a missing one: it means the call failed BEFORE mode was decided
-  // (currentSpec or readStoredSpec threw), which is exactly the case where
-  // no prompt was chosen either — see the prompt_sha comment on the outer
-  // catch below. Do not default this to 'whole'; that would assert a mode
-  // was chosen when none was, in a row that can never be corrected.
-  let mode: 'patch' | 'whole' | null = null
-  // The ops as PARSED on a patch attempt, undefined on a whole-surface
-  // attempt or before any attempt has parsed successfully. Read by every
-  // metrics site in this function, including the outer catch, for the same
-  // reason mode is: an op count on an error row is what lets a query group
-  // ANY row — success or failure — by how expensive patch authoring turned
-  // out to be.
-  let patch: SpecPatch | undefined
+  // The change as PARSED, and undefined until an attempt validates. Declared
+  // out here (not inside the try) for the same reason `result` is: the outer
+  // catch reads it, so a failure AFTER a successful parse — insertSpec, the
+  // version read-back, the spec_proposed append — still reports the count the
+  // model actually produced instead of null.
+  //
+  // It can never go stale: the loop breaks in the same statement that assigns
+  // it, so there is no iteration in which a previous attempt's count could
+  // survive onto a later attempt's row. `metrics` rejects UPDATE, and that is
+  // the failure mode this shape rules out by construction rather than by a
+  // reset (the old `patch` variable needed one because parsePatch and
+  // applyPatch were two steps and only the second one broke the loop).
+  let draft: SpecChangeDraft | undefined
 
   try {
-    // What the writer is SHOWN as the current confirmed version. Read here
-    // because that is when the prompt is built; the lineage pointer stored on
-    // the row is read again at write time instead, and the two reads are
-    // deliberately separate — see sealVersion below.
-    const current = currentSpec(db, input.accountId)
-
-    /**
-     * WHICH SHAPE THE WRITER IS ASKED FOR — and it is decided in the same place
-     * that already decides what the writer is SHOWN (currentVersionBlock's three
-     * arms), so the two can never disagree about which era this account is in.
-     *
-     * `patch` only when there is a confirmed row AND it is in the current shape.
-     * Both other arms author the whole surface:
-     *
-     *   - v1 has no base to patch, and the first-ever conversation is the one
-     *     thing this may not change (unified-loop §7 R3). Same prompt, same
-     *     schema, same code as before this existed.
-     *   - a LEGACY row carries no ids, so there is nothing for an op to name.
-     *     `specs` rejects UPDATE, so it can never gain any. That account authors
-     *     whole-surface exactly once and is on the patch path from its next
-     *     version.
-     */
-    const storedCurrent = current === undefined ? undefined : readStoredSpec(current.payload)
-    const base =
-      storedCurrent !== undefined && storedCurrent.kind === 'version'
-        ? storedCurrent.version
-        : undefined
-    mode = base === undefined ? 'whole' : 'patch'
-
-    const loaded = loadPrompt(mode === 'patch' ? SPEC_PATCH_PROMPT : SPEC_PROMPT)
+    const loaded = loadPrompt(SPEC_PROMPT)
     promptSha = loaded.sha
     const system = loaded.text
-    const schema = mode === 'patch' ? PATCH_JSON_SCHEMA : SPEC_JSON_SCHEMA
 
-    // Named `metricBase`, not `base`: `base` above is the SpecVersion a patch
-    // applies against, and this is a different thing that happens to share
-    // the obvious name — the spread of fields every metrics row this
-    // function writes carries.
+    // Named `metricBase`: the spread of fields every metrics row this function
+    // writes carries.
+    //
+    // authoring_mode is a CONSTANT now — there is one authoring path — and it
+    // is still written on every row. Dropping it would split the series at the
+    // era boundary, which is the same reason contextFor still says 'tweak'
+    // (unified-loop D11): a query grouping spec rows by mode must be able to
+    // see 'patch', 'whole' and 'change' as three eras of one field rather
+    // than as one field that stopped existing. `ops_count` is NOT kept the
+    // same way: ops are gone, and a column that can only ever be null is a
+    // lie in a table nobody can correct. `changes_count` replaces it — a
+    // count, never a name, per the standing metrics bound.
     const metricBase = {
       model: CHAT_MODEL,
       effort: CHAT_EFFORT,
       prompt_sha: promptSha,
       context,
+      authoring_mode: 'change' as const,
     }
 
     const history = toMessages(readTranscript(db, input.accountId))
     const last = history[history.length - 1]
-    // The current-version block always goes, on all three of its arms, so the
-    // prompt has one shape on every path. "Write the spec now." is appended
-    // ONLY when the last transcript message is an assistant turn: on the usual
-    // path the agent said something before calling the tool, so the call needs
-    // a user message to answer. On the no-text path the friend's own message
-    // is already there and a second instruction buys nothing.
+    // The current-state block always goes, on both of its arms, so the prompt
+    // has one shape on every path. "Write the change now." is appended ONLY
+    // when the last transcript message is an assistant turn: on the usual path
+    // the agent said something before calling the tool, so the call needs a
+    // user message to answer. On the no-text path the friend's own message is
+    // already there and a second instruction buys nothing.
     //
     // Neither is ever written to transcripts: both are call-time constructs,
     // not things the friend said (design spec section 4.4).
     const specMessages = [
       ...history,
-      { role: 'user' as const, content: currentVersionBlock(current) },
+      { role: 'user' as const, content: currentStateBlock(input.currentState) },
       ...(last?.role === 'assistant'
-        ? [{ role: 'user' as const, content: 'Write the spec now.' }]
+        ? [{ role: 'user' as const, content: 'Write the change now.' }]
         : []),
     ]
 
-    let draft: SpecDraft | undefined
     let feedback: string | undefined
 
     while (attempt < MAX_SPEC_ATTEMPTS) {
       attempt += 1
-      // Reset per attempt, not just declared once: `patch` must reflect only
-      // THIS attempt's parse outcome. Without this reset an attempt that
-      // never reaches (or never completes) parsePatch — a network error, an
-      // abort, or a reply that fails to parse at all — would report
-      // ops_count from an EARLIER attempt's successfully-parsed-but-
-      // inapplicable patch onto a row that never held one. That is a
-      // permanently wrong row: `metrics` rejects UPDATE. The post-loop uses
-      // (sealVersion, spec_proposed) are unaffected — they run only after the
-      // winning attempt reassigned `patch` in that same iteration.
-      patch = undefined
       const attemptMessages =
         feedback === undefined
           ? specMessages
@@ -403,7 +298,7 @@ export async function authorSpec(
           system,
           messages: attemptMessages,
           signal: input.signal,
-          schema,
+          schema: SPEC_CHANGE_JSON_SCHEMA,
         })
       } catch (error) {
         if (input.signal.aborted) {
@@ -416,7 +311,10 @@ export async function authorSpec(
               ...metricBase,
               ...NO_SERVED,
               attempt,
-              ...modeFields(mode, patch),
+              // Nothing has parsed on this path — the call never returned —
+              // so this is null, and it is null because `draft` says so
+              // rather than because a literal was typed here.
+              changes_count: draft?.changes.length ?? null,
             },
           })
           return undefined
@@ -445,7 +343,7 @@ export async function authorSpec(
             status: shape.status,
             type: shape.type,
             attempt,
-            ...modeFields(mode, patch),
+            changes_count: draft?.changes.length ?? null,
           },
         })
         return undefined
@@ -453,39 +351,14 @@ export async function authorSpec(
       // Recorded for the outer catch as well — see the declaration above.
       result = proposed
 
-      // WHICH PHASE FAILED IS THE CLASSIFICATION — not which error class was
-      // thrown. Ruled at Task 9's re-review, and it is the whole reason the
-      // metrics kinds can be trusted.
-      //
-      // The tempting version discriminates on `error instanceof SpecPatchError`.
-      // That silently misclassifies, because the shape checks inside a patch are
-      // shared with the whole-surface path: a malformed `order` in an
-      // update_screen op, a non-string in `open_questions`, and any bad nested
-      // panel all reach `fields.ts` helpers that throw the BASE class. Those
-      // rows would land in an append-only log as `malformed_spec` forever, and
-      // `metrics` rejects UPDATE.
-      //
-      // Phase cannot be got wrong, because it is not inferred: parsing failed,
-      // or applying failed, and the code knows which one it was standing in.
-      // The meanings come out clean too — `malformed_spec` is "the model
-      // returned the wrong shape", `patch_failed` is "the shape was right and
-      // it would not apply to this base", which is the genuinely new failure
-      // mode worth watching.
-      let phase: 'malformed_spec' | 'patch_failed' = 'malformed_spec'
+      // ONE PARSE, one classification. There is no patch to apply, so the
+      // `phase` discrimination this loop used to carry — `malformed_spec` vs
+      // `patch_failed` — has nothing left to discriminate between: a change
+      // draft either parses or it does not. Rows already carrying
+      // `patch_failed` keep meaning exactly what they said; `metrics` rejects
+      // UPDATE and nothing here rewrites history.
       try {
-        // `base !== undefined` is the whole condition: `mode` is DERIVED from
-        // it above (`mode = base === undefined ? 'whole' : 'patch'`), so the
-        // two can never disagree — checking `mode === 'patch'` here too would
-        // be redundant. Kept as this narrowing form (not `mode === 'patch'`)
-        // because it is what lets the compiler prove `base` is a SpecVersion
-        // at the applyPatch call below, without a non-null assertion.
-        if (base !== undefined) {
-          patch = parsePatch(proposed.input)
-          phase = 'patch_failed'
-          draft = applyPatch(base, patch)
-        } else {
-          draft = parseSpecDraft(proposed.input)
-        }
+        draft = parseSpecChangeDraft(proposed.input)
         break
       } catch (error) {
         // A schema-constrained REQUEST is not a guarantee about the row that
@@ -513,13 +386,15 @@ export async function authorSpec(
             ...proposed.usage,
             ...metricBase,
             ...proposed.served,
-            // Set above, before the call that can fail. See the phase comment.
-            kind: phase,
+            kind: 'malformed_spec',
             status: null,
             type: null,
             attempt,
             message: metricMessage(error),
-            ...modeFields(mode, patch),
+            // The parse this row is REPORTING is the one that just threw, so
+            // there is no count to carry. `draft` is the value, not a typed
+            // literal, so this cannot drift from what actually parsed.
+            changes_count: draft?.changes.length ?? null,
           },
         })
         // Checked BEFORE the retry, not after: the friend has walked away and
@@ -538,42 +413,33 @@ export async function authorSpec(
     // loop guarantees.
     if (draft === undefined || result === undefined) return undefined
 
-    // The one place a SpecVersion is constructed on this path, and the lineage
+    // The one place a SpecChange is constructed on this path, and the lineage
     // pointer comes from the RECORD, never from anything the model wrote:
-    // `parseSpecDraft` rejects a draft carrying one outright, because a
+    // `parseSpecChangeDraft` rejects a draft carrying one outright, because a
     // model-authored lineage pointer is a hallucination that becomes a
     // permanent wrong row in an append-only table (ledger D2).
     //
-    // Re-read here rather than reused from the `current` above, and the gap
-    // between the two is the whole point. Everything between them is the spec
-    // call, which can run 47-97 seconds across two model calls (see
-    // RunTurnInput.authoringSignal, lib/chat/turn.ts) — authoring now runs in
-    // the BACKGROUND, decoupled from the friend's own connection, so nothing
-    // stops them sending another message, and triggering another authorSpec
-    // call, while this one is still in flight. A friend who does that changes
-    // what the newest spec IS before this call's insert lands, and a lineage
-    // pointer read before the call would name the version this one
-    // superseded. `specs` rejects UPDATE, so that row could never be
-    // repaired: the admin pane's diff for this version would be computed
-    // against the wrong base forever.
+    // Re-read here rather than read once before the call, and the gap between
+    // the two is the whole point. Everything before this line is the spec
+    // call, which can run 47-97 seconds (see RunTurnInput.authoringSignal,
+    // lib/chat/turn.ts) — authoring now runs in the BACKGROUND, decoupled from
+    // the friend's own connection, so nothing stops them sending another
+    // message, and triggering another authorSpec call, while this one is still
+    // in flight. A friend who does that changes what the newest spec IS before
+    // this call's insert lands, and a lineage pointer read before the call
+    // would name the version this one superseded. `specs` rejects UPDATE, so
+    // that row could never be repaired: the admin pane's diff for this version
+    // would be computed against the wrong base forever.
     //
-    // A version is a WHOLE-SURFACE spec and the build contract is "the newest
-    // spec" (nothing confirms any more), so the base that means something is
-    // the one this version would supersede at write time. That the writer was
-    // shown an older version is a separate fact, and it is one the transcript
-    // and the prompt already carry.
-    const sealed = sealVersion(
-      draft,
-      currentSpec(db, input.accountId)?.version ?? null,
-      // The ops as PARSED, never as the model returned them: parsePatch is what
-      // turned a reply into a value, and the row must carry the thing the
-      // applier actually acted on.
-      patch?.ops ?? null,
-    )
+    // The build contract is "the newest spec" (nothing confirms any more), so
+    // the base that means something is the one this version would supersede at
+    // write time. That the writer was shown an older state is a separate fact,
+    // and it is one the transcript and the prompt already carry.
+    const sealed = sealChange(draft, currentSpec(db, input.accountId)?.version ?? null)
 
     // Read ONCE and used for both the row and the proposal that describes it.
-    // Two calls to now() would put the card at a different moment from the row
-    // it renders, and after a reload the card would move.
+    // Two calls to now() would put the proposal at a different moment from the
+    // row it describes, and after a reload it would move.
     const at = now()
     const id = insertSpec(db, {
       accountId: input.accountId,
@@ -611,20 +477,11 @@ export async function authorSpec(
         spec_id: id,
         version,
         attempt,
-        ...modeFields(mode, patch),
+        changes_count: draft?.changes.length ?? null,
       },
     })
 
-    return {
-      id,
-      version,
-      at,
-      // `version`, because that is what this path genuinely produced:
-      // parseSpecDraft validated the whole-surface shape and sealVersion
-      // attached the server's lineage pointer. The tag is a statement of fact
-      // about the payload.
-      spec: { kind: 'version', version: sealed },
-    }
+    return { id, version, at }
   } catch (error) {
     // Anything with no dedicated branch above. promptSha may or may not be
     // known depending on where this fired. result may or may not be known
@@ -634,21 +491,23 @@ export async function authorSpec(
     // append itself is what threw — result carries the real, billed
     // counters and those are what must be reported, not zero.
     //
-    // The message goes through metricMessage for a reason that is easy to
-    // miss: currentVersionBlock reads the CURRENT spec, so a stored row that
-    // no longer validates throws a SpecShapeError quoting ids out of THAT
-    // spec, and it lands right here.
+    // `prompt_sha: null` is still a real possibility here and stays exactly as
+    // it was: loadPrompt is the first thing the try does, and a failure inside
+    // it means no prompt was ever chosen. Stamping SPEC_PROMPT's hash on that
+    // row would claim a prompt was involved when none was, in a table that can
+    // never be corrected.
     //
-    // `prompt_sha: null` paired with `authoring_mode: null` is not a gap —
-    // it is the honest value for a call that failed before any prompt was
-    // chosen. Mode selection now reads the account's current spec (to decide
-    // patch vs whole) BEFORE loadPrompt runs, so a stored current-version row
-    // that no longer validates — the same failure the paragraph above
-    // describes — throws here with no mode ever decided and no prompt ever
-    // loaded. Stamping SPEC_PROMPT's hash on that row would claim a prompt
-    // was involved when none was, in a table that can never be corrected.
-    // Null is the honest answer to "which prompt", the same way it is the
-    // honest answer to "which mode".
+    // `authoring_mode` is NOT null-able the same way, and this is the one row
+    // where that distinction has to be argued rather than spread in from
+    // metricBase (which may not exist yet when this fires). It used to be
+    // null here for a failure that struck before a mode was CHOSEN — mode
+    // selection read the account's current spec, which could throw. Nothing
+    // is chosen any more: there is exactly one authoring path, so 'change' is
+    // known before a line of this function runs and is true of every row it
+    // can possibly write, including one written by a loadPrompt failure.
+    // Writing null instead would say "which era this row belongs to is
+    // unknown", which is false, and would leave a permanent hole in the one
+    // field that lets the patch/whole/change eras be read as one series.
     appendMetric(db, {
       accountId: input.accountId,
       event: 'spec_error',
@@ -659,13 +518,17 @@ export async function authorSpec(
         effort: CHAT_EFFORT,
         prompt_sha: promptSha,
         context,
+        authoring_mode: 'change' as const,
         ...(result?.served ?? NO_SERVED),
         kind: 'unexpected_error',
         status: null,
         type: null,
         attempt,
         message: metricMessage(error),
-        ...modeFields(mode, patch),
+        // Real on a failure AFTER the parse (insertSpec, the read-back, the
+        // spec_proposed append), null before it. Either way it is the count
+        // this call actually held, never a claim about one.
+        changes_count: draft?.changes.length ?? null,
       },
     })
     return undefined
