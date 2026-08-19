@@ -28,12 +28,19 @@ architectural changes; do not relitigate decided items).
   the two files are not the same kind of thing: `spec.md` is a designed artifact
   describing a dashboard and has always been tracked; `conversation.md` is
   everything they said, including whatever they said around the dashboard. The
-  guard hook denies `.db` and `.env`, NOT markdown, so the `users/*/conversation.md`
-  line in `.gitignore` and `tests/repo/gitignore.test.ts` are the whole defence —
-  the test asserts the pattern catches a folder that does not exist yet and does
-  not catch `spec.md`. The record of record stays the append-only `transcripts`
-  table on the droplet; the file is a working input, pulled fresh when needed and
-  overwritten by the next pull.
+  guard hook denies `.db` and `.env`, NOT markdown, so **two** `.gitignore` lines
+  plus `tests/repo/gitignore.test.ts` are the whole defence. Two, because the
+  transcript exists at three paths: `users/*/conversation.md`, and
+  `users/*/.conversation.md.*` for the sidecars `scripts/write-spec-pair.ts`
+  writes — `.conversation.md.tmp`, which holds it byte-for-byte during every
+  pull, and `.conversation.md.bak`, which that file's rollback deliberately
+  leaves behind when a restore fails. Git ignores nothing for merely starting
+  with a dot, so the sidecar line is not tidiness. The test asserts all three
+  paths, for a folder that does not exist yet as well as one that does, and
+  asserts the patterns do NOT catch `spec.md` or `notes/conversation.md`. The
+  record of record stays the append-only `transcripts` table on the droplet;
+  the file is a working input, pulled fresh when needed and overwritten by the
+  next pull.
 - Derived keys exist only in the in-process TTL map — never serialized,
   persisted, logged, or written to the sessions table. Passwords and keys
   never appear in cookies, localStorage, URLs, or any persisted artifact.

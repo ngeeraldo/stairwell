@@ -76,7 +76,21 @@ export const REAL_FS_OPS: FsOps = {
   writeFileSync: realWriteFileSync,
 }
 
-/** One output file, mid-write. */
+/**
+ * One output file, mid-write.
+ *
+ * THE `.tmp` AND `.bak` NAMES BELOW ARE MIRRORED IN `.gitignore`, and that
+ * coupling is load-bearing rather than incidental. `.conversation.md.tmp`
+ * holds a friend's raw transcript byte-for-byte on every single pull, and
+ * `.conversation.md.bak` is left on disk ON PURPOSE when a rollback restore
+ * fails (see rethrow below) — at that moment it is the only surviving copy.
+ * Git does not ignore dotfiles. The sidecar line in `.gitignore` — the one
+ * globbing every dotfile whose name starts `.conversation.md.` under a user
+ * folder — is what keeps both out of the repo; it names this file, and
+ * tests/repo/gitignore.test.ts asserts all three paths. Renaming the scheme
+ * here without changing it there stages a transcript. (The glob is described
+ * rather than quoted: it ends in the two characters that close this comment.)
+ */
 type Target = {
   path: string
   tmp: string

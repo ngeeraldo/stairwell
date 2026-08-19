@@ -233,11 +233,16 @@ describe('users/ folder conventions', () => {
      * building the dashboard from it the folder legitimately holds the build
      * contract and nothing else. The sweep used to fail all eight of its
      * checks there — on the documented workflow, at the exact moment it is
-     * followed. (pull-spec.sh also wrote mockup.html alongside spec.md until
-     * the mockup-loop removal — nothing composes or serves mockup HTML any
-     * more, so a pulled folder is spec.md alone now.)
+     * followed. (pull-spec.sh wrote mockup.html alongside spec.md until the
+     * mockup-loop removal — nothing composes or serves mockup HTML any more —
+     * and then spec.md alone until change-only specs, plan
+     * 2026-08-19-change-only-specs. It writes a PAIR again now: spec.md and
+     * conversation.md, the transcript slice behind that spec version. Only
+     * spec.md is tracked; conversation.md is gitignored, so it is invisible to
+     * a fresh clone but genuinely present in a pulled folder on the laptop.)
      *
-     *   pulled     — spec.md only. Allowed: not started yet.
+     *   pulled     — spec.md, plus a gitignored conversation.md beside it and
+     *                nothing else. Allowed: not started yet.
      *   scaffolded — all five entries, but migrations/ holds no .sql. Allowed:
      *                ./scripts/new-dashboard.sh just ran and nobody has
      *                designed a shape yet.

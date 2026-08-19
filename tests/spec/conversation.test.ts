@@ -83,8 +83,40 @@ describe('renderConversationMarkdown', () => {
     // document. This is a transcript: it is read by a builder, never
     // rendered to a friend, and altering someone's words to tidy a layout is
     // not a trade this file gets to make.
-    const md = renderConversationMarkdown([row(9, 'user', '# a heading I typed', 1)], META)
-    expect(md).toContain('# a heading I typed')
+    //
+    // ASSERTED AS EXACT TEXT, not toContain, and that is the whole point of
+    // this test. `toContain('# a heading I typed')` passes on the ESCAPED
+    // string too — '\\# a heading I typed' contains it — so the substring
+    // form pinned nothing at all. Both defects this rule exists to prevent
+    // (escaping line-leading markdown, and collapsing whitespace to tidy a
+    // layout) were confirmed to leave the substring version green.
+    //
+    // The body below is chosen to catch either: a line-leading '#', a
+    // line-leading '-', runs of interior spaces, a leading indent, an emphasis
+    // marker, and a blank line between paragraphs.
+    const body =
+      '# a heading I typed\n' +
+      '\n' +
+      '  - two   spaces  and a *star*\n' +
+      '> and a quote\n'
+
+    const md = renderConversationMarkdown([row(9, 'user', body, 1)], META)
+
+    expect(md).toBe(
+      '# devtwo — the conversation behind spec v2\n' +
+        '\n' +
+        '<!-- Generated from the transcript by scripts/pull-spec.sh.\n' +
+        '     Gitignored: this is a raw transcript, not a designed artifact.\n' +
+        '     Do not hand-edit: the next pull overwrites this file. -->\n' +
+        '\n' +
+        '## user — 1970-01-01T00:00:00.001Z\n' +
+        '\n' +
+        '# a heading I typed\n' +
+        '\n' +
+        '  - two   spaces  and a *star*\n' +
+        '> and a quote\n' +
+        '\n',
+    )
   })
 
   it('says so when there is nothing in the slice', () => {
