@@ -69,6 +69,41 @@ this does not go stale again the next time a line moves.
   different questions, and only one of them survives a pull —
   `scripts/announce-deploy.ts`, which speaks from the note and refuses a version
   that has none.
+- `current.md` describes what the dashboard IS, not what changed — required on
+  every BUILT folder, its own condition rather than a seventh `REQUIRED`
+  entry, since a scaffolded folder has no current shape to describe —
+  CLAUDE.md > Dashboard folder conventions.
+- **Overwritten every build, never added-alongside like `notes/`.** Nothing
+  permanent points at it, unlike a note (an announcement) or a prompt version
+  (a stamped `prompt_sha`), so there is nothing an edit could retroactively
+  falsify — and replacing it is what keeps it usable: an agent replaying a
+  changelog to find the current state is the failure it exists to remove —
+  CLAUDE.md, `lib/build/currentState.ts`.
+- Frontmatter `slug` + `version`, then five level-2 sections in fixed order —
+  `## What this is for`, `## Screens`, `## Panels`, `## What can be entered`,
+  `## Deliberately not included` — parsed and validated by
+  `lib/build/currentState.ts`; an unknown, misspelled, duplicated or missing
+  heading throws, same defensive shape as `lib/build/notes.ts` — CLAUDE.md.
+  `## Deliberately not included` is the only place a refusal survives; leaving
+  it empty is how the agent re-proposes something already turned down —
+  `platform/templates/dashboard/current.md.tmpl`.
+- **Never carries the friend's data.** Same bound as `notes/` above, applied to
+  a third artifact — describe shape, never a row, a value, or a merchant —
+  CLAUDE.md.
+- `version: 0` means "predates the spec loop" — `devone` and `devtwo` are
+  hand-written and never had a spec version behind them — `lib/build/currentState.ts`.
+- **The only artifact under `users/<slug>/` the running app puts in front of a
+  model.** `app/api/chat/route.ts` reads it and feeds its body to the chat
+  agent as the dashboard's current description — CLAUDE.md,
+  `platform/prompts/agent-v6.md`.
+- `tests/users/conventions.test.ts` sweeps `current.md`'s PRESENCE directly —
+  unlike a specific `notes/v<n>.md`, where the sweep cannot know which
+  versions should exist (that lives in the platform database), `current.md` is
+  exactly one file per built dashboard, so its absence is nameable. A BUILT
+  folder must have a `current.md` that parses, and its `version` must equal
+  the newest `notes/v<n>.md` on disk (`0` when there are none) — the
+  staleness gate, since `*.md` is exempt from Gate B and nothing else would
+  notice a build that forgot to rewrite it — `lib/build/currentState.ts`.
 - A folder has four legitimate-or-not states, and only one is a defect
   (`tests/users/conventions.test.ts`):
   - **pulled** — `spec.md`/`mockup.html` only. Not started; allowed.
@@ -77,7 +112,8 @@ this does not go stale again the next time a line moves.
     Allowed; the dashboard says "Under construction" and the friend's
     database stays empty.
   - **built** — all five `REQUIRED` entries AND a shape AND a conforming
-    `notes/`. Swept in full.
+    `notes/` AND a `current.md` naming the newest built version. Swept in
+    full.
   - **partial** — some of the five `REQUIRED` entries. A defect.
 - A dashboard renders only if registered in `lib/dashboard/registry.ts`, one
   line: `<slug>: () => import('@/users/<slug>/dashboard'),`. A folder with no
