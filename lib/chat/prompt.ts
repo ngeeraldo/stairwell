@@ -105,8 +105,16 @@ export const MOCKUP_SCREENS_PROMPT = 'mockup-v4.md'
  * A drafted announcement is the first GENERATED text this system writes into
  * an append-only transcript, which is why scripts/announce-deploy.ts drafts by
  * default and only sends on --send.
+ *
+ * v2 fixes a false premise the mockup-loop removal left behind: v1 told the
+ * model not to repeat what the friend already knows because "they confirmed
+ * this design and read a preview of it." Nobody confirms anything now and
+ * there is no preview, so a friend reading this announcement has never seen
+ * their dashboard — v2 tells the model to say briefly what it does instead
+ * of withholding that. New file, not an edit: transcript rows already stamp
+ * announce-v1.md's hash as their prompt_sha (CLAUDE.md > Data safety).
  */
-export const ANNOUNCE_PROMPT = 'announce-v1.md'
+export const ANNOUNCE_PROMPT = 'announce-v2.md'
 
 export type LoadedPrompt = { text: string; sha: string }
 

@@ -233,7 +233,7 @@ export function commitAnnouncement(
   target: ConfirmedTarget,
   write: {
     body: string
-    /** announce-v1.md's hash, or OPERATOR_SHA for the --plain path. */
+    /** The announce prompt's (ANNOUNCE_PROMPT) hash, or OPERATOR_SHA for the --plain path. */
     promptSha: string
     at: number
   },

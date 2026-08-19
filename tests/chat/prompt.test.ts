@@ -288,8 +288,26 @@ describe('loadPrompt', () => {
   it('keeps superseded prompts on disk, because rows point at their hashes', () => {
     // prompt_sha is a content hash stamped on every transcript and spec row.
     // Deleting a superseded prompt orphans every row that names it.
-    for (const name of ['agent-v2.md', 'spec-v1.md']) {
+    for (const name of ['agent-v2.md', 'spec-v1.md', 'announce-v1.md']) {
       expect(existsSync(promptPath(name))).toBe(true)
     }
+  })
+
+  it('points ANNOUNCE_PROMPT at v2, and keeps v1 as a distinct, unedited file', () => {
+    // Task 9: v1's "do not repeat what they already know" instruction was
+    // premised on a confirmation and a preview the mockup-loop removal
+    // deleted. A new file, not an edit — announce-v1.md already stamped its
+    // hash on real transcript rows (this repo's own prompt-versioning rule,
+    // CLAUDE.md > Onboarding). Pinning the constant's value here means a
+    // future accidental revert back to v1 fails a test instead of silently
+    // restoring the false premise.
+    expect(ANNOUNCE_PROMPT).toBe('announce-v2.md')
+    const v1 = loadPrompt('announce-v1.md')
+    const v2 = loadPrompt(ANNOUNCE_PROMPT)
+    expect(v2.sha).not.toBe(v1.sha)
+    // The false premise is gone from what actually ships...
+    expect(v2.text).not.toContain('They confirmed this design and read a')
+    // ...but v1 is untouched on disk, exactly as it shipped.
+    expect(v1.text).toContain('They confirmed this design and read a')
   })
 })

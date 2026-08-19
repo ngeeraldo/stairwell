@@ -48,7 +48,7 @@ export type DraftResult = {
   message: string
   usage: Usage
   served: Served
-  /** announce-v1.md's hash, stamped on the transcript row. */
+  /** The announce prompt's (ANNOUNCE_PROMPT) hash, stamped on the transcript row. */
   promptSha: string
 }
 
