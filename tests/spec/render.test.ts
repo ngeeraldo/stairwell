@@ -529,3 +529,87 @@ describe('renderSpecMarkdown', () => {
     expect(renderSpecMarkdown(version, meta)).toBe(renderSpecMarkdown(version, meta))
   })
 })
+
+import { renderChangeMarkdown } from '@/lib/spec/render'
+import { parseSpecChangeDraft, sealChange } from '@/lib/spec/change'
+
+describe('renderChangeMarkdown', () => {
+  const CHANGE = sealChange(
+    parseSpecChangeDraft({
+      change_summary: 'Adds a weekly average.',
+      changes: [
+        {
+          action: 'add',
+          target: 'panel',
+          name: 'Weekly average',
+          description: 'Under the streak. Mean of the last seven logged days.',
+        },
+        {
+          action: 'remove',
+          target: 'screen',
+          name: 'History',
+          description: 'They never opened it.',
+        },
+      ],
+      data_requirements: [
+        { table: 'walk_log', purpose: 'One row per logged day.', status: 'unchanged' },
+      ],
+      open_questions: ['Should the average ignore weekends?'],
+    }),
+    2,
+  )
+  const META = { slug: 'devtwo', version: 3, confirmedAt: 1_700_000_000_000 }
+
+  it('leads with the slug and version, not a model-authored title', () => {
+    // title/summary/background do not exist on this shape (design §5.0.1).
+    // The H1 is a fact about the file, so it cannot go stale or be renamed
+    // by a model between versions.
+    expect(renderChangeMarkdown(CHANGE, META)).toContain('# devtwo — spec v3')
+  })
+
+  it('carries the do-not-hand-edit banner, like the other renderers', () => {
+    expect(renderChangeMarkdown(CHANGE, META)).toContain('Do not hand-edit')
+  })
+
+  it('renders each change with its action, target and name', () => {
+    const md = renderChangeMarkdown(CHANGE, META)
+    expect(md).toContain('### Add panel — Weekly average')
+    expect(md).toContain('### Remove screen — History')
+    expect(md).toContain('Mean of the last seven logged days.')
+  })
+
+  it('renders data requirements and open questions', () => {
+    const md = renderChangeMarkdown(CHANGE, META)
+    expect(md).toContain('`walk_log` — unchanged — One row per logged day.')
+    expect(md).toContain('- Should the average ignore weekends?')
+  })
+
+  it('says _None._ for an empty open questions list', () => {
+    const empty = sealChange({ ...CHANGE, open_questions: [] }, 2)
+    expect(renderChangeMarkdown(empty, META)).toContain('_None._')
+  })
+
+  it('escapes a heading a friend wrote inside a description', () => {
+    // Same guarantee as the other two renderers: line-leading markdown
+    // structure from text of unknown provenance is neutralised, and the
+    // attack has to start on its own line for a single-line fixture to prove
+    // anything (see renderPanel's docstring).
+    const attack = sealChange(
+      parseSpecChangeDraft({
+        change_summary: 'Fine.',
+        changes: [
+          {
+            action: 'add',
+            target: 'panel',
+            name: 'Fine',
+            description: 'First line.\n# pwned',
+          },
+        ],
+        data_requirements: [],
+        open_questions: [],
+      }),
+      null,
+    )
+    expect(renderChangeMarkdown(attack, META)).toContain('\\# pwned')
+  })
+})
