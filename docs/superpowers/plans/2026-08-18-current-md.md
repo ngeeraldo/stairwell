@@ -296,14 +296,22 @@ export function parseCurrentState(text: string): CurrentState {
 }
 
 /**
- * USERS_DIR, matching lib/build/notes.ts — it exists so tests can point at a
- * temp tree, and its default IS the correct production value. Duplicated
- * rather than imported from lib/db/userDb.ts for the reason that file's own
- * comment gives: userDb.ts pulls in a native SQLite binding at module top,
- * and this module is pure text parsing.
+ * USERS_DIR, matching lib/build/notes.ts:176 exactly — an explicit argument
+ * wins, then the env var, then the default, which IS the correct production
+ * value.
+ *
+ * The env arm is not optional. USERS_DIR is a live seam: several route tests
+ * (tests/auth/routes.test.ts, tests/invite/registerRoute.test.ts) point the
+ * whole app at a temp users tree, and app/api/chat/route.ts reads this module.
+ * Omitting it would make this file read the real users/ while every other
+ * module read the temp one.
+ *
+ * Duplicated rather than imported from lib/db/userDb.ts for the reason that
+ * file's own comment gives: userDb.ts pulls in a native SQLite binding at
+ * module top, and this module is pure text parsing.
  */
 function usersRoot(override?: string): string {
-  return override ?? resolve(process.cwd(), 'users')
+  return override ?? process.env.USERS_DIR ?? resolve(process.cwd(), 'users')
 }
 
 export function currentStatePath(slug: string, usersDir?: string): string {
