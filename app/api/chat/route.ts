@@ -136,9 +136,10 @@ export async function POST(request: Request) {
 
       // WRAPPED, same reasoning as app/[user]/page.tsx's ensureOpeningMessage
       // wrap. readCurrentState throws when current.md EXISTS but fails to
-      // parse — correct as a builder-facing signal (the folder sweep and
-      // instrumentation.ts both want that loud) but wrong here: this route's
-      // own header comment promises the chat surface "keeps working when the
+      // parse — correct as a builder-facing signal (the folder sweep wants
+      // that loud: tests/users/conventions.test.ts's "has a current.md that
+      // parses" check) but wrong here: this route's own header comment
+      // promises the chat surface "keeps working when the
       // key is gone," and a malformed file the builder wrote must not take
       // the whole chat request down with it — no reply, no assistant row, no
       // chat_error metric. Degrading to null is exactly the graceful

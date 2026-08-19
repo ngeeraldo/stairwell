@@ -92,11 +92,14 @@ this does not go stale again the next time a line moves.
   CLAUDE.md.
 - `version: 0` means "predates the spec loop" — `devone` and `devtwo` are
   hand-written and never had a spec version behind them — `lib/build/currentState.ts`.
-- **The only artifact under `users/<slug>/` the running app puts in front of a
+- **The only artifact under `users/<slug>/` the RUNNING APP puts in front of a
   model.** `app/api/chat/route.ts` reads it; `lib/chat/turn.ts`'s
   `CURRENT_STATE_BLOCK` labels and appends its body onto the system prompt;
   `platform/prompts/agent-v6.md` is what tells the agent to trust it over the
-  spec — CLAUDE.md.
+  spec — CLAUDE.md. Scoped to the running app on purpose: `notes/v<n>.md`
+  reaches a model too, via `scripts/announce-deploy.ts`'s `draftAnnouncement`
+  call — but that is an operator script run by hand, not a path a friend's own
+  session ever triggers.
 - `tests/users/conventions.test.ts` sweeps `current.md`'s PRESENCE directly —
   unlike a specific `notes/v<n>.md`, where the sweep cannot know which
   versions should exist (that lives in the platform database), `current.md` is

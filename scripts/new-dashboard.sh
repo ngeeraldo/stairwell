@@ -100,6 +100,12 @@ main() {
     > "$dest/notes/README.md"
   sed "s/__SLUG__/$slug/g" "$src/tests/dashboard.test.ts.tmpl" \
     > "$dest/tests/dashboard.test.ts"
+  # NOT COPIED: platform/templates/dashboard/current.md.tmpl. Same reasoning
+  # as "NO 001 AND NO MANIFEST" above — current.md says what the dashboard IS,
+  # and a scaffold has no shape yet, so there is nothing true to write. The
+  # sweep does not go looking for one either: tests/users/conventions.test.ts's
+  # `whenBuilt` checks (which require current.md) are gated on migrations/
+  # holding a shape, the same gate this script's own scaffold state skips.
   chmod +x "$dest/seed.py"
 
   # Deliberately prints only what this script alone knows: the folder it just

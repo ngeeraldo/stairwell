@@ -352,13 +352,23 @@ describe('users/ folder conventions', () => {
         .map((f) => /^v(\d+)\.md$/.exec(f))
         .filter((m): m is RegExpExecArray => m !== null)
         .map((m) => Number(m[1]))
-      const state = readCurrentState(slug, USERS)!
+      const state = readCurrentState(slug, USERS)
+      // GUARDED, not `!`. docs/runbook.md:392 tells the builder to expect
+      // current.md to be absent between steps 7.2 (shape landed, so `built`
+      // is already true) and 7.5 (current.md written) — the previous test
+      // already reports that gap by name. An unguarded `!` here would instead
+      // throw a null-deref TypeError, which drops this test's own message and
+      // leaves whoever is reading red output no way to tell "current.md is
+      // missing, as expected mid-build" from "the runner itself broke".
+      expect(state, `${slug} is built but has no current.md`).not.toBeNull()
       // No notes at all means the folder predates the spec loop — devone and
       // devtwo, hand-written, never had a version. Version 0 says so.
       const expected = versions.length === 0 ? 0 : Math.max(...versions)
       expect(
-        state.version,
-        `${slug}/current.md says version ${state.version}, newest note is v${expected}`,
+        state!.version,
+        versions.length === 0
+          ? `${slug}/current.md says version ${state!.version}, but notes/ has no v<n>.md files at all`
+          : `${slug}/current.md says version ${state!.version}, newest note is v${expected}`,
       ).toBe(expected)
     })
 

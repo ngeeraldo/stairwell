@@ -1,5 +1,5 @@
 // tests/build/currentState.test.ts
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -9,6 +9,10 @@ import {
   parseCurrentState,
   readCurrentState,
 } from '@/lib/build/currentState'
+
+// Repo root, the same way tests/scripts/newDashboard.test.ts locates it — this
+// file lives two levels under it (tests/build/).
+const REPO = resolve(__dirname, '..', '..')
 
 const GOOD = `---
 slug: sam
@@ -155,5 +159,23 @@ describe('readCurrentState', () => {
       if (prevUsersDir === undefined) delete process.env.USERS_DIR
       else process.env.USERS_DIR = prevUsersDir
     }
+  })
+})
+
+describe('platform/templates/dashboard/current.md.tmpl', () => {
+  it('parses once __SLUG__ is substituted', () => {
+    // Nothing else in the suite ever loads this file — it is copied by hand
+    // at step 7.5 (docs/runbook.md), not by scripts/new-dashboard.sh, so no
+    // scaffold test exercises it either. A heading typo in it would sit
+    // unnoticed until a builder hit the throw live, mid-build. sed's own
+    // substitution (`s/__SLUG__/.../g`, scripts/new-dashboard.sh) is mirrored
+    // with a plain string replace here rather than shelling out to sed, since
+    // the point is proving the CONTENT parses, not proving sed works.
+    const raw = readFileSync(
+      resolve(REPO, 'platform/templates/dashboard/current.md.tmpl'),
+      'utf8',
+    )
+    const filled = raw.replace(/__SLUG__/g, 'sam')
+    expect(() => parseCurrentState(filled)).not.toThrow()
   })
 })

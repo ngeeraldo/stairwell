@@ -1,6 +1,23 @@
 // users/devone/tests/currentState.test.ts
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readCurrentState } from '@/lib/build/currentState'
+
+// Hermetic against an ambient USERS_DIR, same hazard tests/build/notes.test.ts
+// guards explicitly: several other test files in this suite set and `delete`
+// process.env.USERS_DIR with no try/finally, so a throw between the two leaks
+// it for the rest of that worker. Every call below omits the usersDir
+// argument on purpose — this file exists to check the ACTUAL committed
+// users/devone/current.md, so a leaked USERS_DIR pointing at some other
+// worker's temp tree must not be allowed to redirect it there instead.
+let ambientUsersDir: string | undefined
+beforeEach(() => {
+  ambientUsersDir = process.env.USERS_DIR
+  delete process.env.USERS_DIR
+})
+afterEach(() => {
+  if (ambientUsersDir === undefined) delete process.env.USERS_DIR
+  else process.env.USERS_DIR = ambientUsersDir
+})
 
 describe('devone current.md', () => {
   it('parses', () => {

@@ -67,6 +67,16 @@ architectural changes; do not relitigate decided items).
   spec row, so an edited file would silently change what an already-written
   hash points at. This is a data-safety property, not a style preference
   (unified-loop ledger D13).
+  **Boundary, not a loosening: a prompt file may still be edited in place
+  before the commit that INTRODUCES it reaches `main`.** The rule protects a
+  `prompt_sha` some stored row already points at, and no such row can exist
+  for a file that has never been on `main` — the droplet only ever pulls
+  `main`, and nothing else stamps a hash. `agent-v6.md` was created and edited
+  in the same unmerged branch for exactly this reason: created, then a wording
+  fix landed in a later commit on that same branch, before either commit ever
+  reached `main`. Once a branch merges, the file is exactly as pinned as any
+  other — this boundary describes a window before that point, not a standing
+  exception.
 
 ## Schema & module rules
 - migrations + seed.py + tests/ update in the SAME commit. No drift.
@@ -118,11 +128,15 @@ architectural changes; do not relitigate decided items).
   no current shape to describe. `tests/users/conventions.test.ts` sweeps it
   the same way it sweeps `notes/`: it must exist, and its frontmatter
   `version` must equal the newest `notes/v<n>.md` (`0` when there are none).
-  It is the ONLY artifact under `users/<slug>/` that the running app puts in
+  It is the ONLY artifact under `users/<slug>/` that the RUNNING APP puts in
   front of a model — `app/api/chat/route.ts` reads it, `lib/chat/turn.ts`'s
   `CURRENT_STATE_BLOCK` labels and appends its body to the system prompt, and
   `platform/prompts/agent-v6.md` is what tells the agent to trust it over the
-  spec.
+  spec. "The running app" is doing the work in that sentence: `notes/v<n>.md`
+  reaches a model too, just not from the app — `scripts/announce-deploy.ts`
+  feeds it to `draftAnnouncement` when drafting an announcement. That is an
+  operator script run by hand, not a request path a friend's session ever
+  triggers, which is the distinction this bullet is naming.
   **Overwritten every build**, unlike `notes/` and unlike a prompt version:
   those are pinned because something permanent already points at them — an
   announcement, a `prompt_sha` on a stored row — and editing one would change

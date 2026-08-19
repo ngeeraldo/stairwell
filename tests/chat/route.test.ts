@@ -352,6 +352,13 @@ describe('POST /api/chat', () => {
     await signIn(true)
     const res = await post({ body: 'hi' })
     expect(res.status).toBe(200)
+
+    // An ORDINARY turn, on the real repo's users/devone/current.md (beforeEach
+    // deletes USERS_DIR, so this reads the actual committed file, not a
+    // fixture). The malformed-file test below only proves the DEGRADED path;
+    // nothing before this proved a VALID current.md actually reaches the
+    // model at all. lastSystem.value is the same capture that test reads.
+    expect(lastSystem.value).toContain(CURRENT_STATE_BLOCK)
   })
 
   it('persists the exchange against the session that sent it', async () => {
