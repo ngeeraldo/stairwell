@@ -1,11 +1,11 @@
 // tests/chat/announce.test.ts
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount, findAccountBySlug } from '@/lib/auth/accounts'
-import { readTranscript } from '@/lib/db/appendOnly'
+import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { insertSpec, confirmSpec } from '@/lib/db/specs'
 import {
   AlreadyAnnouncedError,
@@ -82,11 +82,34 @@ function legacyPayload(overrides: Partial<LegacySpecPayload> = {}): LegacySpecPa
 let specSeq = 0
 
 /**
- * Confirm a new spec version for an already-existing account — against this
- * file's shared 'devtwo' fixture rather than minting a fresh account per
- * scenario, since these tests share one account's spec history on purpose
- * (each call adds the NEXT confirmed version, matching how a real account
+ * Insert a spec without confirming it — the only shape this plan produces.
+ * Against this file's shared 'devtwo' fixture rather than minting a fresh
+ * account per scenario, since these tests share one account's spec history
+ * on purpose (each call adds the NEXT version, matching how a real account
  * accumulates them).
+ */
+function authorAVersion(
+  db: PlatformDb,
+  slug: string,
+  overrides: Partial<SpecVersion> = {},
+): number {
+  const account = findAccountBySlug(db, slug)
+  if (!account) throw new Error(`no account with slug '${slug}'`)
+  specSeq += 1
+  return insertSpec(db, {
+    accountId: account.id,
+    conversationId: `conv-${slug}-${specSeq}`,
+    promptSha: `sha-${slug}-${specSeq}`,
+    payload: currentPayload(overrides),
+    mockupHtml: MOCKUP,
+    at: 1_000 + specSeq,
+  })
+}
+
+/**
+ * Confirm a new spec version for an already-existing account. Built on
+ * authorAVersion rather than duplicating its insert, so the two shapes
+ * (authored, and authored-then-confirmed) cannot drift apart.
  */
 function confirmAVersion(
   db: PlatformDb,
@@ -95,16 +118,34 @@ function confirmAVersion(
 ): void {
   const account = findAccountBySlug(db, slug)
   if (!account) throw new Error(`no account with slug '${slug}'`)
-  specSeq += 1
-  const specId = insertSpec(db, {
-    accountId: account.id,
-    conversationId: `conv-${slug}-${specSeq}`,
-    promptSha: `sha-${slug}-${specSeq}`,
-    payload: currentPayload(overrides),
-    mockupHtml: MOCKUP,
-    at: 1_000 + specSeq,
-  })
+  const specId = authorAVersion(db, slug, overrides)
   confirmSpec(db, { specId, accountId: account.id, at: 1_500 + specSeq })
+}
+
+/**
+ * A minimal notes file that readBuildNotes accepts. Four sections, in order,
+ * with a non-empty "What shipped" — lib/build/notes.ts rejects anything else.
+ */
+function writeNote(usersDir: string, slug: string, version: number): void {
+  const notesDir = join(usersDir, slug, 'notes')
+  mkdirSync(notesDir, { recursive: true })
+  writeFileSync(
+    join(notesDir, `v${version}.md`),
+    `---\nslug: ${slug}\nversion: ${version}\nbuilt_at: 2026-08-19\n---\n\n` +
+      '## What shipped\nA panel TEST.\n\n' +
+      '## Built differently\n\n' +
+      '## Open\n\n' +
+      '## Notes for the next build\n',
+  )
+}
+
+function markAnnounced(db: PlatformDb, specId: number, accountId: number): void {
+  appendMetric(db, {
+    accountId,
+    event: 'deploy_announced',
+    data: { spec_id: specId },
+    at: 2_000,
+  })
 }
 
 afterAll(() => {
@@ -151,17 +192,21 @@ describe('announce', () => {
 })
 
 describe('announceTarget', () => {
-  it('reports no_confirmed_spec when nothing is confirmed', () => {
-    // <db>, <slug> from this file's existing fixture helpers.
+  it('reports no_build_notes when nothing has been built', () => {
+    // <db>, <slug> from this file's existing fixture helpers. Nothing has
+    // even been authored yet for this account at this point in the file, so
+    // there is no version notes could exist for either.
     expect(announceTarget(db, 'devtwo')).toEqual({
       ok: false,
-      reason: 'no_confirmed_spec',
+      reason: 'no_build_notes',
     })
   })
 
   it('returns the headline, version and first-ness of the confirmed spec', () => {
     confirmAVersion(db, 'devtwo', { change_summary: 'Added a takeaway panel.' })
-    const target = announceTarget(db, 'devtwo')
+    // First spec ever authored for 'devtwo' in this file — version 1.
+    writeNote(dir, 'devtwo', 1)
+    const target = announceTarget(db, 'devtwo', dir)
     expect(target.ok).toBe(true)
     if (!target.ok) return
     expect(target.headline).toBe('Added a takeaway panel.')
@@ -171,10 +216,12 @@ describe('announceTarget', () => {
 
   it('reports already_announced after a commit', () => {
     confirmAVersion(db, 'devtwo', { change_summary: 'x' })
-    const target = announceTarget(db, 'devtwo')
+    // Second spec ever authored for 'devtwo' — version 2.
+    writeNote(dir, 'devtwo', 2)
+    const target = announceTarget(db, 'devtwo', dir)
     if (!target.ok) throw new Error('expected a target')
     commitAnnouncement(db, target, { body: 'hello', promptSha: 'abc123abc123', at: 5 })
-    expect(announceTarget(db, 'devtwo')).toEqual({
+    expect(announceTarget(db, 'devtwo', dir)).toEqual({
       ok: false,
       reason: 'already_announced',
     })
@@ -199,8 +246,9 @@ describe('announceTarget', () => {
       at: 1_000,
     })
     confirmSpec(db, { specId, accountId: legacyAccountId, at: 1_500 })
+    writeNote(dir, 'legacyannounce', 1)
 
-    const target = announceTarget(db, 'legacyannounce')
+    const target = announceTarget(db, 'legacyannounce', dir)
     expect(target.ok).toBe(true)
     if (!target.ok) return
     expect(target.headline).toBe('A legacy dashboard TEST')
@@ -236,8 +284,11 @@ describe('announceTarget', () => {
       at: 2_000,
     })
     confirmSpec(db, { specId: secondSpecId, accountId: rebuildAccountId, at: 2_500 })
+    // Only the second (higher) version has notes — the walk should find it
+    // first and never need to fall back to the first version's notes.
+    writeNote(dir, 'rebuildannounce', 2)
 
-    const target = announceTarget(db, 'rebuildannounce')
+    const target = announceTarget(db, 'rebuildannounce', dir)
     expect(target.ok).toBe(true)
     if (!target.ok) return
     expect(target.first).toBe(false)
@@ -247,10 +298,84 @@ describe('announceTarget', () => {
   })
 })
 
+describe('announceTarget keys off build notes', () => {
+  // Own account and own users tree per test, not this file's shared 'devtwo'
+  // fixture: these tests assert on version NUMBERS, and 'devtwo's specSeq-
+  // driven history keeps growing across the rest of the file, so a shared
+  // account would make "version 1" mean something different depending on
+  // what ran earlier. A fresh mkdtempSync tree per test, not just per
+  // describe block, for the same reason: a notes file written by an earlier
+  // test in this block would otherwise still be sitting on disk for a later
+  // one's "no version has notes" check.
+  let notesUsersDir: string
+  let notesSlug: string
+  let notesAccountId: number
+  let notesSeq = 0
+
+  beforeEach(async () => {
+    notesSeq += 1
+    notesUsersDir = mkdtempSync(join(tmpdir(), 'stairwell-announce-buildnotes-'))
+    notesSlug = `buildnotes${notesSeq}`
+    notesAccountId = await createAccount(db, {
+      slug: notesSlug,
+      role: 'user',
+      password: `TEST-buildnotes-${notesSeq}`,
+    })
+  })
+
+  afterEach(() => {
+    rmSync(notesUsersDir, { recursive: true, force: true })
+  })
+
+  it('targets the highest version that has a notes file', () => {
+    // Two specs, notes for v1 only. v2 is authored but not built — the state
+    // between a friend asking and Nico building, which used to be impossible
+    // because nothing was authored without a card in front of it.
+    authorAVersion(db, notesSlug)
+    authorAVersion(db, notesSlug)
+    writeNote(notesUsersDir, notesSlug, 1)
+
+    const target = announceTarget(db, notesSlug, notesUsersDir)
+    expect(target.ok).toBe(true)
+    expect(target.ok && target.version).toBe(1)
+  })
+
+  it('reports nothing to announce when no version has notes', () => {
+    authorAVersion(db, notesSlug)
+    const target = announceTarget(db, notesSlug, notesUsersDir)
+    expect(target.ok).toBe(false)
+    expect(!target.ok && target.reason).toBe('no_build_notes')
+  })
+
+  it('skips a version already announced rather than announcing an older one', () => {
+    // v2 announced, v1 also built. Announcing v1 now would tell a friend
+    // about an older build than the one they already have.
+    authorAVersion(db, notesSlug)
+    const second = authorAVersion(db, notesSlug)
+    writeNote(notesUsersDir, notesSlug, 1)
+    writeNote(notesUsersDir, notesSlug, 2)
+    markAnnounced(db, second, notesAccountId)
+
+    const target = announceTarget(db, notesSlug, notesUsersDir)
+    expect(target.ok).toBe(false)
+    expect(!target.ok && target.reason).toBe('already_announced')
+  })
+
+  it('does not require a confirmation', () => {
+    // The point of the whole task: no spec_confirmations row exists in this
+    // fixture, and the announcement still finds its target.
+    authorAVersion(db, notesSlug)
+    writeNote(notesUsersDir, notesSlug, 1)
+    expect(announceTarget(db, notesSlug, notesUsersDir).ok).toBe(true)
+  })
+})
+
 describe('commitAnnouncement', () => {
   it('stamps the drafting prompt sha, not the operator sentinel', () => {
     confirmAVersion(db, 'devtwo', { change_summary: 'x' })
-    const target = announceTarget(db, 'devtwo')
+    // Third spec ever authored for 'devtwo' — version 3.
+    writeNote(dir, 'devtwo', 3)
+    const target = announceTarget(db, 'devtwo', dir)
     if (!target.ok) throw new Error('expected a target')
     commitAnnouncement(db, target, { body: 'hello', promptSha: 'deadbeef1234', at: 5 })
     const row = db
@@ -264,7 +389,9 @@ describe('commitAnnouncement', () => {
 
   it('refuses a blank body, and writes neither half of the pair', () => {
     confirmAVersion(db, 'devtwo', { change_summary: 'x' })
-    const target = announceTarget(db, 'devtwo')
+    // Fourth spec ever authored for 'devtwo' — version 4.
+    writeNote(dir, 'devtwo', 4)
+    const target = announceTarget(db, 'devtwo', dir)
     if (!target.ok) throw new Error('expected a target')
     const metricsBefore = (
       db.prepare(`SELECT COUNT(*) AS n FROM metrics WHERE account_id = ?`).get(accountId) as {
@@ -297,7 +424,9 @@ describe('commitAnnouncement', () => {
   // sacred, append-only metric per CLAUDE.md) gets a permanent duplicate.
   it('refuses a second commit for the same target, even when both resolved the target before either wrote (the race)', () => {
     confirmAVersion(db, 'devtwo', { change_summary: 'racy build' })
-    const target = announceTarget(db, 'devtwo')
+    // Fifth spec ever authored for 'devtwo' — version 5.
+    writeNote(dir, 'devtwo', 5)
+    const target = announceTarget(db, 'devtwo', dir)
     if (!target.ok) throw new Error('expected a target')
 
     const transcriptBefore = readTranscript(db, accountId).length

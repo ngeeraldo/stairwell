@@ -14,10 +14,12 @@
 // exact prompt text behind it; a row with prompt_sha = OPERATOR_SHA says,
 // permanently, that there was none. transcripts is append-only — the
 // distinction has to be right at write time or not at all.
+import { existsSync } from 'node:fs'
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, appendTranscript } from '@/lib/db/appendOnly'
 import { conversationIdFor } from '@/lib/chat/conversation'
-import { currentSpec, hasConfirmedSpecBelow } from '@/lib/db/specs'
+import { readSpecs, hasConfirmedSpecBelow } from '@/lib/db/specs'
+import { notesPath } from '@/lib/build/notes'
 import { readStoredSpec } from '@/lib/spec/stored'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 
@@ -107,7 +109,7 @@ export type AnnounceTarget =
       /** Whether this is the account's first dashboard (ledger D9). */
       first: boolean
     }
-  | { ok: false; reason: 'no_confirmed_spec' | 'already_announced' }
+  | { ok: false; reason: 'no_build_notes' | 'already_announced' }
 
 /**
  * Decide, without writing anything and without spending a model call.
@@ -116,13 +118,25 @@ export type AnnounceTarget =
  * to announce?" BEFORE paying to draft a sentence — and so its dry run can
  * print a draft while writing neither the transcript row nor the
  * deploy_announced metric that would make the real send a no-op.
+ *
+ * `usersDir` threads through to notesPath so a test can point it at a temp
+ * tree; omitted, it defaults to lib/build/notes.ts's own production default.
  */
-export function announceTarget(db: PlatformDb, slug: string): AnnounceTarget {
+export function announceTarget(db: PlatformDb, slug: string, usersDir?: string): AnnounceTarget {
   const account = findAccountBySlug(db, slug)
   if (!account) throw new Error(`no account with slug '${slug}'`)
 
-  const spec = currentSpec(db, account.id)
-  if (!spec) return { ok: false, reason: 'no_confirmed_spec' }
+  // notes/v<n>.md exists only for a version that was actually built and
+  // committed — a spec being authored (or even confirmed) proves someone
+  // asked for it, never that it was built. So the notes file, not `specs`
+  // itself, is what decides what can honestly be announced: walk versions
+  // newest first and take the first one a notes file exists for on disk,
+  // never parsing it here (a parse failure is runAnnounce's to report, with
+  // its own message).
+  const spec = readSpecs(db, account.id).find((s) =>
+    existsSync(notesPath(slug, s.version, usersDir)),
+  )
+  if (!spec) return { ok: false, reason: 'no_build_notes' }
   if (alreadyAnnounced(db, account.id, spec.id)) {
     return { ok: false, reason: 'already_announced' }
   }

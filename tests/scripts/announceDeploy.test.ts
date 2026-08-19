@@ -167,10 +167,16 @@ afterEach(() => {
 })
 
 describe('runAnnounce', () => {
-  it('refuses when the notes file is missing, naming the path', async () => {
+  it('refuses when no version has notes, since nothing has been built yet', async () => {
+    // The confirmed spec from beforeEach has no notes/v1.md anywhere — the
+    // state announceTarget now refuses BEFORE runAnnounce ever tries to read
+    // notes for a specific version. NotesMissingError (its own dedicated
+    // message) covers the different, narrower case: a version announceTarget
+    // already found notes for on disk, whose file then vanished before
+    // readBuildNotes got to it.
     const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false })
-    expect(out.kind).toBe('notes_missing')
-    expect(out.message).toMatch(/v1\.md/)
+    expect(out.kind).toBe('no_build_notes')
+    expect(out.message).toMatch(/nothing has been built yet/)
     expect(transcriptCount(db)).toBe(0)
   })
 
@@ -242,6 +248,16 @@ describe('runAnnounce', () => {
   // verbatim, with no model call — the way to actually send what an earlier
   // dry run showed, rather than a fresh independent sample.
   describe('--body-file', () => {
+    // Every scenario below is testing --body-file's OWN logic (verbatim
+    // send, shell-marker refusal, missing-path handling) — none of it is
+    // about whether a version was built. announceTarget resolves first
+    // (ORDER MATTERS, above), so without notes on disk every one of these
+    // would refuse with no_build_notes before ever reaching the code under
+    // test here.
+    beforeEach(() => {
+      writeNotes('sam', 1)
+    })
+
     function writeBody(text: string): string {
       const path = join(dir, 'reviewed-body.txt')
       writeFileSync(path, text)
@@ -373,6 +389,7 @@ describe('runAnnounce', () => {
     })
 
     it('does not warn on --send --body-file — nothing was redrafted', async () => {
+      writeNotes('sam', 1)
       const path = join(dir, 'reviewed.txt')
       writeFileSync(path, 'Reviewed text.')
       const out = await runAnnounce(deps, { slug: 'sam', send: true, plain: false, bodyFile: path })
@@ -511,7 +528,7 @@ describe('exitCodeFor', () => {
       'notes_missing',
       'notes_invalid',
       'draft_failed',
-      'no_confirmed_spec',
+      'no_build_notes',
       'body_file_invalid',
     ]
     const ok: AnnounceOutcome['kind'][] = ['drafted', 'announced', 'already_announced']
@@ -629,8 +646,24 @@ describe('scripts/announce-deploy.ts (CLI)', () => {
     const bodyPath = join(dir, 'reviewed.txt')
     writeFileSync(bodyPath, 'Your tracker is live.')
 
+    // announceTarget resolves against USERS_DIR/clitest/notes/v1.md
+    // (lib/build/notes.ts's own default reads that env var) — without it,
+    // this CLI invocation would refuse with no_build_notes before ever
+    // reaching --body-file, and the real repo's users/ tree must not be
+    // touched by a test.
+    mkdirSync(join(dir, 'clitest', 'notes'), { recursive: true })
+    writeFileSync(
+      join(dir, 'clitest', 'notes', 'v1.md'),
+      '---\nslug: clitest\nversion: 1\nbuilt_at: 2026-08-19\n---\n\n' +
+        '## What shipped\nA panel TEST.\n\n' +
+        '## Built differently\n\n' +
+        '## Open\n\n' +
+        '## Notes for the next build\n',
+    )
+
     const { stdout, stderr } = runSplit(['clitest', '--body-file', bodyPath], {
       PLATFORM_DB: target,
+      USERS_DIR: dir,
     })
 
     // Exactly the sentence — this is what `tee` would write to the file that
@@ -665,6 +698,6 @@ describe('scripts/announce-deploy.ts (CLI)', () => {
     const { status, output } = run(['clitest', '--plain'], { PLATFORM_DB: target })
     expect(status).not.toBe(0)
     expect(output).not.toContain('PLATFORM_DB')
-    expect(output).toContain('no confirmed spec')
+    expect(output).toContain('no build notes')
   })
 })
