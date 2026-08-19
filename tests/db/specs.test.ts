@@ -5,10 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import {
-  confirmSpec,
   currentSpec,
-  hasConfirmedSpec,
-  hasConfirmedSpecBelow,
+  hasSpec,
+  hasSpecBelow,
   insertSpec,
   newestSpec,
   readSpecs,
@@ -38,6 +37,14 @@ function write(accountId: number, title: string, at: number): number {
   })
 }
 
+// specs.account_id carries no FOREIGN KEY (platform/schema.sql's own
+// comment: additive-only), so a fresh id here needs no accounts row behind
+// it — just a number no other case in this file already used.
+let nextAccount = 1000
+function freshAccount(): number {
+  return nextAccount++
+}
+
 describe('insertSpec / readSpecs', () => {
   it('round-trips the payload and the mockup', () => {
     write(1, 'FIRST TEST DASHBOARD', 1_000)
@@ -64,93 +71,73 @@ describe('insertSpec / readSpecs', () => {
   })
 })
 
-describe('hasConfirmedSpecBelow — "is this card the first dashboard?"', () => {
-  // The bounded question, and the reason it is not hasConfirmedSpec. See that
-  // function's docstring: the unbounded reading flips the instant a friend
-  // confirms their FIRST card, which made that same card start describing a
-  // whole first dashboard as a small change on the next page load.
+describe('hasSpecBelow — "is this card the first dashboard?"', () => {
+  // The bounded question, and the reason it is not hasSpec. See that
+  // function's docstring: the unbounded reading flips the instant a friend's
+  // very first card is on screen, which would make that same card start
+  // describing a whole first dashboard as a small change on the next page
+  // load.
 
-  it('is false for an account that has confirmed nothing', () => {
+  it('is false for an account with nothing', () => {
     write(1, 'one', 1_000)
-    expect(hasConfirmedSpecBelow(db, 1, 1)).toBe(false)
+    expect(hasSpecBelow(db, 1, 1)).toBe(false)
   })
 
-  it('is false when the ONLY confirmed spec is the one being asked about', () => {
-    // The card that IS the first dashboard. Nothing was being built before
-    // it, so nothing sits below it.
-    const id = write(1, 'one', 1_000)
-    confirmSpec(db, { specId: id, accountId: 1, at: 5_000 })
-    expect(hasConfirmedSpec(db, 1)).toBe(true)
-    expect(hasConfirmedSpecBelow(db, 1, 1)).toBe(false)
+  it('is false when the ONLY spec is the one being asked about', () => {
+    // The card that IS the first dashboard. Nothing existed before it, so
+    // nothing sits below it.
+    write(1, 'one', 1_000)
+    expect(hasSpec(db, 1)).toBe(true)
+    expect(hasSpecBelow(db, 1, 1)).toBe(false)
   })
 
-  it('is true once an EARLIER spec was confirmed beneath the one being asked about', () => {
-    const first = write(1, 'one', 1_000)
-    confirmSpec(db, { specId: first, accountId: 1, at: 5_000 })
+  it('is true once an EARLIER spec exists beneath the one being asked about', () => {
+    write(1, 'one', 1_000)
     write(1, 'two', 2_000)
-    expect(hasConfirmedSpecBelow(db, 1, 2)).toBe(true)
-  })
-
-  it('ignores an unconfirmed earlier spec — a draft nobody accepted built nothing', () => {
-    write(1, 'an abandoned draft', 1_000)
-    write(1, 'two', 2_000)
-    expect(hasConfirmedSpecBelow(db, 1, 2)).toBe(false)
+    expect(hasSpecBelow(db, 1, 2)).toBe(true)
   })
 
   it('scopes to one account', () => {
-    const theirs = write(2, 'theirs', 1_000)
-    confirmSpec(db, { specId: theirs, accountId: 2, at: 5_000 })
+    write(2, 'theirs', 1_000)
     write(1, 'mine', 2_000)
-    expect(hasConfirmedSpecBelow(db, 1, 1)).toBe(false)
+    expect(hasSpecBelow(db, 1, 1)).toBe(false)
   })
 })
 
-describe('confirmation', () => {
-  it('is null until confirmed, then carries the timestamp', () => {
-    const id = write(1, 'one', 1_000)
-    expect(newestSpec(db, 1)!.confirmed_at).toBeNull()
-    expect(hasConfirmedSpec(db, 1)).toBe(false)
+describe('hasSpec', () => {
+  it('is false until an account has a spec, then true', () => {
+    expect(hasSpec(db, 1)).toBe(false)
+    write(1, 'one', 1_000)
+    expect(hasSpec(db, 1)).toBe(true)
+  })
+})
 
-    confirmSpec(db, { specId: id, accountId: 1, at: 5_000 })
-    expect(newestSpec(db, 1)!.confirmed_at).toBe(5_000)
-    expect(hasConfirmedSpec(db, 1)).toBe(true)
+describe('currentSpec after confirmations were removed', () => {
+  it('returns the newest spec row, confirmed or not', () => {
+    // No spec_confirmations row is written anywhere here — that is the point.
+    // The newest spec IS the contract now.
+    const account = freshAccount()
+    write(account, 'first', 1_000)
+    const newest = write(account, 'second', 2_000)
+
+    expect(currentSpec(db, account)?.id).toBe(newest)
   })
 
-  it('reports the EARLIEST confirmation and never duplicates the row', () => {
-    // Two confirmations for one spec is the documented concurrent-confirm
-    // race (spec section 12). It must not double the spec in readSpecs, and
-    // the reported moment must be the first one — that is when the friend
-    // actually decided.
-    const id = write(1, 'one', 1_000)
-    confirmSpec(db, { specId: id, accountId: 1, at: 5_000 })
-    confirmSpec(db, { specId: id, accountId: 1, at: 9_000 })
-    const rows = readSpecs(db, 1)
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.confirmed_at).toBe(5_000)
+  it('hasSpec is false until an account has one', () => {
+    const account = freshAccount()
+    expect(hasSpec(db, account)).toBe(false)
+    write(account, 'first', 1_000)
+    expect(hasSpec(db, account)).toBe(true)
   })
 
-  it('currentSpec is the newest CONFIRMED spec, not the newest spec', () => {
-    const first = write(1, 'confirmed one', 1_000)
-    confirmSpec(db, { specId: first, accountId: 1, at: 1_500 })
-    write(1, 'later draft', 2_000)
-
-    expect(JSON.parse(newestSpec(db, 1)!.payload).title).toBe('later draft')
-    expect(JSON.parse(currentSpec(db, 1)!.payload).title).toBe('confirmed one')
-  })
-
-  it('has no current spec before anything is confirmed', () => {
-    write(1, 'draft', 1_000)
-    expect(currentSpec(db, 1)).toBeUndefined()
-  })
-
-  it('rejects confirming another account\'s spec and writes nothing', () => {
-    const ownerSpec = write(1, 'owned by account 1', 1_000)
-    expect(() =>
-      confirmSpec(db, { specId: ownerSpec, accountId: 2, at: 5_000 }),
-    ).toThrow(/does not belong to account/)
-
-    // Verify the spec is still unconfirmed; no partial write occurred.
-    expect(readSpecs(db, 1)[0]!.confirmed_at).toBeNull()
+  it('still reports a historical confirmation without anything writing one', () => {
+    // spec_confirmations keeps its rows and its trigger. Nothing in the
+    // application writes there any more; reading one still works.
+    const account = freshAccount()
+    const id = write(account, 'first', 1_000)
+    db.prepare('INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)')
+      .run(id, account, 1_500)
+    expect(readSpecs(db, account)[0]!.confirmed_at).toBe(1_500)
   })
 })
 
@@ -184,8 +171,13 @@ describe('append-only enforcement', () => {
   })
 
   it('rejects UPDATE and DELETE on spec_confirmations', () => {
+    // Nothing in the application writes spec_confirmations rows any more,
+    // but the table, its rows, and its append-only triggers all stay —
+    // inserted directly here, the way the "historical confirmation" test
+    // above does.
     const id = write(1, 'one', 1_000)
-    confirmSpec(db, { specId: id, accountId: 1, at: 5_000 })
+    db.prepare('INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)')
+      .run(id, 1, 5_000)
     expect(() =>
       db.prepare('UPDATE spec_confirmations SET at = 2').run(),
     ).toThrow(/append-only/)

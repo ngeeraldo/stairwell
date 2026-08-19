@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
-import { confirmSpec, insertSpec } from '@/lib/db/specs'
+import { insertSpec } from '@/lib/db/specs'
 import { contextFor } from '@/lib/chat/context'
 
 let dir: string
@@ -35,32 +35,25 @@ describe('contextFor', () => {
     expect(contextFor(db, 1)).toBe('interview')
   })
 
-  it('is still interview while a proposal is unconfirmed', () => {
-    // A spec that was offered and not accepted has not ended the interview.
+  it('is tweak the moment a spec exists — nothing confirms any more', () => {
+    // The newest spec IS the contract now (lib/db/specs.ts's currentSpec), so
+    // there is no "offered but not accepted" state left to distinguish.
     draft(1)
-    expect(contextFor(db, 1)).toBe('interview')
-  })
-
-  it('is tweak once a spec is confirmed', () => {
-    const id = draft(1)
-    confirmSpec(db, { specId: id, accountId: 1, at: 2_000 })
     expect(contextFor(db, 1)).toBe('tweak')
   })
 
   it('does not leak across accounts', () => {
-    const id = draft(1)
-    confirmSpec(db, { specId: id, accountId: 1, at: 2_000 })
+    draft(1)
     expect(contextFor(db, 2)).toBe('interview')
   })
 
   it('keeps both era labels, because metrics rows already carry them', () => {
     // A rename here splits an append-only series. See ledger D11.
     const freshAccount = 1
-    const confirmedAccount = 2
-    const id = draft(confirmedAccount)
-    confirmSpec(db, { specId: id, accountId: confirmedAccount, at: 2_000 })
+    const accountWithASpec = 2
+    draft(accountWithASpec)
 
     expect(contextFor(db, freshAccount)).toBe('interview')
-    expect(contextFor(db, confirmedAccount)).toBe('tweak')
+    expect(contextFor(db, accountWithASpec)).toBe('tweak')
   })
 })

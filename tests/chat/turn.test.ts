@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { APIError } from '@anthropic-ai/sdk'
 import { openPlatformDb } from '@/lib/db/platform'
 import { appendTranscript, readTranscript } from '@/lib/db/appendOnly'
-import { confirmSpec, insertSpec } from '@/lib/db/specs'
+import { insertSpec } from '@/lib/db/specs'
 import {
   CHAT_MODEL,
   ChatStreamError,
@@ -931,8 +931,11 @@ describe('conversation-start alerting', () => {
 
   it('does not alert on the confirmation turn itself', async () => {
     // The other half, so the test above cannot be satisfied by alerting on
-    // every product-initiated turn: nobody typed, so nobody showed up. The
-    // confirm route has already sent its own spec_confirmed alert.
+    // every product-initiated turn: nobody typed, so nobody showed up. (This
+    // exercises runTurn's body: null path directly; nothing in the app sends
+    // that trigger any more now that the confirm button and route are gone,
+    // but runTurn's own contract for a product-initiated turn is still real
+    // and still worth pinning.)
     const { deps, calls } = alerted({ now: () => 1_000 })
     const outcome = await runTurn(deps, input({ body: null }))
     expect(calls).toEqual([])
@@ -1316,6 +1319,11 @@ describe('the completion rule with propose_spec', () => {
       }
     }
 
+    // Nothing in the application writes spec_confirmations any more
+    // (lib/db/specs.ts's confirmSpec is gone), but a friend who confirmed
+    // something last month said a real thing, and the agent should still see
+    // it — readConfirmations and the confirmation-note merge both survive.
+    // Inserted directly, as tests/db/specs.test.ts's own fixtures now do.
     function confirmOne(at: number): void {
       const specId = insertSpec(db, {
         accountId: 1,
@@ -1325,7 +1333,9 @@ describe('the completion rule with propose_spec', () => {
         mockupHtml: '<p>mock</p>',
         at,
       })
-      confirmSpec(db, { specId, accountId: 1, at })
+      db.prepare(
+        'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
+      ).run(specId, 1, at)
     }
 
     async function turn(seen: Parameters<typeof capturingClient>[0]) {

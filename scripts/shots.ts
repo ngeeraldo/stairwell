@@ -332,23 +332,30 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
   },
 
   /**
-   * A friend with an already-CONFIRMED two-screen dashboard, plus a NEW
-   * unconfirmed proposal that renames one panel on just one of those screens —
-   * task 19's fixture, for card-proposal-scoped.
+   * A friend with an already-built two-screen dashboard, plus a NEW proposal
+   * that renames one panel on just one of those screens — task 19's fixture,
+   * for card-proposal-scoped.
+   *
+   * Its only consumer, card-proposal-scoped, is `live: false` (the card it
+   * photographed no longer renders anywhere — see screenshots/screens.ts), so
+   * this seeder no longer runs in an ordinary capture. Left in place rather
+   * than deleted, same as that screen row: a future removal of the id is what
+   * should decide whether this goes too, not a shots.ts edit alone.
    *
    * Built through parseSpecDraft + sealVersion, same as friend-new above, so a
    * malformed fixture throws in the harness instead of silently degrading to
    * no card. Two spec rows and two insertScreenMockups calls, mirroring what
-   * authorSpec actually writes (lib/spec/author.ts): v1 whole-surface and
-   * confirmed, v2 a patch that only touches `money`, carrying `home`'s
-   * fragment forward unchanged. This is the ONLY fixture in this file that
-   * calls insertScreenMockups — every other one predates the scoped preview
-   * and is a legitimate no-fragments row.
+   * authorSpec actually writes (lib/spec/author.ts): v1 whole-surface, v2 a
+   * patch that only touches `money`, carrying `home`'s fragment forward
+   * unchanged. This is the ONLY fixture in this file that calls
+   * insertScreenMockups — every other one predates the scoped preview and is
+   * a legitimate no-fragments row. v1 no longer needs confirming — nothing
+   * does; the row existing is what makes it current.
    */
   'friend-tweak': async (dbPath) => {
     const { openPlatformDb } = await import('../lib/db/platform')
     const { createAccount } = await import('../lib/auth/accounts')
-    const { insertSpec, confirmSpec } = await import('../lib/db/specs')
+    const { insertSpec } = await import('../lib/db/specs')
     const { insertScreenMockups } = await import('../lib/db/screenMockups')
     const { parseSpecDraft, sealVersion } = await import('../lib/spec/validate')
     const { appendTranscript } = await import('../lib/db/appendOnly')
@@ -447,7 +454,6 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
         ],
         base + 2000,
       )
-      confirmSpec(db, { specId: v1Id, accountId, at: base + 3000 })
 
       // Final review, Minor 9: this used to model the rename as an
       // `update_screen` op naming the SCREEN ('money') with its title and
@@ -563,7 +569,7 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
     const { openPlatformDb } = await import('../lib/db/platform')
     const { createAccount } = await import('../lib/auth/accounts')
     const { appendTranscript } = await import('../lib/db/appendOnly')
-    const { insertSpec, confirmSpec } = await import('../lib/db/specs')
+    const { insertSpec } = await import('../lib/db/specs')
     const db = openPlatformDb(dbPath)
     try {
       const password = 'TEST-SHOTS-NOT-A-REAL-PASSWORD'
@@ -608,7 +614,15 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
         at: base + 2000,
       })
       say('user', 'That is exactly it. TEST', base + 3000)
-      confirmSpec(db, { specId, accountId: friend, at: base + 4000 })
+      // Nothing in the application writes spec_confirmations any more
+      // (lib/db/specs.ts's confirmSpec is gone), but admin-transcript's own
+      // assertion still needs one on screen — "a confirmation appears as an
+      // event at the point it happened" is about a real historical row, and
+      // spec_confirmations keeps every row it already holds. Inserted
+      // directly, the way tests/db/specs.test.ts's own fixtures now do.
+      db.prepare(
+        'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
+      ).run(specId, friend, base + 4000)
 
       // NOT the friend's slug: the admin index and the per-user pane both take
       // the SLUG in the path, and the session belongs to nico.

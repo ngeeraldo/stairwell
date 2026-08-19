@@ -96,56 +96,65 @@ export function newestSpec(
   return readSpecs(db, accountId)[0]
 }
 
-/** The newest proposal that has a confirmation. The build contract. */
+/**
+ * The newest proposal. The build contract.
+ *
+ * It used to be "the newest proposal that has a confirmation" — the friend
+ * pressing Build this is what promoted a proposal to the thing Nico built.
+ * Nothing confirms any more, so the newest spec IS the contract, and
+ * `readSpecs` already returns newest-first.
+ *
+ * `confirmed_at` stays on SpecRecord and stays populated for rows that have a
+ * historical confirmation. spec_confirmations is append-only and keeps every
+ * row it holds; this function simply no longer asks about them.
+ */
 export function currentSpec(
   db: PlatformDb,
   accountId: number,
 ): SpecRecord | undefined {
-  return readSpecs(db, accountId).find((s) => s.confirmed_at !== null)
+  return readSpecs(db, accountId)[0]
 }
 
-export function hasConfirmedSpec(db: PlatformDb, accountId: number): boolean {
+/** Whether this account has any spec at all. */
+export function hasSpec(db: PlatformDb, accountId: number): boolean {
   const row = db
-    .prepare(
-      `SELECT 1 FROM spec_confirmations c
-       JOIN specs s ON s.id = c.spec_id
-       WHERE c.account_id = ? AND s.account_id = ?
-       LIMIT 1`,
-    )
-    .get(accountId, accountId)
+    .prepare('SELECT 1 FROM specs WHERE account_id = ? LIMIT 1')
+    .get(accountId)
   return row !== undefined
 }
 
 /**
- * Whether a confirmed spec exists at a version BELOW `version` — i.e. whether
- * anything was already being built before the proposal at `version` existed.
+ * Whether a spec exists at a version BELOW `version` — i.e. whether anything
+ * already existed before the proposal at `version` existed.
  *
- * Deliberately NOT hasConfirmedSpec above, and the difference is a promise
- * made to a person. "Is the card on screen this account's first dashboard" is
- * not "has this account ever confirmed anything": the instant a friend
- * confirms their very first card, the unbounded reading flips, and on the next
- * reload that same card — a whole first dashboard, nothing built yet — starts
- * describing itself as a small change landing within hours. Bounding the
- * question by the displayed version keeps it true for the card that IS the
- * first dashboard, and turns it false only once an EARLIER spec was already
- * confirmed underneath it.
+ * Deliberately NOT hasSpec above, and the difference is a promise made to a
+ * person. "Is the card on screen this account's first dashboard" is not "has
+ * this account ever had a spec at all": the instant a friend's very first
+ * card is on screen, the unbounded reading flips, and on the next reload that
+ * same card — a whole first dashboard, nothing built yet — starts describing
+ * itself as a small change landing within hours. Bounding the question by the
+ * displayed version keeps it true for the card that IS the first dashboard,
+ * and turns it false only once an EARLIER spec already existed underneath it.
  *
- * hasConfirmedSpec keeps its unbounded meaning because lib/chat/context.ts
- * asks a genuinely different question of it — interview vs tweak is about the
+ * hasSpec keeps its unbounded meaning because lib/chat/context.ts asks a
+ * genuinely different question of it — interview vs tweak is about the
  * account's history, not about any one card.
  *
  * Walks readSpecs rather than adding a WHERE clause, for the same reason
  * specByVersion does: version is derived from position, and a second
  * derivation could disagree with the first.
+ *
+ * It used to be bounded on CONFIRMATION rather than mere existence — the
+ * distinction mattered when a draft nobody accepted built nothing. Nothing is
+ * confirmed any more, so every spec row IS the thing that gets built, and
+ * existence is now the only question there is to ask.
  */
-export function hasConfirmedSpecBelow(
+export function hasSpecBelow(
   db: PlatformDb,
   accountId: number,
   version: number,
 ): boolean {
-  return readSpecs(db, accountId).some(
-    (s) => s.confirmed_at !== null && s.version < version,
-  )
+  return readSpecs(db, accountId).some((s) => s.version < version)
 }
 
 /**
@@ -172,27 +181,4 @@ export function readConfirmations(
     .filter((s) => s.confirmed_at !== null)
     .map((s) => ({ version: s.version, at: s.confirmed_at! }))
     .sort((a, b) => a.at - b.at)
-}
-
-export function confirmSpec(
-  db: PlatformDb,
-  row: { specId: number; accountId: number; at: number },
-): void {
-  // Look up the spec to validate it belongs to the provided account. Without this
-  // check, readSpecs and hasConfirmedSpec would disagree forever on a mismatched
-  // (specId, accountId) pair: readSpecs ignores confirmation.account_id and joins
-  // only on spec_id, while hasConfirmedSpec requires both account_ids to match.
-  // Since spec_confirmations is append-only, a bad row cannot be deleted later.
-  const spec = db
-    .prepare('SELECT account_id FROM specs WHERE id = ?')
-    .get(row.specId) as { account_id: number } | undefined
-  if (!spec || spec.account_id !== row.accountId) {
-    throw new Error(
-      `Cannot confirm spec ${row.specId}: does not belong to account ${row.accountId}`,
-    )
-  }
-
-  db.prepare(
-    'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
-  ).run(row.specId, row.accountId, row.at)
 }

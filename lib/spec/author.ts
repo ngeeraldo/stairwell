@@ -3,7 +3,7 @@ import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import {
   currentSpec,
-  hasConfirmedSpecBelow,
+  hasSpecBelow,
   insertSpec,
   readSpecs,
   type SpecRecord,
@@ -340,8 +340,10 @@ function currentVersionBlock(current: SpecRecord | undefined): string {
       // a spec. The version and the confirmation time are the real values.
       slug: 'this account',
       version: current.version,
-      // currentSpec only ever returns a CONFIRMED row, so confirmed_at is
-      // non-null here; the fallback exists because the type says it can be.
+      // currentSpec now returns the newest row whether or not it was ever
+      // confirmed, so confirmed_at CAN genuinely be null here — this
+      // fallback used to be defensive-only (the type said null was possible;
+      // currentSpec never actually produced it) and is now a real path.
       confirmedAt: current.confirmed_at ?? current.at,
     })
   )
@@ -934,11 +936,11 @@ export async function authorSpec(
       // Asked of the record, for THIS version, at the moment the row exists —
       // the same question app/[user]/page.tsx asks of the page-load card, and
       // the same helper, so the two answers cannot drift. Bounded by `version`
-      // rather than "has this account ever confirmed anything": the instant a
-      // friend confirms their very first card the unbounded reading flips, and
+      // rather than "has this account ever had a spec at all": the instant a
+      // friend's very first card is on screen the unbounded reading flips, and
       // that card — a whole first dashboard, nothing built yet — would start
       // describing itself as a small change landing within hours.
-      first: !hasConfirmedSpecBelow(db, input.accountId, version),
+      first: !hasSpecBelow(db, input.accountId, version),
     }
   } catch (error) {
     // Anything with no dedicated branch above. promptSha may or may not be

@@ -191,7 +191,7 @@ describe('the spec pane', () => {
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount } = await import('@/lib/auth/accounts')
     const { createSession, SESSION_COOKIE } = await import('@/lib/session/store')
-    const { insertSpec, confirmSpec } = await import('@/lib/db/specs')
+    const { insertSpec } = await import('@/lib/db/specs')
     sessionCookieName = SESSION_COOKIE
     handle = getDb()
 
@@ -208,8 +208,12 @@ describe('the spec pane', () => {
       })
       // Confirmed early, then the friend kept iterating — a realistic shape,
       // and it proves "Confirmed" renders without requiring it be the
-      // newest row.
-      confirmSpec(handle, { specId: v1, accountId: targetId, at: 1_500 })
+      // newest row. Nothing in the application writes spec_confirmations any
+      // more (lib/db/specs.ts's confirmSpec is gone), but the pane still
+      // renders a HISTORICAL confirmation — inserted directly.
+      handle
+        .prepare('INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)')
+        .run(v1, targetId, 1_500)
       insertSpec(handle, {
         accountId: targetId,
         conversationId: 'conv-1',

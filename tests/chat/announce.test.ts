@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount, findAccountBySlug } from '@/lib/auth/accounts'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
-import { insertSpec, confirmSpec } from '@/lib/db/specs'
+import { insertSpec } from '@/lib/db/specs'
 import {
   AlreadyAnnouncedError,
   announce,
@@ -82,11 +82,11 @@ function legacyPayload(overrides: Partial<LegacySpecPayload> = {}): LegacySpecPa
 let specSeq = 0
 
 /**
- * Insert a spec without confirming it — the only shape this plan produces.
- * Against this file's shared 'devtwo' fixture rather than minting a fresh
- * account per scenario, since these tests share one account's spec history
- * on purpose (each call adds the NEXT version, matching how a real account
- * accumulates them).
+ * Insert a spec — nothing confirms any more, so this is the only shape a
+ * spec row has. Against this file's shared 'devtwo' fixture rather than
+ * minting a fresh account per scenario, since these tests share one
+ * account's spec history on purpose (each call adds the NEXT version,
+ * matching how a real account accumulates them).
  */
 function authorAVersion(
   db: PlatformDb,
@@ -104,22 +104,6 @@ function authorAVersion(
     mockupHtml: MOCKUP,
     at: 1_000 + specSeq,
   })
-}
-
-/**
- * Confirm a new spec version for an already-existing account. Built on
- * authorAVersion rather than duplicating its insert, so the two shapes
- * (authored, and authored-then-confirmed) cannot drift apart.
- */
-function confirmAVersion(
-  db: PlatformDb,
-  slug: string,
-  overrides: Partial<SpecVersion> = {},
-): void {
-  const account = findAccountBySlug(db, slug)
-  if (!account) throw new Error(`no account with slug '${slug}'`)
-  const specId = authorAVersion(db, slug, overrides)
-  confirmSpec(db, { specId, accountId: account.id, at: 1_500 + specSeq })
 }
 
 /**
@@ -202,8 +186,8 @@ describe('announceTarget', () => {
     })
   })
 
-  it('returns the headline, version and first-ness of the confirmed spec', () => {
-    confirmAVersion(db, 'devtwo', { change_summary: 'Added a takeaway panel.' })
+  it('returns the headline, version and first-ness of the current spec', () => {
+    authorAVersion(db, 'devtwo', { change_summary: 'Added a takeaway panel.' })
     // First spec ever authored for 'devtwo' in this file — version 1.
     writeNote(dir, 'devtwo', 1)
     const target = announceTarget(db, 'devtwo', dir)
@@ -215,7 +199,7 @@ describe('announceTarget', () => {
   })
 
   it('reports already_announced after a commit', () => {
-    confirmAVersion(db, 'devtwo', { change_summary: 'x' })
+    authorAVersion(db, 'devtwo', { change_summary: 'x' })
     // Second spec ever authored for 'devtwo' — version 2.
     writeNote(dir, 'devtwo', 2)
     const target = announceTarget(db, 'devtwo', dir)
@@ -228,16 +212,16 @@ describe('announceTarget', () => {
   })
 
   // Own account, not the shared 'devtwo' fixture: a legacy row is a
-  // different SHAPE of confirmed spec, not just another version of the same
-  // account's history, and mixing it into devtwo's sequential version count
-  // would make this test's meaning depend on where in that sequence it ran.
+  // different SHAPE of spec, not just another version of the same account's
+  // history, and mixing it into devtwo's sequential version count would make
+  // this test's meaning depend on where in that sequence it ran.
   it("falls back to a legacy spec's title as the headline — legacy rows can never be migrated to carry change_summary", async () => {
     const legacyAccountId = await createAccount(db, {
       slug: 'legacyannounce',
       role: 'user',
       password: 'TEST-legacyannounce',
     })
-    const specId = insertSpec(db, {
+    insertSpec(db, {
       accountId: legacyAccountId,
       conversationId: 'conv-legacyannounce',
       promptSha: 'sha-legacyannounce-0001',
@@ -245,7 +229,6 @@ describe('announceTarget', () => {
       mockupHtml: MOCKUP,
       at: 1_000,
     })
-    confirmSpec(db, { specId, accountId: legacyAccountId, at: 1_500 })
     writeNote(dir, 'legacyannounce', 1)
 
     const target = announceTarget(db, 'legacyannounce', dir)
@@ -255,14 +238,14 @@ describe('announceTarget', () => {
   })
 
   // Ledger D9: a promise made to a person, gotten wrong twice already. A
-  // SECOND confirmed build for an account must not read as its first launch.
-  it('calls a second confirmed build a rebuild, not a first-time launch', async () => {
+  // SECOND build for an account must not read as its first launch.
+  it('calls a second build a rebuild, not a first-time launch', async () => {
     const rebuildAccountId = await createAccount(db, {
       slug: 'rebuildannounce',
       role: 'user',
       password: 'TEST-rebuildannounce',
     })
-    const firstSpecId = insertSpec(db, {
+    insertSpec(db, {
       accountId: rebuildAccountId,
       conversationId: 'conv-rebuildannounce',
       promptSha: 'sha-rebuildannounce-0001',
@@ -270,9 +253,8 @@ describe('announceTarget', () => {
       mockupHtml: MOCKUP,
       at: 1_000,
     })
-    confirmSpec(db, { specId: firstSpecId, accountId: rebuildAccountId, at: 1_500 })
 
-    const secondSpecId = insertSpec(db, {
+    insertSpec(db, {
       accountId: rebuildAccountId,
       conversationId: 'conv-rebuildannounce',
       promptSha: 'sha-rebuildannounce-0002',
@@ -283,7 +265,6 @@ describe('announceTarget', () => {
       mockupHtml: MOCKUP,
       at: 2_000,
     })
-    confirmSpec(db, { specId: secondSpecId, accountId: rebuildAccountId, at: 2_500 })
     // Only the second (higher) version has notes — the walk should find it
     // first and never need to fall back to the first version's notes.
     writeNote(dir, 'rebuildannounce', 2)
@@ -372,7 +353,7 @@ describe('announceTarget keys off build notes', () => {
 
 describe('commitAnnouncement', () => {
   it('stamps the drafting prompt sha, not the operator sentinel', () => {
-    confirmAVersion(db, 'devtwo', { change_summary: 'x' })
+    authorAVersion(db, 'devtwo', { change_summary: 'x' })
     // Third spec ever authored for 'devtwo' — version 3.
     writeNote(dir, 'devtwo', 3)
     const target = announceTarget(db, 'devtwo', dir)
@@ -388,7 +369,7 @@ describe('commitAnnouncement', () => {
   })
 
   it('refuses a blank body, and writes neither half of the pair', () => {
-    confirmAVersion(db, 'devtwo', { change_summary: 'x' })
+    authorAVersion(db, 'devtwo', { change_summary: 'x' })
     // Fourth spec ever authored for 'devtwo' — version 4.
     writeNote(dir, 'devtwo', 4)
     const target = announceTarget(db, 'devtwo', dir)
@@ -423,7 +404,7 @@ describe('commitAnnouncement', () => {
   // announceTarget's read, or both calls succeed and `deploy_announced` (a
   // sacred, append-only metric per CLAUDE.md) gets a permanent duplicate.
   it('refuses a second commit for the same target, even when both resolved the target before either wrote (the race)', () => {
-    confirmAVersion(db, 'devtwo', { change_summary: 'racy build' })
+    authorAVersion(db, 'devtwo', { change_summary: 'racy build' })
     // Fifth spec ever authored for 'devtwo' — version 5.
     writeNote(dir, 'devtwo', 5)
     const target = announceTarget(db, 'devtwo', dir)

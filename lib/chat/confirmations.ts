@@ -4,12 +4,18 @@
 //
 // THE DEFECT THIS FIXES, stated plainly: the agent's whole conversational
 // context is the `transcripts` table (lib/chat/turn.ts -> toMessages), and
-// pressing "Build this" writes to `specs`, `spec_confirmations` and `metrics`
-// and to NONE of it. So the agent proposed, the friend confirmed, and the next
-// turn the agent could not tell the confirmation had happened — it re-proposed
-// an identical version, which is exactly what was observed in testing. The
-// "After they confirm" section of platform/prompts/agent-v4.md was dead text
-// against this codebase until this module existed.
+// pressing "Build this" used to write to `specs`, `spec_confirmations` and
+// `metrics` and to NONE of it. So the agent proposed, the friend confirmed, and
+// the next turn the agent could not tell the confirmation had happened — it
+// re-proposed an identical version, which is exactly what was observed in
+// testing. The "After they confirm" section of platform/prompts/agent-v4.md
+// was dead text against this codebase until this module existed.
+//
+// Nothing confirms any more — the newest spec is the build contract the
+// moment it exists (see lib/db/specs.ts's currentSpec) — but this module stays
+// exactly as it was: `spec_confirmations` keeps every row real people wrote
+// while the button existed, and a friend who confirmed something last month
+// said a real thing the agent should still see in their history.
 //
 // NOTHING NEW IS PERSISTED TO FIX IT — onboarding ledger D5/D5a, and the same
 // ruling lib/chat/timeline.ts already implements for RENDERING. A confirmation

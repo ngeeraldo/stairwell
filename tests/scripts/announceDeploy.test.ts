@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
-import { confirmSpec, insertSpec } from '@/lib/db/specs'
+import { insertSpec } from '@/lib/db/specs'
 import { appendTranscript, readTranscript } from '@/lib/db/appendOnly'
 import type { ChatClient } from '@/lib/chat/client'
 import type { SpecVersion } from '@/lib/spec/schema'
@@ -150,7 +150,12 @@ beforeEach(async () => {
     mockupHtml: MOCKUP,
     at: 1_000,
   })
-  confirmSpec(db, { specId, accountId, at: 1_500 })
+  // Nothing writes spec_confirmations any more (lib/db/specs.ts's
+  // confirmSpec is gone), but announceTarget's own `first` bound still walks
+  // a historical confirmation when one exists — inserted directly.
+  db.prepare(
+    'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
+  ).run(specId, accountId, 1_500)
 
   deps = {
     db,
@@ -638,7 +643,9 @@ describe('scripts/announce-deploy.ts (CLI)', () => {
         mockupHtml: MOCKUP,
         at: 1_000,
       })
-      confirmSpec(database, { specId, accountId: id, at: 1_500 })
+      database
+        .prepare('INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)')
+        .run(specId, id, 1_500)
     } finally {
       database.close()
     }

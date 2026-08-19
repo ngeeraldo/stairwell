@@ -163,7 +163,7 @@ describe('the transcript tab', () => {
     // the same hole, moved.
     const { devone } = await seed()
     const { appendTranscript } = await import('@/lib/db/appendOnly')
-    const { insertSpec, confirmSpec } = await import('@/lib/db/specs')
+    const { insertSpec } = await import('@/lib/db/specs')
 
     appendTranscript(db!, {
       accountId: devone,
@@ -191,7 +191,14 @@ describe('the transcript tab', () => {
       body: 'AFTER THE CARD',
       at: 300,
     })
-    confirmSpec(db!, { specId, accountId: devone, at: 400 })
+    // Nothing in the application writes spec_confirmations any more
+    // (lib/db/specs.ts's confirmSpec is gone), but the admin transcript
+    // pane still renders a HISTORICAL confirmation as its own event
+    // (Task 2's ruling) — inserted directly, as tests/db/specs.test.ts's
+    // own fixtures now do.
+    db!.prepare(
+      'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
+    ).run(specId, devone, 400)
 
     const html = await renderUser('devone')
     const card = html.indexOf('data-spec-version="1"')
@@ -231,7 +238,7 @@ describe('the transcript tab', () => {
 describe('the spec tab', () => {
   it('renders REAL markdown, not a wall of preformatted text', async () => {
     const { devone } = await seed()
-    const { insertSpec, confirmSpec } = await import('@/lib/db/specs')
+    const { insertSpec } = await import('@/lib/db/specs')
     const specId = insertSpec(db!, {
       accountId: devone,
       conversationId: 'c',
@@ -249,7 +256,11 @@ describe('the spec tab', () => {
       mockupHtml: MOCKUP,
       at: 100,
     })
-    confirmSpec(db!, { specId, accountId: devone, at: 200 })
+    // Nothing writes spec_confirmations any more; inserted directly so the
+    // pane's "confirmed" label still has a historical row to render.
+    db!.prepare(
+      'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
+    ).run(specId, devone, 200)
 
     const html = await renderUser('devone')
     // A heading that is a heading. renderLegacyMarkdown emits '# <title>', so
@@ -271,7 +282,7 @@ describe('the spec tab', () => {
     // and the admin portal must not be a softer target than the chat surface
     // it is reviewing.
     const { devone } = await seed()
-    const { insertSpec, confirmSpec } = await import('@/lib/db/specs')
+    const { insertSpec } = await import('@/lib/db/specs')
     const specId = insertSpec(db!, {
       accountId: devone,
       conversationId: 'c',
@@ -287,7 +298,9 @@ describe('the spec tab', () => {
       mockupHtml: MOCKUP,
       at: 100,
     })
-    confirmSpec(db!, { specId, accountId: devone, at: 200 })
+    db!.prepare(
+      'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
+    ).run(specId, devone, 200)
 
     const html = await renderUser('devone')
     // No <img> ELEMENT is created. Asserted on the tag rather than on the

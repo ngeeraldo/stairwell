@@ -23,14 +23,14 @@ import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openPlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
-import { confirmSpec, insertSpec } from '@/lib/db/specs'
+import { insertSpec } from '@/lib/db/specs'
 import type { LegacySpecPayload } from '@/lib/spec/legacy'
 
 const REPO = resolve(__dirname, '..', '..')
 
 // Disposable, unmistakably-synthetic slugs — never real dashboards.
 const CONFIRMED_SLUG = 'pullspectest-confirmed'
-const UNCONFIRMED_SLUG = 'pullspectest-unconfirmed'
+const NO_SPEC_SLUG = 'pullspectest-nospec'
 
 const tempDirs: string[] = []
 
@@ -71,12 +71,20 @@ const PANEL: LegacySpecPayload['panels'][number] = {
   source: 'plaid',
 }
 
-/** Build a fresh temp platform db with one account and one spec in it. */
+/**
+ * Build a fresh temp platform db with one account and one spec in it.
+ *
+ * Nothing confirms any more (lib/db/specs.ts's confirmSpec is gone), so this
+ * no longer takes a `confirm` option — the row it writes is exportable the
+ * moment it exists. Inserted directly into spec_confirmations, the way
+ * tests/db/specs.test.ts's own fixtures now do, so a caller that wants a
+ * HISTORICAL confirmation on the row can still add one.
+ */
 async function makeDb(opts: {
   slug: string
-  confirm: boolean
   title: string
   mockupHtml: string
+  confirmedAt?: number
 }): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), 'stairwell-pull-spec-db-'))
   tempDirs.push(dir)
@@ -102,7 +110,25 @@ async function makeDb(opts: {
     mockupHtml: opts.mockupHtml,
     at: 1_000,
   })
-  if (opts.confirm) confirmSpec(db, { specId, accountId, at: 1_500 })
+  if (opts.confirmedAt !== undefined) {
+    db.prepare(
+      'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
+    ).run(specId, accountId, opts.confirmedAt)
+  }
+  db.close()
+  return path
+}
+
+/**
+ * Build a fresh temp platform db with an account that has NO spec at all —
+ * the only case exportSpec (and so pull-spec.sh) still refuses.
+ */
+async function makeEmptyDb(slug: string): Promise<string> {
+  const dir = mkdtempSync(join(tmpdir(), 'stairwell-pull-spec-db-'))
+  tempDirs.push(dir)
+  const path = join(dir, 'synthetic.db')
+  const db = openPlatformDb(path)
+  await createAccount(db, { slug, role: 'user', password: 'TEST-PULL-SPEC' })
   db.close()
   return path
 }
@@ -159,7 +185,7 @@ const SUBPROCESS_TIMEOUT_MS = 60_000
  * platform/dev/ is absent from the droplet's checkout — git will not create a
  * directory whose only contents are gitignored. With that directory present,
  * the failure mode is silent and much worse: synthetic rows written into
- * users/<name>/spec.md as if they were a friend's real confirmed spec.
+ * users/<name>/spec.md as if they were a friend's real spec.
  *
  * This pins the fix, not the bug. It cannot prove the remote command runs;
  * only a real pull can, and one has.
@@ -211,11 +237,11 @@ describe('scripts/pull-spec.sh droplet path', () => {
 })
 
 describe('scripts/pull-spec.sh --local', () => {
-  it('writes spec.md and mockup.html from the confirmed spec', async () => {
+  it('writes spec.md and mockup.html from the current spec', async () => {
     const sandbox = makeSandbox()
     const dbPath = await makeDb({
       slug: CONFIRMED_SLUG,
-      confirm: true,
+      confirmedAt: 1_500,
       title: 'Pulled via pull-spec.sh TEST',
       mockupHtml: '<!doctype html><html><body>PULL SPEC TEST</body></html>',
     })
@@ -235,7 +261,7 @@ describe('scripts/pull-spec.sh --local', () => {
     const sandbox = makeSandbox()
     const first = await makeDb({
       slug: CONFIRMED_SLUG,
-      confirm: true,
+      confirmedAt: 1_500,
       title: 'First pull TEST',
       mockupHtml: '<!doctype html><html><body>FIRST PULL TEST</body></html>',
     })
@@ -243,7 +269,7 @@ describe('scripts/pull-spec.sh --local', () => {
 
     const second = await makeDb({
       slug: CONFIRMED_SLUG,
-      confirm: true,
+      confirmedAt: 1_500,
       title: 'Second pull, meant to replace the first file TEST',
       mockupHtml: '<!doctype html><html><body>SECOND PULL TEST</body></html>',
     })
@@ -258,22 +284,22 @@ describe('scripts/pull-spec.sh --local', () => {
     )
   }, SUBPROCESS_TIMEOUT_MS)
 
-  it('writes NEITHER file and exits non-zero when the account has no confirmed spec', async () => {
+  it('writes NEITHER file and exits non-zero when the account has no spec at all', async () => {
     // The partial-write hazard this guards against: a spec.md from one
     // proposal sitting next to a mockup.html from nowhere.
+    //
+    // Nothing confirms any more (lib/db/specs.ts's currentSpec is the newest
+    // spec, full stop), so the only account left that exportSpec refuses is
+    // one with no spec row at all — makeEmptyDb, not makeDb with an
+    // unconfirmed one.
     const sandbox = makeSandbox()
-    const dbPath = await makeDb({
-      slug: UNCONFIRMED_SLUG,
-      confirm: false,
-      title: 'Never confirmed TEST',
-      mockupHtml: '<!doctype html><html><body>NEVER CONFIRMED TEST</body></html>',
-    })
+    const dbPath = await makeEmptyDb(NO_SPEC_SLUG)
 
-    const { status, output } = run(sandbox, [UNCONFIRMED_SLUG, '--local'], dbPath)
+    const { status, output } = run(sandbox, [NO_SPEC_SLUG, '--local'], dbPath)
 
     expect(status).not.toBe(0)
-    expect(output).toMatch(/no confirmed spec/)
-    expect(existsSync(userDir(sandbox, UNCONFIRMED_SLUG))).toBe(false)
+    expect(output).toMatch(/no spec/)
+    expect(existsSync(userDir(sandbox, NO_SPEC_SLUG))).toBe(false)
   }, SUBPROCESS_TIMEOUT_MS)
 
   it('requires a user argument and writes nothing', () => {

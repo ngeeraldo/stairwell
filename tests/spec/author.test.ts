@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { appendTranscript } from '@/lib/db/appendOnly'
-import { confirmSpec, insertSpec, readSpecs } from '@/lib/db/specs'
+import { insertSpec, readSpecs } from '@/lib/db/specs'
 import { CHAT_MODEL, ChatStreamError, type ChatClient, type Usage } from '@/lib/chat/client'
 import { SCREEN_MOCKUP_JSON_SCHEMA, type Panel } from '@/lib/spec/schema'
 import { PATCH_JSON_SCHEMA } from '@/lib/spec/patch'
@@ -240,16 +240,19 @@ function metrics(): { event: string; data: Record<string, unknown> }[] {
 }
 
 /**
- * A confirmed spec for account 1, so currentSpec() has something to return.
+ * A spec for account 1, so currentSpec() has something to return — nothing
+ * confirms any more, so the row existing is what makes it current (kept the
+ * name `confirmed` rather than churning all 17 call sites; the fixture's
+ * shape is unchanged, only the no-longer-needed confirmSpec call is gone).
  *
- * Also stores a per-screen fragment for every screen the payload has — a
- * confirmed spec written since Task 18 shipped always has one, because
- * insertScreenMockups runs unconditionally after insertSpec on the success
- * path (lib/spec/author.ts). Skipped when the payload has no `screens` array
+ * Also stores a per-screen fragment for every screen the payload has — a spec
+ * written since Task 18 shipped always has one, because insertScreenMockups
+ * runs unconditionally after insertSpec on the success path
+ * (lib/spec/author.ts). Skipped when the payload has no `screens` array
  * (a legacy payload, whose shape is entirely different) — legacy authors
  * whole-surface unconditionally, so it never reads a carried fragment anyway.
- * A test that wants to simulate the OTHER case — a current-shape row
- * confirmed BEFORE this branch existed, with no fragments at all — uses
+ * A test that wants to simulate the OTHER case — a current-shape row written
+ * BEFORE this branch existed, with no fragments at all — uses
  * confirmCurrentSpecWithoutFragments in the 'scoped mockup' describe block
  * below instead of this helper.
  */
@@ -262,7 +265,6 @@ function confirmed(payload: unknown): number {
     mockupHtml: '<!doctype html><html><body>OLD</body></html>',
     at: 1,
   })
-  confirmSpec(db, { specId: id, accountId: 1, at: 2 })
   const screens = (payload as { screens?: { id: string }[] }).screens
   if (screens) {
     insertScreenMockups(
@@ -576,19 +578,13 @@ describe('authorSpec', () => {
       // Behaviour-preserving: the v1 path must send a prompt of the same
       // SHAPE, not a prompt with a section missing.
       //
-      // A rejected proposal is seeded first, so the second assertion is not
-      // vacuous: something in the database DOES contain those ids, and the
-      // empty arm is right only because currentSpec asks for the newest
-      // CONFIRMED proposal, not the newest one.
-      insertSpec(db, {
-        accountId: 1,
-        conversationId: 'conv-0',
-        promptSha: 'abc123abc123',
-        payload: CURRENT_V1,
-        mockupHtml: '<html></html>',
-        at: 1,
-      })
-
+      // Nothing confirms any more, so this is now the ONLY thing that puts an
+      // account in the empty arm: no spec at all. Previously a rejected
+      // proposal was seeded here to prove currentSpec skipped it in favour of
+      // the empty arm — that distinction is gone, because currentSpec no
+      // longer asks about confirmation (lib/db/specs.ts). An account with a
+      // spec, confirmed or not, now gets the "current version" arm instead —
+      // see "gives the writer the current confirmed version as JSON" above.
       const client = fake()
       await authorSpec(deps(client.client), INPUT)
 
@@ -930,7 +926,7 @@ describe('authorSpec', () => {
       expect(stored.version.based_on_version).toBe(1)
     })
 
-    it('stores null based_on_version when nothing is confirmed yet', async () => {
+    it('stores null based_on_version when there is no prior spec yet', async () => {
       await authorSpec(deps(fake().client), INPUT)
 
       const stored = readStoredSpec(readSpecs(db, 1)[0]!.payload)
@@ -938,9 +934,12 @@ describe('authorSpec', () => {
       expect(stored.version.based_on_version).toBeNull()
     })
 
-    it('ignores an UNCONFIRMED newer proposal when choosing the base', async () => {
-      // currentSpec is the newest CONFIRMED proposal. A rejected one sitting
-      // on top of it is not what the next version is based on.
+    it('bases the next version on the newest proposal, confirmed or not', async () => {
+      // currentSpec is the newest proposal, full stop — nothing confirms any
+      // more, so there is no longer an "unconfirmed proposal" for it to skip.
+      // This used to prove the OPPOSITE: that a proposal sitting on top of a
+      // confirmed one was ignored. That distinction is gone by design (see
+      // lib/db/specs.ts's currentSpec docstring).
       confirmed(CURRENT_V1)
       insertSpec(db, {
         accountId: 1,
@@ -955,27 +954,27 @@ describe('authorSpec', () => {
 
       const stored = readStoredSpec(readSpecs(db, 1)[0]!.payload)
       if (stored.kind !== 'version') throw new Error('unreachable')
-      expect(stored.version.based_on_version).toBe(1)
+      // Version 2 (the row just inserted above), not version 1.
+      expect(stored.version.based_on_version).toBe(2)
     })
 
-    it('reads the pointer at WRITE time, so a confirmation mid-authoring is not missed', async () => {
-      // The authoring call can run for three minutes, and the confirm buttons
-      // are gated by `confirming`, not by `busy` — so the card already on
-      // screen stays clickable for the whole wait while the friend watches
-      // "Putting together a preview…". If they press "Build this" in that
-      // window, the row this function writes must not name a base that stopped
-      // being current before the row existed: `specs` rejects UPDATE, so the
-      // diff for that version is computed against the wrong base forever.
+    it('reads the pointer at WRITE time, so a spec written mid-authoring is not missed', async () => {
+      // The authoring call can run for three minutes. If some other write
+      // lands a newer spec row while THIS call is still in flight — a second
+      // conversation, a retry, anything — the row this function writes must
+      // not name a base that stopped being current before the row existed:
+      // `specs` rejects UPDATE, so the diff for that version is computed
+      // against the wrong base forever.
       //
       // onCall fires while the spec call is in flight, which is exactly when
-      // the button is live.
+      // that race is live.
       confirmed(CURRENT_V1)
       let fired = false
       const client = fake({
         onCall: () => {
           if (fired) return
           fired = true
-          confirmed({ ...CURRENT_V1, change_summary: 'the card that was on screen' })
+          confirmed({ ...CURRENT_V1, change_summary: 'a spec written while the first call was in flight' })
         },
       })
 
@@ -987,7 +986,7 @@ describe('authorSpec', () => {
       expect(written.version).toBe(3)
       const stored = readStoredSpec(written.payload)
       if (stored.kind !== 'version') throw new Error('unreachable')
-      // v2 — the version confirmed mid-flight — not v1, which was current
+      // v2 — the version written mid-flight — not v1, which was current
       // when the call started.
       expect(stored.version.based_on_version).toBe(2)
     })
@@ -1018,15 +1017,17 @@ describe('authorSpec', () => {
       expect(proposal!.first).toBe(true)
     })
 
-    it('calls a proposal above an already-confirmed version a change, not a first dashboard', async () => {
-      confirmed(CURRENT_V1)
-      const proposal = await authorSpec(deps(fake().client), INPUT)
-      expect(proposal!.first).toBe(false)
-    })
-
-    it('still calls it a first dashboard when the version below it was only PROPOSED', async () => {
-      // hasConfirmedSpecBelow, not hasConfirmedSpec: a rejected v1 means
-      // nothing has ever been built, so v2 really is their first dashboard.
+    it('calls a proposal above an already-existing version a change, not a first dashboard', async () => {
+      // hasSpecBelow, not "was it confirmed": nothing confirms any more, so
+      // ANY earlier spec — this account's whole history is one proposal deep
+      // — means v2 is not its first dashboard.
+      //
+      // This used to be two tests, distinguishing a CONFIRMED v1 from one
+      // that was only PROPOSED (hasConfirmedSpecBelow ignored the latter, so
+      // v2 still counted as a first dashboard). That distinction is gone by
+      // design (see hasSpecBelow's docstring, lib/db/specs.ts): every spec
+      // row is now a thing that gets built, so existence is the only
+      // question left to ask.
       insertSpec(db, {
         accountId: 1,
         conversationId: 'conv-0',
@@ -1037,7 +1038,7 @@ describe('authorSpec', () => {
       })
       const proposal = await authorSpec(deps(fake().client), INPUT)
       expect(proposal!.version).toBe(2)
-      expect(proposal!.first).toBe(true)
+      expect(proposal!.first).toBe(false)
     })
   })
 
@@ -1400,12 +1401,14 @@ describe('authorSpec', () => {
     }
 
     /**
-     * Simulates a confirmed spec WITH its fragments stored — the state every
-     * confirmation reaches from Task 18 onward, since insertScreenMockups
-     * runs unconditionally after insertSpec on the success path.
-     * `withFragments: false` simulates the other, load-bearing case: a
-     * current-shape version confirmed BEFORE this branch shipped, which has
-     * none at all.
+     * Simulates the current spec WITH its fragments stored — the state every
+     * spec reaches from Task 18 onward, since insertScreenMockups runs
+     * unconditionally after insertSpec on the success path. Kept the name
+     * (and the `confirm` prefix) rather than churning every call site;
+     * nothing confirms any more, so inserting the row is what makes it
+     * current. `withFragments: false` simulates the other, load-bearing
+     * case: a current-shape version written BEFORE this branch shipped,
+     * which has none at all.
      */
     function confirmCurrentSpec(base: unknown, opts: { withFragments?: boolean } = {}): number {
       const id = insertSpec(db, {
@@ -1416,7 +1419,6 @@ describe('authorSpec', () => {
         mockupHtml: '<!doctype html><html><body>OLD WHOLE DOCUMENT</body></html>',
         at: 1,
       })
-      confirmSpec(db, { specId: id, accountId: 1, at: 2 })
       if (opts.withFragments !== false) {
         insertScreenMockups(
           db,

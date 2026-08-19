@@ -18,7 +18,7 @@ import { existsSync } from 'node:fs'
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, appendTranscript } from '@/lib/db/appendOnly'
 import { conversationIdFor } from '@/lib/chat/conversation'
-import { readSpecs, hasConfirmedSpecBelow } from '@/lib/db/specs'
+import { readSpecs, hasSpecBelow } from '@/lib/db/specs'
 import { notesPath } from '@/lib/build/notes'
 import { readStoredSpec } from '@/lib/spec/stored'
 import { findAccountBySlug } from '@/lib/auth/accounts'
@@ -104,7 +104,7 @@ export type AnnounceTarget =
       accountId: number
       specId: number
       version: number
-      /** The confirmed version's change_summary, or a legacy row's title. */
+      /** The version's change_summary, or a legacy row's title. */
       headline: string
       /** Whether this is the account's first dashboard (ledger D9). */
       first: boolean
@@ -127,9 +127,9 @@ export function announceTarget(db: PlatformDb, slug: string, usersDir?: string):
   if (!account) throw new Error(`no account with slug '${slug}'`)
 
   // notes/v<n>.md exists only for a version that was actually built and
-  // committed — a spec being authored (or even confirmed) proves someone
-  // asked for it, never that it was built. So the notes file, not `specs`
-  // itself, is what decides what can honestly be announced: walk versions
+  // committed — a spec existing proves someone asked for it, never that it
+  // was built. So the notes file, not `specs` itself, is what decides what
+  // can honestly be announced: walk versions
   // newest first and take the first one a notes file exists for on disk,
   // never parsing it here (a parse failure is runAnnounce's to report, with
   // its own message).
@@ -155,7 +155,7 @@ export function announceTarget(db: PlatformDb, slug: string, usersDir?: string):
     specId: spec.id,
     version: spec.version,
     headline,
-    first: !hasConfirmedSpecBelow(db, account.id, spec.version),
+    first: !hasSpecBelow(db, account.id, spec.version),
   }
 }
 
@@ -163,8 +163,8 @@ export function announceTarget(db: PlatformDb, slug: string, usersDir?: string):
  * The two fixed sentences, unchanged and still fixed chrome.
  *
  * "Rebuilt" is false on the one morning it matters most: a first build had
- * nothing to rebuild. Bounded by hasConfirmedSpecBelow, the same question and
- * the same helper the delivery promise on the card uses (ledger D9), so the
+ * nothing to rebuild. Bounded by hasSpecBelow, the same question and the
+ * same helper the delivery promise on the card uses (ledger D9), so the
  * sentence that promised the build and the sentence announcing it cannot
  * disagree about which one this was.
  */
