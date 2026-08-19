@@ -7,8 +7,13 @@
 //
 // THE SECTION SPLIT IS THE POINT. Two sections reach the friend and two do
 // not, and that boundary is enforced here — by a parser — rather than by a
-// line in a prompt. lib/spec/banner.ts (unified-loop D19) sets the precedent:
-// a guarantee the model cannot forget beats a rule it is asked to remember.
+// line in a prompt: a guarantee the model cannot forget beats a rule it is
+// asked to remember. The mockup loop's banner/CSP boundary (lib/spec/banner.ts)
+// used to be this codebase's other example of the same principle; it was
+// deleted with its subject as of the mockup-loop removal (plan
+// 2026-08-19-remove-the-mockup-loop, Task 6) — nothing renders model-generated
+// HTML to a person any more, so there was no boundary left to guard.
+// unified-loop ledger D19 still records the original reasoning.
 //
 // Every failure throws. transcripts rejects DELETE, so a half-parsed notes
 // file that produced a partial announcement would be permanent —

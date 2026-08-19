@@ -197,9 +197,15 @@ CREATE TABLE IF NOT EXISTS invites (
 -- own input. CREATE TABLE IF NOT EXISTS needs no migration mechanism — the
 -- precedent is account_keys, added the same way for the same reason.
 --
--- specs.mockup_html keeps holding the COMPOSED document, so pull-spec.sh,
--- users/<slug>/mockup.html, the admin Mockup tab and the build contract are
--- all untouched by this table's existence.
+-- specs.mockup_html held the COMPOSED document through the mockup loop.
+-- Nothing composes or serves mockup HTML any more (mockup-loop removal, plan
+-- 2026-08-19-remove-the-mockup-loop, Task 6) — pull-spec.sh no longer writes
+-- users/<slug>/mockup.html, and the admin Mockup tab is gone — so every row
+-- written since carries mockup_html = ''. The COLUMN stays exactly as it is:
+-- it is NOT NULL on a sacred, append-only table holding real rows, and
+-- altering it would be schema surgery CLAUDE.md restricts to lib/db/reshape.ts
+-- (a zero-rows proof, which this table cannot offer) and lib/db/migrate.ts
+-- (per-user databases only) — neither applies here.
 CREATE TABLE IF NOT EXISTS spec_screen_mockups (
   id        INTEGER PRIMARY KEY,
   spec_id   INTEGER NOT NULL,
