@@ -162,10 +162,15 @@ Once a friend's request produces a spec in chat, it lives in the platform
 database, not in the repo — `users/<name>/spec.md` is a projection of it,
 pulled explicitly. Nothing confirms any more: the newest spec IS the build
 contract the moment it is authored (`lib/db/specs.ts`'s `currentSpec`).
-`scripts/pull-spec.sh` writes `spec.md` alone now — it used to write a pair
-with `mockup.html` too, but nothing composes or serves mockup HTML any more
-(plan 2026-08-19-remove-the-mockup-loop). It **overwrites `spec.md` on every
-pull**, so hand edits do not survive the next run.
+`scripts/pull-spec.sh` writes a PAIR: `spec.md`, the change that was asked
+for, and `conversation.md`, the transcript slice that produced that spec
+version. The second file is **gitignored on purpose** — it is a friend's raw
+transcript, not a designed artifact (CLAUDE.md > Data safety) — and
+`tests/repo/gitignore.test.ts` is what keeps it that way. `mockup.html` is not
+one of them: nothing composes or serves mockup HTML any more (plan
+2026-08-19-remove-the-mockup-loop). Both files are written atomically, both or
+neither, and **overwritten on every pull**, so hand edits do not survive the
+next run.
 
 ```bash
 ./scripts/pull-spec.sh devtwo

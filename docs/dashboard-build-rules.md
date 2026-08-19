@@ -22,7 +22,7 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 | `docs/superpowers/specs/2026-08-15-user-db-migrations-design.md` | How a friend's tables change shape without losing rows. Read before writing any migration. Closes step-6a ledger residual 2. |
 | `docs/superpowers/ledgers/friend-timezone.md` | Why the day belongs to the friend, and what the bug cost. |
 | `users/devone/` | The worked reference. Its README: "Copy this folder's shape when building a real dashboard." |
-| `users/<slug>/spec.md`, `current.md` and the conversation | The build contract for this friend. No mockup — §8. |
+| `users/<slug>/spec.md`, `conversation.md`, `current.md` | The build contract for this friend: what changes, what they meant, what already exists. No mockup — §8. |
 | `docs/runbook.md` | The operator sequence around the build — step 7 is the commands, in order. This file is why they are what they are; that one does not repeat it. |
 | `docs/dashboard-ui-ux-guidelines.md` | How a dashboard should LOOK and behave: the default stack (shadcn on Tailwind, Recharts), the fluid 375–1200px container, the four non-happy panel states, formatting, and what animation may and may not imply. Defaults — a friend's own request outranks them, subject to the three limits that file names. |
 
@@ -69,7 +69,11 @@ this does not go stale again the next time a line moves.
   by the next pull (§8) and records what was *asked for* — the two answer
   different questions, and only one of them survives a pull —
   `scripts/announce-deploy.ts`, which speaks from the note and refuses a version
-  that has none.
+  that has none. It refuses a version `current.md` does not name, too: missing,
+  unparseable, or a frontmatter `version` that is not the one being announced
+  (`current_state_missing` / `_invalid` / `_stale`, each exit 1, all three
+  checked before any drafting call) — `scripts/announce-deploy.ts`'s
+  `runAnnounce` and `exitCodeFor`.
 - `current.md` describes what the dashboard IS, not what changed — required on
   every BUILT folder, its own condition rather than a seventh `REQUIRED`
   entry, since a scaffolded folder has no current shape to describe —
@@ -96,7 +100,8 @@ this does not go stale again the next time a line moves.
 - **The only artifact under `users/<slug>/` the RUNNING APP puts in front of a
   model.** `app/api/chat/route.ts` reads it; `lib/chat/turn.ts`'s
   `CURRENT_STATE_BLOCK` labels and appends its body onto the system prompt;
-  `platform/prompts/agent-v6.md` is what tells the agent to trust it over the
+  the live agent prompt — `lib/chat/prompt.ts`'s `AGENT_PROMPT`, today
+  `platform/prompts/agent-v8.md` — is what tells the agent to trust it over the
   spec — CLAUDE.md. Scoped to the running app on purpose: `notes/v<n>.md`
   reaches a model too, via `scripts/announce-deploy.ts`'s `draftAnnouncement`
   call — but that is an operator script run by hand, not a path a friend's own
@@ -111,8 +116,9 @@ this does not go stale again the next time a line moves.
   notice a build that forgot to rewrite it — `lib/build/currentState.ts`.
 - A folder has four legitimate-or-not states, and only one is a defect
   (`tests/users/conventions.test.ts`):
-  - **pulled** — `spec.md` only (no `mockup.html` any more — mockup-loop
-    removal). Not started; allowed.
+  - **pulled** — the pulled files only (`spec.md`, and an ignored
+    `conversation.md`; no `mockup.html` any more — mockup-loop removal). Not
+    started; allowed.
   - **scaffolded** — all five `REQUIRED` entries, but `migrations/` holds no
     `.sql`. `new-dashboard.sh` just ran and nobody has designed a shape.
     Allowed; the dashboard says "Under construction" and the friend's
@@ -175,9 +181,13 @@ resolves any of them itself** — CLAUDE.md.
 
 ### What that looks like
 
-Take `id`/`title`/`order` for each screen straight from `spec.md`'s own
-`## Screens` section — never a second source that could drift from what the
-spec promised:
+A change-only `spec.md` has no `## Screens` section and carries no ids — its
+sections are `## What changed`, `## Changes`, `## Data requirements` and
+`## Open questions` (`lib/spec/render.ts`'s `renderChangeMarkdown`). So take
+each screen's `title` from what the spec's `## Changes` asks for, and keep
+every screen that is only described in `current.md`'s `## Screens`; the `id`
+and `order` are yours to choose, and `current.md` is where you write them down
+so the next build and the agent see the same set:
 
 ```ts
 export const screens: DashboardScreen[] = [
@@ -334,24 +344,32 @@ Sacred data.
 
 ## 8. The build contract
 
-- `spec.md`, `current.md`, and the code are the build contract for user
-  dashboards — nothing pulls the conversation itself into the repo; read it
-  live in `/admin` if `spec.md` alone leaves a question. There is no mockup —
-  nothing composes or serves mockup HTML any more, and `mockup.html` is gone
-  from every folder (mockup-loop removal). Feasibility doubts → flag to Nico,
-  don't guess — CLAUDE.md > Build contract.
+- Four things are the build contract for user dashboards, each answering a
+  different question: **`spec.md`** (what changes), **`conversation.md`** (what
+  they meant), **`current.md`** (what already exists), and the code. There is no
+  mockup — nothing composes or serves mockup HTML any more, and `mockup.html` is
+  gone from every folder (mockup-loop removal). Feasibility doubts → flag to
+  Nico, don't guess — CLAUDE.md > Build contract.
 - Feasibility doubts go back to the friend via `ask-user.ts`, not into a guess —
   `docs/runbook.md` step 7.
-- `spec.md` is **written by `./scripts/pull-spec.sh` and overwritten on every
-  pull**. Hand edits do not survive. If the spec is wrong, the fix is asking
-  for a change in chat and pulling again — `docs/runbook.md` step 6.
-- A spec version is **whole-surface** — it describes the friend's entire
-  dashboard, not one conversation's worth of changes. Nothing confirms a
-  version any more; the newest spec row is the contract the moment
-  `propose_spec` writes it — CLAUDE.md > Schema & module rules.
-- The spec-writer emits a PATCH against a current-shape base; the stored row
-  is still the whole surface, so the build contract above is unchanged —
-  CLAUDE.md > Schema & module rules.
+- **Both pulled files are written by `./scripts/pull-spec.sh` and overwritten on
+  every pull.** Hand edits do not survive. If the spec is wrong, the fix is
+  asking for a change in chat and pulling again — `docs/runbook.md` step 6.
+- **`conversation.md` is gitignored and must stay that way.** It is the friend's
+  raw transcript, not a designed artifact; the guard hook covers `.db` and
+  `.env`, not markdown, so two `.gitignore` lines and `tests/repo/gitignore.test.ts`
+  are the whole defence — CLAUDE.md > Data safety.
+- A spec version is **change-only** — it describes what changes against
+  `current.md`, the dashboard as it was actually built, not the friend's entire
+  dashboard. No ids, and no `title`, `summary` or `background`; a panel's detail
+  is prose in its `description`. So `spec.md` alone does NOT describe the
+  dashboard — read it against `current.md` — CLAUDE.md > Schema & module rules,
+  `lib/spec/change.ts`.
+- Nothing confirms a version any more; the newest spec row is the contract the
+  moment `propose_spec` writes it — CLAUDE.md > Schema & module rules.
+- Because the next spec is written against `current.md`, **a `current.md` you
+  got wrong corrupts the next version too**, not just this one's record — the
+  design's own failure mode §11, `lib/spec/author.ts`.
 
 ---
 

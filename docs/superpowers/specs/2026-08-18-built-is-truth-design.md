@@ -1,8 +1,11 @@
 # The built dashboard is the truth — design
 
-**Status:** in build. Plan 1 (`current.md`) and plan 2 (mockup-loop removal)
-are merged to `main`. Plan 3 — change-only specs and `conversation.md` — is
-the remainder, and §5, §5.1 and §9 carry its resolutions, dated 2026-08-19.
+**Status:** built. All three plans are done — plan 1 (`current.md`) and plan 2
+(mockup-loop removal) merged to `main`, and plan 3 (change-only specs and
+`conversation.md`) completed on 2026-08-19, its resolutions recorded in §5,
+§5.1 and §9. `CLAUDE.md`, `architecture-overview.md`, `docs/runbook.md`,
+`docs/dashboard-build-rules.md` and `docs/local-dev.md` were rewritten to
+match in plan 3's last task.
 
 **Supersedes:** the 2026-08-17 scoped-specs design in full (Parts A/B/C — the
 patch, the applier, the per-screen preview), and the unified-proposal-loop

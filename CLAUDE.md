@@ -157,8 +157,9 @@ architectural changes; do not relitigate decided items).
   It is the ONLY artifact under `users/<slug>/` that the RUNNING APP puts in
   front of a model — `app/api/chat/route.ts` reads it, `lib/chat/turn.ts`'s
   `CURRENT_STATE_BLOCK` labels and appends its body to the system prompt, and
-  `platform/prompts/agent-v6.md` is what tells the agent to trust it over the
-  spec. "The running app" is doing the work in that sentence: `notes/v<n>.md`
+  the live agent prompt — `lib/chat/prompt.ts`'s `AGENT_PROMPT`, today
+  `platform/prompts/agent-v8.md` — is what tells the agent to trust it over
+  the spec. "The running app" is doing the work in that sentence: `notes/v<n>.md`
   reaches a model too, just not from the app — `scripts/announce-deploy.ts`
   feeds it to `draftAnnouncement` when drafting an announcement. That is an
   operator script run by hand, not a request path a friend's session ever
@@ -186,32 +187,54 @@ architectural changes; do not relitigate decided items).
   produced that spec version (`lib/spec/conversation.ts`) — a change-only spec
   says what changed, not what the friend meant. **`conversation.md` is
   gitignored and that is a data-safety line, not housekeeping**, see Data
-  safety above. `synthetic.db` is generated and gitignored.
+  safety above. The pair is written atomically by `scripts/write-spec-pair.ts`
+  — both files or neither — and `export-spec.ts`'s JSON reaches it over
+  **stdin**, not argv: a whole transcript can exceed `ARG_MAX`, and that
+  failure would come back as an exec error from the shell naming nothing.
+  **`spec.md` no longer describes the dashboard**, a named consequence of the
+  change-only shape (design doc §5.0.1): it is a changelog entry, and the
+  surface is only in `current.md`. `synthetic.db` is generated and gitignored.
   `<slug>.db` arrived in step 6a and is described next.
-- A spec **version** is whole-surface — it describes the user's entire
-  dashboard, not just one conversation's worth of changes. `specs.payload`
-  (platform database) holds it; `version` is derived from row position, never
-  stored, so it can neither drift nor race; `based_on_version` is supplied by
-  the server from the account's current version, never authored by the
-  model — a model-authored lineage pointer would be a hallucination becoming
-  a permanent row in an append-only table. **Nothing confirms a version any
-  more.** The newest spec row IS the build contract the moment `propose_spec`
-  writes it (`lib/db/specs.ts`'s `currentSpec`) — there is no card, no button,
-  and no separate confirmation event on the write path.
-  The MODEL is asked only for the change: against a current-shape base it
-  emits a PATCH (`lib/spec/patch.ts`, eight ops — `set_meta`, `add_screen`,
-  `update_screen`, `remove_screen`, `add_panel`, `replace_panel`,
-  `move_panel`, `remove_panel`) and `lib/spec/author.ts` applies it via
-  `applyPatch`, so an untouched panel is COPIED rather than regenerated. The
-  stored row is still the whole surface — `applyPatch` produces it and hands
-  it to `parseSpecDraft`, the same validator every version goes through — and
-  the ops ride flat inside `payload` beside it as `SpecVersion.ops`, `null`
-  when a version was authored whole-surface, **never `[]`**. A row stored
-  before `ops` existed has no `ops` key at all; `parseSpecVersion` reads that
-  the same as null, since `specs` rejects UPDATE and none can ever gain one.
-  Three paths author, not two: `patch` against a current-shape base; `whole`
-  for a first version, which has no base to patch; `whole` for a legacy base,
-  which carries no ids for an op to name and can never gain any.
+- A spec **version** is **change-only**. It describes what CHANGES against
+  `users/<slug>/current.md` — the dashboard as it was actually BUILT — and
+  never restates the whole surface, because `current.md` already does.
+  `lib/spec/change.ts` is the live shape and the only one anything authors:
+  `change_summary`, `changes` (at least one, each
+  `{action: add|change|remove, target: screen|panel, name, description}`),
+  `data_requirements` and `open_questions`. There are **no ids** — `name` is
+  what the friend calls it, and a panel's detail is prose inside
+  `description` — and no `title`, `summary` or `background`. Dropping
+  `background` is a deliberate, recorded loss (design doc §5.0.1): what it
+  carried about the PERSON now survives only as raw transcript in
+  `conversation.md`. `specs.payload` (platform database) holds the row;
+  `version` is derived from row position, never stored, so it can neither
+  drift nor race; `based_on_version` is supplied by the server from the
+  account's current version, **re-read at write time** rather than at the
+  start of the call, and never authored by the model — a model-authored
+  lineage pointer would be a hallucination becoming a permanent row in an
+  append-only table, which is why `parseSpecChangeDraft` rejects an authored
+  one outright. **Nothing confirms a version any more.** The newest spec row
+  IS the build contract the moment `propose_spec` writes it (`lib/db/specs.ts`'s
+  `currentSpec`) — there is no card, no button, and no separate confirmation
+  event on the write path.
+- `payload.shape` is `'change'`, **written by the server** — `sealChange` is
+  the one place a stored change is constructed, and `parseSpecChangeDraft`
+  rejects a model that authors it, for the same reason it rejects an authored
+  `based_on_version`. It is what `lib/spec/stored.ts` discriminates on, and
+  it is checked **before** the `screens` array: no row written before
+  change-only specs carries `shape`, no row written after it carries
+  `screens`, and `specs` rejects UPDATE so neither set can ever move.
+- **There is ONE authoring path**, so there is no mode to choose. The
+  whole-surface authoring contract is deleted — `SPEC_JSON_SCHEMA`,
+  `parseSpecDraft`, `PATCH_JSON_SCHEMA`, `parsePatch`, `applyPatch` and
+  `currentVersionBlock` are gone, along with the eight patch ops as something
+  a model emits. Their READERS are FROZEN, not removed, because `specs`
+  rejects UPDATE and a row written in any past shape must keep parsing
+  forever: `lib/spec/schema.ts`, ALL of `lib/spec/fields.ts` (a stored
+  whole-surface row is re-validated through it by `parseSpecVersion`),
+  `lib/spec/patch.ts`'s `parseOp` and `OP_NAMES` (stored rows' `ops` key),
+  `lib/spec/diff.ts` and `lib/spec/legacy.ts`. Nothing authors `ops` any
+  more; a stored row that has one keeps it and `parseOp` keeps reading it.
 - `specs.mockup_html` is written as `''` on every row now — `insertSpec` still
   fills a NOT NULL column, but nothing composes or serves mockup HTML any
   more (mockup-loop removal). `spec_screen_mockups` and `spec_confirmations`
@@ -227,11 +250,18 @@ architectural changes; do not relitigate decided items).
   transcript-derived content to a third party. Nothing renders
   model-generated HTML to a person any more, so there is no surface left for
   that guarantee to travel with.
-- `specs` rejects UPDATE, so a row written before the unified proposal loop
-  can never be rewritten into the current shape — it is read as legacy
-  forever. Read every stored spec payload through `lib/spec/stored.ts`, the
-  one place that discriminates a legacy row from a current-shape version;
-  every consumer handles both arms.
+- `specs` rejects UPDATE, so a row written in an older shape can never be
+  rewritten into the current one — a pre-unification row is read as legacy
+  forever, and a whole-surface row as a version forever. Read every stored
+  spec payload through `lib/spec/stored.ts`, the one place that discriminates,
+  and it has **three** arms now, in this order: `shape === 'change'` →
+  `change`; `Array.isArray(screens)` → `version`; otherwise → `legacy`. The
+  reader COMMITS to an arm and reports that arm's own error rather than
+  falling through. Every consumer handles all three — `app/admin/[user]/page.tsx`,
+  `scripts/export-spec.ts` and `lib/chat/announce.ts` (whose `headline` reads
+  `change_summary` on both non-legacy arms). `lib/spec/author.ts` is no longer
+  one of them: nothing in the authoring path reads a stored payload, so a
+  stored row that no longer validates can no longer take out authoring.
 - Two databases per user, and the difference is load-bearing:
   - `synthetic.db` — loudly fake, regenerated by every deploy, shown under a
     **SYNTHETIC DATA** banner. Safe to read locally.
@@ -281,19 +311,27 @@ architectural changes; do not relitigate decided items).
   panel and nothing else — no day, no count, no payload. This is permanent
   policy for every panel type, and it is what makes the login page's promise
   ("I can see when you use it … but not what you log") true. Spec-version
-  diffs are held to the same bound: a diff metric row carries counts
-  (`screens_added`, `panels_changed`, …) and nothing else — not a panel's
-  title, description or display text, and not its stable id either. An id
+  diffs are held to the same bound: `lib/spec/diff.ts`'s `diffCounts` reduces
+  a diff to counts (`screens_added`, `panels_changed`, …) and nothing else —
+  not a panel's title, description or display text, and not its stable id
+  either. Nothing writes such a row today (`diffCounts` has had no production
+  caller since specs stopped being confirmed, and a change-only spec IS the
+  diff), and that bound is what any future one is held to. An id
   like `divorce_lawyer_fund` is derived from what the friend asked for, which
   is why `lib/spec/author.ts` strips quoted ids out of `spec_error` messages
   too. The content of what changed stays in `specs`, never in `metrics`.
-  The same bound covers patch authoring: every metric row the authoring path
+  The same bound covers authoring: every metric row the authoring path
   writes — `spec_proposed` and every `spec_error`/`spec_aborted` row too, not
-  `spec_proposed` alone — carries `authoring_mode` (`patch`, `whole`, or
-  `null` for a call that failed before a mode was chosen) and `ops_count`
-  (the parsed op count; `null` on every whole-surface row, and on a patch
-  attempt whose ops never parsed). A mode name and a count, never an op and
-  never a panel id.
+  `spec_proposed` alone — carries `authoring_mode`, now the CONSTANT
+  `'change'` (there is one authoring path, so nothing is chosen and no row can
+  honestly be null), and `changes_count`, which replaces `ops_count` (the
+  parsed `changes` length; `null` on an attempt whose draft never parsed).
+  `authoring_mode` is kept rather than dropped so a query grouping spec rows
+  by mode reads `patch`, `whole` and `change` as three eras of one field
+  instead of a field that stopped existing — the same reasoning that keeps
+  `contextFor` saying `'tweak'`. `ops_count` is NOT kept the same way: ops are
+  gone, and a column that could only ever be null is a lie in a table nobody
+  can correct. A mode name and a count, never an op and never a name.
   `dashboard_open` follows the same bound: it carries `screen_order`, the
   active screen's integer position, and never the screen's `id` — a
   spec-authored identifier under the same slug rule as a panel id. See the
@@ -347,8 +385,10 @@ architectural changes; do not relitigate decided items).
   never the dashboard.** `DashboardModule.screens: DashboardScreen[]`
   (`lib/dashboard/contract.ts`) is REQUIRED on every dashboard registered in
   `lib/dashboard/registry.ts`; `DashboardScreen`'s `id`/`title`/`order` mirror
-  `lib/spec/schema.ts`'s `Screen` exactly — never a second source that could
-  drift from what the spec promised. `DashboardProps.screen` stays OPTIONAL —
+  `lib/spec/schema.ts`'s `Screen` exactly — that type is a frozen reader now,
+  and a change-only spec carries no ids at all, so a screen's `id` and `order`
+  are the builder's and `current.md`'s `## Screens` is where they are written
+  down for the next build and for the agent. `DashboardProps.screen` stays OPTIONAL —
   not for the sequencing reason that made it optional to begin with (no
   dashboard exported `screens` yet), which is gone now that all four do, but
   because every one of the four dashboards on this branch has exactly one
@@ -460,6 +500,17 @@ architectural changes; do not relitigate decided items).
   `screenshots/screens.ts` says what each one has to look like. It is a review
   gate, not a test — no pixel diffing — and it has caught things no test in
   this repo can see (onboarding ledger D16).
+- **`announce-deploy.ts` refuses to announce a version `users/<slug>/current.md`
+  does not describe.** Three distinct refusals, each with its own outcome kind
+  and exit 1: `current_state_missing` (no file — write it), `current_state_invalid`
+  (it exists and does not parse — the parser's own message names the section or
+  frontmatter line), and `current_state_stale` (its frontmatter `version` is not
+  the version being announced — rewrite it). It compares VERSIONS, never mtimes:
+  a fresh clone rewrites every mtime, so a check that passed on the laptop and
+  failed on the droplet would be worse than none. The gate runs after the target
+  is resolved and before any body-producing branch, so it applies to `--plain`
+  and `--body-file` too and never pays for a drafting call. Rewriting
+  `current.md` is part of the build, not a follow-up.
 - **A build that could not deliver something goes back to the chat, never into
   the announcement.** The announcement is an update, not a disclosure: what
   shipped, and any in-spirit adjustment that makes it work better. Anything in
@@ -468,11 +519,16 @@ architectural changes; do not relitigate decided items).
   `announce-deploy.ts` warns when that section is non-empty.
 
 ## Build contract
-- `spec.md` in the user's folder, the conversation it was pulled from,
-  `current.md`, and the code are the build contract for **user dashboards**
-  (`users/<name>/`, `app/[user]/`). There is no mockup — nothing composes or
-  serves mockup HTML any more (mockup-loop removal), and `mockup.html` is
-  gone from every folder. Feasibility doubts → flag to Nico, don't guess.
+- Four things are the build contract for **user dashboards**
+  (`users/<name>/`, `app/[user]/`), and each answers a different question:
+  `spec.md` (what changes), `conversation.md` (what they meant — pulled beside
+  it, gitignored), `current.md` (what already exists), and the code. The
+  conversation is IN the repo now rather than only in `/admin`, because a
+  change-only spec no longer carries the `background` field that used to hold
+  the residue about the person (design doc §5.0.1). There is no mockup —
+  nothing composes or serves mockup HTML any more (mockup-loop removal), and
+  `mockup.html` is gone from every folder. Feasibility doubts → flag to Nico,
+  don't guess.
 - **Platform auth pages** (`app/(auth)/login`, `app/(auth)/unlock`, `app/admin`)
   are NOT covered by `spec.md` either. Their contract is the step-1a design
   doc, docs/superpowers/specs/2026-08-10-step1-auth-and-test-gate-design.md
