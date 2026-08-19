@@ -4,6 +4,8 @@ import { appendMetric } from '@/lib/db/appendOnly'
 import { SESSION_COOKIE, readSession } from '@/lib/session/store'
 import { resolveState } from '@/lib/session/resolve'
 import { isAdmin } from '@/lib/auth/authorize'
+import { findAccountById } from '@/lib/auth/accounts'
+import { readCurrentState } from '@/lib/build/currentState'
 import {
   CHAT_EFFORT,
   CHAT_MODEL,
@@ -125,6 +127,13 @@ export async function POST(request: Request) {
       // request, not two reads of a value that could change between them.
       const context = contextFor(db, session.account_id)
 
+      // The account row is looked up fresh rather than trusted from the
+      // session, and its absence is handled rather than thrown: a slug that
+      // has gone missing must not take down a chat request, and reads the
+      // same as an account with no built dashboard.
+      const slug = findAccountById(db, session.account_id)?.slug
+      const currentState = slug ? (readCurrentState(slug)?.body ?? null) : null
+
       // NOTHING GOES DOWN THIS CONNECTION WHILE THE SLOW WORK RUNS.
       //
       // Between the reply finishing and the authored proposal coming back, the
@@ -186,6 +195,7 @@ export async function POST(request: Request) {
         {
           accountId: session.account_id,
           sessionId: sessionId!,
+          currentState,
           body,
           // A real transition, forwarded as it happens: the spec came back and
           // validated, and the slow half — drawing the preview — is starting.

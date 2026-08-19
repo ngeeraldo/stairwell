@@ -17,8 +17,14 @@ const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
  * before it calls the tool. The wait is about a minute and mostly spent drawing;
  * a person who was told to expect that waits, and a person who was not decides
  * the product is broken and starts clicking.
+ *
+ * v6 hands the agent users/<slug>/current.md — the builder's description of
+ * what is actually deployed — and tells it to trust that over the spec. Until
+ * v6 the agent received no description of the dashboard at all and
+ * reconstructed one from the conversation, which is why a second conversation
+ * could discuss panels that were never built the way they were proposed.
  */
-export const AGENT_PROMPT = 'agent-v5.md'
+export const AGENT_PROMPT = 'agent-v6.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output
