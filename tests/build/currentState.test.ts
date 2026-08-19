@@ -128,4 +128,32 @@ describe('readCurrentState', () => {
   it('names the path it looked at', () => {
     expect(currentStatePath('sam', '/tmp/users')).toBe('/tmp/users/sam/current.md')
   })
+
+  it('reads from process.env.USERS_DIR when usersDir is not provided', () => {
+    // Tests the seam that lets the app point all user modules at a temp tree
+    // during test runs. See deploy/required-env: USERS_DIR is not listed there.
+    const dir = tree({ 'sam/current.md': GOOD })
+    const prevUsersDir = process.env.USERS_DIR
+    try {
+      process.env.USERS_DIR = dir
+      expect(readCurrentState('sam')?.version).toBe(3)
+    } finally {
+      if (prevUsersDir === undefined) delete process.env.USERS_DIR
+      else process.env.USERS_DIR = prevUsersDir
+    }
+  })
+
+  it('prefers an explicit usersDir argument over process.env.USERS_DIR', () => {
+    // When both are set, the argument wins. This is the precedence the code promises.
+    const dir1 = tree({ 'sam/current.md': GOOD })
+    const dir2 = tree({ 'other/current.md': '' })
+    const prevUsersDir = process.env.USERS_DIR
+    try {
+      process.env.USERS_DIR = dir2
+      expect(readCurrentState('sam', dir1)?.version).toBe(3)
+    } finally {
+      if (prevUsersDir === undefined) delete process.env.USERS_DIR
+      else process.env.USERS_DIR = prevUsersDir
+    }
+  })
 })

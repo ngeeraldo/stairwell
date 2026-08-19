@@ -111,14 +111,20 @@ export function parseCurrentState(text: string): CurrentState {
 }
 
 /**
- * USERS_DIR, matching lib/build/notes.ts — it exists so tests can point at a
- * temp tree, and its default IS the correct production value. Duplicated
- * rather than imported from lib/db/userDb.ts for the reason that file's own
- * comment gives: userDb.ts pulls in a native SQLite binding at module top,
- * and this module is pure text parsing.
+ * USERS_DIR, matching the rest of the repo — it exists so tests can point at a
+ * temp tree, and its default IS the correct production value, which is why
+ * deploy/required-env deliberately does not list it.
+ *
+ * This duplicates the one-line fallback lib/db/userDb.ts already exports
+ * rather than importing it. That file pulls in
+ * better-sqlite3-multiple-ciphers (a native SQLite binding) at module top, and
+ * this module is pure text parsing — importing from userDb.ts would drag that
+ * native binding into every downstream consumer of lib/build/currentState.ts,
+ * including an operator CLI that has no business opening a database. A
+ * duplicated one-liner is much cheaper than that coupling.
  */
 function usersRoot(override?: string): string {
-  return override ?? resolve(process.cwd(), 'users')
+  return override ?? process.env.USERS_DIR ?? resolve(process.cwd(), 'users')
 }
 
 export function currentStatePath(slug: string, usersDir?: string): string {
