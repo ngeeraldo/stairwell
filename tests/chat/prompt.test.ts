@@ -7,7 +7,6 @@ import {
   ANNOUNCE_PROMPT,
   MOCKUP_PROMPT,
   MOCKUP_SCREENS_PROMPT,
-  SPEC_PATCH_PROMPT,
   SPEC_PROMPT,
   loadPrompt,
   loadPromptAtPath,
@@ -138,8 +137,13 @@ describe('loadPrompt', () => {
     expect(loaded.sha).toMatch(/^[0-9a-f]{12}$/)
   })
 
-  it('loads the patch prompt and hashes it', () => {
-    const loaded = loadPrompt(SPEC_PATCH_PROMPT)
+  it('loads the retired patch prompt and hashes it — spec-v3.md stays on disk', () => {
+    // SPEC_PATCH_PROMPT (the exported constant) is gone: there is one
+    // authoring path now. spec-v3.md itself is not deleted — prompt_sha on
+    // existing spec rows points at it — so it is addressed by literal name
+    // here, the same pattern the ANNOUNCE_PROMPT tests below use for
+    // announce-v1.md and announce-v2.md.
+    const loaded = loadPrompt('spec-v3.md')
     expect(loaded.text).toContain('A PATCH: only what changes')
     expect(loaded.sha).not.toBe(loadPrompt(SPEC_PROMPT).sha)
   })
@@ -180,7 +184,6 @@ describe('loadPrompt', () => {
     for (const name of [
       AGENT_PROMPT,
       SPEC_PROMPT,
-      SPEC_PATCH_PROMPT,
       MOCKUP_PROMPT,
       MOCKUP_SCREENS_PROMPT,
       ANNOUNCE_PROMPT,
@@ -276,7 +279,6 @@ describe('loadPrompt', () => {
     for (const name of [
       AGENT_PROMPT,
       SPEC_PROMPT,
-      SPEC_PATCH_PROMPT,
       MOCKUP_PROMPT,
       MOCKUP_SCREENS_PROMPT,
       ANNOUNCE_PROMPT,

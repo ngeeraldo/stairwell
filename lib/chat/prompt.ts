@@ -41,17 +41,25 @@ export const AGENT_PROMPT = 'agent-v8.md'
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output
  * contract can be iterated without touching interview wording, and so the two
- * eras stay separable in the record. As of v2 it no longer covers the mockup
- * — that moved to its own call and its own prompt, MOCKUP_PROMPT below.
+ * eras stay separable in the record.
+ *
+ * v4 makes the spec change-only. The writer's base is users/<slug>/current.md
+ * — the builder's description of what is actually deployed — instead of the
+ * previous spec row, which was a prediction written before any code existed.
+ * It emits change_summary, changes, data_requirements and open_questions:
+ * no ids, no whole-surface restatement, and no title/summary/background,
+ * which current.md now answers.
+ *
+ * It also drops two false premises v2 and v3 both carried: a "current
+ * confirmed version" (nothing confirms) and a preview card the change_summary
+ * would appear in (nothing previews).
+ *
+ * spec-v2.md and spec-v3.md stay on disk. spec-v3.md was SPEC_PATCH_PROMPT,
+ * used when a current-shape version existed to patch; there is one authoring
+ * path now, so that constant is gone while the file it named is not —
+ * prompt_sha on existing spec rows points at both.
  */
-export const SPEC_PROMPT = 'spec-v2.md'
-
-/**
- * The PATCH-authoring prompt, used when there is a current version in
- * the current shape to change. v1 and a legacy base still go through
- * SPEC_PROMPT and emit the whole surface — see lib/spec/author.ts.
- */
-export const SPEC_PATCH_PROMPT = 'spec-v3.md'
+export const SPEC_PROMPT = 'spec-v4.md'
 
 /**
  * The mockup-rendering prompt. Takes a validated spec version as JSON and
