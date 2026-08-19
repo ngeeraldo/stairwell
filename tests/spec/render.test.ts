@@ -39,12 +39,12 @@ describe('renderLegacyMarkdown', () => {
     })
     expect(out).toBe(`# Eating out and the car fund
 
-<!-- Generated from the confirmed spec record by scripts/pull-spec.sh.
+<!-- Generated from the spec record by scripts/pull-spec.sh.
      Do not hand-edit: the next pull overwrites this file. -->
 
 - **User:** devtwo
 - **Spec version:** v2
-- **Confirmed:** 2025-10-09T08:53:20.000Z
+- **Version date:** 2025-10-09T08:53:20.000Z
 
 ## Summary
 

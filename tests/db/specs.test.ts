@@ -9,7 +9,6 @@ import {
   hasSpec,
   hasSpecBelow,
   insertSpec,
-  newestSpec,
   readSpecs,
   specByVersion,
 } from '@/lib/db/specs'
@@ -68,6 +67,27 @@ describe('insertSpec / readSpecs', () => {
     write(2, 'theirs', 2_000)
     expect(readSpecs(db, 1)).toHaveLength(1)
     expect(readSpecs(db, 99)).toEqual([])
+  })
+
+  it('reports the EARLIEST confirmation and never duplicates the row', () => {
+    // The property under test is readSpecs' own MIN(c.at) scalar subquery
+    // (this file's docstring on readSpecs, and lib/db/specs.ts:54-58) —
+    // still live, still load-bearing against the documented concurrent-
+    // confirm race (design spec section 12), and no longer exercised by
+    // anything now that confirmSpec is gone. Two confirmations for one spec
+    // must not double the spec in readSpecs, and the reported moment must be
+    // the first one — that is when the friend actually decided. Inserted
+    // directly, the same technique as the append-only-enforcement test
+    // below.
+    const account = freshAccount()
+    const id = write(account, 'one', 1_000)
+    db.prepare('INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)')
+      .run(id, account, 5_000)
+    db.prepare('INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)')
+      .run(id, account, 9_000)
+    const rows = readSpecs(db, account)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.confirmed_at).toBe(5_000)
   })
 })
 

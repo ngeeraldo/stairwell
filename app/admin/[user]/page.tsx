@@ -433,11 +433,17 @@ export default async function TranscriptPane({
         }
         spec={
           current === undefined || currentStored === undefined ? (
-            <p className="py-4 text-sm text-muted-foreground">No confirmed spec yet.</p>
+            <p className="py-4 text-sm text-muted-foreground">No spec yet.</p>
           ) : (
             <div className="py-4">
               <p className="mb-3 text-xs text-muted-foreground">
-                {`v${current.version} — confirmed ${new Date(current.confirmed_at!).toISOString()}`}
+                {/* currentSpec (lib/db/specs.ts) now returns the newest spec
+                    whether or not it was ever confirmed, so confirmed_at can
+                    genuinely be null — fall back to the spec's own authored
+                    timestamp, same as lib/spec/author.ts's
+                    currentVersionBlock and scripts/export-spec.ts. Worded "as
+                    of", not "confirmed": nothing confirms any more. */}
+                {`v${current.version} — as of ${new Date(current.confirmed_at ?? current.at).toISOString()}`}
               </p>
               {/*
                 REAL MARKDOWN, not preformatted text. The build contract is
@@ -456,12 +462,12 @@ export default async function TranscriptPane({
                       ? renderSpecMarkdown(currentStored.version, {
                           slug: user,
                           version: current.version,
-                          confirmedAt: current.confirmed_at!,
+                          confirmedAt: current.confirmed_at ?? current.at,
                         })
                       : renderLegacyMarkdown(currentStored.payload, {
                           slug: user,
                           version: current.version,
-                          confirmedAt: current.confirmed_at!,
+                          confirmedAt: current.confirmed_at ?? current.at,
                         }),
                   )}
                 </ReactMarkdown>
@@ -471,7 +477,7 @@ export default async function TranscriptPane({
         }
         mockup={
           current === undefined ? (
-            <p className="py-4 text-sm text-muted-foreground">No confirmed mockup yet.</p>
+            <p className="py-4 text-sm text-muted-foreground">No mockup yet.</p>
           ) : (
             <div className="space-y-3 py-4">
               <MockupDialog

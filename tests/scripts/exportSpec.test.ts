@@ -95,6 +95,12 @@ function insertRawSpec(
 let dir: string
 let db: PlatformDb
 
+// Real-scale timestamps for devfive's fixture (module scope so the test
+// below can assert against the exact value) — see the comment at their use
+// site in beforeAll for why small relative-order integers would not do.
+const DEVFIVE_OLDER_AT = Date.UTC(2026, 7, 18)
+const DEVFIVE_NEWER_AT = Date.UTC(2026, 7, 19)
+
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-export-spec-'))
   db = openPlatformDb(join(dir, 'synthetic.db'))
@@ -188,27 +194,36 @@ beforeAll(async () => {
   // spec regardless of confirmation (lib/db/specs.ts) — the newest proposal
   // IS the build contract now, so exportSpec must pick the newer one rather
   // than falling back to the historically-confirmed older row.
+  //
+  // Real-scale timestamps (module-scoped constants above), not this file's
+  // usual small relative-order integers: the newer spec has no confirmation,
+  // so its exported date falls back to its own `at`
+  // (scripts/export-spec.ts's `?? spec.at`), and a small integer like
+  // `2_000` renders as an ISO string still inside 1970 — indistinguishable
+  // from the epoch-zero date the old `confirmed_at!` assertion would have
+  // produced. Only a real-scale `at` makes "the export does not say 1970"
+  // mean anything (see the devfive test below).
   insertSpec(db, {
     accountId: devfiveId,
     conversationId: 'conv-devfive',
     promptSha: 'sha-devfive-0001',
     payload: payload({ title: 'An older, once-confirmed spec TEST' }),
     mockupHtml: '<!doctype html><html><body>OLDER MOCKUP TEST</body></html>',
-    at: 1_000,
+    at: DEVFIVE_OLDER_AT,
   })
   const devfiveOlderId = db
     .prepare('SELECT id FROM specs WHERE account_id = ? ORDER BY id LIMIT 1')
     .get(devfiveId) as { id: number }
   db.prepare(
     'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
-  ).run(devfiveOlderId.id, devfiveId, 1_500)
+  ).run(devfiveOlderId.id, devfiveId, DEVFIVE_OLDER_AT + 500)
   insertSpec(db, {
     accountId: devfiveId,
     conversationId: 'conv-devfive',
     promptSha: 'sha-devfive-0002',
     payload: payload({ title: 'A newer spec on top TEST' }),
     mockupHtml: '<!doctype html><html><body>NEWER MOCKUP TEST</body></html>',
-    at: 2_000,
+    at: DEVFIVE_NEWER_AT,
   })
 })
 
@@ -235,6 +250,18 @@ describe('exportSpec', () => {
     // The older, historically-confirmed spec must not be what gets exported
     // once something newer exists.
     expect(out.spec_md).not.toContain('An older, once-confirmed spec TEST')
+  })
+
+  it('falls back to the spec\'s own timestamp, never 1970, when the current spec has no confirmation', () => {
+    // devfive's newer spec (see beforeAll) has confirmed_at: null — a bare
+    // `spec.confirmed_at!` would render `new Date(null)`, the silent
+    // 1970-01-01 bug this pins against. DEVFIVE_NEWER_AT is a real-scale
+    // timestamp specifically so this assertion means something: a small
+    // relative-order integer like this file's other fixtures use would
+    // ALSO render inside 1970, correctly-fixed or not.
+    const out = exportSpec(db, 'devfive')
+    expect(out.spec_md).not.toContain('1970')
+    expect(out.spec_md).toContain(new Date(DEVFIVE_NEWER_AT).toISOString())
   })
 
   it('refuses an account with no spec at all, naming why', () => {
@@ -266,12 +293,12 @@ describe('exportSpec', () => {
     const out = exportSpec(db, 'devtwo')
     expect(out.spec_md).toBe(`# Eating out and the car fund
 
-<!-- Generated from the confirmed spec record by scripts/pull-spec.sh.
+<!-- Generated from the spec record by scripts/pull-spec.sh.
      Do not hand-edit: the next pull overwrites this file. -->
 
 - **User:** devtwo
 - **Spec version:** v1
-- **Confirmed:** 1970-01-01T00:00:01.500Z
+- **Version date:** 1970-01-01T00:00:01.500Z
 
 ## Summary
 

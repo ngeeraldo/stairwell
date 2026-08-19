@@ -391,6 +391,20 @@ describe('POST /api/chat', () => {
     expect(readTranscript(handle!, accountId)).toHaveLength(0)
   })
 
+  it('no longer accepts a confirmation trigger — an old-shaped POST 400s like any other bodiless one', async () => {
+    // This route used to special-case `{trigger: 'confirmation'}`, sending a
+    // body-less, product-initiated turn straight into runTurn (no `body`
+    // needed). Nothing confirms any more, so that field is just an unknown
+    // property now: no `body` string means a 400, exactly like any other
+    // request with nothing to say, and no model call is spent and no row is
+    // written on it.
+    const { accountId } = await signIn(false)
+    expect((await post({ trigger: 'confirmation' })).status).toBe(400)
+
+    const { readTranscript } = await import('@/lib/db/appendOnly')
+    expect(readTranscript(handle!, accountId)).toHaveLength(0)
+  })
+
   it('beats while the authoring call is slow, so the connection never goes silent', async () => {
     // The regression this exists for: between the reply finishing and the
     // proposal coming back, the route used to send nothing for 47-97 seconds,

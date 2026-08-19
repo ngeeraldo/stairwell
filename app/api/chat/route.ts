@@ -63,24 +63,24 @@ export async function POST(request: Request) {
     return new Response(null, { status: 403 })
   }
 
-  let payload: { body?: unknown; trigger?: unknown }
+  let payload: { body?: unknown }
   try {
-    payload = (await request.json()) as { body?: unknown; trigger?: unknown }
+    payload = (await request.json()) as { body?: unknown }
   } catch {
     return new Response(null, { status: 400 })
   }
-  const typed = typeof payload.body === 'string' ? payload.body.trim() : ''
-
-  // A turn the PRODUCT starts rather than the person. Today there is exactly
-  // one: pressing "Build this" used to record the decision and say nothing, so
-  // agent-v4's promised acknowledgment waited for the friend's next message —
-  // silence at the moment they had just committed to something.
-  //
-  // `body: null` is what tells runTurn no user row belongs in the transcript.
-  // Nobody typed anything, and that table cannot be corrected afterwards.
-  const confirmationTurn = payload.trigger === 'confirmation'
-  const body = confirmationTurn ? null : typed
-  if (body !== null && !body) return new Response(null, { status: 400 })
+  // No `trigger` field any more. This endpoint used to also accept
+  // `{trigger: 'confirmation'}` — a body-less, product-initiated turn sent
+  // right after pressing "Build this", so runTurn's promised acknowledgment
+  // arrived immediately instead of waiting for the friend's next message.
+  // Nothing confirms any more (lib/db/specs.ts's confirmSpec is gone, and so
+  // is the button that sent this), so accepting it left an authenticated
+  // friend able to spend a model call on a `body: null` turn nobody could
+  // otherwise produce. TurnInput.body stays `string | null` in
+  // lib/chat/turn.ts — that shape is real, tested infrastructure independent
+  // of this route — but this route now only ever passes a string.
+  const body = typeof payload.body === 'string' ? payload.body.trim() : ''
+  if (!body) return new Response(null, { status: 400 })
 
   // Resolved BEFORE the ReadableStream. Inside start() a construction failure
   // would land after the 200 and its headers had already gone out, and before

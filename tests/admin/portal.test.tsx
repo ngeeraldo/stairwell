@@ -257,7 +257,8 @@ describe('the spec tab', () => {
       at: 100,
     })
     // Nothing writes spec_confirmations any more; inserted directly so the
-    // pane's "confirmed" label still has a historical row to render.
+    // pane's version label still has a historical row to render a real date
+    // from.
     db!.prepare(
       'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
     ).run(specId, devone, 200)
@@ -268,7 +269,7 @@ describe('the spec tab', () => {
     // dumped.
     expect(html).toMatch(/<h1[^>]*>COFFEE PALACE TEST tracker<\/h1>/)
     expect(html).not.toContain('# COFFEE PALACE TEST tracker')
-    expect(html).toContain('v1 — confirmed')
+    expect(html).toContain('v1 — as of')
     // The "do not hand-edit" banner is addressed to whoever opens spec.md in
     // an editor, not to whoever is reading this pane. react-markdown does not
     // render raw HTML, so it arrived here as a visible paragraph of body copy

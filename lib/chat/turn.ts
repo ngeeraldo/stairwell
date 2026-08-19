@@ -67,12 +67,18 @@ export type TurnInput = {
    * What the friend typed — or `null` for a turn the PRODUCT started rather
    * than the person.
    *
-   * The only such turn today is a confirmation: pressing "Build this" used to
-   * record the decision and say nothing, so the acknowledgment agent-v4
-   * promises sat waiting for the friend's next message. It arrives immediately
-   * now, which means a turn with no user message behind it. No user row is
-   * written on that path — nobody typed anything, and `transcripts` cannot be
-   * corrected later.
+   * Nothing sends `null` any more. The only such turn ever was a
+   * confirmation: pressing "Build this" used to record the decision and say
+   * nothing, so this let agent-v4's promised acknowledgment arrive
+   * immediately — a turn with no user message behind it — instead of
+   * waiting for the friend's next message. Nothing confirms any more
+   * (lib/db/specs.ts's confirmSpec is gone), and app/api/chat/route.ts no
+   * longer accepts the `trigger` that produced this. Kept, not deleted:
+   * this file's own tests exercise the shape directly, and it is the
+   * general contract for ANY future product-initiated turn, not solely the
+   * confirmation one that used to be the only example of it. No user row is
+   * written on that path — nobody typed anything, and `transcripts` cannot
+   * be corrected later.
    */
   body: string | null
   /**
@@ -265,7 +271,8 @@ export async function runTurn(
   // wiring mistake — an alert that never fires would look exactly like an
   // alert that fired.
   // Not for an agent-initiated turn: the alert means "a friend showed up",
-  // and a confirmation already has its own alert on the confirm route.
+  // and nobody did — the product started this one. (Nothing produces one any
+  // more; see TurnInput.body's own comment.)
   if (arrived && input.body !== null) {
     alert(input.accountId)
   }

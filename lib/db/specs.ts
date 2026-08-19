@@ -89,13 +89,6 @@ export function specByVersion(
   return readSpecs(db, accountId).find((s) => s.version === version)
 }
 
-export function newestSpec(
-  db: PlatformDb,
-  accountId: number,
-): SpecRecord | undefined {
-  return readSpecs(db, accountId)[0]
-}
-
 /**
  * The newest proposal. The build contract.
  *
