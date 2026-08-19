@@ -213,10 +213,11 @@ export async function POST(request: Request) {
           currentState,
           body,
           // The exchange is committed. Sent before authoring begins, so a
-          // connection that dies during the preview still leaves the browser
-          // knowing the reply was saved — which is the difference between
-          // "your message is safe, the preview is late" and "nothing
-          // happened". Guarded like every other enqueue on this stream.
+          // connection that dies while a spec is being authored still leaves
+          // the browser knowing the reply was saved — which is the
+          // difference between "your message is safe, the build is still
+          // coming" and "nothing happened". Guarded like every other enqueue
+          // on this stream.
           onSaved: () => {
             if (!request.signal.aborted) controller.enqueue(line({ saved: true }))
           },

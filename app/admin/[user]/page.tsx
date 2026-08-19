@@ -230,11 +230,15 @@ function readOrUndefined(payload: string): StoredSpec | undefined {
  * so Nico reads the conversation the way the user experienced it — a
  * transcript with a hole where the proposal happened is a broken transcript."
  *
- * Not literally app/[user]/ChatPanel.tsx's SpecCard: that one carries the
- * confirm controls, and the admin portal is read-only by a standing rule
- * (lib/auth/authorize.ts). What is shared is the SHAPE — version label, title,
- * what changed, the mockup — and, through MockupDialog, the identical
- * full-screen affordance the friend gets.
+ * Not the friend's own SpecCard — that component is gone from
+ * app/[user]/ChatPanel.tsx along with its confirm controls, since a friend no
+ * longer confirms anything. This pane still renders every proposal as a card,
+ * though: it is Nico's permanent visual record of what was offered at each
+ * point in the conversation, read-only by a standing rule
+ * (lib/auth/authorize.ts), unaffected by whatever the friend's own screen
+ * currently shows. What it shares with the old friend-facing card is the
+ * SHAPE — version label, title, what changed, the mockup — and, through
+ * MockupDialog, the same full-screen affordance the friend used to get.
  */
 function InlineCard({
   slug,

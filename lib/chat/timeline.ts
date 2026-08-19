@@ -22,9 +22,18 @@
  * the card changing state at the moment it was OFFERED, and those two
  * timestamps can be days apart.
  *
- * Deliberately free of React and of anything server-only: ChatPanel is a
- * client component and the admin pane is a server one, and both render from
- * this.
+ * Deliberately free of React and of anything server-only, so a server
+ * component can call it too.
+ *
+ * ChatPanel (app/[user]/ChatPanel.tsx) used to be a second caller, merging
+ * turns with the friend's own proposal card and confirmation events. That
+ * card is gone — the agent now says in words that it has what it needs, and
+ * nothing confirms — so ChatPanel renders its turns directly and no longer
+ * calls this. The admin transcript pane (app/admin/[user]/page.tsx) is this
+ * function's only caller now, and it still needs all three inputs: it is
+ * Nico's read-only review surface, not the friend's, and `specs` /
+ * `spec_confirmations` are historical records an operator reads regardless
+ * of whether anything on the friend's own screen still shows them.
  */
 
 export type TimelineItem<Turn, Proposal> =

@@ -123,7 +123,16 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
   return {
     ...actual,
     // Takes its input, because one of the things the route is on the hook for
-    // is which signal it puts IN that input (see authoringSignals below).
+    // is which signal it puts IN that input (see authoringSignals below) —
+    // and, per fix round 1, whether it wires `onStage` onto the object it
+    // hands authorSpecImpl. This double calls `input.onStage?.('mockup')`
+    // unconditionally, on every path, exactly where the real authorSpec
+    // does (lib/spec/author.ts: "Announced before the call, not after" —
+    // right before the slow drawing call starts). A double that never
+    // called it could not tell a route that forwards the callback apart
+    // from one that doesn't: the `'stage' in line` absence assertion below
+    // would pass either way, for the wrong reason. See the "no proposal or
+    // stage lines reach the browser" describe block.
     authorSpec: async (
       _deps: unknown,
       input: import('@/lib/spec/author').AuthorInput,
@@ -131,6 +140,7 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
       authoringSignals.push(input.signal)
       if (behaviour.value === 'propose-slow') {
         slowAuthoring.onEnter?.()
+        input.onStage?.('mockup')
         // An authoring call that does not return until the test says so —
         // the 47-97 second window the heartbeat exists to keep warm.
         await new Promise<void>((resolve) => {
@@ -138,8 +148,14 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
         })
         return PROPOSAL_FIXTURE
       }
-      if (behaviour.value === 'propose-ok') return PROPOSAL_FIXTURE
-      if (behaviour.value === 'propose-fail') return undefined
+      if (behaviour.value === 'propose-ok') {
+        input.onStage?.('mockup')
+        return PROPOSAL_FIXTURE
+      }
+      if (behaviour.value === 'propose-fail') {
+        input.onStage?.('mockup')
+        return undefined
+      }
       throw new Error('authorSpec called on a turn that never proposed')
     },
   }
@@ -519,6 +535,16 @@ describe('POST /api/chat — no proposal or stage lines reach the browser', () =
     // suppression, not an accident of nothing happening.
     expect(authoringSignals).toHaveLength(1)
 
+    // The mocked authorSpec (above) calls `input.onStage?.('mockup')`
+    // unconditionally, exactly where the real one does. If the route still
+    // wired that callback onto the object it hands authorSpecImpl — either
+    // via TurnInput.onStage (removed, so this would now be a compile error)
+    // or by re-adding `onStage` locally inside the route's own authorSpec
+    // wrapper before forwarding to authorSpecImpl (still legal — AuthorInput
+    // keeps the field, so this path is NOT caught by the type change) — a
+    // `{stage:"mockup"}` line would appear here. It doesn't, which is what
+    // proves the suppression is real rather than an artifact of nothing ever
+    // calling onStage in the first place.
     expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual(['t', 'saved', 'done'])
     expect(seen.some((l) => 'authoring' in (l as object))).toBe(false)
     expect(seen.some((l) => 'stage' in (l as object))).toBe(false)

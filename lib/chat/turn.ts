@@ -95,8 +95,11 @@ export type TurnInput = {
    * nothing.
    *
    * A dropped connection is now a DELAY, not a loss: authoring runs to
-   * completion, `specs` gets its row, and app/[user]/page.tsx serves the card
-   * on the friend's next load. Nothing is lost that was paid for.
+   * completion and `specs` gets its row regardless of whether the connection
+   * that started the turn is still open. Nothing is lost that was paid for —
+   * there is no more card for app/[user]/page.tsx to serve on the friend's
+   * next load, but the row is still there, still real, and still what Nico
+   * builds from.
    *
    * Still a signal rather than nothing, because the abort path in
    * lib/spec/author.ts is correct and worth keeping for a caller that really
@@ -110,11 +113,11 @@ export type TurnInput = {
    * authoring starts.
    *
    * Exists so the panel can stop lying. `{done:true}` only arrives after the
-   * whole turn including authoring, so a connection that dropped during the
-   * preview looked identical to one that dropped before anything was written,
-   * and the panel said "interrupted - not saved" about a reply that was sitting
-   * in an append-only table. It said that in production on 2026-08-18 about
-   * transcripts row 150.
+   * whole turn including authoring, so a connection that dropped while a spec
+   * was being authored looked identical to one that dropped before anything
+   * was written, and the panel said "interrupted - not saved" about a reply
+   * that was sitting in an append-only table. It said that in production on
+   * 2026-08-18 about transcripts row 150.
    *
    * Deliberately fires only on the `usable` path, where an assistant row really
    * was appended. A turn that proposed without saying anything
