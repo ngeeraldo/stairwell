@@ -612,4 +612,51 @@ describe('renderChangeMarkdown', () => {
     )
     expect(renderChangeMarkdown(attack, META)).toContain('\\# pwned')
   })
+
+  it('escapes a heading a friend wrote inside a change entry name', () => {
+    // Pins the heading-line interpolation of `change.name` in `renderChange`
+    // (the `### Add panel — <name>` line) separately from `description`
+    // above: the two calls are independent safeMarkdown sites and each needs
+    // its own attack fixture, on its own line, or a removed call would go
+    // unnoticed (see safeMarkdown's own docstring on this file).
+    const attack = sealChange(
+      parseSpecChangeDraft({
+        change_summary: 'Fine.',
+        changes: [
+          {
+            action: 'add',
+            target: 'panel',
+            name: 'First line.\n# pwned',
+            description: 'Fine.',
+          },
+        ],
+        data_requirements: [],
+        open_questions: [],
+      }),
+      null,
+    )
+    expect(renderChangeMarkdown(attack, META)).toContain('\\# pwned')
+  })
+
+  it('escapes a heading a friend wrote inside change_summary', () => {
+    // Same reasoning as the name test just above, for the `## What changed`
+    // block's safeMarkdown(change.change_summary) call.
+    const attack = sealChange(
+      parseSpecChangeDraft({
+        change_summary: 'First line.\n# pwned',
+        changes: [
+          {
+            action: 'add',
+            target: 'panel',
+            name: 'Fine',
+            description: 'Fine.',
+          },
+        ],
+        data_requirements: [],
+        open_questions: [],
+      }),
+      null,
+    )
+    expect(renderChangeMarkdown(attack, META)).toContain('\\# pwned')
+  })
 })
