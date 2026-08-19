@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Panel, Screen, SpecVersion } from '@/lib/spec/schema'
-import { parseSpecDraft, sealVersion } from '@/lib/spec/validate'
+import { parseSpecVersion } from '@/lib/spec/validate'
 import { diffCounts, diffVersions } from '@/lib/spec/diff'
 
 // Copied from tests/spec/validate.test.ts, per the brief, so this file's
@@ -22,7 +22,7 @@ function panel(over: Partial<Panel> = {}): Panel {
   }
 }
 
-function draft(over: Record<string, unknown> = {}): unknown {
+function draft(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     title: 'Did I walk the dog today?',
     summary: 'A one-tap daily tracker.',
@@ -35,9 +35,26 @@ function draft(over: Record<string, unknown> = {}): unknown {
   }
 }
 
-// Goes through the real validator/sealer rather than being cast, so v1 is a
-// genuine SpecVersion and not just an object that happens to typecheck as one.
-const v1: SpecVersion = sealVersion(parseSpecDraft(draft()), null, null)
+
+/**
+ * Build a whole-surface SpecVersion the way the database hands one back:
+ * through parseSpecVersion, which is the only door left into that shape.
+ * parseSpecDraft — the model-output validator this used to go through — is
+ * gone with the schema it guarded (lib/spec/validate.ts's header); the reader
+ * still runs the same draftFrom/parseScreen/parsePanel/checkInvariants
+ * validation, so a malformed fixture still throws rather than being cast.
+ */
+function whole(
+  raw: Record<string, unknown>,
+  basedOn: number | null = null,
+  ops: unknown = null,
+): SpecVersion {
+  return parseSpecVersion(JSON.stringify({ ...raw, based_on_version: basedOn, ops }))
+}
+
+// Goes through the real reader rather than being cast, so v1 is a genuine
+// SpecVersion and not just an object that happens to typecheck as one.
+const v1: SpecVersion = whole(draft())
 
 /** Renames one panel's title in place. Everything else — id, screen, values,
  * entry — is untouched, isolating "title changed" as the only edit. */

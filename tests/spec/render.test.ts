@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { LegacyPanel, LegacySpecPayload } from '@/lib/spec/legacy'
 import type { Panel, SpecVersion } from '@/lib/spec/schema'
-import { parseSpecDraft, sealVersion } from '@/lib/spec/validate'
+import { parseSpecVersion } from '@/lib/spec/validate'
 import { renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 
 const PAYLOAD: LegacySpecPayload = {
@@ -225,7 +225,7 @@ function panel(over: Partial<Panel> = {}): Panel {
   }
 }
 
-function draft(over: Record<string, unknown> = {}): unknown {
+function draft(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     title: 'Did I walk the dog today?',
     summary: 'A one-tap daily tracker.',
@@ -238,16 +238,32 @@ function draft(over: Record<string, unknown> = {}): unknown {
   }
 }
 
-/** Goes through the real validator/sealer rather than being cast, so `version`
- * is a genuine SpecVersion and not just an object that happens to typecheck
- * as one — same rationale tests/spec/diff.test.ts gives for its own `v1`. */
-const version: SpecVersion = sealVersion(parseSpecDraft(draft()), null, null)
+
+/**
+ * Build a whole-surface SpecVersion the way the database hands one back:
+ * through parseSpecVersion, which is the only door left into that shape.
+ * parseSpecDraft — the model-output validator this used to go through — is
+ * gone with the schema it guarded (lib/spec/validate.ts's header); the reader
+ * still runs the same draftFrom/parseScreen/parsePanel/checkInvariants
+ * validation, so a malformed fixture still throws rather than being cast.
+ */
+function whole(
+  raw: Record<string, unknown>,
+  basedOn: number | null = null,
+  ops: unknown = null,
+): SpecVersion {
+  return parseSpecVersion(JSON.stringify({ ...raw, based_on_version: basedOn, ops }))
+}
+
+/** Goes through the real reader rather than being cast, so `version` is a
+ * genuine SpecVersion and not just an object that happens to typecheck as
+ * one — same rationale tests/spec/diff.test.ts gives for its own `v1`. */
+const version: SpecVersion = whole(draft())
 
 /** A version whose only value anywhere is `synced`, so the derived "Entered
  * by hand" section has nothing to list. Isolates the empty-section case from
  * the populated one without touching `version` itself. */
-const allSyncedVersion: SpecVersion = sealVersion(
-  parseSpecDraft(
+const allSyncedVersion: SpecVersion = whole(
     draft({
       screens: [
         {
@@ -270,9 +286,6 @@ const allSyncedVersion: SpecVersion = sealVersion(
         },
       ],
     }),
-  ),
-  null,
-  null,
 )
 
 /** Two screens whose ARRAY position is the reverse of their `order` field —
@@ -281,8 +294,7 @@ const allSyncedVersion: SpecVersion = sealVersion(
  * a self-review round caught disagreeing (collectEnteredValues originally
  * walked `version.screens` directly instead of the order-sorted copy the
  * Screens section itself renders). */
-const outOfOrderVersion: SpecVersion = sealVersion(
-  parseSpecDraft(
+const outOfOrderVersion: SpecVersion = whole(
     draft({
       screens: [
         {
@@ -309,9 +321,6 @@ const outOfOrderVersion: SpecVersion = sealVersion(
         },
       ],
     }),
-  ),
-  null,
-  null,
 )
 
 /** A version with every optional/list field populated (non-null
@@ -320,11 +329,7 @@ const outOfOrderVersion: SpecVersion = sealVersion(
  * shape exactly (same screen/panel/value/entry-field/requirement/question
  * counts), so the two renders differ only in field CONTENT, never in how
  * many of the renderer's own fixed headings appear. */
-const RICH_VERSION: SpecVersion = sealVersion(
-  parseSpecDraft(draft({ open_questions: ['Wants a Monzo pot balance — is that reachable?'] })),
-  null,
-  null,
-)
+const RICH_VERSION: SpecVersion = whole(draft({ open_questions: ['Wants a Monzo pot balance — is that reachable?'] }))
 
 /**
  * Same shape as RICH_VERSION, field for field, but every free-text field
@@ -346,8 +351,7 @@ const RICH_VERSION: SpecVersion = sealVersion(
  * defeats any escaping approach keyed on what the injected text looks like
  * rather than on where it lands.
  */
-const DANGEROUS_VERSION: SpecVersion = sealVersion(
-  parseSpecDraft({
+const DANGEROUS_VERSION: SpecVersion = whole({
     // Site: version.title. Exact-string collision with a real fixed heading.
     title: 'Did I walk the dog today?\n## Summary',
     // Site: version.summary. A heading with no space after the hashes.
@@ -413,10 +417,7 @@ const DANGEROUS_VERSION: SpecVersion = sealVersion(
     ],
     // Site: open_questions, via list() — inline ("- " + text).
     open_questions: ['Wants a Monzo pot balance — is that reachable?\n# Open question heading'],
-  }),
-  null,
-  null,
-)
+  })
 
 const meta = { slug: 'devtwo', version: 1, confirmedAt: 1_760_000_000_000 }
 

@@ -119,137 +119,14 @@ export class SpecShapeError extends Error {
   }
 }
 
-const str = { type: 'string' } as const
-const strList = { type: 'array', items: str } as const
-
-/**
- * Every optional field in 03-spec-schema.md is REQUIRED-AND-NULLABLE here
- * instead. Structured outputs constrain the response, and a field the model
- * may silently omit is a field it will silently omit; an explicit null is a
- * decision, an absent key is an accident.
- *
- * No minItems anywhere: it is outside the supported structured-output subset
- * and would be ignored. "At least one screen" lives in lib/spec/validate.ts.
- */
-const VALUE_SCHEMA = {
-  anyOf: [
-    {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        kind: { const: 'synced' },
-        id: str,
-        module: str,
-        description: str,
-      },
-      required: ['kind', 'id', 'module', 'description'],
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      properties: { kind: { const: 'entered' }, id: str, description: str },
-      required: ['kind', 'id', 'description'],
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        kind: { const: 'derived' },
-        id: str,
-        description: str,
-        inputs: strList,
-      },
-      required: ['kind', 'id', 'description', 'inputs'],
-    },
-  ],
-} as const
-
-const ENTRY_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    description: str,
-    fields: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          name: str,
-          type: { type: 'string', enum: FIELD_TYPES },
-          choices: strList,
-        },
-        required: ['name', 'type', 'choices'],
-      },
-    },
-    annotates: { type: ['string', 'null'] },
-  },
-  required: ['description', 'fields', 'annotates'],
-} as const
-
-export const PANEL_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    id: str,
-    title: str,
-    intent: str,
-    display: str,
-    context_of_use: { type: ['string', 'null'] },
-    values: { type: 'array', items: VALUE_SCHEMA },
-    entry: { anyOf: [ENTRY_SCHEMA, { type: 'null' }] },
-  },
-  required: ['id', 'title', 'intent', 'display', 'context_of_use', 'values', 'entry'],
-} as const
-
-/** One declaration, two consumers: SPEC_JSON_SCHEMA below and PATCH_JSON_SCHEMA
- * (lib/spec/patch.ts) for its add_screen op. */
-export const SCREEN_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    id: str,
-    title: str,
-    order: { type: 'integer' },
-    panels: { type: 'array', items: PANEL_SCHEMA },
-  },
-  required: ['id', 'title', 'order', 'panels'],
-} as const
-
-export const SPEC_JSON_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    title: str,
-    summary: str,
-    background: str,
-    change_summary: str,
-    screens: { type: 'array', items: SCREEN_SCHEMA },
-    data_requirements: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          table: str,
-          purpose: str,
-          status: { type: 'string', enum: REQUIREMENT_STATUSES },
-        },
-        required: ['table', 'purpose', 'status'],
-      },
-    },
-    open_questions: strList,
-  },
-  required: [
-    'title',
-    'summary',
-    'background',
-    'change_summary',
-    'screens',
-    'data_requirements',
-    'open_questions',
-  ],
-} as const
+// The whole-surface authoring schemas that lived here — SPEC_JSON_SCHEMA and
+// the PANEL_SCHEMA / SCREEN_SCHEMA / VALUE_SCHEMA / ENTRY_SCHEMA it and
+// lib/spec/patch.ts's PATCH_JSON_SCHEMA were built from — are gone with the
+// authoring path that used them. Nothing constrains a model to this shape any
+// more (lib/spec/change.ts's SPEC_CHANGE_JSON_SCHEMA is what does now); the
+// TYPES above stay, because parseSpecVersion still reads stored rows into
+// them. The two schemas below are HISTORICAL rather than deleted, for the
+// reason each of their comments gives.
 
 /**
  * The mockup call's contract. One field, so the reply cannot arrive wrapped

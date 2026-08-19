@@ -8,6 +8,13 @@
 // favors determinism and stability over cleverness: compare by stable id
 // (never by position), normalise away incidental serialisation noise, and
 // sort every output array.
+//
+// FROZEN as of change-only specs. diffVersions compares two whole-surface
+// versions by stable id, and nothing authors that shape any more. Its one
+// caller is app/admin/[user]/page.tsx, rendering the history of accounts that
+// have such rows; a change-only spec IS the diff, so nothing computes one for
+// the live shape. diffCounts has no production caller and is kept beside the
+// function it summarises rather than deleted from under a future one.
 import type { Panel, Screen, SpecVersion } from './schema'
 
 export type SpecDiff = {

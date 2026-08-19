@@ -227,19 +227,20 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
       const result = await registerFromInvite(db, { token, password, at: Date.now() })
       if (!result.ok) throw new Error(`friend-new seed failed: ${result.reason}`)
 
-      // A proposal to look at, so the card screens have a card.
+      // A proposal to look at, so the card screens have a card. A CHANGE-shaped
+      // row — the live spec shape (lib/spec/change.ts).
       //
-      // Built through parseSpecDraft + sealVersion, NOT hand-written into the
-      // payload column. The first attempt was hand-written, failed validation
-      // for a reason that was not obvious (a panel with no values), and the
-      // page did exactly what it is supposed to do with an unreadable row:
-      // degrade silently to no card. A screenshot of an empty chat panel looks
-      // a lot like a screenshot of a working one.
+      // Built through parseSpecChangeDraft + sealChange, NOT hand-written into
+      // the payload column. The first attempt was hand-written, failed
+      // validation for a reason that was not obvious (a panel with no values),
+      // and the page did exactly what it is supposed to do with an unreadable
+      // row: degrade silently to no card. A screenshot of an empty chat panel
+      // looks a lot like a screenshot of a working one.
       //
       // Validating here means a bad fixture THROWS in the harness instead.
       const { insertSpec } = await import('../lib/db/specs')
       const { findAccountBySlug } = await import('../lib/auth/accounts')
-      const { parseSpecDraft, sealVersion } = await import('../lib/spec/validate')
+      const { parseSpecChangeDraft, sealChange } = await import('../lib/spec/change')
       const account = findAccountBySlug(db, 'newfriendtest')!
 
       // A few turns, so the chat surface can be REVIEWED as a conversation
@@ -277,51 +278,43 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
           at: Date.now() - (10 - index) * 60_000,
         })
       })
-      const draft = parseSpecDraft({
-        title: 'COFFEE PALACE TEST tracker',
-        summary: 'A one-tap tracker for the walk and the coffee.',
-        change_summary: 'Added a streak panel and a coffee count.',
-        background: 'Walks the dog every morning TEST.',
-        open_questions: [],
-        data_requirements: [],
-        screens: [
+      const change = parseSpecChangeDraft({
+        change_summary: 'Added a COFFEE PALACE TEST streak panel and a coffee count.',
+        changes: [
           {
-            id: 'home',
-            title: 'Home',
-            order: 1,
-            panels: [
-              {
-                id: 'streak',
-                title: 'Streak',
-                intent: 'So the run is visible at a glance.',
-                display: 'Days in a row you walked.',
-                context_of_use: null,
-                values: [
-                  {
-                    kind: 'entered',
-                    id: 'walk_flag',
-                    description: 'Whether the walk happened today.',
-                  },
-                ],
-                entry: null,
-              },
-            ],
+            action: 'add',
+            target: 'screen',
+            name: 'Home',
+            description: 'The one screen. Opened first thing in the morning TEST.',
+          },
+          {
+            action: 'add',
+            target: 'panel',
+            name: 'Streak',
+            description:
+              'Days in a row you walked, as one big number, so the run is visible at a glance. ' +
+              'Tapped once a day TEST.',
+          },
+          {
+            action: 'add',
+            target: 'panel',
+            name: 'COFFEE PALACE TEST count',
+            description: 'How many coffees this week, from the walk log TEST.',
           },
         ],
+        data_requirements: [
+          { table: 'walks', purpose: 'One row per day walked TEST.', status: 'new' },
+        ],
+        open_questions: [],
       })
       insertSpec(db, {
         accountId: account.id,
         conversationId: 'shots-conversation',
         promptSha: 'shots-fixture',
-        payload: sealVersion(draft, null, null),
-        mockupHtml:
-          '<!doctype html><html><body style="font-family:system-ui;padding:24px">' +
-          '<h1 style="margin:0 0 8px">COFFEE PALACE TEST tracker</h1>' +
-          '<p style="color:#666;margin:0 0 24px">Every number here is fake.</p>' +
-          '<div style="border:1px solid #ddd;border-radius:12px;padding:16px">' +
-          '<div style="font-size:12px;color:#666">Streak</div>' +
-          '<div style="font-size:40px;font-weight:600">7 days</div></div>' +
-          '</body></html>',
+        payload: sealChange(change, null),
+        // Written as '' on every row now: nothing composes or serves mockup
+        // HTML any more, and insertSpec still fills a NOT NULL column.
+        mockupHtml: '',
         at: Date.now(),
       })
 
@@ -332,9 +325,8 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
   },
 
   /**
-   * A friend with an already-built two-screen dashboard, plus a NEW proposal
-   * that renames one panel on just one of those screens — task 19's fixture,
-   * for card-proposal-scoped.
+   * A friend with two spec versions, so the pane shows a version that carries
+   * a lineage pointer as well as a first one that does not.
    *
    * Its only consumer, card-proposal-scoped, is `live: false` (the card it
    * photographed no longer renders anywhere — see screenshots/screens.ts), so
@@ -342,22 +334,22 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
    * than deleted, same as that screen row: a future removal of the id is what
    * should decide whether this goes too, not a shots.ts edit alone.
    *
-   * Built through parseSpecDraft + sealVersion, same as friend-new above, so a
+   * Both rows are CHANGE-shaped — the live spec shape (lib/spec/change.ts) —
+   * and both are built through parseSpecChangeDraft + sealChange, so a
    * malformed fixture throws in the harness instead of silently degrading to
-   * no card. Two spec rows and two insertScreenMockups calls, mirroring what
-   * authorSpec actually writes (lib/spec/author.ts): v1 whole-surface, v2 a
-   * patch that only touches `money`, carrying `home`'s fragment forward
-   * unchanged. This is the ONLY fixture in this file that calls
-   * insertScreenMockups — every other one predates the scoped preview and is
-   * a legitimate no-fragments row. v1 no longer needs confirming — nothing
-   * does; the row existing is what makes it current.
+   * no card. v2 passes `sealChange(draft, 1)`, which is the server-supplied
+   * lineage pointer a second version carries.
+   *
+   * It used to seed two whole-surface rows plus two insertScreenMockups calls,
+   * to photograph an untouched screen's mockup fragment being carried forward.
+   * There are no fragments: nothing composes or serves mockup HTML any more,
+   * and a change-only spec has no screens to carry anything forward for.
    */
   'friend-tweak': async (dbPath) => {
     const { openPlatformDb } = await import('../lib/db/platform')
     const { createAccount } = await import('../lib/auth/accounts')
     const { insertSpec } = await import('../lib/db/specs')
-    const { insertScreenMockups } = await import('../lib/db/screenMockups')
-    const { parseSpecDraft, sealVersion } = await import('../lib/spec/validate')
+    const { parseSpecChangeDraft, sealChange } = await import('../lib/spec/change')
     const { appendTranscript } = await import('../lib/db/appendOnly')
     const db = openPlatformDb(dbPath)
     try {
@@ -378,120 +370,67 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
       say('user', 'Can you relabel "Eating out" to "Dining"? TEST', base)
       say('assistant', 'Done — here is the updated Money screen. TEST', base + 1000)
 
-      const draft = parseSpecDraft({
-        title: 'COFFEE PALACE TEST tracker',
-        summary: 'A daily walk streak plus the eating-out total.',
-        change_summary: 'First version.',
-        background: 'Walks the dog every morning TEST.',
-        open_questions: [],
-        data_requirements: [],
-        screens: [
+      const v1 = parseSpecChangeDraft({
+        change_summary: 'First version: a walk streak and the COFFEE PALACE TEST eating-out total.',
+        changes: [
           {
-            id: 'home',
-            title: 'Home',
-            order: 1,
-            panels: [
-              {
-                id: 'streak',
-                title: 'Streak',
-                intent: 'So the run is visible at a glance.',
-                display: 'Days in a row you walked.',
-                context_of_use: null,
-                values: [
-                  { kind: 'entered', id: 'walk_flag', description: 'Whether the walk happened today.' },
-                ],
-                entry: null,
-              },
-            ],
+            action: 'add',
+            target: 'screen',
+            name: 'Home',
+            description: 'The morning screen TEST.',
           },
           {
-            id: 'money',
-            title: 'Money',
-            order: 2,
-            panels: [
-              {
-                id: 'eating_out',
-                title: 'Eating out',
-                intent: 'Watch the spend without opening the banking app.',
-                display: 'This month against last.',
-                context_of_use: null,
-                values: [
-                  { kind: 'derived', id: 'eating_out_total', description: 'Sum this month.', inputs: [] },
-                ],
-                entry: null,
-              },
-            ],
+            action: 'add',
+            target: 'panel',
+            name: 'Streak',
+            description: 'Days in a row you walked, as one number TEST.',
+          },
+          {
+            action: 'add',
+            target: 'panel',
+            name: 'Eating out',
+            description: 'This month against last, from COFFEE PALACE TEST transactions.',
           },
         ],
+        data_requirements: [
+          { table: 'walks', purpose: 'One row per day walked TEST.', status: 'new' },
+        ],
+        open_questions: [],
       })
-
-      // Distinct fragment strings per screen per version, so the shot can be
-      // read at a glance: `home` is IDENTICAL in both versions (carried
-      // forward, not redrawn) and `money`'s panel title is the only thing
-      // that changes.
-      const homeFragment =
-        '<div class="screen-title">Home</div><div class="panel"><div class="panel-title">Streak</div><div class="figure">7 days</div></div>'
-      const moneyFragmentV1 =
-        '<div class="screen-title">Money</div><div class="panel"><div class="panel-title">Eating out</div><div class="figure">£45.00</div></div>'
-      const moneyFragmentV2 =
-        '<div class="screen-title">Money</div><div class="panel"><div class="panel-title">Dining</div><div class="figure">£45.00</div></div>'
-
-      const v1 = sealVersion(draft, null, null)
-      const v1Id = insertSpec(db, {
+      insertSpec(db, {
         accountId,
         conversationId: 'shots-conversation',
         promptSha: 'shots-fixture',
-        payload: v1,
-        mockupHtml: `<!doctype html><html><body>${homeFragment}${moneyFragmentV1}</body></html>`,
+        payload: sealChange(v1, null),
+        mockupHtml: '',
         at: base + 2000,
       })
-      insertScreenMockups(
-        db,
-        v1Id,
-        [
-          { screenId: 'home', html: homeFragment },
-          { screenId: 'money', html: moneyFragmentV1 },
-        ],
-        base + 2000,
-      )
 
-      // Final review, Minor 9: this used to model the rename as an
-      // `update_screen` op naming the SCREEN ('money') with its title and
-      // order both unchanged — a no-op shape that authorSpec never actually
-      // produces for a panel-title rename. A rename to a panel's own title
-      // is what `replace_panel` is for (lib/spec/patch.ts): the full updated
-      // panel, matching id, is what `authorSpec` writes. Corrected to match
-      // what this fixture claims to mirror.
-      const renamedPanel = { ...draft.screens[1]!.panels[0]!, title: 'Dining' }
-      const v2Draft = {
-        ...draft,
-        change_summary: 'Renamed "Eating out" to "Dining".',
-        screens: [
-          draft.screens[0]!,
+      const v2 = parseSpecChangeDraft({
+        change_summary: 'Renamed "Eating out" to "Dining". TEST',
+        changes: [
           {
-            ...draft.screens[1]!,
-            panels: [renamedPanel],
+            action: 'change',
+            target: 'panel',
+            name: 'Eating out',
+            description: 'Same panel, relabelled "Dining". Nothing else about it moves TEST.',
           },
         ],
-      }
-      const v2 = sealVersion(v2Draft, 1, [{ op: 'replace_panel', panel: renamedPanel }])
-      const v2Id = insertSpec(db, {
+        data_requirements: [
+          { table: 'walks', purpose: 'Unchanged TEST.', status: 'unchanged' },
+        ],
+        open_questions: ['Should the COFFEE PALACE TEST total still exclude coffees?'],
+      })
+      insertSpec(db, {
         accountId,
         conversationId: 'shots-conversation',
         promptSha: 'shots-fixture',
-        payload: v2,
-        mockupHtml: `<!doctype html><html><body>${homeFragment}${moneyFragmentV2}</body></html>`,
+        // The lineage pointer is the SERVER's, and it is what makes this the
+        // second version rather than another first one.
+        payload: sealChange(v2, 1),
+        mockupHtml: '',
         at: base + 4000,
       })
-      insertScreenMockups(
-        db,
-        v2Id,
-        [
-          { screenId: 'home', html: homeFragment }, // carried forward, untouched
-          { screenId: 'money', html: moneyFragmentV2 }, // freshly drawn
-        ],
-        base + 4000,
-      )
 
       return { slug: 'tweaktest', password }
     } finally {
@@ -564,12 +503,43 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
     }
   },
 
-  /** Nico, plus a friend with a conversation, a proposal and a confirmation. */
+  /**
+   * Nico, plus a friend with a conversation, a confirmation, and ONE SPEC ROW
+   * OF EACH OF THE THREE PAYLOAD SHAPES lib/spec/stored.ts discriminates.
+   *
+   * The admin transcript pane draws every spec row as an inline card, so this
+   * one account is what puts all three arms — legacy, whole-surface, change —
+   * in a single picture. A fixture that exercised one arm would let the other
+   * two collapse to "Unreadable proposal (corrupt payload)" with every test
+   * still green: `specs` rejects UPDATE, so all three shapes are permanent and
+   * all three must keep rendering.
+   *
+   * v1 is LEGACY and is left exactly as it was written. It is the only proof
+   * the legacy arm still renders and it must not be modernised — a legacy row
+   * carries no ids for anything to regenerate from.
+   * v2 is WHOLE-SURFACE, built through parseSpecVersion, which is a READER and
+   * still validates, so a malformed fixture throws in the harness instead of
+   * degrading to a blank card (the same reason the change fixtures above go
+   * through parseSpecChangeDraft).
+   * v3 is CHANGE — the live shape, and the newest row, so the Spec tab
+   * renders the change document rather than one of the frozen ones.
+   *
+   * DELIBERATELY TERSE, and that is a layout constraint rather than laziness.
+   * The transcript pane scrolls to the newest item and the viewport is 900px
+   * (screenshots/screens.ts, VIEWPORT_HEIGHT), so three cards plus a
+   * confirmation only fit in one frame if each card is short. The opening two
+   * turns now sit above the fold at 1440 as a result: admin-transcript's
+   * "user and agent turns are clearly distinguishable" is reviewed on the
+   * friend's own chat screens instead. Lengthening any string here pushes the
+   * legacy card off the top, which is the one arm nothing else photographs.
+   */
   admin: async (dbPath) => {
     const { openPlatformDb } = await import('../lib/db/platform')
     const { createAccount } = await import('../lib/auth/accounts')
     const { appendTranscript } = await import('../lib/db/appendOnly')
     const { insertSpec } = await import('../lib/db/specs')
+    const { parseSpecVersion } = await import('../lib/spec/validate')
+    const { parseSpecChangeDraft, sealChange } = await import('../lib/spec/change')
     const db = openPlatformDb(dbPath)
     try {
       const password = 'TEST-SHOTS-NOT-A-REAL-PASSWORD'
@@ -613,7 +583,74 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
           '<p style="color:#666">Every number here is fake.</p></body></html>',
         at: base + 2000,
       })
-      say('user', 'That is exactly it. TEST', base + 3000)
+
+      // v2: the WHOLE-SURFACE shape. Nothing authors it any more, but
+      // parseSpecVersion still reads it, and this is the card that proves the
+      // reader's output still renders. based_on_version points at the legacy
+      // v1 above, which is the pane's "first structured version" note.
+      insertSpec(db, {
+        accountId: friend,
+        conversationId: 'shots-conversation',
+        promptSha: 'shots-fixture',
+        payload: parseSpecVersion(
+          JSON.stringify({
+            title: 'COFFEE PALACE TEST tracker',
+            summary: 'A one-tap tracker TEST.',
+            background: 'Walks the dog TEST.',
+            change_summary: 'Gave the streak a screen TEST.',
+            screens: [
+              {
+                id: 'home',
+                title: 'Home',
+                order: 1,
+                panels: [
+                  {
+                    id: 'streak',
+                    title: 'Streak',
+                    intent: 'The run at a glance TEST.',
+                    display: 'Days in a row you walked.',
+                    context_of_use: null,
+                    values: [
+                      { kind: 'entered', id: 'walk_flag', description: 'One tap a day TEST.' },
+                    ],
+                    entry: null,
+                  },
+                ],
+              },
+            ],
+            data_requirements: [{ table: 'walks', purpose: 'A row a day TEST.', status: 'new' }],
+            open_questions: [],
+            based_on_version: 1,
+            ops: null,
+          }),
+        ),
+        mockupHtml: '',
+        at: base + 5000,
+      })
+
+      // v3: the LIVE shape, and the newest row — so `currentSpec` picks it and
+      // the Spec tab renders `## Changes` rather than a frozen document.
+      const change = parseSpecChangeDraft({
+        change_summary: 'Added a COFFEE PALACE TEST coffee count beside the streak.',
+        changes: [
+          {
+            action: 'add',
+            target: 'panel',
+            name: 'COFFEE PALACE TEST count',
+            description: 'How many coffees this week, off the walk log TEST.',
+          },
+        ],
+        data_requirements: [{ table: 'walks', purpose: 'Already there TEST.', status: 'unchanged' }],
+        open_questions: [],
+      })
+      insertSpec(db, {
+        accountId: friend,
+        conversationId: 'shots-conversation',
+        promptSha: 'shots-fixture',
+        payload: sealChange(change, 2),
+        mockupHtml: '',
+        at: base + 7000,
+      })
       // Nothing in the application writes spec_confirmations any more
       // (lib/db/specs.ts's confirmSpec is gone), but admin-transcript's own
       // assertion still needs one on screen — "a confirmation appears as an

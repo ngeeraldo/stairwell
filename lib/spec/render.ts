@@ -222,7 +222,13 @@ function collectEnteredValues(screensInOrder: Screen[]): ValueSpec[] {
 }
 
 /**
- * The new whole-surface spec, as the build contract on disk.
+ * FROZEN, in the same sense renderLegacyMarkdown above is. It renders
+ * whole-surface rows, which nothing authors any more (renderChangeMarkdown
+ * below is the live renderer). Its behaviour must not move: spec.md is a
+ * build contract, and re-pulling an old spec must not produce a diff nobody
+ * asked for.
+ *
+ * The whole-surface spec, as the build contract on disk.
  *
  * Emits, in a fixed order: an H1 title with the generated-file banner; the
  * slug/version/date metadata list; `## What changed`; `## Summary`;
