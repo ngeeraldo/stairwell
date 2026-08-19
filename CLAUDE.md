@@ -185,7 +185,11 @@ architectural changes; do not relitigate decided items).
   an account has any spec at all. That pull writes a PAIR:
   `conversation.md` lands beside it, holding the transcript slice that
   produced that spec version (`lib/spec/conversation.ts`) — a change-only spec
-  says what changed, not what the friend meant. **`conversation.md` is
+  says what changed, not what the friend meant. That slice runs from the last
+  BUILT version, not from the previous spec ROW, so it reaches back to the
+  same place `current.md` describes and `spec.md` is written against: a
+  superseded spec (authored, never built, so no `notes/v<n>.md`) is inside the
+  slice rather than truncating it. **`conversation.md` is
   gitignored and that is a data-safety line, not housekeeping**, see Data
   safety above. The pair is written atomically by `scripts/write-spec-pair.ts`
   — both files or neither — and `export-spec.ts`'s JSON reaches it over

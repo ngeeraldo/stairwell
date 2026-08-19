@@ -1,6 +1,6 @@
 // tests/scripts/exportSpec.test.ts
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -116,6 +116,29 @@ function insertRawSpec(
 
 let dir: string
 let db: PlatformDb
+/**
+ * A temp `users/` tree, threaded into exportSpec as its `usersDir`.
+ *
+ * `notes/v<n>.md` existing is what "this version was BUILT" means
+ * (lib/spec/conversation.ts, lib/chat/announce.ts), and it is what decides how
+ * far back the conversation slice reaches. The repo's real users/ tree has no
+ * notes files at all, so without this every fixture account below would read
+ * as "nothing built yet" and every slice would run from the beginning of time
+ * — which is the right answer for some of them and would silently hide the
+ * boundary for the rest.
+ */
+let usersDir: string
+
+/** Write a minimal, parseable notes file — presence is all exportSpec reads. */
+function markBuilt(slug: string, version: number, at: string): void {
+  mkdirSync(join(usersDir, slug, 'notes'), { recursive: true })
+  writeFileSync(
+    join(usersDir, slug, 'notes', `v${version}.md`),
+    `---\nslug: ${slug}\nversion: ${version}\nbuilt_at: ${at}\n---\n\n` +
+      '## What shipped\n\nA panel TEST.\n\n## Built differently\n\n' +
+      '## Open\n\n## Notes for the next build\n',
+  )
+}
 
 // Real-scale timestamps for devfive's fixture (module scope so the test
 // below can assert against the exact value) — see the comment at their use
@@ -123,9 +146,16 @@ let db: PlatformDb
 const DEVFIVE_OLDER_AT = Date.UTC(2026, 7, 18)
 const DEVFIVE_NEWER_AT = Date.UTC(2026, 7, 19)
 
+// devseven's three specs — v1 built, v2 superseded, v3 the one being pulled.
+const DEVSEVEN_V1_AT = Date.UTC(2026, 7, 10)
+const DEVSEVEN_V2_AT = Date.UTC(2026, 7, 12)
+const DEVSEVEN_V3_AT = Date.UTC(2026, 7, 14)
+
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'stairwell-export-spec-'))
   db = openPlatformDb(join(dir, 'synthetic.db'))
+  usersDir = join(dir, 'users')
+  mkdirSync(usersDir, { recursive: true })
 
   const devoneId = await createAccount(db, {
     slug: 'devone',
@@ -156,6 +186,11 @@ beforeAll(async () => {
     slug: 'devsix',
     role: 'user',
     password: 'TEST-DEV-SIX',
+  })
+  const devsevenId = await createAccount(db, {
+    slug: 'devseven',
+    role: 'user',
+    password: 'TEST-DEV-SEVEN',
   })
   // 'ghost' is deliberately never created.
 
@@ -293,6 +328,49 @@ beforeAll(async () => {
     mockupHtml: MOCKUP,
     at: 1_000,
   })
+
+  // devseven: the SUPERSEDED case (design §7). Three specs; only v1 was ever
+  // built. v2 was authored, never built, and superseded by v3 — which is
+  // legitimate now that nothing confirms a spec: a friend can ask for two
+  // things on two days and the builder builds the highest.
+  //
+  // v3's spec.md is a change against current.md, and current.md still
+  // describes v1. So the conversation beside it must reach back to v1 too, or
+  // what the friend said before v2 is in neither file.
+  for (const row of [
+    { sha: 'sha-devseven-0001', at: DEVSEVEN_V1_AT },
+    { sha: 'sha-devseven-0002', at: DEVSEVEN_V2_AT },
+    { sha: 'sha-devseven-0003', at: DEVSEVEN_V3_AT },
+  ]) {
+    insertSpec(db, {
+      accountId: devsevenId,
+      conversationId: 'conv-devseven',
+      promptSha: row.sha,
+      payload: CHANGE_PAYLOAD,
+      mockupHtml: '',
+      at: row.at,
+    })
+  }
+  for (const row of [
+    { body: 'BEFORE THE BUILD COFFEE PALACE TEST', at: DEVSEVEN_V1_AT - 1_000 },
+    { body: 'THE WEEKLY AVERAGE COFFEE PALACE TEST', at: DEVSEVEN_V1_AT + 1_000 },
+    { body: 'AND DROP THAT PANEL COFFEE PALACE TEST', at: DEVSEVEN_V2_AT + 1_000 },
+  ]) {
+    appendTranscript(db, {
+      accountId: devsevenId,
+      sessionId: 'sess-devseven',
+      conversationId: 'conv-devseven',
+      promptSha: 'sha-devseven-0003',
+      role: 'user',
+      body: row.body,
+      at: row.at,
+    })
+  }
+
+  // What was actually BUILT, on disk. devfive v1 and devseven v1 shipped;
+  // devseven v2 was superseded and deliberately has no notes file.
+  markBuilt('devfive', 1, '2026-08-18')
+  markBuilt('devseven', 1, '2026-08-18')
 })
 
 afterAll(() => {
@@ -311,7 +389,7 @@ describe('exportSpec', () => {
     // The newest spec IS the build contract now (lib/db/specs.ts's
     // currentSpec). devfive's older spec has a historical confirmation and
     // its newer one does not — the newer one still wins.
-    const out = exportSpec(db, 'devfive')
+    const out = exportSpec(db, 'devfive', usersDir)
     expect(out.spec_md).toContain('A newer spec on top TEST')
     // The older, historically-confirmed spec must not be what gets exported
     // once something newer exists.
@@ -325,7 +403,7 @@ describe('exportSpec', () => {
     // timestamp specifically so this assertion means something: a small
     // relative-order integer like this file's other fixtures use would
     // ALSO render inside 1970, correctly-fixed or not.
-    const out = exportSpec(db, 'devfive')
+    const out = exportSpec(db, 'devfive', usersDir)
     expect(out.spec_md).not.toContain('1970')
     expect(out.spec_md).toContain(new Date(DEVFIVE_NEWER_AT).toISOString())
   })
@@ -409,14 +487,40 @@ _None._
     expect(out.conversation_md).toContain('# COFFEE PALACE TEST — what I actually meant')
   })
 
-  it('slices the conversation to THIS version, not the whole history', () => {
+  it('slices the conversation to the last BUILT version, not the whole history', () => {
     // devfive has two specs and one conversation on either side of the older
-    // one. Exporting v2 must carry the second and not the first: a
-    // change-only spec is read against what the friend said THIS time.
-    const out = exportSpec(db, 'devfive')
+    // one, and v1 WAS built (markBuilt in beforeAll). Exporting v2 must carry
+    // the second and not the first: a change-only spec is read against what
+    // the friend said since the thing current.md describes.
+    const out = exportSpec(db, 'devfive', usersDir)
     expect(out.conversation_md).toContain('NEW CONVERSATION COFFEE PALACE TEST')
     expect(out.conversation_md).not.toContain('OLD CONVERSATION COFFEE PALACE TEST')
     expect(out.conversation_md).toContain('v2')
+  })
+
+  it('reaches back past a superseded spec to the last version with build notes', () => {
+    // devseven: v1 built, v2 authored and superseded (no notes/v2.md), v3 the
+    // current one. Slicing on `spec.version - 1` would start at v2 and drop
+    // what the friend said about the weekly average — half the conversation
+    // v3's spec.md actually covers, in neither file, with nothing on disk
+    // saying so. The boundary is the notes file, exactly as it is for
+    // lib/chat/announce.ts's announceTarget.
+    const out = exportSpec(db, 'devseven', usersDir)
+    expect(out.conversation_md).toContain('THE WEEKLY AVERAGE COFFEE PALACE TEST')
+    expect(out.conversation_md).toContain('AND DROP THAT PANEL COFFEE PALACE TEST')
+    // Still exclusive at the built boundary: what was said BEFORE v1 shipped
+    // belongs to v1's own slice.
+    expect(out.conversation_md).not.toContain('BEFORE THE BUILD COFFEE PALACE TEST')
+    expect(out.conversation_md).toContain('v3')
+  })
+
+  it('takes the whole conversation when no version has ever been built', () => {
+    // Same account, same three specs, pointed at a users/ tree with no notes
+    // files in it: nothing has shipped, so this is a first build and every
+    // row belongs to it — including the one before v1.
+    const out = exportSpec(db, 'devseven', join(dir, 'no-builds'))
+    expect(out.conversation_md).toContain('BEFORE THE BUILD COFFEE PALACE TEST')
+    expect(out.conversation_md).toContain('THE WEEKLY AVERAGE COFFEE PALACE TEST')
   })
 
   it('says so, rather than emitting nothing, when a version has no conversation rows', () => {

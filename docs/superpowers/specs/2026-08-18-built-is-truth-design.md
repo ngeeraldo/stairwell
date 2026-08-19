@@ -393,6 +393,21 @@ oldest first, where `prev` is the spec row one version below (absent for a
 first spec, which takes everything up to `spec.at`). One block per row: the
 role and the row's ISO timestamp as a heading, then the body verbatim.
 
+**Resolved in plan 3's final review: `prev` is the last BUILT version, not the
+row one version below.** The paragraph above disagreed with §7's own
+superseded-spec rule. `spec.md` is a change against `current.md`, and
+`current.md` describes what was last BUILT — so with v2 built, v3 superseded
+and v4 pulled, `spec.md` covers v2 -> v4 while a version-1-below slice covered
+only v3 -> v4. Everything the friend said before v3 would then be in neither
+file, and §5.0.1 dropped `background` on the explicit promise that exactly
+that residue survives here. `prev` is therefore the newest version with a
+`notes/v<n>.md` on disk — the same marker `announceTarget` keys off, for the
+same reason: a spec existing proves someone asked for it, never that it was
+built. No notes file anywhere means nothing has shipped, which is a first
+build and takes everything up to `spec.at`. `conversationRows`
+(`lib/spec/conversation.ts`) stays pure and filesystem-free — it is handed the
+boundary row; `scripts/export-spec.ts` is what looks on disk.
+
 ---
 
 ## 6. The agent — `agent-v6.md`

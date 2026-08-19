@@ -13,27 +13,46 @@ import type { TranscriptRow } from '@/lib/db/appendOnly'
 import type { SpecRecord } from '@/lib/db/specs'
 
 /**
- * The transcript rows belonging to one spec version.
+ * The transcript rows behind one spec version.
  *
- * `prev.at < at <= spec.at`. Exclusive at the bottom so a row written in the
- * same millisecond as the previous spec belongs to that spec's slice and not
- * to two of them; inclusive at the top because the rows that produced a spec
- * include the one the agent wrote just before calling the tool.
+ * `builtBase.at < at <= spec.at`. Exclusive at the bottom so a row written in
+ * the same millisecond as the boundary spec belongs to that spec's slice and
+ * not to two of them; inclusive at the top because the rows that produced a
+ * spec include the one the agent wrote just before calling the tool.
  *
- * A first version has no predecessor and takes everything up to its own
- * timestamp.
+ * `builtBase` IS THE LAST BUILT VERSION, not the row one version below.
+ * A spec is a change written against `users/<slug>/current.md`, and
+ * `current.md` describes what was last BUILT — so the conversation beside it
+ * has to reach back to the same place the spec's own base does. With nothing
+ * to confirm, a friend can author two specs before either is built (design
+ * §7): v3 asks for a weekly average, v4 also drops a panel, the builder
+ * builds v4 and v3 is superseded, never getting a `notes/v<n>.md`. Slicing at
+ * v3 would hand the builder a `spec.md` covering v2 -> v4 beside a
+ * `conversation.md` covering only v3 -> v4, and design §5.0.1 dropped the
+ * spec's `background` field on the explicit promise that the residue about
+ * the PERSON survives as raw transcript here. Half of it would be in neither
+ * file, with nothing on disk saying so.
  *
- * `specs` is passed in rather than re-read: readSpecs derives `version` from
- * ROW POSITION, and a second derivation could disagree with the first
- * (lib/db/specs.ts).
+ * `undefined` means NOTHING HAS BEEN BUILT YET — a first build — and takes
+ * everything up to `spec.at`, which is already what a first spec does.
+ *
+ * PURE AND FILESYSTEM-FREE ON PURPOSE. "Was this version built?" is answered
+ * by `notes/v<n>.md` existing on disk (`lib/chat/announce.ts`'s
+ * `announceTarget` uses the same marker, and its comment says why: a spec
+ * existing proves someone asked for it, never that it was built). That lookup
+ * belongs to the caller — `scripts/export-spec.ts` — so the slice itself stays
+ * directly testable with plain data.
+ *
+ * The boundary is passed in rather than re-derived here for the same reason it
+ * used to take the whole list: readSpecs derives `version` from ROW POSITION,
+ * and a second derivation could disagree with the first (lib/db/specs.ts).
  */
 export function conversationRows(
   rows: TranscriptRow[],
   spec: SpecRecord,
-  specs: SpecRecord[],
+  builtBase: SpecRecord | undefined,
 ): TranscriptRow[] {
-  const previous = specs.find((s) => s.version === spec.version - 1)
-  const after = previous?.at ?? Number.NEGATIVE_INFINITY
+  const after = builtBase?.at ?? Number.NEGATIVE_INFINITY
   return rows
     .filter((r) => r.at > after && r.at <= spec.at)
     .sort((a, b) => a.at - b.at || a.id - b.id)
@@ -56,11 +75,13 @@ export function renderConversationMarkdown(
   const header =
     `# ${meta.slug} — the conversation behind spec v${meta.version}\n\n` +
     '<!-- Generated from the transcript by scripts/pull-spec.sh.\n' +
+    '     Everything said since the last BUILT version, up to this spec —\n' +
+    '     the same base current.md describes, not the previous spec row.\n' +
     '     Gitignored: this is a raw transcript, not a designed artifact.\n' +
     '     Do not hand-edit: the next pull overwrites this file. -->\n'
 
   if (rows.length === 0) {
-    return `${header}\n_No conversation rows fall between the previous spec and this one._\n`
+    return `${header}\n_No conversation rows fall between the last built version and this spec._\n`
   }
 
   const body = rows

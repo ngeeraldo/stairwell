@@ -34,30 +34,90 @@ const ROWS = [
   row(5, 'user', 'after v2', 250),
 ]
 
+// The superseded case (design §7): four specs, and only v2 was ever BUILT.
+// v3 was authored, never built, and superseded by v4. Newest first again.
+const SUPERSEDED_SPECS = [
+  spec(4, 4, 400),
+  spec(3, 3, 300),
+  spec(2, 2, 200),
+  spec(1, 1, 100),
+]
+const SUPERSEDED_ROWS = [
+  row(1, 'assistant', 'at v2 — the last build', 200),
+  row(2, 'user', 'the weekly average, and why TEST', 250),
+  row(3, 'assistant', 'at v3 — superseded, never built', 300),
+  row(4, 'user', 'also drop that panel TEST', 350),
+  row(5, 'assistant', 'at v4', 400),
+  row(6, 'user', 'after v4', 450),
+]
+
 describe('conversationRows', () => {
   it('takes everything up to a first spec', () => {
-    const got = conversationRows(ROWS, SPECS[1]!, SPECS)
+    // No built base at all — nothing has shipped yet, so the whole
+    // conversation up to the spec belongs to this first build.
+    const got = conversationRows(ROWS, SPECS[1]!, undefined)
     expect(got.map((r) => r.body)).toEqual(['before v1', 'at v1'])
   })
 
-  it('takes only the rows since the previous spec', () => {
-    // The conversation that produced v2 — not the one that produced v1.
-    const got = conversationRows(ROWS, SPECS[0]!, SPECS)
+  it('takes only the rows since the last built version', () => {
+    // The ordinary case, unchanged: every version was built, so the last
+    // built version IS the row one version below. The conversation that
+    // produced v2 — not the one that produced v1.
+    const got = conversationRows(ROWS, SPECS[0]!, SPECS[1]!)
     expect(got.map((r) => r.body)).toEqual(['after v1', 'at v2'])
   })
 
   it('is exclusive at the bottom and inclusive at the top', () => {
-    // A row written in the same millisecond as the previous spec belongs to
+    // A row written in the same millisecond as the boundary spec belongs to
     // that spec's slice, not to this one — otherwise two consecutive pulls
     // both carry it.
-    const got = conversationRows(ROWS, SPECS[0]!, SPECS)
+    const got = conversationRows(ROWS, SPECS[0]!, SPECS[1]!)
     expect(got.some((r) => r.body === 'at v1')).toBe(false)
     expect(got.some((r) => r.body === 'at v2')).toBe(true)
   })
 
   it('returns oldest first', () => {
-    const got = conversationRows(ROWS, SPECS[1]!, SPECS)
+    const got = conversationRows(ROWS, SPECS[1]!, undefined)
     expect(got[0]!.at).toBeLessThan(got[1]!.at)
+  })
+
+  it('reaches back past a SUPERSEDED spec to the last built version', () => {
+    // v3 was authored and never built; v4 supersedes it. spec.md for v4 is a
+    // change against current.md, which still describes v2 — so the
+    // conversation beside it has to reach back to v2 as well, or the residue
+    // about the person that §5.0.1 promised survives only here is in neither
+    // file.
+    const got = conversationRows(SUPERSEDED_ROWS, SUPERSEDED_SPECS[0]!, SUPERSEDED_SPECS[2]!)
+    expect(got.map((r) => r.body)).toEqual([
+      'the weekly average, and why TEST',
+      'at v3 — superseded, never built',
+      'also drop that panel TEST',
+      'at v4',
+    ])
+  })
+
+  it('does not stop at the previous spec ROW when that row was never built', () => {
+    // The defect this boundary exists to prevent, stated as its own
+    // assertion: slicing on spec.version - 1 would start at v3 and drop
+    // everything the friend said before it.
+    const got = conversationRows(SUPERSEDED_ROWS, SUPERSEDED_SPECS[0]!, SUPERSEDED_SPECS[2]!)
+    expect(got.some((r) => r.body === 'the weekly average, and why TEST')).toBe(true)
+    // Still exclusive at the built boundary itself, and still stops at v4.
+    expect(got.some((r) => r.body === 'at v2 — the last build')).toBe(false)
+    expect(got.some((r) => r.body === 'after v4')).toBe(false)
+  })
+
+  it('takes everything up to the spec when nothing has been built yet', () => {
+    // Two specs authored, neither built. That is a first build, whatever the
+    // version number says.
+    const got = conversationRows(SUPERSEDED_ROWS, SUPERSEDED_SPECS[0]!, undefined)
+    expect(got.map((r) => r.body)).toEqual([
+      'at v2 — the last build',
+      'the weekly average, and why TEST',
+      'at v3 — superseded, never built',
+      'also drop that panel TEST',
+      'at v4',
+    ])
   })
 })
 
@@ -106,6 +166,8 @@ describe('renderConversationMarkdown', () => {
       '# devtwo — the conversation behind spec v2\n' +
         '\n' +
         '<!-- Generated from the transcript by scripts/pull-spec.sh.\n' +
+        '     Everything said since the last BUILT version, up to this spec —\n' +
+        '     the same base current.md describes, not the previous spec row.\n' +
         '     Gitignored: this is a raw transcript, not a designed artifact.\n' +
         '     Do not hand-edit: the next pull overwrites this file. -->\n' +
         '\n' +
@@ -120,6 +182,18 @@ describe('renderConversationMarkdown', () => {
   })
 
   it('says so when there is nothing in the slice', () => {
-    expect(renderConversationMarkdown([], META)).toContain('No conversation')
+    const md = renderConversationMarkdown([], META)
+    expect(md).toContain('No conversation')
+    // Names the boundary the slice actually used. This repo has no gate that
+    // catches a comment going false, and this sentence is the only thing on
+    // disk telling a builder what the empty file means.
+    expect(md).toContain('last built version')
+  })
+
+  it('says in the header that the slice runs from the last BUILT version', () => {
+    // The header is the only place the file explains its own bounds, and a
+    // stale one would describe the exact defect this boundary fixes.
+    const md = renderConversationMarkdown([ROWS[2]!], META)
+    expect(md).toContain('last BUILT version')
   })
 })
