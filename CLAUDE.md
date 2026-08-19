@@ -67,6 +67,16 @@ architectural changes; do not relitigate decided items).
   spec row, so an edited file would silently change what an already-written
   hash points at. This is a data-safety property, not a style preference
   (unified-loop ledger D13).
+  **Boundary, not a loosening: a prompt file may still be edited in place
+  before the commit that INTRODUCES it reaches `main`.** The rule protects a
+  `prompt_sha` some stored row already points at, and no such row can exist
+  for a file that has never been on `main` — the droplet only ever pulls
+  `main`, and nothing else stamps a hash. `agent-v6.md` was created and edited
+  in the same unmerged branch for exactly this reason: created, then a wording
+  fix landed in a later commit on that same branch, before either commit ever
+  reached `main`. Once a branch merges, the file is exactly as pinned as any
+  other — this boundary describes a window before that point, not a standing
+  exception.
 
 ## Schema & module rules
 - migrations + seed.py + tests/ update in the SAME commit. No drift.
@@ -113,6 +123,37 @@ architectural changes; do not relitigate decided items).
     every note parses) and deliberately not its presence: the sweep cannot know
     which versions were built. Presence is enforced by `announce-deploy.ts`,
     which refuses to announce v`n` without `notes/v<n>.md`.
+- `users/<slug>/current.md` is required on every BUILT folder — not the six
+  above, its own condition, since a scaffolded or pulled-but-unbuilt folder has
+  no current shape to describe. `tests/users/conventions.test.ts` sweeps it
+  the same way it sweeps `notes/`: it must exist, and its frontmatter
+  `version` must equal the newest `notes/v<n>.md` (`0` when there are none).
+  It is the ONLY artifact under `users/<slug>/` that the RUNNING APP puts in
+  front of a model — `app/api/chat/route.ts` reads it, `lib/chat/turn.ts`'s
+  `CURRENT_STATE_BLOCK` labels and appends its body to the system prompt, and
+  `platform/prompts/agent-v6.md` is what tells the agent to trust it over the
+  spec. "The running app" is doing the work in that sentence: `notes/v<n>.md`
+  reaches a model too, just not from the app — `scripts/announce-deploy.ts`
+  feeds it to `draftAnnouncement` when drafting an announcement. That is an
+  operator script run by hand, not a request path a friend's session ever
+  triggers, which is the distinction this bullet is naming.
+  **Overwritten every build**, unlike `notes/` and unlike a prompt version:
+  those are pinned because something permanent already points at them — an
+  announcement, a `prompt_sha` on a stored row — and editing one would change
+  what that permanent thing was based on. Nothing permanent points at
+  `current.md`. Replacing it is instead what keeps it USABLE: an agent that
+  has to replay a changelog to work out what currently exists is back to
+  guessing, which is the exact failure this file exists to remove.
+  Five level-2 sections, in order, parser-enforced by
+  `lib/build/currentState.ts` (`## What this is for`, `## Screens`,
+  `## Panels`, `## What can be entered`, `## Deliberately not included`) — an
+  unknown, misspelled, duplicated or missing heading throws.
+  `## Deliberately not included` is the only place a refusal survives;
+  leaving it empty is how the agent proposes the same declined thing again
+  next month.
+  Same no-user-values bound as `notes/`: describe shape, never a row, a
+  value, or a merchant. `version: 0` means "predates the spec loop" —
+  `devone` and `devtwo` are hand-written and never had a spec version.
 - `spec.md` and `mockup.html` are written by `./scripts/pull-spec.sh <slug>`
   and are absent until a spec is confirmed. `synthetic.db` is generated and
   gitignored. `<slug>.db` arrived in step 6a and is described next.
@@ -445,9 +486,11 @@ architectural changes; do not relitigate decided items).
 - **A dependency is judged by what it touches, not by how many friends want
   it.** At pilot scale one friend's panel justifies a repo-wide package: Next
   code-splits per route and `lib/dashboard/registry.ts` loads each dashboard
-  through a dynamic `import()`, so a charting library only `run4` imports ships
-  in `run4`'s chunk and nobody else's page carries it. Three charting libraries
-  across four friends is an accepted outcome, not drift.
+  through a dynamic `import()`, so a charting library only one friend's
+  dashboard imports ships in that dashboard's own chunk and nobody else's page
+  carries it — true of whichever folder does the importing, so the point does
+  not depend on naming one. Three charting libraries across four friends is an
+  accepted outcome, not drift.
   **Render-only** (charts, formatting, display) — add it.
   **Server-touching** (reads env, the filesystem, or the network) — prefer
   writing the call ourselves; every dependency runs in the same process as the

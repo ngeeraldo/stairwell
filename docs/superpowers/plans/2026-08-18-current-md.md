@@ -296,14 +296,22 @@ export function parseCurrentState(text: string): CurrentState {
 }
 
 /**
- * USERS_DIR, matching lib/build/notes.ts — it exists so tests can point at a
- * temp tree, and its default IS the correct production value. Duplicated
- * rather than imported from lib/db/userDb.ts for the reason that file's own
- * comment gives: userDb.ts pulls in a native SQLite binding at module top,
- * and this module is pure text parsing.
+ * USERS_DIR, matching lib/build/notes.ts:176 exactly — an explicit argument
+ * wins, then the env var, then the default, which IS the correct production
+ * value.
+ *
+ * The env arm is not optional. USERS_DIR is a live seam: several route tests
+ * (tests/auth/routes.test.ts, tests/invite/registerRoute.test.ts) point the
+ * whole app at a temp users tree, and app/api/chat/route.ts reads this module.
+ * Omitting it would make this file read the real users/ while every other
+ * module read the temp one.
+ *
+ * Duplicated rather than imported from lib/db/userDb.ts for the reason that
+ * file's own comment gives: userDb.ts pulls in a native SQLite binding at
+ * module top, and this module is pure text parsing.
  */
 function usersRoot(override?: string): string {
-  return override ?? resolve(process.cwd(), 'users')
+  return override ?? process.env.USERS_DIR ?? resolve(process.cwd(), 'users')
 }
 
 export function currentStatePath(slug: string, usersDir?: string): string {
@@ -577,8 +585,11 @@ One screen, `morning`, titled "Daily walk". It carries all four panels below.
 shown beneath. When the day is not yet marked it offers the tap control; once
 marked it says so instead of offering the control again.
 
-**Current streak.** Consecutive days ending today, with the label agreeing in
-number — "day in a row" at one, "days in a row" otherwise.
+**Current streak.** Consecutive days walked, ending today or yesterday. The
+one-day grace is deliberate and comes from the confirmed spec: a streak that
+broke at 00:01 would punish someone for a day that has not happened yet, so
+today being unmarked does not reset it. The label agrees in number — "day in a
+row" at one, "days in a row" otherwise.
 
 **Last 30 days.** A percentage, with the count it came from underneath.
 
@@ -654,7 +665,11 @@ git commit -m "Backfill current.md for devone and devtwo at version 0"
 
 **Interfaces:**
 - Consumes: `readCurrentState` (Task 1), the two backfilled files (Task 3), the deletions (Task 2).
-- Produces: a sweep that fails any BUILT folder with no `current.md`.
+- Produces: a sweep that fails any BUILT folder with no `current.md`, or whose
+  `current.md` does not name the newest version in `notes/`.
+
+`readdirSync` and `join` are already imported by this file (:11 and its path
+import). No new imports beyond `readCurrentState`.
 
 **Gated on `built`, not `complete`.** A scaffolded folder has no shape and nobody has designed anything, so there is nothing true to write — the same reasoning that ships a scaffold with no `001_*.sql`. The scaffold therefore does NOT create `current.md`; the template is copied by the builder when the first version is built, which is the first moment its content can be true.
 
@@ -673,6 +688,30 @@ Add to `tests/users/conventions.test.ts`, inside the per-slug `describe` block, 
       expect(state, `${slug} is built but has no current.md`).not.toBeNull()
       expect(state!.slug).toBe(slug)
     })
+
+    whenBuilt('current.md names the newest version that was built', () => {
+      // THE STALENESS GATE, and it needs no database — notes/v<n>.md exists
+      // on disk for exactly the versions that were built, so the newest note
+      // is what current.md must describe.
+      //
+      // This matters because nothing else catches it: `*.md` is exempt from
+      // Gate B (.githooks/pre-commit:152), so a build that edits dashboard.tsx
+      // and forgets to rewrite current.md commits green. Without this check
+      // the file rots into a description of some earlier version, which is the
+      // exact failure the artifact exists to prevent, just slower.
+      const versions = readdirSync(join(dir, 'notes'))
+        .map((f) => /^v(\d+)\.md$/.exec(f))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => Number(m[1]))
+      const state = readCurrentState(slug, USERS)!
+      // No notes at all means the folder predates the spec loop — devone and
+      // devtwo, hand-written, never had a version. Version 0 says so.
+      const expected = versions.length === 0 ? 0 : Math.max(...versions)
+      expect(
+        state.version,
+        `${slug}/current.md says version ${state.version}, newest note is v${expected}`,
+      ).toBe(expected)
+    })
 ```
 
 And add the import at the top of that file:
@@ -684,7 +723,8 @@ import { readCurrentState } from '@/lib/build/currentState'
 - [ ] **Step 2: Run it to verify it passes for the right reason**
 
 Run: `npx vitest run tests/users/conventions.test.ts`
-Expected: PASS — devone and devtwo both have the file from Task 3.
+Expected: PASS — devone and devtwo both have the file from Task 3, and neither
+has any `notes/v<n>.md`, so both are expected at version 0 and both say 0.
 
 Now prove the check has teeth:
 
@@ -698,7 +738,23 @@ Expected: FAIL with "devtwo is built but has no current.md".
 mv /tmp/devtwo-current.md users/devtwo/current.md
 npx vitest run tests/users/conventions.test.ts
 ```
-Expected: PASS again. Do not skip this — a presence check that passes because nothing was ever absent is not a check.
+Expected: PASS again. Do not skip this — a presence check that passes because
+nothing was ever absent is not a check.
+
+Now prove the staleness check the same way:
+
+```bash
+sed -i '' 's/^version: 0$/version: 4/' users/devtwo/current.md
+npx vitest run tests/users/conventions.test.ts
+```
+Expected: FAIL with "devtwo/current.md says version 4, newest note is v0".
+
+```bash
+sed -i '' 's/^version: 4$/version: 0/' users/devtwo/current.md
+npx vitest run tests/users/conventions.test.ts
+```
+Expected: PASS. This check is the only thing standing between a build and a
+silently stale description, so it gets the same treatment.
 
 - [ ] **Step 3: Write the template**
 
@@ -722,6 +778,13 @@ not how they are drawn.
 Each panel: what it shows, how it behaves, and the edges that were decided.
 The edges are the part that matters and the part a spec never has — where a
 count stops, which days are blank rather than zero, what an empty state says.
+
+WRITE THIS FROM queries.ts, NOT FROM dashboard.tsx. A panel's real behaviour
+usually lives in its query, not in the component that renders it: a streak with
+a one-day grace period, a total that counts only logged days, a window that
+starts on Monday. The component shows you a number; the query is what decides
+what the number MEANS. Describing only what you can see rendered is how this
+file ends up confidently wrong.
 
 ## What can be entered
 Every control that writes, and what it writes. "Nothing" is a real answer for
@@ -965,43 +1028,152 @@ system prompt and a transcript — and reconstructed one from conversation."
 
 ---
 
-### Task 6: Documentation
+### Task 6: The runbook
 
 **Files:**
-- Modify: `CLAUDE.md` (Dashboard folder conventions; Sacred data)
-- Modify: `docs/dashboard-build-rules.md`
-- Modify: `docs/runbook.md` (the build step)
+- Modify: `docs/runbook.md` (7.5, 7.6, the standing-rules table, step 10)
 
 **Interfaces:**
 - Consumes: everything above.
 - Produces: nothing code depends on.
 
-Docs are exempt from Gate B by path, so this task has no test. It is a separate task because a reviewer can reject the wording while approving the code.
+Its own task because the runbook is the thing Nico actually follows at a
+terminal, and a wrong line here costs a build. Docs are exempt from Gate B by
+path (`.githooks/pre-commit:152`), so there is no test — the verification is
+reading it against what the code now does.
+
+Most of the runbook is untouched. Steps 0–6, 8 and 9 do not change in this
+plan: the spec pull, the mockup and the announcement are all plan 2's business.
+
+- [ ] **Step 1: Rewrite 7.5 to cover both artifacts**
+
+`### 7.5 Write the build notes` becomes:
+
+```markdown
+### 7.5 Write the build notes, and rewrite `current.md`
+
+Two files, and they answer different questions. Write both before you ship.
+
+**`users/$FRIEND/notes/v$V.md`** — what shipped in THIS version. Added, never
+edited: step 9 speaks from it, and editing one changes what an already-sent,
+permanent announcement was based on. `notes/README.md` in their folder holds
+the template and says which sections the friend sees.
+
+**`users/$FRIEND/current.md`** — what the dashboard IS now, after this build.
+**Overwritten every time**, because it is the agent's whole picture of what
+exists and a changelog is not a picture. If the file is not there yet:
+
+```bash
+sed 's/__SLUG__/'"$FRIEND"'/g' platform/templates/dashboard/current.md.tmpl \
+  > users/$FRIEND/current.md
+```
+
+Then edit it to describe what you actually built, and set `version: $V`.
+Write the panel descriptions from `queries.ts`, not from `dashboard.tsx` — a
+panel's real behaviour usually lives in its query (a grace day, a window, what
+counts as a logged day), and a description written from the component alone
+describes a simpler dashboard than the one that shipped.
+`tests/users/conventions.test.ts` fails if it is missing, or if its version is
+not the newest `notes/v<n>.md` — that check is what stops it rotting, since
+`*.md` is exempt from Gate B and a commit will not notice.
+
+The section that earns the most care is `## Deliberately not included`. It is
+the only place a refusal survives. Anything the friend considered and turned
+down goes there, or the agent proposes it again next month.
+
+Never put their data in either file — both are committed to the repo
+(build-rules §2).
+```
+
+- [ ] **Step 2: Add one line to 7.6**
+
+In `### 7.6 Commit the build`, after the sentence about Gate B and Gate C, add:
+
+```markdown
+`current.md` and the notes are `*.md`, which Gate B exempts — they will not
+force a test, and they will not be noticed if you forget them. The sweep in
+`npx vitest run tests` is what catches a missing or stale `current.md`, so run
+it before you reach step 8.
+```
+
+- [ ] **Step 3: Add a standing rule**
+
+In the `## Standing rules` table, immediately after the existing
+`Write notes/v<n>.md before announcing` row — the two belong together, and the
+contrast between them is the point:
+
+```markdown
+| Rewrite `current.md` on every build, and never let it accumulate | It is what the chat agent reads to know what exists. A note is added and never edited because an announcement was based on it; `current.md` is the opposite and must be REPLACED, because an agent that has to replay a changelog to work out the current state is back to guessing. |
+```
+
+- [ ] **Step 4: Correct step 10**
+
+`## Step 10 — The next version` currently says step 7 is "the same work as the
+first time — including a migration". Add `current.md` to what the second run
+redoes, so a Flow B build does not skip it:
+
+```markdown
+Step 7 is the same work as the first time — including a migration, which at v2
+is the next number rather than `001` (step 7.2), and including a rewritten
+`current.md` (step 7.5). The notes are a new file; `current.md` is the same
+file, replaced.
+```
+
+- [ ] **Step 5: Read it end to end and commit**
+
+Read steps 7 and 10 straight through as if following them for the first time.
+The failure this catches is a sequence that no longer flows — a command
+referring to a file the previous step no longer creates.
+
+```bash
+git add docs/runbook.md
+git commit -m "Runbook: write current.md at 7.5, and rewrite it every build"
+```
+
+---
+
+### Task 7: CLAUDE.md and the build rules
+
+**Files:**
+- Modify: `CLAUDE.md` (Dashboard folder conventions)
+- Modify: `docs/dashboard-build-rules.md`
+
+**Interfaces:**
+- Consumes: everything above.
+- Produces: nothing code depends on.
 
 - [ ] **Step 1: CLAUDE.md**
 
-In **Dashboard folder conventions**, after the `notes/` bullet, add a `current.md` bullet stating: it is required on every BUILT folder and swept by `tests/users/conventions.test.ts`; it is **overwritten every build**, unlike `notes/` and unlike prompts, and say why — nothing permanent points at it, and a changelog replayed forward is the failure it exists to remove; five required sections, parser-enforced by `lib/build/currentState.ts`; `## Deliberately not included` is the only carrier of a refusal; same no-user-values bound as notes; `version: 0` means predates the spec loop.
+In **Dashboard folder conventions**, after the `notes/` bullet, add a
+`current.md` bullet covering: required on every BUILT folder and swept by
+`tests/users/conventions.test.ts`, including a check that its version matches
+the newest note; **overwritten every build**, unlike `notes/` and unlike
+prompts, with the reason stated — nothing permanent points at it, and a
+changelog replayed forward is the failure it exists to remove; five required
+sections, parser-enforced by `lib/build/currentState.ts`;
+`## Deliberately not included` is the only carrier of a refusal; the same
+no-user-values bound notes carry; `version: 0` means predates the spec loop.
 
-Update the folder-entry list: it currently says six entries are required. `current.md` is required for BUILT folders only, so state it as its own condition rather than adding it to that count.
+That section currently says six entries are required. `current.md` is required
+for BUILT folders only, so state it as its own condition rather than changing
+that count.
+
+Also note, in the same bullet, that the chat agent reads this file — it is the
+only artifact in `users/<slug>/` that the running app puts in front of a model.
 
 - [ ] **Step 2: docs/dashboard-build-rules.md**
 
-Add `current.md` to the artifact index with a citation on each line, matching that file's existing form. It is an index, not a second copy — where it disagrees with CLAUDE.md or the design doc, the source wins. Amend the four-folder-states list: `built` now additionally means "has a current.md".
+Add `current.md` to the artifact index in that file's existing form, one line
+per rule with a citation on each. It is an index, not a second copy — where it
+disagrees with CLAUDE.md or the design doc, the source wins.
 
-- [ ] **Step 3: docs/runbook.md**
+Amend the four-folder-states list: `built` now additionally means "has a
+`current.md` naming the newest built version".
 
-In the build step (step 7), add writing `current.md` to what a build produces, beside `notes/v<n>.md`, with the copy-the-template command spelled out rather than described:
-
-```bash
-sed 's/__SLUG__/'"$FRIEND"'/g' platform/templates/dashboard/current.md.tmpl > users/$FRIEND/current.md
-```
-
-State plainly that it is overwritten on every build and that the version is bumped to the spec version just built.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add CLAUDE.md docs/dashboard-build-rules.md docs/runbook.md
+git add CLAUDE.md docs/dashboard-build-rules.md
 git commit -m "Document current.md: required when built, overwritten every build"
 ```
 
@@ -1014,6 +1186,7 @@ git commit -m "Document current.md: required when built, overwritten every build
 - `npx next build` succeeds (Gate D runs it on push regardless).
 - `users/` holds only `devone` and `devtwo`, both with a parsing `current.md`.
 - A chat turn for `devtwo` puts that file's body in the system prompt; a turn for an account with no dashboard puts no block there at all.
+- The sweep fails when a `current.md` is removed, and fails when its version does not match the newest `notes/v<n>.md` — both proved by breaking them on purpose, not by assuming.
 - `npm run shots` still captures every screen — the deleted folders were not pinned by `screenshots/screens.ts`, but run it before the final commit, because that is the gate that sees what tests cannot.
 
 ## Not in this plan

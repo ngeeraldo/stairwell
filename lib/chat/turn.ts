@@ -22,6 +22,19 @@ import {
 } from './client'
 import type { AuthorInput, Proposal } from '@/lib/spec/author'
 
+/**
+ * What the block of current.md is introduced as.
+ *
+ * A LABEL, not a summary — the body is the builder's own prose and is handed
+ * over untouched. Omitted entirely when there is no dashboard: an empty
+ * labelled block would tell the model a dashboard exists and is blank, which
+ * is a different and wrong thing from having none.
+ */
+export const CURRENT_STATE_BLOCK =
+  "This is their dashboard as it exists right now, written by the builder " +
+  'after the last build. It is the truth about what is deployed — trust it ' +
+  'over anything earlier in this conversation.'
+
 export type TurnDeps = {
   db: PlatformDb
   client: ChatClient
@@ -114,6 +127,15 @@ export type TurnInput = {
    * saved.
    */
   onSaved?: () => void
+  /**
+   * The body of users/<slug>/current.md, or null when the account has no
+   * built dashboard.
+   *
+   * Read by the ROUTE, not here: TurnInput carries an accountId and not a
+   * slug, and the route already knows the user. Passing the text keeps this
+   * module free of filesystem access and lets a test set it directly.
+   */
+  currentState: string | null
 }
 
 /**
@@ -267,9 +289,17 @@ export async function runTurn(
     ? `${system}\n\n${OPENER_ALREADY_SENT}`
     : system
 
+  // Omitted entirely when there is no dashboard: an empty labelled block
+  // would tell the model a dashboard exists and is blank, which is a
+  // different and wrong thing from having none.
+  const systemWithState =
+    input.currentState === null
+      ? systemWithOpener
+      : `${systemWithOpener}\n\n${CURRENT_STATE_BLOCK}\n\n${input.currentState}`
+
   const merged = applyConfirmationNote(
     toMessages(rows),
-    systemWithOpener,
+    systemWithState,
     confirmationNote(readConfirmations(db, input.accountId), lastAssistantAt),
     CHAT_MODEL,
     input.body === null,

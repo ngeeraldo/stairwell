@@ -24,6 +24,14 @@ import { dayKey } from '@/lib/time/dayKey'
  * in its own route, where they can be read next to the table they defend,
  * rather than in a shared handler that grows a branch per friend.
  *
+ * ORPHANED, DELIBERATELY KEPT. users/run8/ was deleted on the simplify-loop
+ * branch, so nothing routes here any more and the "run8's confirmed answer"
+ * comments below now cite a folder that no longer exists. It stays because it
+ * is the repo's only worked example of the four ordered checks below applied
+ * to a WRITE (walk/ is the read-side sibling) — deleting it would leave the
+ * next per-friend write route with a rule to follow and no worked instance of
+ * following it.
+ *
  * The order of the checks below is the security property, and is walk/'s
  * order unchanged:
  *

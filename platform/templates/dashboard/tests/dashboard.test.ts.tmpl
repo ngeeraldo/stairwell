@@ -37,9 +37,11 @@ describe('users/__SLUG__', () => {
     // task 23), so a scaffold must export one even before a spec confirms
     // real ids/titles — this pins dashboard.tsx's own placeholder export.
     // Once ./scripts/pull-spec.sh writes a real spec.md, replace this with
-    // the id/title from its own `## Screens` section instead, the way
-    // users/run3/dashboard.tsx and users/run4/dashboard.tsx do — never a
-    // second, invented source.
+    // the id/title from its own `## Screens` section instead — spec.md is
+    // the only legitimate source for a real screen id/title; never invent a
+    // second one. (Not users/devone or users/devtwo: both predate the spec
+    // loop and say so in their own comments, so pointing at them here would
+    // teach the opposite of this rule.)
     expect(screens).toEqual([{ id: 'morning', title: 'Morning', order: 1 }])
   })
 
