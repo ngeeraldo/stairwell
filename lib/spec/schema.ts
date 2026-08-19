@@ -103,9 +103,13 @@ export type SpecDraft = {
  * nothing", which is a different and impossible claim.
  *
  * It rides INSIDE payload, flat beside the version's own fields, because
- * readStoredSpec discriminates on a top-level `screens` array and draftFrom
- * picks named keys. A `{ patch, version }` wrapper would break the
- * discriminator and every consumer with it. No new column on `specs`.
+ * readStoredSpec identifies a row of THIS shape by a top-level `screens`
+ * array and draftFrom picks named keys. (That check is second now, not
+ * first: readStoredSpec tests the change shape's explicit `shape` tag ahead
+ * of it — see lib/spec/stored.ts. No row of this shape carries that tag, so
+ * the `screens` test is still what decides every one of them.) A
+ * `{ patch, version }` wrapper would break the discriminator and every
+ * consumer with it. No new column on `specs`.
  */
 export type SpecVersion = SpecDraft & {
   based_on_version: number | null

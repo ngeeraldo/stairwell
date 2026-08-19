@@ -61,10 +61,16 @@ function compareToBase(
   if (stored.kind === 'legacy') {
     return { kind: 'note', base, note: 'first structured version' }
   }
-  // A change-shaped base cannot happen yet — nothing writes that shape until
-  // authoring switches over — but the union has to be exhausted here the
-  // same way it is everywhere else that reads a StoredSpec. A change spec IS
-  // a diff, so there is structurally nothing on it to diff AGAINST.
+  // A change-shaped base is unreachable, and the reason is ordering rather
+  // than "nothing writes that shape" (something does now — it is the only
+  // shape authored). This function is only ever called with a VERSION-shaped
+  // row, and it looks at a row BELOW it. Every version-shaped row was written
+  // before change-only authoring existed, and nothing has authored a
+  // whole-surface row since, so no row beneath a version row can be
+  // change-shaped. The union is exhausted anyway, the same way it is
+  // everywhere else that reads a StoredSpec: an unreachable arm that is
+  // spelled out cannot become a silent fallthrough later. A change spec IS a
+  // diff, so there is structurally nothing on it to diff AGAINST.
   if (stored.kind === 'change') {
     return {
       kind: 'note',

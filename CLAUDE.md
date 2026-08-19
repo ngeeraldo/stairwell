@@ -230,11 +230,23 @@ architectural changes; do not relitigate decided items).
   `currentVersionBlock` are gone, along with the eight patch ops as something
   a model emits. Their READERS are FROZEN, not removed, because `specs`
   rejects UPDATE and a row written in any past shape must keep parsing
-  forever: `lib/spec/schema.ts`, ALL of `lib/spec/fields.ts` (a stored
-  whole-surface row is re-validated through it by `parseSpecVersion`),
-  `lib/spec/patch.ts`'s `parseOp` and `OP_NAMES` (stored rows' `ops` key),
-  `lib/spec/diff.ts` and `lib/spec/legacy.ts`. Nothing authors `ops` any
-  more; a stored row that has one keeps it and `parseOp` keeps reading it.
+  forever: `lib/spec/schema.ts`'s whole-surface TYPES (`Screen`, `Panel`,
+  `ValueSpec`, `EntryWidget`, `SpecDraft`, `SpecVersion`),
+  `lib/spec/fields.ts`'s whole-surface PARSERS (a stored whole-surface row is
+  re-validated through them by `parseSpecVersion`), `lib/spec/patch.ts`'s
+  `parseOp` and `OP_NAMES` (stored rows' `ops` key), `lib/spec/diff.ts` and
+  `lib/spec/legacy.ts`. Nothing authors `ops` any more; a stored row that has
+  one keeps it and `parseOp` keeps reading it.
+  **Frozen is not untouchable, and two live edges are load-bearing.**
+  `lib/spec/fields.ts` exports validation HELPERS — `record`, `text`,
+  `textList`, `arrayField`, `oneOf`, `nonEmptyArray` and `requirement` — that
+  `lib/spec/change.ts` imports and MUST keep importing: `requirement` in
+  particular, since two implementations of the `data_requirements` parser
+  would be two answers to "is this status valid". `lib/spec/schema.ts`'s
+  `SpecShapeError`, `DataRequirement` and `REQUIREMENT_STATUSES` are live
+  shared vocabulary for the same reason — an error class and a status enum are
+  not a payload shape. Each file's own header names its edge; read it before
+  concluding you must write a second copy.
 - `specs.mockup_html` is written as `''` on every row now — `insertSpec` still
   fills a NOT NULL column, but nothing composes or serves mockup HTML any
   more (mockup-loop removal). `spec_screen_mockups` and `spec_confirmations`

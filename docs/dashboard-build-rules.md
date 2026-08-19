@@ -173,8 +173,12 @@ resolves any of them itself** — CLAUDE.md.
   page after `dashboard_open` was already written —
   `platform/templates/dashboard/dashboard.tsx.tmpl`.
 - **Screens are declared, and the platform draws the tabs — never the
-  dashboard.** `DashboardModule.screens` is required, its `id`/`title`/`order`
-  mirror the spec's own `Screen` type, `?screen=` resolves against it before a
+  dashboard.** `DashboardModule.screens` is required and its
+  `id`/`title`/`order` mirror `lib/spec/schema.ts`'s `Screen` — a FROZEN
+  reader type now, since a change-only spec carries no ids at all, so the
+  `id` and `order` are the builder's to choose and `current.md`'s
+  `## Screens` is where they are recorded (see "What that looks like" below).
+  `?screen=` resolves against the declared list before a
   dashboard ever sees it, and this is exactly why the point above (no nested
   function component) matters: a dashboard's own `<Tabs>` would be one —
   CLAUDE.md > Dashboard folder conventions, `lib/dashboard/contract.ts`.
