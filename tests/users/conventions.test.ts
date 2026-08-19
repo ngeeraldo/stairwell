@@ -186,6 +186,25 @@ describe('isFreeText — where a real person’s data could hide', () => {
   })
 })
 
+describe('SCREEN_ID_PATTERN is not SLUG_PATTERN', () => {
+  // Held here explicitly since users/run4/ was deleted. Its screens export
+  // used `walk_now`, and it was the only folder in the repo where the two
+  // patterns disagreed — the sweep below runs over live folders, so with
+  // every remaining folder on `morning` (which passes both) it can no longer
+  // tell them apart. A deleted fixture must not take a real assertion with
+  // it: this states directly what the sweep used to prove incidentally.
+  it('accepts an underscore in a screen id, which a slug may not carry', () => {
+    expect(SCREEN_ID_PATTERN.test('walk_now')).toBe(true)
+    expect(SLUG_PATTERN.test('walk_now')).toBe(false)
+  })
+
+  it('still rejects what neither pattern allows', () => {
+    expect(SCREEN_ID_PATTERN.test('Walk Now')).toBe(false)
+    expect(SCREEN_ID_PATTERN.test('')).toBe(false)
+    expect(SCREEN_ID_PATTERN.test('_leading')).toBe(false)
+  })
+})
+
 describe('users/ folder conventions', () => {
   // Without this the it.each below is vacuous on an empty users/ tree: zero
   // cases, zero failures, a green suite that checked nothing. devone exists,
@@ -433,20 +452,18 @@ describe('users/ folder conventions', () => {
     // comes from dashboard.tsx, one of the five REQUIRED entries that make a
     // folder `complete`; `whenBuilt` additionally requires `hasShape` (a real
     // .sql migration file), which is about the DATA shape and has no
-    // relationship to a dashboard's screens. Gating on `whenBuilt` skipped
-    // these checks on run4, which has migrations but no numbered .sql file
-    // yet — and run4 is the one folder in the repo whose screens export
-    // (`walk_now`) actually distinguishes SCREEN_ID_PATTERN from
-    // SLUG_PATTERN; every other folder uses `morning`, which passes both.
-    // Fix round 1, finding 1: gating on whenBuilt made the sweep exercise
-    // zero cases where the id-pattern choice mattered.
+    // relationship to a dashboard's screens.
     //
-    // Safe on a freshly scaffolded folder: platform/templates ships
-    // `screens: [{ id: 'morning', title: 'Morning', order: 1 }]`, which
-    // trivially satisfies all four checks. No separate vacuity guard is
-    // needed either — the file's existing "sweeps at least one BUILT
-    // dashboard" guard already proves at least one COMPLETE folder exists
-    // (built implies complete).
+    // The folder this ruling was made for — run4, complete but with no
+    // numbered .sql, and the only one whose screen id (`walk_now`) told
+    // SCREEN_ID_PATTERN and SLUG_PATTERN apart — was deleted on 2026-08-18.
+    // The ruling stands on its own reasoning above. The id-pattern coverage
+    // moved to the SCREEN_ID_PATTERN describe at the top of this
+    // file, which states it directly rather than depending on a fixture
+    // happening to exist. NO FOLDER IS
+    // CURRENTLY IN THE `scaffolded` STATE, so that branch is live but
+    // unexercised — a known gap, accepted rather than papered over with a
+    // permanent fake dashboard under users/.
 
     whenComplete('screens is non-empty', async () => {
       const screens = await loadScreens(slug)
