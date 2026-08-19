@@ -9,6 +9,7 @@ import { createAccount } from '@/lib/auth/accounts'
 import { insertSpec } from '@/lib/db/specs'
 import { SpecShapeError, type SpecVersion } from '@/lib/spec/schema'
 import { type LegacySpecPayload } from '@/lib/spec/legacy'
+import { parseSpecChangeDraft, sealChange } from '@/lib/spec/change'
 import { exportSpec } from '@/scripts/export-spec'
 
 const REPO = resolve(__dirname, '..', '..')
@@ -58,6 +59,26 @@ const CURRENT_PAYLOAD: SpecVersion = {
   data_requirements: [],
   open_questions: [],
 }
+
+// A change-only row. Nothing writes this shape yet (Task 5 switches
+// authoring over), but the export has to be ready the moment something does
+// — same reasoning as CURRENT_PAYLOAD/devfour above, one shape later.
+const CHANGE_PAYLOAD = sealChange(
+  parseSpecChangeDraft({
+    change_summary: 'Added a weekly average TEST.',
+    changes: [
+      {
+        action: 'add',
+        target: 'panel',
+        name: 'Weekly average TEST',
+        description: 'Mean of the last seven logged days TEST.',
+      },
+    ],
+    data_requirements: [],
+    open_questions: [],
+  }),
+  null,
+)
 
 /**
  * Insert a spec row with an arbitrary, possibly-invalid payload string,
@@ -129,6 +150,11 @@ beforeAll(async () => {
     slug: 'devfive',
     role: 'user',
     password: 'TEST-DEV-FIVE',
+  })
+  const devsixId = await createAccount(db, {
+    slug: 'devsix',
+    role: 'user',
+    password: 'TEST-DEV-SIX',
   })
   // 'ghost' is deliberately never created.
 
@@ -224,6 +250,18 @@ beforeAll(async () => {
     payload: payload({ title: 'A newer spec on top TEST' }),
     mockupHtml: '<!doctype html><html><body>NEWER MOCKUP TEST</body></html>',
     at: DEVFIVE_NEWER_AT,
+  })
+
+  // devsix: a spec in the change-only shape. Same rationale as devfour above,
+  // one shape later — nothing writes this yet, but the export must already
+  // know how to render it.
+  insertSpec(db, {
+    accountId: devsixId,
+    conversationId: 'conv-devsix',
+    promptSha: 'sha-devsix-0001',
+    payload: CHANGE_PAYLOAD,
+    mockupHtml: MOCKUP,
+    at: 1_000,
   })
 })
 
@@ -322,6 +360,15 @@ _None._
 
 _None._
 `)
+  })
+
+  it('renders a change-shaped row through the change renderer', () => {
+    // '## Changes' exists only in renderChangeMarkdown. Asserting on it is
+    // asserting that exportSpec picked the right renderer for the row's
+    // actual shape, same check as the devfour case above, one shape later.
+    const out = exportSpec(db, 'devsix')
+    expect(out.spec_md).toContain('## Changes')
+    expect(out.spec_md).toContain('Weekly average TEST')
   })
 
   it('names the failure instead of crashing when the stored payload is corrupt', () => {

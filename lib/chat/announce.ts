@@ -138,13 +138,18 @@ export function announceTarget(db: PlatformDb, slug: string, usersDir?: string):
     return { ok: false, reason: 'already_announced' }
   }
 
-  // The renderer's own discriminator, reused rather than re-implemented: a
-  // legacy row has no change_summary field at all, so headline falls back to
-  // the title. Saying something generic beats saying nothing on the one
-  // morning the promise ("your build landed") is being kept.
+  // Every arm answers "what is this build about" with the best thing it has.
+  // A change row and a whole-surface row both carry change_summary; a legacy
+  // row has no such field at all, so it falls back to its title. Saying
+  // something generic beats saying nothing on the one morning the promise
+  // ("your build landed") is being kept.
   const stored = readStoredSpec(spec.payload)
   const headline =
-    stored.kind === 'version' ? stored.version.change_summary : stored.payload.title
+    stored.kind === 'change'
+      ? stored.change.change_summary
+      : stored.kind === 'version'
+        ? stored.version.change_summary
+        : stored.payload.title
 
   return {
     ok: true,

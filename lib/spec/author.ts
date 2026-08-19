@@ -191,6 +191,14 @@ function currentVersionBlock(current: SpecRecord | undefined): string {
   }
 
   const stored = readStoredSpec(current.payload)
+  // UNREACHABLE, and deleted with this whole function by the next task. No
+  // change-shaped row can exist yet, because nothing writes one until
+  // authoring switches over. The arm is here so the compiler can prove the
+  // union is covered; a SpecShapeError so that if it somehow does run, it is
+  // redacted by metricMessage like every other spec-content error.
+  if (stored.kind === 'change') {
+    throw new SpecShapeError('a change-shaped spec has no whole-surface version to show')
+  }
   if (stored.kind === 'version') {
     return (
       `The dashboard's current version is v${current.version}, ` +

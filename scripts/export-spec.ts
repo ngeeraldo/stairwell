@@ -26,7 +26,7 @@ import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { findAccountBySlug } from '@/lib/auth/accounts'
 import { currentSpec } from '@/lib/db/specs'
 import { readStoredSpec } from '@/lib/spec/stored'
-import { renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
+import { renderChangeMarkdown, renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 
 export function exportSpec(
   db: PlatformDb,
@@ -59,9 +59,11 @@ export function exportSpec(
   const meta = { slug, version: spec.version, confirmedAt: spec.confirmed_at ?? spec.at }
   const stored = readStoredSpec(spec.payload)
   const spec_md =
-    stored.kind === 'version'
-      ? renderSpecMarkdown(stored.version, meta)
-      : renderLegacyMarkdown(stored.payload, meta)
+    stored.kind === 'change'
+      ? renderChangeMarkdown(stored.change, meta)
+      : stored.kind === 'version'
+        ? renderSpecMarkdown(stored.version, meta)
+        : renderLegacyMarkdown(stored.payload, meta)
 
   return { spec_md }
 }
