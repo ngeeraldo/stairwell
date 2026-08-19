@@ -228,14 +228,16 @@ describe('users/ folder conventions', () => {
     /**
      * A user folder has three legitimate states, and only one of them is a
      * defect. This distinction was missing until the first real pull created
-     * the middle one: `./scripts/pull-spec.sh devtwo` writes spec.md and
-     * mockup.html into a folder that does not exist yet, so between pulling a
-     * confirmed spec and building the dashboard from it the folder legitimately
-     * holds the build contract and nothing else. The sweep used to fail all
-     * eight of its checks there — on the documented workflow, at the exact
-     * moment it is followed.
+     * the middle one: `./scripts/pull-spec.sh devtwo` writes spec.md into a
+     * folder that does not exist yet, so between pulling a version and
+     * building the dashboard from it the folder legitimately holds the build
+     * contract and nothing else. The sweep used to fail all eight of its
+     * checks there — on the documented workflow, at the exact moment it is
+     * followed. (pull-spec.sh also wrote mockup.html alongside spec.md until
+     * the mockup-loop removal — nothing composes or serves mockup HTML any
+     * more, so a pulled folder is spec.md alone now.)
      *
-     *   pulled     — spec.md / mockup.html only. Allowed: not started yet.
+     *   pulled     — spec.md only. Allowed: not started yet.
      *   scaffolded — all five entries, but migrations/ holds no .sql. Allowed:
      *                ./scripts/new-dashboard.sh just ran and nobody has
      *                designed a shape yet.

@@ -18,10 +18,11 @@ export const SLUG_PATTERN = /^[a-z0-9-]{1,32}$/
 
 /**
  * Route segments a slug must not collide with. admin/login/unlock/invite/
- * forgot/mockup are real top-level routes (app/admin, app/(auth)/login,
- * app/(auth)/unlock, app/(auth)/invite, app/(auth)/forgot, app/mockup); api
- * and _next are reserved by the app/framework; favicon.ico is a static asset
- * route.
+ * forgot are real top-level routes (app/admin, app/(auth)/login,
+ * app/(auth)/unlock, app/(auth)/invite, app/(auth)/forgot); api and _next are
+ * reserved by the app/framework; favicon.ico is a static asset route.
+ * `mockup` was a real route too (app/mockup) until the mockup-loop removal
+ * deleted it — see that entry below for why it stays reserved anyway.
  *
  * lib/invite/tokens.ts checks this at MINT time as well, so a reserved slug is
  * rejected when the link is created rather than when it is used.
@@ -33,10 +34,15 @@ export const RESERVED_SLUGS = new Set([
   'api',
   '_next',
   'favicon.ico',
-  // Added with the onboarding flow: /invite/<token>, /forgot, and
-  // /mockup/<version> are all real top-level routes now, and a slug that
-  // collided with one would shadow it for that user forever.
+  // Added with the onboarding flow: /invite/<token> and /forgot are real
+  // top-level routes, and a slug that collided with one would shadow it for
+  // that user forever.
   'invite',
   'forgot',
+  // /mockup/<version> was a real top-level route until the mockup-loop
+  // removal deleted app/mockup and app/admin/mockup. Left reserved rather
+  // than freed: nothing is served there any more, but nothing needs the name
+  // back either, and freeing it would just be one more thing a future mockup
+  // route would have to re-reserve.
   'mockup',
 ])

@@ -7,14 +7,14 @@
 //
 //   version           — derived from row position (lib/db/specs.ts), never
 //                       stored, so it can neither drift nor race.
-//   based_on_version  — supplied by the server from the current confirmed
+//   based_on_version  — supplied by the server from the account's current
 //                       version at authoring time. A model-authored lineage
 //                       pointer is a hallucination that becomes a permanent
 //                       row in an append-only table. See ledger D2.
 //
 // title/summary/background are RETAINED from the pre-unification shape: each
-// has live consumers (spec.md's H1, the preview card, the admin pane) and the
-// spec doc is silent about them, so existing conventions stand. See ledger D1.
+// has live consumers (spec.md's H1, the admin pane) and the spec doc is
+// silent about them, so existing conventions stand. See ledger D1.
 //
 // `import type` only: patch.ts imports from this file (schema.ts -> patch.ts
 // would be the cycle). Erased at compile time, so it creates no runtime edge.
