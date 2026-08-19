@@ -60,6 +60,7 @@ import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { readTranscript } from '@/lib/db/appendOnly'
 import { toMessages } from '@/lib/chat/history'
 import { friendFacing, NotesMissingError, readBuildNotes, type BuildNotes } from '@/lib/build/notes'
+import { CurrentStateError, readCurrentState, type CurrentState } from '@/lib/build/currentState'
 import {
   AlreadyAnnouncedError,
   announceTarget,
@@ -81,6 +82,8 @@ export type AnnounceOutcome = {
     | 'no_build_notes'
     | 'notes_missing'
     | 'notes_invalid'
+    | 'current_state_missing'
+    | 'current_state_stale'
     | 'draft_failed'
     // --body-file named a path that could not be read as UTF-8 text — a typo,
     // a missing file, a directory. Final review, Important 4.
@@ -165,6 +168,48 @@ export async function runAnnounce(
             // something first", that one says "write the notes for what you
             // already built".
             `no build notes for '${opts.slug}' — nothing has been built yet`,
+      warnings,
+    }
+  }
+
+  // THE STALENESS GATE (design §4.1). A build that shipped and forgot to
+  // rewrite current.md leaves the chat agent describing a dashboard that no
+  // longer exists — and the agent trusts current.md over everything else, so
+  // the error compounds silently through every later conversation. Refusing
+  // the announcement is how that gets found, and Nico is the one who finds it.
+  //
+  // Compares VERSIONS, never mtimes: a fresh clone rewrites every mtime, so a
+  // check that passed on the laptop and failed on the droplet would be worse
+  // than none.
+  let currentState: CurrentState | null
+  try {
+    currentState = readCurrentState(opts.slug, deps.usersDir)
+  } catch (error) {
+    // readCurrentState throws when the file EXISTS and does not parse. Same
+    // outcome kind as absent — there is no usable description either way —
+    // but carry the parser's own message, which names the section or the
+    // frontmatter line that failed.
+    return {
+      kind: 'current_state_missing',
+      message: error instanceof CurrentStateError ? error.message : String(error),
+      warnings,
+    }
+  }
+  if (currentState === null) {
+    return {
+      kind: 'current_state_missing',
+      message:
+        `no users/${opts.slug}/current.md — write it before announcing v${target.version}`,
+      warnings,
+    }
+  }
+  if (currentState.version !== target.version) {
+    return {
+      kind: 'current_state_stale',
+      message:
+        `users/${opts.slug}/current.md says v${currentState.version} but ` +
+        `v${target.version} is being announced — rewrite it to describe what ` +
+        'was just built',
       warnings,
     }
   }
@@ -364,6 +409,8 @@ export function exitCodeFor(kind: AnnounceOutcome['kind']): number {
   const refusal: AnnounceOutcome['kind'][] = [
     'notes_missing',
     'notes_invalid',
+    'current_state_missing',
+    'current_state_stale',
     'draft_failed',
     'no_build_notes',
     'body_file_invalid',
