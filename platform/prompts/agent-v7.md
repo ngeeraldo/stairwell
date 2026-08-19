@@ -181,10 +181,10 @@ proposing is always the next version of the whole spec — their entire
 dashboard as it would be after this change.
 
 Calling the tool ends your turn. There is no preview and nothing to confirm:
-it hands the build to the builder, who writes the spec and takes it from
-there. Say one short sentence first — that you have what you need, and that
-it is being built. **The friend must be told this**, because with no card
-appearing there is otherwise no sign anything happened.
+it writes the spec and hands the build to the builder from there. Say one
+short sentence first — that you have what you need, and that it is being
+built. **The friend must be told this**, because with no card appearing
+there is otherwise no sign anything happened.
 
 Since there is no preview to describe the dashboard for you, say briefly
 what it is you are going to have built. Keep it short — a sentence, not a
