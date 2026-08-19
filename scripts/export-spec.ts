@@ -1,7 +1,8 @@
 // scripts/export-spec.ts
 //
-// Prints one account's confirmed spec as JSON on stdout. Runs ON THE
-// DROPLET, invoked by scripts/pull-spec.sh over ssh.
+// Prints one account's current spec (the newest one — nothing confirms any
+// more) as JSON on stdout. Runs ON THE DROPLET, invoked by
+// scripts/pull-spec.sh over ssh.
 //
 // THIS READS A NON-SYNTHETIC DATABASE BY DESIGN, on the server, run by Nico.
 // That is consistent with CLAUDE.md: the platform database is not encrypted
@@ -19,7 +20,7 @@
 // EnvironmentFile, so a forgotten $STAIRWELL prelude on the droplet is
 // exactly the state a fallback would hit — and a fallback there would write
 // synthetic data into a friend's users/<slug>/spec.md as if it were their
-// real confirmed spec, silently, with no error telling Nico it happened.
+// real spec, silently, with no error telling Nico it happened.
 import { resolve } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { findAccountBySlug } from '@/lib/auth/accounts'
@@ -30,36 +31,39 @@ import { renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 export function exportSpec(
   db: PlatformDb,
   slug: string,
-): { spec_md: string; mockup_html: string } {
+): { spec_md: string } {
   const account = findAccountBySlug(db, slug)
   if (!account) throw new Error(`no account with slug '${slug}'`)
 
   const spec = currentSpec(db, account.id)
-  // Only a CONFIRMED spec is a build contract. Refusing loudly here is what
-  // stops a draft being committed as one — an account with proposals but no
-  // confirmation must fail, never silently export the newest draft.
-  if (!spec) throw new Error(`no confirmed spec for '${slug}'`)
+  // Nothing confirms any more — the newest spec IS the build contract
+  // (lib/db/specs.ts's currentSpec) — so this only fires for an account with
+  // no spec at all.
+  if (!spec) throw new Error(`no spec for '${slug}'`)
 
   // readStoredSpec throws SpecShapeError on a corrupt stored payload. Let it
-  // propagate: exportSpec must build BOTH output strings or return NEITHER,
-  // never a spec_md from a half-parsed payload paired with a mockup_html from
-  // nowhere. Computing spec_md first, before the return object is
-  // constructed, is what guarantees that — a throw here means the caller (the
-  // CLI entry point below, then pull-spec.sh) never sees a result to write at
-  // all.
+  // propagate: exportSpec must build the output string or return nothing at
+  // all, never a spec_md from a half-parsed payload. A throw here means the
+  // caller (the CLI entry point below, then pull-spec.sh) never sees a result
+  // to write at all.
   //
   // The renderer is chosen by the row's ACTUAL shape, never by which one is
   // current: a pre-unification row exports through the frozen renderer
   // forever, because spec.md is a build contract and re-pulling one must not
   // produce a diff nobody asked for.
-  const meta = { slug, version: spec.version, confirmedAt: spec.confirmed_at! }
+  // confirmed_at can genuinely be null now — currentSpec no longer requires
+  // a confirmation — so fall back to the spec's own timestamp, the same
+  // fallback lib/spec/author.ts's currentVersionBlock already uses. Without
+  // it, `new Date(null)` renders as 1970-01-01 in spec.md — exactly the
+  // silent-garbage-date failure this project guards against elsewhere.
+  const meta = { slug, version: spec.version, confirmedAt: spec.confirmed_at ?? spec.at }
   const stored = readStoredSpec(spec.payload)
   const spec_md =
     stored.kind === 'version'
       ? renderSpecMarkdown(stored.version, meta)
       : renderLegacyMarkdown(stored.payload, meta)
 
-  return { spec_md, mockup_html: spec.mockup_html }
+  return { spec_md }
 }
 
 /**
@@ -73,7 +77,7 @@ function resolvePlatformDbPath(): string {
       'Refusing to run: PLATFORM_DB is not set.\n\n' +
         'This script never falls back to a synthetic database — a fallback ' +
         "on the droplet would write synthetic data into a friend's " +
-        'users/<slug>/spec.md as if it were their real confirmed spec, ' +
+        "users/<slug>/spec.md as if it were their real spec, " +
         'silently. Set it explicitly, e.g.:\n\n' +
         '  PLATFORM_DB=platform/dev/synthetic.db npx tsx scripts/export-spec.ts <slug>',
     )

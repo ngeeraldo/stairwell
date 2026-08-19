@@ -44,7 +44,23 @@ export const ALERT_TIMEOUT_MS = 5_000
  */
 export const ALERT_TEXT = {
   conversation_started: 'started a conversation',
+  // Nothing sends this any more — the confirmation step it fired on is gone
+  // (removed alongside the mockup loop, plan
+  // 2026-08-19-remove-the-mockup-loop). Kept rather than deleted: this key
+  // is the wording an already-sent push notification was built from, the
+  // same reason a prompt file is added rather than edited (CLAUDE.md > Data
+  // safety). Removing it would make that wording unrecoverable for free.
   spec_confirmed: 'confirmed a spec',
+  // The confirmation card is gone, so this is now the ONLY way Nico learns a
+  // friend wants a build — without it the only signal is reading transcripts
+  // by hand. Fired from app/api/chat/route.ts, at the point that already
+  // knows authoring succeeded (plan 2026-08-19-remove-the-mockup-loop,
+  // Task 5).
+  spec_authored: 'asked for a build',
+  // Authoring now happens in the background where nobody is watching — the
+  // friend has asked for something and nothing exists. Fired from the same
+  // call site as spec_authored, on the sibling outcome.
+  spec_failed: 'asked for a build, and writing the spec failed',
   migration_failed: 'could not log in — migration failed',
 } as const
 
@@ -68,15 +84,17 @@ export function alerter(
       const account = findAccountById(deps.db, accountId)
 
       // BELT AND BRACES, not the primary control anymore. app/api/chat/route.ts
-      // and app/api/spec/confirm/route.ts now reject an admin with 403 before
-      // writing anything, which makes an admin account unreachable through
-      // this alerter today — canSeeUserSpace's 404 closes the third path.
-      // Left in rather than deleted: if that upstream rule ever regresses,
-      // the worst case here should be a missing push notification, not
-      // ntfy.sh being told that a friend confirmed a spec. An admin is Nico,
-      // who is at the computer anyway (design spec §3 D2). Suppression
-      // records nothing: a deliberate silence must not look like a broken
-      // alerter in the log that exists to tell those two apart.
+      // rejects an admin with 403 before writing anything, which makes an
+      // admin account unreachable through this alerter today —
+      // canSeeUserSpace's 404 closes the other path. (app/api/spec/confirm's
+      // own 403 used to be a second such gate; that route is gone along with
+      // everything it guarded.) Left in rather than deleted: if that upstream
+      // rule ever regresses, the worst case here should be a missing push
+      // notification, not ntfy.sh being told something about a friend's
+      // account. An admin is Nico, who is at the computer anyway (design spec
+      // §3 D2). Suppression records nothing: a deliberate silence must not
+      // look like a broken alerter in the log that exists to tell those two
+      // apart.
       if (!account || account.role === 'admin') return
 
       const topic = deps.topic?.trim()

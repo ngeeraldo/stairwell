@@ -64,7 +64,7 @@ Two paths through one set of steps. The steps are written once, below.
 
 | | **Flow A — a new friend** | **Flow B — a new version** |
 |---|---|---|
-| When | They have never had a dashboard | They have one, and confirmed a new spec |
+| When | They have never had a dashboard | They have one, and asked for a new version |
 | Run | 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 | 0 → 4 → 5 → 6 → 7 → 8 → 9 |
 | What you skip | nothing | 1–3 — the slug, invite and account already exist |
 | Extra work | scaffold the folder (step 6), add the registry line (step 7) | neither — both already exist |
@@ -89,7 +89,7 @@ checked out *there* is what ships. Confirm that once, read-only:
 ssh "$DROPLET" 'git -C /home/deploy/stairwell branch --show-current'
 ```
 
-The build itself happens on a branch named for the confirmed spec version —
+The build itself happens on a branch named for the spec version —
 `sam/v1`, `sam/v2` — created at **step 6**, which is the first moment that
 number exists on the laptop. One branch per version: merged to main at step 8,
 deleted at step 9. A version is already the atomic unit everywhere else in this
@@ -216,12 +216,15 @@ the second, and a `<slug>.db` file of a few KB.
 
 ## Step 4 — Watch the conversation
 
-- **ntfy** fires a push to `NTFY_TOPIC` when a conversation starts. That is the
-  real-time channel.
+- **ntfy** fires a push to `NTFY_TOPIC` on a conversation start, and on the two
+  outcomes a spec authoring call can produce: `spec_authored` (`asked for a
+  build`) and `spec_failed` (`asked for a build, and writing the spec
+  failed`) — see Step 5. That is the real-time channel.
 - **`/admin`** is the reading surface: the user list sorted by last activity,
-  then per user three tabs — **Transcript / Spec / Mockup**. It is manual
-  refresh only; nothing polls. Log in as `nico` (an admin lands on `/admin`, and
-  has no user space of their own).
+  then per user two tabs — **Transcript / Spec**. There is no Mockup tab —
+  nothing composes or serves mockup HTML any more (mockup-loop removal). It is
+  manual refresh only; nothing polls. Log in as `nico` (an admin lands on
+  `/admin`, and has no user space of their own).
 - Metrics tell you **that** someone used it, never **what** they logged — a slug
   and a panel, and nothing else. To learn what a friend is tracking, read their
   chat or ask them. That bound is the promise the login page makes.
@@ -247,18 +250,28 @@ above, and it holds.
 
 ---
 
-## Step 5 — They confirm a spec
+## Step 5 — The agent authors a spec
 
-The model proposes; the friend presses confirm on the proposal card in chat.
-Until that happens there is **nothing to import** — `scripts/export-spec.ts`
-refuses an account with drafts but no confirmation, loudly, rather than
-exporting the newest draft.
+There is nothing for a friend to confirm any more. When the agent decides it
+has enough — `platform/prompts/agent-v7.md`'s "When you have enough" — it
+calls `propose_spec`, which writes a spec in the background and ends there:
+no card, no button, no confirmation event. The newest spec row IS the build
+contract the moment it exists (`lib/db/specs.ts`'s `currentSpec`), so the
+instant one exists there is something to import — `scripts/export-spec.ts`
+refuses only an account with no spec at all, never one that merely has not
+been confirmed, because nothing is.
+
+**You learn a friend wants a build from an ntfy push, not by watching for a
+confirmation:** `spec_authored` fires the moment authoring succeeds
+(`<slug> asked for a build`); `spec_failed` fires if it did not (`<slug>
+asked for a build, and writing the spec failed`) — see Step 4. A `spec_failed`
+push means there is nothing to pull yet: read the transcript in `/admin` for
+what the friend actually asked, and let the conversation continue.
 
 Two properties worth holding in your head when you read a spec in `/admin`:
 
-- A confirmed spec version is **whole-surface** — it describes their entire
-  dashboard, not one conversation's worth of changes. v3 supersedes v2
-  completely.
+- A spec version is **whole-surface** — it describes their entire dashboard,
+  not one conversation's worth of changes. v3 supersedes v2 completely.
 - `specs` rejects UPDATE. A version is a permanent row. `based_on_version` is
   supplied by the server, never authored by the model.
 
@@ -286,16 +299,18 @@ Then pull, in both flows:
 ./scripts/pull-spec.sh "$FRIEND"
 ```
 
-This ssh's to the droplet, reads the real confirmed spec, and writes two files:
+This ssh's to the droplet, reads the real spec, and writes one file:
 
 - `users/<slug>/spec.md`
-- `users/<slug>/mockup.html`
 
-**It overwrites both on every pull**, because both are a projection of a
-database record rather than a source. Treat them as read-only: when the spec is
-wrong, have the friend confirm a new version in chat and pull again.
+**It overwrites `spec.md` on every pull**, because it is a projection of a
+database record rather than a source. Treat it as read-only: when the spec is
+wrong, have the friend ask for a change in chat and pull again. `mockup.html`
+is gone — nothing composes or serves mockup HTML any more, so there is no
+second file to write or to keep in sync with the first.
 
-The write is atomic as a pair: either both files land or neither does.
+The write is atomic: a temp-write-then-rename, so a failure partway through
+never leaves a half-written `spec.md` behind.
 
 Now branch. **The pull comes first and the branch second**, because the version
 number you need for the branch name is written *by* the pull — `lib/spec/render.ts`
@@ -309,17 +324,17 @@ echo "$V"                                       # sanity-check: a bare number
 git checkout -b "$FRIEND/v$V"                   # everything written above rides along, untracked
 git add "users/$FRIEND"                         # the whole folder: *.db is gitignored, so no
                                                 # database can be staged by this
-git commit -m "Scaffold $FRIEND and pull confirmed spec v$V"   # Flow B: drop "Scaffold and"
+git commit -m "Scaffold $FRIEND and pull spec v$V"   # Flow B: drop "Scaffold and"
 ```
 
-Adding the folder rather than the pair is what makes one command work for both
-flows: in Flow A it picks up the scaffold too, and the scaffold ships its own
-`tests/dashboard.test.ts`, which is what satisfies Gate B for a change under
-`users/<slug>/`. The spec pair itself is Gate B exempt either way.
+Adding the folder rather than just `spec.md` is what makes one command work
+for both flows: in Flow A it picks up the scaffold too, and the scaffold
+ships its own `tests/dashboard.test.ts`, which is what satisfies Gate B for a
+change under `users/<slug>/`. `spec.md` itself is Gate B exempt either way.
 
 Identical in both flows. There is deliberately no "Flow A is always v1" shortcut:
-a new friend can iterate in chat and confirm v2 before you ever sit down to
-build, and a branch named `v1` holding v2's spec is a lie you would not notice
+a new friend can ask for changes in chat and reach v2 before you ever sit down
+to build, and a branch named `v1` holding v2's spec is a lie you would not notice
 until the announce step disagreed with it.
 
 ---
@@ -407,10 +422,13 @@ stdout and dropped it, so the line named here reached no terminal. Fixed;
 asserting against a stubbed console, because "the string was logged" and "a
 human saw it" are different claims.
 
-### 7.3 Build toward `mockup.html`
+### 7.3 Build toward the spec
 
-`spec.md` + `mockup.html` are the build contract. Feasibility doubts go back to
-the friend rather than into a guess — `scripts/ask-user.ts`, step 4 — and you
+There is no mockup. The build contract is `spec.md`, `current.md` (what the
+dashboard already is, if this is not its first version), and the code —
+nothing pulls the conversation itself into the repo; read it live in `/admin`
+if `spec.md` alone leaves a question. Feasibility doubts go back to the
+friend rather than into a guess — `scripts/ask-user.ts`, step 4 — and you
 build on their answer.
 
 Everything about *how* to build lives in build-rules: what a dashboard is handed
@@ -427,7 +445,7 @@ npx vitest run tests/users/conventions.test.ts
 
 ### 7.4 See it on a screen
 
-No test tells you whether it matches the mockup. Look at it.
+No test tells you whether it matches the spec. Look at it.
 
 **Once per friend** — there is no local account for their slug yet:
 
@@ -459,7 +477,7 @@ npm run dev                              # then log in at /login as the slug
 You land on `/<slug>`: their dashboard, reading `users/<slug>/synthetic.db`,
 under the **SYNTHETIC DATA** banner. Anything the entry widget writes goes to
 that same file, so the loop is honest — type a value, save, see it. Keep
-`mockup.html` open beside it and iterate.
+`spec.md` open beside it and iterate.
 
 More than one screen? The tab strip only appears once `screens` has two or more
 entries — click each tab, or go straight to `/<slug>?screen=<id>` for the one
@@ -629,8 +647,11 @@ other line — the `DRY RUN` notice, the `## Open` warning — to **stderr**, so
 variables above, as a backstop for a file assembled some other way.
 
 The draft is written from `notes/v$V.md` — what shipped, plus any in-spirit
-adjustment worth mentioning — and from what they have already been told, so it
-does not repeat the preview back at them. **Read it before sending.**
+adjustment worth mentioning — and from what they have already been told.
+There is no preview and nothing was confirmed in advance, so this message is
+the first look they get: it names what it actually shows, rather than
+assuming they have already seen it (`platform/prompts/announce-v2.md`).
+**Read it before sending.**
 `transcripts` rejects DELETE; this is the first generated sentence this system
 puts in there, and a bad one is permanent.
 
@@ -654,7 +675,7 @@ ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/announce-deploy.ts $FRIEND --send 
 sanctioned way to announce without reading the notes. (`--plain` and
 `--body-file` are two different ways to skip drafting — pass at most one.)
 
-Posts into **that one account's** chat, **once per confirmed spec version**.
+Posts into **that one account's** chat, **once per spec version**.
 Safe to re-run: an already-announced version is reported, not repeated.
 
 Run it by hand, per friend, and keep it that way. `deploy.sh` deploys the whole
@@ -674,11 +695,11 @@ git branch -d "$FRIEND/v$V"     # -d: git refuses the delete if the merge never 
 
 ## Step 10 — The next version
 
-Versions 2, 3, … are **Flow B** in the table at the top: they confirm a new
-whole-surface spec in chat, and you run 0 → 4 → 5 → 6 → 7 → 8 → 9 again on a
-fresh `<slug>/v<n>` branch. `pull-spec.sh` overwrites the pair, step 6 skips the
-scaffold and step 7 skips the registry line, and everything else is the same
-work as the first time — including a migration, which at v2 is the next number
+Versions 2, 3, … are **Flow B** in the table at the top: the agent authors a
+new whole-surface spec in chat, and you run 0 → 4 → 5 → 6 → 7 → 8 → 9 again on
+a fresh `<slug>/v<n>` branch. `pull-spec.sh` overwrites `spec.md`, step 6 skips
+the scaffold and step 7 skips the registry line, and everything else is the
+same work as the first time — including a migration, which at v2 is the next number
 rather than `001` (step 7.2), and including a rewritten `current.md`
 (step 7.5). The notes are a new file; `current.md` is the same file, replaced.
 
@@ -696,7 +717,7 @@ is here because getting it wrong is expensive and quiet.
 |---|---|
 | Tell every friend at step 3 that a forgotten password is unrecoverable | The password *is* the key; there is nothing to reset to. `/forgot` says exactly this and offers no form, and `tests/routing/forgotPage.test.tsx` keeps it that way — including against a "temporary, just for dev" one. |
 | Leave `devone`, `devtwo` and `nico` deriving their key directly, forever | Their wrapped `account_keys` row cannot be computed without their password. Inventing one locks a real person out of real data. |
-| Fix a wrong spec by confirming a new version in chat, then re-running `pull-spec.sh` | `spec.md` and `mockup.html` are a projection of the confirmed record, and the next pull overwrites both. The source is the record. |
+| Fix a wrong spec by asking for a change in chat, then re-running `pull-spec.sh` | `spec.md` is a projection of the record, not a source, and the next pull overwrites it. The source is the record. |
 | Ship every shape change as a new numbered migration — `002_…`, then `003_…` | A friend's database records only which NUMBER it reached, so editing an applied file silently changes what that number means. The manifest's checksum refuses the session rather than letting it through. |
 | Add a new prompt version — `agent-v3.md` | `prompt_sha` is stamped on transcript and spec rows that already exist, so editing `agent-v2.md` changes what an already-written hash points at. Prompts are added, and that is a data-safety property. |
 | Run `announce-deploy.ts` by hand, once per friend, at step 9 | `deploy.sh` deploys the whole service. Calling the announcer from it would post "your dashboard is live" into every account's chat on every push — a permanent line in an append-only transcript. |
@@ -750,7 +771,7 @@ harness: `docs/local-dev.md`.
 
 | Symptom | Cause |
 |---|---|
-| `no confirmed spec for '<slug>'` on pull | They have drafts but pressed confirm on none. Correct refusal — check the Spec tab in `/admin`. |
+| `no spec for '<slug>'` on pull | The agent has never had enough to call `propose_spec` for this account yet. Correct refusal — check the transcript in `/admin`, or wait for a `spec_authored` push. |
 | Pull fails with `Refusing to run: PLATFORM_DB is not set` | `.env` on the far side doesn't set it — `pull-spec.sh` sources `.env` itself before calling `export-spec.ts`, so this points at `.env`, not at the command you typed. `export-spec.ts` has no fallback (see its header): it refuses rather than guessing, so this can no longer come back as a spec that quietly *looks* synthetic — only as a loud failure naming the variable. |
 | Their dashboard says **Under construction** | The folder was scaffolded but `migrations/001_initial.sql` has not been written. Expected between step 6's scaffold and step 7.2, and it is what step 7.2 exists to fix. |
 | A friend cannot log in, and ntfy says a migration failed | The session was refused rather than served over a half-migrated shape. The alert carries the slug and migration number; the server log has the error. Their `<slug>.backup.db` holds the pre-migration copy. |

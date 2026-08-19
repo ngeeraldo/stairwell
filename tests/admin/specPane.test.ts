@@ -191,7 +191,7 @@ describe('the spec pane', () => {
     const { getDb } = await import('@/lib/db/instance')
     const { createAccount } = await import('@/lib/auth/accounts')
     const { createSession, SESSION_COOKIE } = await import('@/lib/session/store')
-    const { insertSpec, confirmSpec } = await import('@/lib/db/specs')
+    const { insertSpec } = await import('@/lib/db/specs')
     sessionCookieName = SESSION_COOKIE
     handle = getDb()
 
@@ -208,8 +208,12 @@ describe('the spec pane', () => {
       })
       // Confirmed early, then the friend kept iterating — a realistic shape,
       // and it proves "Confirmed" renders without requiring it be the
-      // newest row.
-      confirmSpec(handle, { specId: v1, accountId: targetId, at: 1_500 })
+      // newest row. Nothing in the application writes spec_confirmations any
+      // more (lib/db/specs.ts's confirmSpec is gone), but the pane still
+      // renders a HISTORICAL confirmation — inserted directly.
+      handle
+        .prepare('INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)')
+        .run(v1, targetId, 1_500)
       insertSpec(handle, {
         accountId: targetId,
         conversationId: 'conv-1',
@@ -312,20 +316,13 @@ describe('the spec pane', () => {
     )
   })
 
-  it('renders the mockup with an empty sandbox', async () => {
-    const html = await render('devone')
-    expect(html).toContain('sandbox=""')
-    expect(html).not.toContain('allow-scripts')
-  })
-
   it('says so plainly when there are no proposals yet', async () => {
     // Two different absences now, and they are worth distinguishing: an empty
-    // conversation, and a conversation with nothing confirmed in it. The Spec
-    // tab shows the CONFIRMED version, so it is the second one that decides
-    // what that tab says.
+    // conversation, and a conversation with no spec at all. The Spec tab
+    // shows the CURRENT version (the newest spec — nothing confirms any
+    // more), so it is the second one that decides what that tab says.
     const html = await render('devtwo')
-    expect(html).toContain('No confirmed spec yet.')
-    expect(html).toContain('No confirmed mockup yet.')
+    expect(html).toContain('No spec yet.')
   })
 
   it('still 404s a non-admin session', async () => {
@@ -353,6 +350,56 @@ describe('the spec pane', () => {
     expect(html).toContain('entered')
     // And it is NOT badged as legacy.
     expect(html).not.toContain('Pre-unification spec (legacy shape)')
+  })
+
+  it('never renders 1970 for a current spec that was never confirmed', async () => {
+    // currentSpec (lib/db/specs.ts) now returns the newest spec whether or
+    // not it was ever confirmed, so confirmed_at can genuinely be null. A
+    // bare `new Date(current.confirmed_at!)` renders the epoch here
+    // silently, in both the version label and the two renderer calls this
+    // pane makes. NOT built on this file's shared `render()`/devthree
+    // fixture, which uses small relative-order integers (`at: 1_000`) for
+    // every spec — those are themselves indistinguishable from the
+    // epoch-zero fallback this test exists to rule out (`new Date(1000)` is
+    // ALSO in 1970). A real-scale timestamp is what makes "not 1970" mean
+    // anything. Same assertion form as tests/admin/portal.test.tsx's
+    // "says 'no activity yet' rather than showing 1970".
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount } = await import('@/lib/auth/accounts')
+    const { createSession, SESSION_COOKIE } = await import('@/lib/session/store')
+    const { insertSpec } = await import('@/lib/db/specs')
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+
+    const targetId = await createAccount(handle, {
+      slug: 'neverconfirmed',
+      role: 'user',
+      password: 'pw',
+    })
+    const REALISTIC_AT = Date.UTC(2026, 7, 19)
+    insertSpec(handle, {
+      accountId: targetId,
+      conversationId: 'conv-1',
+      promptSha: 'sha123456789',
+      payload: SPEC_V1,
+      mockupHtml: '<!doctype html><p>preview TEST</p>',
+      at: REALISTIC_AT,
+    })
+    // No spec_confirmations row at all — that is the point.
+
+    const adminId = await createAccount(handle, { slug: 'nico', role: 'admin', password: 'pw' })
+    cookieSlot.value = { value: createSession(handle, adminId) }
+
+    const { default: Pane } = await import('@/app/admin/[user]/page')
+    const element = await Pane({ params: Promise.resolve({ user: 'neverconfirmed' }) })
+    const html = renderToStaticMarkup(element)
+    expect(html).not.toContain('1970')
+    // A positive anchor, not just the negative one above — without it this
+    // assertion would pass just as well if the pane rendered nothing at all
+    // (same fix as tests/scripts/exportSpec.test.ts's sibling assertion on
+    // the same fallback). confirmed_at is null here, so the fallback to the
+    // spec's own `at` (REALISTIC_AT) is exactly what has to show up.
+    expect(html).toContain(new Date(REALISTIC_AT).toISOString())
   })
 
   it('renders the diff against the version a current row was based on', async () => {

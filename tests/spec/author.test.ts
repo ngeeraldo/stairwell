@@ -5,13 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { appendTranscript } from '@/lib/db/appendOnly'
-import { confirmSpec, insertSpec, readSpecs } from '@/lib/db/specs'
+import { insertSpec, readSpecs } from '@/lib/db/specs'
 import { CHAT_MODEL, ChatStreamError, type ChatClient, type Usage } from '@/lib/chat/client'
-import { SCREEN_MOCKUP_JSON_SCHEMA, type Panel } from '@/lib/spec/schema'
 import { PATCH_JSON_SCHEMA } from '@/lib/spec/patch'
 import { readStoredSpec } from '@/lib/spec/stored'
-import { authorSpec, MAX_MOCKUP_ATTEMPTS } from '@/lib/spec/author'
-import { insertScreenMockups, readScreenMockups } from '@/lib/db/screenMockups'
+import { authorSpec } from '@/lib/spec/author'
 
 let dir: string
 let db: PlatformDb
@@ -79,18 +77,6 @@ const IDENTIFYING_DRAFT = {
 }
 
 /**
- * The default per-screen mockup fragment, used when a test does not care what
- * the drawing call returned — only that authoring succeeded and that the
- * composed document is recognisable. Kept as a function, not a constant,
- * because the default has to answer for WHATEVER screen it is asked about
- * (task 18: one call draws every affected screen, and the fake must not know
- * in advance which ids that will be).
- */
-function drawnFragment(screenId: string): string {
-  return `<section class="screen">COFFEE PALACE TEST (${screenId})</section>`
-}
-
-/**
  * A default PATCH response for tests that only care that authoring
  * SUCCEEDED, not what the writer said — chosen to touch neither a screen id
  * nor a panel id, so it applies cleanly against ANY confirmed current-shape
@@ -104,10 +90,7 @@ const GOOD_PATCH = {
   ops: [{ op: 'set_meta', title: null, summary: 'Updated.', background: null }],
 }
 
-/** The SPEC call's usage and the MOCKUP call's usage differ on purpose: the
- * mockup_failed row has to prove which call's numbers it is carrying. */
 const USAGE: Usage = { input: 50, output: 900, cache_read: 0, cache_creation: 0 }
-const MOCKUP_USAGE: Usage = { input: 120, output: 2_400, cache_read: 0, cache_creation: 0 }
 const SERVED = { model_served: CHAT_MODEL, fallback_fired: false }
 
 type Call = { system: string; messages: { role: string; content: string }[]; schema: object }
@@ -115,25 +98,17 @@ type Call = { system: string; messages: { role: string; content: string }[]; sch
 type FakeOptions = {
   /** One entry per SPEC call, in order. An Error is thrown instead. */
   drafts?: unknown[]
-  /**
-   * The per-screen MOCKUP call's parsed input, or an Error to throw. Left
-   * undefined, the fake reads which screen ids were actually requested (task
-   * 18's call asks for exactly the affected screens) and synthesises one
-   * drawnFragment() per id — so a test that only cares about SUCCEEDING does
-   * not have to know which screens will be asked for.
-   */
-  mockup?: unknown
-  /**
-   * One outcome PER mockup call, for retry tests. An Error entry throws; `null`
-   * means "behave like the default and draw the requested screens". Takes
-   * precedence over `mockup` when both are set.
-   */
-  mockups?: unknown[]
-  mockupUsage?: Usage
   /** Fires on every propose() call, before it returns — used to abort mid-flight. */
   onCall?: () => void
 }
 
+/**
+ * The fake ChatClient every test in this file drives authorSpec with. Its
+ * `propose()` only ever sees the ONE call authorSpec now makes — the spec
+ * (whole-surface or patch, by schema) — since the mockup-loop removal (plan
+ * 2026-08-19-remove-the-mockup-loop, Task 4) deleted the second, per-screen
+ * mockup call this fake used to also answer.
+ */
 function fake(options: FakeOptions = {}) {
   const calls: Call[] = []
   // undefined (not defaulted to [GOOD_DRAFT] here) when the test supplied no
@@ -142,7 +117,6 @@ function fake(options: FakeOptions = {}) {
   // mentioning `drafts` should not have to know or care which shape the
   // writer was actually asked for.
   const drafts = options.drafts === undefined ? undefined : [...options.drafts]
-  const mockups = options.mockups === undefined ? undefined : [...options.mockups]
 
   const client = {
     async stream() {
@@ -151,46 +125,6 @@ function fake(options: FakeOptions = {}) {
     async propose({ system, messages, schema }: Parameters<ChatClient['propose']>[0]) {
       calls.push({ system, messages: [...messages], schema })
       options.onCall?.()
-
-      if (schema === SCREEN_MOCKUP_JSON_SCHEMA) {
-        if (mockups !== undefined) {
-          const next = mockups.shift()
-          if (next === undefined) {
-            throw new Error('mockup propose() called more times than the test supplied outcomes')
-          }
-          if (next instanceof Error) throw next
-          if (next !== null) {
-            return {
-              input: next,
-              usage: options.mockupUsage ?? MOCKUP_USAGE,
-              stop_reason: 'end_turn',
-              served: SERVED,
-            }
-          }
-          // null: fall through to the default "draw what was asked for" path.
-        } else if (options.mockup !== undefined) {
-          if (options.mockup instanceof Error) throw options.mockup
-          return {
-            input: options.mockup,
-            usage: options.mockupUsage ?? MOCKUP_USAGE,
-            stop_reason: 'end_turn',
-            served: SERVED,
-          }
-        }
-        // No override: draw exactly the screens the call asked for, from the
-        // request's own content — the same request lib/spec/author.ts builds
-        // (`{ title, screens }`), so this works regardless of which screens
-        // ended up affected.
-        const requested = (
-          JSON.parse(messages[0]!.content as string) as { screens: { id: string }[] }
-        ).screens.map((s) => s.id)
-        return {
-          input: { screens: requested.map((id) => ({ id, html: drawnFragment(id) })) },
-          usage: options.mockupUsage ?? MOCKUP_USAGE,
-          stop_reason: 'end_turn',
-          served: SERVED,
-        }
-      }
 
       if (drafts !== undefined) {
         const next = drafts.shift()
@@ -209,11 +143,12 @@ function fake(options: FakeOptions = {}) {
   return {
     client,
     calls,
-    // SCREEN_MOCKUP_JSON_SCHEMA is the one call this is never asked about —
-    // every other schema (whole-surface SPEC_JSON_SCHEMA or PATCH_JSON_SCHEMA)
-    // is a "spec call" as far as a caller of this helper is concerned.
-    specCalls: () => calls.filter((c) => c.schema !== SCREEN_MOCKUP_JSON_SCHEMA),
-    mockupCalls: () => calls.filter((c) => c.schema === SCREEN_MOCKUP_JSON_SCHEMA),
+    // Every call this fake ever records IS a spec call now — kept as its own
+    // accessor (rather than pointing every existing call site at `calls`
+    // directly) because that used to be a real distinction from the mockup
+    // call and rewriting every one of this file's `client.specCalls()` sites
+    // for no behaviour change would be pure churn.
+    specCalls: () => calls,
   }
 }
 
@@ -240,21 +175,21 @@ function metrics(): { event: string; data: Record<string, unknown> }[] {
 }
 
 /**
- * A confirmed spec for account 1, so currentSpec() has something to return.
+ * A spec for account 1, so currentSpec() has something to return — nothing
+ * confirms any more, so the row existing is what makes it current (kept the
+ * name `confirmed` rather than churning all 17 call sites; the fixture's
+ * shape is unchanged, only the no-longer-needed confirmSpec call is gone).
  *
- * Also stores a per-screen fragment for every screen the payload has — a
- * confirmed spec written since Task 18 shipped always has one, because
- * insertScreenMockups runs unconditionally after insertSpec on the success
- * path (lib/spec/author.ts). Skipped when the payload has no `screens` array
- * (a legacy payload, whose shape is entirely different) — legacy authors
- * whole-surface unconditionally, so it never reads a carried fragment anyway.
- * A test that wants to simulate the OTHER case — a current-shape row
- * confirmed BEFORE this branch existed, with no fragments at all — uses
- * confirmCurrentSpecWithoutFragments in the 'scoped mockup' describe block
- * below instead of this helper.
+ * No longer also seeds a per-screen spec_screen_mockups fragment for each of
+ * the payload's screens: that existed only because authorSpec used to read
+ * carried-forward fragments off the account's current spec when drawing its
+ * own mockup. As of the mockup-loop removal (plan
+ * 2026-08-19-remove-the-mockup-loop, Task 4) authorSpec never reads that
+ * table at all, so seeding it here would be fixture data nothing under test
+ * consumes.
  */
 function confirmed(payload: unknown): number {
-  const id = insertSpec(db, {
+  return insertSpec(db, {
     accountId: 1,
     conversationId: 'conv-0',
     promptSha: 'abc123abc123',
@@ -262,17 +197,6 @@ function confirmed(payload: unknown): number {
     mockupHtml: '<!doctype html><html><body>OLD</body></html>',
     at: 1,
   })
-  confirmSpec(db, { specId: id, accountId: 1, at: 2 })
-  const screens = (payload as { screens?: { id: string }[] }).screens
-  if (screens) {
-    insertScreenMockups(
-      db,
-      id,
-      screens.map((s) => ({ screenId: s.id, html: `<p>OLD FRAGMENT (${s.id})</p>` })),
-      1,
-    )
-  }
-  return id
 }
 
 const CURRENT_V1 = { ...GOOD_DRAFT, based_on_version: null }
@@ -320,7 +244,6 @@ describe('authorSpec', () => {
     if (proposal!.spec.kind !== 'version') throw new Error('unreachable')
     expect(proposal!.spec.version.title).toBe('Did I walk the dog today?')
     expect(proposal!.spec.version.screens[0]!.panels[0]!.id).toBe('walked_today')
-    expect(proposal!.mockup_html).toContain('COFFEE PALACE TEST')
 
     const rows = readSpecs(db, 1)
     expect(rows).toHaveLength(1)
@@ -335,37 +258,6 @@ describe('authorSpec', () => {
     expect(row!.data.context).toBe('interview')
     // The authoring prompt's sha, NOT the interview prompt's.
     expect(row!.data.prompt_sha).toMatch(/^[0-9a-f]{12}$/)
-  })
-
-  it('records the mockup call\'s own billed tokens alongside the spec call\'s', async () => {
-    // Both calls returned, so both spent real, billed tokens. The four
-    // standard counters mean "the spec call" on every row in this log
-    // (ledger D15); the mockup call's ride beside them under mockup_* names.
-    // Without this the success path is the ONE path where a returning model
-    // call's usage reaches no metrics row at all.
-    await authorSpec(deps(fake().client), INPUT)
-
-    const [row] = metrics()
-    expect(row!.event).toBe('spec_proposed')
-    expect(row!.data.output).toBe(USAGE.output)
-    expect(row!.data.mockup_input).toBe(MOCKUP_USAGE.input)
-    expect(row!.data.mockup_output).toBe(MOCKUP_USAGE.output)
-    expect(row!.data.mockup_cache_read).toBe(MOCKUP_USAGE.cache_read)
-    expect(row!.data.mockup_cache_creation).toBe(MOCKUP_USAGE.cache_creation)
-  })
-
-  it('ties the stored mockup to the prompt that produced it', async () => {
-    // prompt_sha on every row this module writes is the SPEC prompt's, and
-    // specs.prompt_sha likewise — so without this field the HTML sitting in
-    // specs.mockup_html names no prompt at all, in two tables that can never
-    // be backfilled (ledger D13).
-    await authorSpec(deps(fake().client), INPUT)
-
-    const [row] = metrics()
-    expect(row!.data.mockup_prompt_sha).toMatch(/^[0-9a-f]{12}$/)
-    // A DIFFERENT prompt from the spec call's — copying prompt_sha across
-    // would satisfy a bare "is a sha" assertion and be a lie.
-    expect(row!.data.mockup_prompt_sha).not.toBe(row!.data.prompt_sha)
   })
 
   it('writes NO spec and records spec_error when the call fails', async () => {
@@ -480,19 +372,16 @@ describe('authorSpec', () => {
     expect(row!.event).toBe('spec_error')
     expect(row!.data.kind).toBe('unexpected_error')
     expect(row!.data.message).toBeTruthy()
-    // BOTH calls actually SUCCEEDED here — insertSpec is what threw, after
-    // real, billed tokens were already spent on each. A cost log that reports
-    // zero for them is fiction (lib/chat/turn.ts states this rule in its own
-    // words). The four standard counters are the spec call's; the mockup
-    // call's ride alongside under mockup_* names, as on every other row.
+    // The spec call actually SUCCEEDED here — insertSpec is what threw, after
+    // real, billed tokens were already spent on it. A cost log that reports
+    // zero for it is fiction (lib/chat/turn.ts states this rule in its own
+    // words).
     expect(row!.data.input).toBe(USAGE.input)
     expect(row!.data.output).toBe(USAGE.output)
     expect(row!.data.cache_read).toBe(USAGE.cache_read)
     expect(row!.data.cache_creation).toBe(USAGE.cache_creation)
     expect(row!.data.model_served).toBe(SERVED.model_served)
     expect(row!.data.fallback_fired).toBe(SERVED.fallback_fired)
-    expect(row!.data.mockup_output).toBe(MOCKUP_USAGE.output)
-    expect(row!.data.mockup_prompt_sha).toMatch(/^[0-9a-f]{12}$/)
   })
 
   it('writes NO spec and records spec_aborted when the friend walks away', async () => {
@@ -560,7 +449,7 @@ describe('authorSpec', () => {
   })
 
   describe('the current version handed to the writer', () => {
-    it('gives the writer the current confirmed version as JSON', async () => {
+    it('gives the writer the current version as JSON', async () => {
       // Id stability is the whole point of the new shape, so the ids have to
       // arrive in a form the writer can copy verbatim.
       confirmed(CURRENT_V1)
@@ -576,24 +465,18 @@ describe('authorSpec', () => {
       // Behaviour-preserving: the v1 path must send a prompt of the same
       // SHAPE, not a prompt with a section missing.
       //
-      // A rejected proposal is seeded first, so the second assertion is not
-      // vacuous: something in the database DOES contain those ids, and the
-      // empty arm is right only because currentSpec asks for the newest
-      // CONFIRMED proposal, not the newest one.
-      insertSpec(db, {
-        accountId: 1,
-        conversationId: 'conv-0',
-        promptSha: 'abc123abc123',
-        payload: CURRENT_V1,
-        mockupHtml: '<html></html>',
-        at: 1,
-      })
-
+      // Nothing confirms any more, so this is now the ONLY thing that puts an
+      // account in the empty arm: no spec at all. Previously a rejected
+      // proposal was seeded here to prove currentSpec skipped it in favour of
+      // the empty arm — that distinction is gone, because currentSpec no
+      // longer asks about confirmation (lib/db/specs.ts). An account with a
+      // spec, confirmed or not, now gets the "current version" arm instead —
+      // see "gives the writer the current version as JSON" above.
       const client = fake()
       await authorSpec(deps(client.client), INPUT)
 
       const sent = JSON.stringify(client.specCalls()[0]!.messages)
-      expect(sent).toMatch(/no confirmed spec/i)
+      expect(sent).toMatch(/no spec for this account/i)
       expect(sent).toMatch(/empty/i)
       expect(sent).not.toContain('walked_today')
     })
@@ -742,183 +625,6 @@ describe('authorSpec', () => {
     })
   })
 
-  describe('the mockup call', () => {
-    it('calls the mockup writer with the VALIDATED payload, after the spec call', async () => {
-      const client = fake()
-      await authorSpec(deps(client.client), INPUT)
-
-      expect(client.calls).toHaveLength(2)
-      const mockupCall = client.calls[1]!
-      // Task 18: a per-screen call, not the whole-document one.
-      expect(mockupCall.schema).toBe(SCREEN_MOCKUP_JSON_SCHEMA)
-      expect(JSON.stringify(mockupCall.messages)).toContain('walked_today')
-    })
-
-    /**
-     * The production failure this retry was built for, reproduced exactly:
-     * an overloaded_error delivered as a STREAM EVENT, so it carries a `type`
-     * and no `status`. The SDK cannot retry it (the response had already
-     * begun) and a status-code check would not see it.
-     */
-    const OVERLOADED = () =>
-      new ChatStreamError(
-        { kind: 'api_error', status: null, type: 'overloaded_error' },
-        '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
-      )
-
-    it('retries a transient mockup failure, and the proposal survives it', async () => {
-      // 2026-08-18: this exact failure discarded a validated spec that had
-      // already cost 4704 billed output tokens, and the friend got nothing.
-      const client = fake({ mockups: [OVERLOADED(), null] })
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
-      expect(proposal).toBeDefined()
-      expect(client.mockupCalls()).toHaveLength(2)
-      // One spec call, not two: the retry re-runs ONLY the mockup call, so the
-      // validated draft is not re-authored and not re-billed.
-      expect(client.specCalls()).toHaveLength(1)
-
-      const row = metrics().at(-1)!
-      expect(row.event).toBe('spec_proposed')
-      expect(row.data.mockup_attempt).toBe(2)
-      expect(readSpecs(db, 1)).toHaveLength(1)
-    })
-
-    it('gives up after MAX_MOCKUP_ATTEMPTS rather than retrying forever', async () => {
-      const client = fake({ mockups: [OVERLOADED(), OVERLOADED()] })
-      expect(await authorSpec(deps(client.client), INPUT)).toBeUndefined()
-
-      expect(client.mockupCalls()).toHaveLength(MAX_MOCKUP_ATTEMPTS)
-      const row = metrics().at(-1)!
-      expect(row.event).toBe('spec_error')
-      expect(row.data.kind).toBe('mockup_failed')
-      expect(row.data.mockup_attempt).toBe(MAX_MOCKUP_ATTEMPTS)
-    })
-
-    it('does not retry a mockup failure another sample cannot fix', async () => {
-      const client = fake({
-        mockups: [
-          new ChatStreamError(
-            { kind: 'bad_request', status: 400, type: 'invalid_request_error' },
-            'nope',
-          ),
-        ],
-      })
-      expect(await authorSpec(deps(client.client), INPUT)).toBeUndefined()
-
-      expect(client.mockupCalls()).toHaveLength(1)
-      expect(metrics().at(-1)!.data.mockup_attempt).toBe(1)
-    })
-
-    it('does not retry once the friend has gone, even on a transient failure', async () => {
-      // A retry here would spend real money drawing a preview for a closed
-      // tab. The abort check is separate from isTransient on purpose.
-      const aborter = new AbortController()
-      let seen = 0
-      const client = fake({
-        mockups: [OVERLOADED(), null],
-        // Call 1 is the spec call, call 2 the mockup call — abort as the
-        // mockup call starts, so the spec half still completes normally.
-        onCall: () => {
-          seen += 1
-          if (seen === 2) aborter.abort()
-        },
-      })
-
-      expect(
-        await authorSpec(deps(client.client), { ...INPUT, signal: aborter.signal }),
-      ).toBeUndefined()
-      expect(client.mockupCalls()).toHaveLength(1)
-    })
-
-    it('writes NO spec row when the mockup call fails', async () => {
-      // mockup_html is NOT NULL and a spec row without its preview is a card
-      // the friend cannot read. Both calls succeed or neither is stored.
-      const client = fake({ mockup: new Error('boom') })
-      expect(await authorSpec(deps(client.client), INPUT)).toBeUndefined()
-      expect(readSpecs(db, 1)).toEqual([])
-
-      const row = metrics().at(-1)!
-      expect(row.event).toBe('spec_error')
-      expect(row.data.kind).toBe('mockup_failed')
-      expect(row.data.attempt).toBe(1)
-      // The prompt was loaded before the call failed, so the row can still
-      // say which mockup prompt was in play.
-      expect(row.data.mockup_prompt_sha).toMatch(/^[0-9a-f]{12}$/)
-      expect(row.data.mockup_prompt_sha).not.toBe(row.data.prompt_sha)
-    })
-
-    it("puts the SPEC call's billed tokens on the mockup_failed row", async () => {
-      // On the happy path those tokens ride on spec_proposed. No spec_proposed
-      // is written here, so this row is their only home — see ledger D15.
-      await authorSpec(deps(fake({ mockup: new Error('boom') }).client), INPUT)
-
-      const data = metrics().at(-1)!.data
-      expect(data.input).toBe(USAGE.input)
-      expect(data.output).toBe(USAGE.output)
-    })
-
-    it('reports the mockup call\'s own usage as null when it failed before responding', async () => {
-      // Zero is a claim that nothing was billed. For a connection failure that
-      // is true of the mockup call and false of the spec call — hence two sets
-      // of fields.
-      await authorSpec(
-        deps(
-          fake({
-            mockup: new ChatStreamError(
-              { kind: 'connection', status: null, type: null },
-              'socket hang up',
-            ),
-          }).client,
-        ),
-        INPUT,
-      )
-
-      const data = metrics().at(-1)!.data
-      expect(data.kind).toBe('mockup_failed')
-      expect(data.mockup_input).toBeNull()
-      expect(data.mockup_output).toBeNull()
-      expect(data.mockup_cache_read).toBeNull()
-      expect(data.mockup_cache_creation).toBeNull()
-    })
-
-    it("reports the mockup call's own usage when it failed AFTER responding", async () => {
-      await authorSpec(
-        deps(
-          fake({
-            mockup: new ChatStreamError(
-              {
-                kind: 'truncated_spec',
-                status: null,
-                type: null,
-                usage: MOCKUP_USAGE,
-                served: SERVED,
-              },
-              'mockup call did not complete',
-            ),
-          }).client,
-        ),
-        INPUT,
-      )
-
-      const data = metrics().at(-1)!.data
-      expect(data.mockup_output).toBe(MOCKUP_USAGE.output)
-      // Still the SPEC call's on the four standard names.
-      expect(data.output).toBe(USAGE.output)
-    })
-
-    it("reports the mockup call's own usage when the VALIDATOR rejects its reply", async () => {
-      // The call returned and was billed; only the validator said no. Null
-      // here would claim nothing was billed (ledger D15).
-      await authorSpec(deps(fake({ mockup: { mockup_html: '   ' } }).client), INPUT)
-
-      const data = metrics().at(-1)!.data
-      expect(data.kind).toBe('mockup_failed')
-      expect(data.mockup_output).toBe(MOCKUP_USAGE.output)
-      expect(readSpecs(db, 1)).toEqual([])
-    })
-  })
-
   describe('lineage', () => {
     it('stores the server-supplied based_on_version, not a model-authored one', async () => {
       confirmed(CURRENT_V1)
@@ -930,7 +636,7 @@ describe('authorSpec', () => {
       expect(stored.version.based_on_version).toBe(1)
     })
 
-    it('stores null based_on_version when nothing is confirmed yet', async () => {
+    it('stores null based_on_version when there is no prior spec yet', async () => {
       await authorSpec(deps(fake().client), INPUT)
 
       const stored = readStoredSpec(readSpecs(db, 1)[0]!.payload)
@@ -938,9 +644,12 @@ describe('authorSpec', () => {
       expect(stored.version.based_on_version).toBeNull()
     })
 
-    it('ignores an UNCONFIRMED newer proposal when choosing the base', async () => {
-      // currentSpec is the newest CONFIRMED proposal. A rejected one sitting
-      // on top of it is not what the next version is based on.
+    it('bases the next version on the newest proposal, confirmed or not', async () => {
+      // currentSpec is the newest proposal, full stop — nothing confirms any
+      // more, so there is no longer an "unconfirmed proposal" for it to skip.
+      // This used to prove the OPPOSITE: that a proposal sitting on top of a
+      // confirmed one was ignored. That distinction is gone by design (see
+      // lib/db/specs.ts's currentSpec docstring).
       confirmed(CURRENT_V1)
       insertSpec(db, {
         accountId: 1,
@@ -955,27 +664,27 @@ describe('authorSpec', () => {
 
       const stored = readStoredSpec(readSpecs(db, 1)[0]!.payload)
       if (stored.kind !== 'version') throw new Error('unreachable')
-      expect(stored.version.based_on_version).toBe(1)
+      // Version 2 (the row just inserted above), not version 1.
+      expect(stored.version.based_on_version).toBe(2)
     })
 
-    it('reads the pointer at WRITE time, so a confirmation mid-authoring is not missed', async () => {
-      // The authoring call can run for three minutes, and the confirm buttons
-      // are gated by `confirming`, not by `busy` — so the card already on
-      // screen stays clickable for the whole wait while the friend watches
-      // "Putting together a preview…". If they press "Build this" in that
-      // window, the row this function writes must not name a base that stopped
-      // being current before the row existed: `specs` rejects UPDATE, so the
-      // diff for that version is computed against the wrong base forever.
+    it('reads the pointer at WRITE time, so a spec written mid-authoring is not missed', async () => {
+      // The authoring call can run for three minutes. If some other write
+      // lands a newer spec row while THIS call is still in flight — a second
+      // conversation, a retry, anything — the row this function writes must
+      // not name a base that stopped being current before the row existed:
+      // `specs` rejects UPDATE, so the diff for that version is computed
+      // against the wrong base forever.
       //
       // onCall fires while the spec call is in flight, which is exactly when
-      // the button is live.
+      // that race is live.
       confirmed(CURRENT_V1)
       let fired = false
       const client = fake({
         onCall: () => {
           if (fired) return
           fired = true
-          confirmed({ ...CURRENT_V1, change_summary: 'the card that was on screen' })
+          confirmed({ ...CURRENT_V1, change_summary: 'a spec written while the first call was in flight' })
         },
       })
 
@@ -987,7 +696,7 @@ describe('authorSpec', () => {
       expect(written.version).toBe(3)
       const stored = readStoredSpec(written.payload)
       if (stored.kind !== 'version') throw new Error('unreachable')
-      // v2 — the version confirmed mid-flight — not v1, which was current
+      // v2 — the version written mid-flight — not v1, which was current
       // when the call started.
       expect(stored.version.based_on_version).toBe(2)
     })
@@ -1006,41 +715,6 @@ describe('authorSpec', () => {
     })
   })
 
-  describe('the delivery promise rides on the proposal', () => {
-    // The card that streams in mid-turn arrives through the `proposal` NDJSON
-    // line, and the page never re-renders — so a `first` computed once at page
-    // load and handed to every card promised "tomorrow morning" for a one-word
-    // relabel proposed later in the same session. The answer has to be
-    // computed for THIS card, at the moment the row is written.
-
-    it('calls a first-ever proposal a first dashboard', async () => {
-      const proposal = await authorSpec(deps(fake().client), INPUT)
-      expect(proposal!.first).toBe(true)
-    })
-
-    it('calls a proposal above an already-confirmed version a change, not a first dashboard', async () => {
-      confirmed(CURRENT_V1)
-      const proposal = await authorSpec(deps(fake().client), INPUT)
-      expect(proposal!.first).toBe(false)
-    })
-
-    it('still calls it a first dashboard when the version below it was only PROPOSED', async () => {
-      // hasConfirmedSpecBelow, not hasConfirmedSpec: a rejected v1 means
-      // nothing has ever been built, so v2 really is their first dashboard.
-      insertSpec(db, {
-        accountId: 1,
-        conversationId: 'conv-0',
-        promptSha: 'abc123abc123',
-        payload: CURRENT_V1,
-        mockupHtml: '<html></html>',
-        at: 1,
-      })
-      const proposal = await authorSpec(deps(fake().client), INPUT)
-      expect(proposal!.version).toBe(2)
-      expect(proposal!.first).toBe(true)
-    })
-  })
-
   describe('the messages sent to propose()', () => {
     it('appends the synthetic "Write the spec now." message when the transcript ends on an assistant turn', async () => {
       seedConversation()
@@ -1052,7 +726,7 @@ describe('authorSpec', () => {
       expect(sent.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'user'])
       expect(sent[0]!.content).toBe('what should I track?')
       expect(sent[1]!.content).toBe('sure thing')
-      expect(sent[2]!.content).toMatch(/no confirmed spec/i)
+      expect(sent[2]!.content).toMatch(/no spec for this account/i)
       expect(sent[3]!.content).toBe('Write the spec now.')
     })
 
@@ -1100,53 +774,6 @@ describe('authorSpec', () => {
   })
 
   /**
-   * THE STAGE, FROM THE SIDE THAT PRODUCES IT.
-   *
-   * Nothing in the suite asked authorSpec to report the crossing before this
-   * block existed: the panel's tests push a stage line in by hand, and the
-   * route's authorSpec double takes no argument at all. Both halves of the
-   * server's contribution — this call, and the route line it feeds — could be
-   * deleted with the whole suite staying green, which is what "the wiring test
-   * holds the stream open" was taken to cover and does not.
-   */
-  describe('reporting which half of the wait we are in', () => {
-    it('reports the mockup stage BEFORE the mockup call, not after it', async () => {
-      // The ordering is the entire point. Announced after the call returns,
-      // the friend is told about the slow half once it is already over — the
-      // panel would jump to "Drawing the preview…" and immediately resolve.
-      const order: string[] = []
-      const client = fake({
-        onCall: () => order.push('propose'),
-      })
-
-      await authorSpec(deps(client.client), {
-        ...INPUT,
-        onStage: (stage) => order.push(`stage:${stage}`),
-      })
-
-      // spec call, then the announcement, then the mockup call.
-      expect(order).toEqual(['propose', 'stage:mockup', 'propose'])
-      expect(client.specCalls()).toHaveLength(1)
-    })
-
-    it('says nothing when the spec never validated and no preview is drawn', async () => {
-      // A stage that is announced for a call that never happens is a lie the
-      // friend watches for the rest of the turn.
-      const seen: string[] = []
-      const client = fake({ drafts: [BAD_DRAFT, BAD_DRAFT] })
-
-      expect(
-        await authorSpec(deps(client.client), {
-          ...INPUT,
-          onStage: (stage) => seen.push(stage),
-        }),
-      ).toBeUndefined()
-
-      expect(seen).toEqual([])
-    })
-  })
-
-  /**
    * Task 13: which shape the writer is asked for. `mode` is decided in the
    * same place currentVersionBlock already branches — a confirmed row in the
    * current shape gets PATCH, everything else (no confirmed row at all, or a
@@ -1164,7 +791,7 @@ describe('authorSpec', () => {
       values: [{ kind: 'entered', id: 'eating_out_flag', description: 'One tap per day.' }],
     }
 
-    /** A current confirmed version with two panels, so a patch has something
+    /** A current version with two panels, so a patch has something
      * to remove and something left over to prove the rest survived untouched. */
     const TWO_PANEL_CURRENT = {
       ...GOOD_DRAFT,
@@ -1331,323 +958,50 @@ describe('authorSpec', () => {
     })
   })
 
-  /**
-   * Task 18: draw only the screens a patch touched, carry the rest forward.
-   *
-   * `TWO_SCREEN_BASE` gives `morning` TWO panels (not one) specifically so
-   * `move_panel` can take one away without leaving the screen empty —
-   * `parseSpecDraft` (via `applyPatch`) rejects an empty screen, and a
-   * fixture with only one panel per screen would make the move test fail for
-   * a reason that has nothing to do with scoped drawing.
-   */
-  describe('scoped mockup', () => {
-    /** A panel builder parameterised on id, in the same shape the 'authoring
-     * mode' describe block's PANEL_WALKS/PANEL_EATING already use. */
-    function panel(id: string): Panel {
-      return {
-        ...PANEL,
-        id,
-        values: [{ kind: 'entered', id: `${id}_flag`, description: 'One tap per day.' }],
-      }
-    }
-
-    const PANEL_WAKE_UP = panel('wake_up')
-    const PANEL_EATING_OUT = panel('eating_out')
-    const PANEL_BALANCE = panel('balance')
-    const PANEL_WORKOUT = panel('workout')
-
-    /** Two screens: `morning` (two panels, so removing/moving one still
-     * leaves it non-empty) and `money` (one). */
-    const TWO_SCREEN_BASE = {
-      ...GOOD_DRAFT,
-      based_on_version: null,
-      screens: [
-        { id: 'morning', title: 'Morning', order: 1, panels: [PANEL_WAKE_UP, PANEL_EATING_OUT] },
-        { id: 'money', title: 'Money', order: 2, panels: [PANEL_BALANCE] },
-      ],
-    }
-
-    /** The same two screens plus an untouched third. The third is what makes
-     * "draws and previews EVERY screen a single patch touched" a real test of
-     * SCOPING rather than one that would pass just as well if every screen
-     * were affected. */
-    const THREE_SCREEN_BASE = {
-      ...GOOD_DRAFT,
-      based_on_version: null,
-      screens: [
-        { id: 'morning', title: 'Morning', order: 1, panels: [PANEL_WAKE_UP, PANEL_EATING_OUT] },
-        { id: 'money', title: 'Money', order: 2, panels: [PANEL_BALANCE] },
-        { id: 'gym', title: 'Gym', order: 3, panels: [PANEL_WORKOUT] },
-      ],
-    }
-
-    /** A whole-surface DRAFT — no based_on_version, no ops — for the v1
-     * "previews the whole dashboard" case, where the model itself is the one
-     * emitting it. */
-    const TWO_SCREEN_DRAFT = {
-      ...GOOD_DRAFT,
-      screens: [
-        { id: 'morning', title: 'Morning', order: 1, panels: [PANEL_WAKE_UP] },
-        { id: 'money', title: 'Money', order: 2, panels: [PANEL_BALANCE] },
-      ],
-    }
-
-    /** The fragment a screen's BASE version was drawn with — distinct from
-     * fake()'s own drawnFragment(), so "carried forward unchanged" and
-     * "freshly redrawn" can never be confused with each other. */
-    function baseFragment(screenId: string): string {
-      return `<p>BASE FRAGMENT (${screenId})</p>`
-    }
-
-    /**
-     * Simulates a confirmed spec WITH its fragments stored — the state every
-     * confirmation reaches from Task 18 onward, since insertScreenMockups
-     * runs unconditionally after insertSpec on the success path.
-     * `withFragments: false` simulates the other, load-bearing case: a
-     * current-shape version confirmed BEFORE this branch shipped, which has
-     * none at all.
-     */
-    function confirmCurrentSpec(base: unknown, opts: { withFragments?: boolean } = {}): number {
-      const id = insertSpec(db, {
-        accountId: 1,
-        conversationId: 'conv-0',
-        promptSha: 'abc123abc123',
-        payload: base,
-        mockupHtml: '<!doctype html><html><body>OLD WHOLE DOCUMENT</body></html>',
-        at: 1,
-      })
-      confirmSpec(db, { specId: id, accountId: 1, at: 2 })
-      if (opts.withFragments !== false) {
-        insertScreenMockups(
-          db,
-          id,
-          (base as { screens: { id: string }[] }).screens.map((s) => ({
-            screenId: s.id,
-            html: baseFragment(s.id),
-          })),
-          1,
-        )
-      }
-      return id
-    }
-
-    function confirmCurrentSpecWithoutFragments(base: unknown): number {
-      return confirmCurrentSpec(base, { withFragments: false })
-    }
-
-    /** The spec row BY ID, for account 1 — version() is derived from
-     * position so a lookup has to go through readSpecs, same as
-     * specByVersion does. */
-    function specById(id: number) {
-      return readSpecs(db, 1).find((s) => s.id === id)!
-    }
-
-    /** The most recent metrics row of a given event, as its `data` object —
-     * matching the shape every assertion in this file already reads off
-     * `metrics()[i]!.data`. */
-    function lastMetric(event: string): Record<string, unknown> {
-      return metrics().filter((r) => r.event === event).at(-1)!.data
-    }
-
-    const REPLACE_EATING_OUT_PATCH = {
-      change_summary: 'Reworded eating out.',
-      data_requirements: [],
-      open_questions: [],
-      ops: [{ op: 'replace_panel', panel: panel('eating_out') }],
-    }
-
-    it('asks the model only for the affected screens', async () => {
-      confirmCurrentSpec(TWO_SCREEN_BASE)
-      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
-      await authorSpec(deps(client.client), INPUT)
-
-      const mockupCall = client.calls[1]!
-      expect(JSON.stringify(mockupCall.messages)).toContain('morning')
-      expect(JSON.stringify(mockupCall.messages)).not.toContain('money')
+  describe('authorSpec no longer draws a mockup', () => {
+    it('makes exactly ONE model call', async () => {
+      // Two was the old shape: the spec, then the per-screen mockup. The second
+      // call is what this task removes, and a count is the only assertion that
+      // notices if it comes back.
+      const f = fake()
+      await authorSpec(deps(f.client), INPUT)
+      expect(f.calls).toHaveLength(1)
     })
 
-    it("carries the unchanged screen's fragment forward from the base version", async () => {
-      confirmCurrentSpec(TWO_SCREEN_BASE) // fragments already stored
-      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
-      const fragments = readScreenMockups(db, proposal!.id)
-      expect(fragments.get('money')).toBe(baseFragment('money'))
-      expect(fragments.get('morning')).not.toBe(baseFragment('morning'))
+    it('stores an empty mockup_html rather than failing the NOT NULL column', async () => {
+      // The column stays — altering it would be schema surgery on an
+      // append-only table. '' readably means "authored after mockups were
+      // removed"; a row that failed to insert would mean nothing at all.
+      await authorSpec(deps(fake().client), INPUT)
+      const row = db
+        .prepare('SELECT mockup_html FROM specs ORDER BY id DESC LIMIT 1')
+        .get() as { mockup_html: string }
+      expect(row.mockup_html).toBe('')
     })
 
-    it('stores the WHOLE composed document as mockup_html — the build contract', async () => {
-      confirmCurrentSpec(TWO_SCREEN_BASE)
-      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
-      const stored = specById(proposal!.id).mockup_html
-      expect(stored).toContain('morning')
-      expect(stored).toContain('money')
-    })
-
-    it('previews ONLY the affected screen', async () => {
-      confirmCurrentSpec(TWO_SCREEN_BASE)
-      const client = fake({ drafts: [REPLACE_EATING_OUT_PATCH] })
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
-      expect(proposal!.preview_html).toContain('morning')
-      expect(proposal!.preview_html).not.toContain('money')
-    })
-
-    it('previews the whole dashboard for a first version', async () => {
-      const client = fake({ drafts: [TWO_SCREEN_DRAFT] })
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
-      expect(proposal!.preview_html).toContain('money')
-    })
-
-    // The case a friend hits when ONE request touches two screens — the thing
-    // to prove end to end, not just in composeMockup's own unit tests. Both
-    // must be drawn, both must reach the card, and an untouched third must do
-    // neither.
-    it('draws and previews EVERY screen a single patch touched', async () => {
-      confirmCurrentSpec(THREE_SCREEN_BASE) // morning, money, gym
-      const client = fake({
-        drafts: [
-          {
-            change_summary: 'Two small changes.',
-            data_requirements: [],
-            open_questions: [],
-            ops: [
-              { op: 'replace_panel', panel: panel('eating_out') }, // on `morning`
-              { op: 'replace_panel', panel: panel('balance') }, // on `money`
-            ],
-          },
-        ],
-      })
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
-      // The model was asked for both, and only both.
-      const asked = JSON.stringify(client.calls[1]!.messages)
-      expect(asked).toContain('morning')
-      expect(asked).toContain('money')
-      expect(asked).not.toContain('gym')
-
-      // Both reach the card; the untouched one does not.
-      expect(proposal!.preview_html).toContain('morning')
-      expect(proposal!.preview_html).toContain('money')
-      expect(proposal!.preview_html).not.toContain('gym')
-
-      // And the STORED document is still the whole surface, gym included —
-      // the card is scoped, the build contract never is.
-      expect(specById(proposal!.id).mockup_html).toContain('gym')
-    })
-
-    // A move is the one op that touches two screens without naming two panels.
-    it('redraws BOTH ends of a move, so the screen a panel left loses it', async () => {
-      confirmCurrentSpec(TWO_SCREEN_BASE)
-      const client = fake({
-        drafts: [
-          {
-            change_summary: 'Moved eating out into money.',
-            data_requirements: [],
-            open_questions: [],
-            ops: [{ op: 'move_panel', panel_id: 'eating_out', screen_id: 'money' }],
-          },
-        ],
-      })
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
-      const asked = JSON.stringify(client.calls[1]!.messages)
-      // Without the source end, `morning` would keep a carried-forward
-      // fragment still showing the panel that just left it.
-      expect(asked).toContain('morning')
-      expect(asked).toContain('money')
-      expect(proposal!.preview_html).toContain('morning')
-    })
-
-    // Final review, Important 2. Before this fix, a version confirmed BEFORE
-    // spec_screen_mockups existed (zero rows, simulated by
-    // confirmCurrentSpecWithoutFragments) hit composeMockup's own-fragment
-    // gap on EVERY subsequent patch that didn't touch every screen, because
-    // affectedScreens only reports what the OPS touched and a meta-only
-    // patch touches none. That is permanent for the account — `specs` is
-    // append-only, so there is no backfill — until a patch is authored that
-    // happens to touch every screen. The fix treats "no carried fragment" as
-    // affected too, so the very first patch after this deploy asks the model
-    // to redraw everything it is missing and the account heals itself.
-    it('heals a pre-branch account: a meta-only patch on a version with no stored fragments still succeeds and draws every screen', async () => {
-      confirmCurrentSpecWithoutFragments(TWO_SCREEN_BASE)
-      const client = fake({
-        drafts: [
-          {
-            change_summary: 'Renamed the dashboard.',
-            data_requirements: [],
-            open_questions: [],
-            ops: [{ op: 'set_meta', title: 'New title', summary: null, background: null }],
-          },
-        ],
-      })
-
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
+    it('writes no spec_screen_mockups row', async () => {
+      const proposal = await authorSpec(deps(fake().client), INPUT)
+      // A zero count is not proof by itself — it is also what a total
+      // authoring failure looks like (nothing written at all). Assert the
+      // spec row actually landed first, so this test can only pass by
+      // proving "a spec was written, and it has no mockup rows" rather than
+      // "nothing happened".
       expect(proposal).toBeDefined()
-      // The ops named no screen, but both were missing a fragment, so both
-      // had to be asked for.
-      const asked = JSON.stringify(client.calls[1]!.messages)
-      expect(asked).toContain('morning')
-      expect(asked).toContain('money')
-
-      // A full, gap-free fragment set is now stored — not the fabricated
-      // baseFragment() the "carries the unchanged screen's fragment forward"
-      // tests use, but a freshly drawn one, because there was nothing to
-      // carry.
-      const fragments = readScreenMockups(db, proposal!.id)
-      expect(fragments.get('morning')).toBe(drawnFragment('morning'))
-      expect(fragments.get('money')).toBe(drawnFragment('money'))
-
-      // And no error, let alone a screen id, ever reached the metrics log.
-      expect(metrics().some((r) => r.event === 'spec_error')).toBe(false)
+      expect(readSpecs(db, 1)).toHaveLength(1)
+      const row = db
+        .prepare('SELECT COUNT(*) AS n FROM spec_screen_mockups')
+        .get() as { n: number }
+      expect(row.n).toBe(0)
     })
 
-    // Final review, Critical 1. This is the failure mode the healing test
-    // above closes off in practice for lib/spec/author.ts's own caller — with
-    // the fix above applied, composeMockup can no longer be handed a
-    // draft.screens id it has no fragment for, so its own "no fragment for
-    // screen" throw is unreachable from authorSpec by construction (proved in
-    // the mockupCompose.test.ts unit test alongside it). It remains reachable
-    // from any OTHER caller with a narrower guarantee — see
-    // app/[user]/page.tsx's pageLoadPreview, which already catches
-    // unconditionally and degrades to mockup_html — which is why the fix
-    // belongs in composeMockup itself (a SpecShapeError, redacted by
-    // metricMessage) rather than only in this call site.
-
-    it('makes no mockup call at all for a meta-only patch, and carries every fragment forward', async () => {
-      confirmCurrentSpec(TWO_SCREEN_BASE)
-      const client = fake({
-        drafts: [
-          {
-            change_summary: 'Renamed the dashboard.',
-            data_requirements: [],
-            open_questions: [],
-            ops: [{ op: 'set_meta', title: 'New title', summary: null, background: null }],
-          },
-        ],
-      })
-      const proposal = await authorSpec(deps(client.client), INPUT)
-
-      expect(proposal).toBeDefined()
-      // Only the spec call happened — no second propose() call at all.
-      expect(client.calls).toHaveLength(1)
-
-      // mockupFields reports null rather than fabricating usage for a call
-      // that never happened (ledger D15's rule, extended to "zero calls").
-      const row = metrics().find((r) => r.event === 'spec_proposed')!
-      expect(row.data.mockup_input).toBeNull()
-      expect(row.data.mockup_prompt_sha).toBeNull()
-
-      // Both screens carried forward untouched, and the card falls back to
-      // the whole (unchanged-looking) dashboard rather than showing nothing.
-      const fragments = readScreenMockups(db, proposal!.id)
-      expect(fragments.get('morning')).toBe(baseFragment('morning'))
-      expect(fragments.get('money')).toBe(baseFragment('money'))
-      expect(proposal!.preview_html).toBe(proposal!.mockup_html)
+    it('writes no mockup_prompt_sha on the spec_proposed row', async () => {
+      // The metric's shape is part of the contract: a field naming a prompt
+      // that no longer runs would be permanently misleading in an append-only
+      // table.
+      await authorSpec(deps(fake().client), INPUT)
+      const proposed = metrics().find((m) => m.event === 'spec_proposed')
+      expect(proposed).toBeDefined()
+      expect(proposed!.data).not.toHaveProperty('mockup_prompt_sha')
     })
   })
 })

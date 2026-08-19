@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { APIError } from '@anthropic-ai/sdk'
 import { openPlatformDb } from '@/lib/db/platform'
 import { appendTranscript, readTranscript } from '@/lib/db/appendOnly'
-import { confirmSpec, insertSpec } from '@/lib/db/specs'
+import { insertSpec } from '@/lib/db/specs'
 import {
   CHAT_MODEL,
   ChatStreamError,
@@ -906,18 +906,22 @@ describe('conversation-start alerting', () => {
     // account HAS spoken before, so firstHumanWords is false, and the
     // acknowledgment row is seconds old, so `started` is false too.
     //
-    // The sequence is the real one, driven through runTurn rather than
-    // hand-seeded, so it is the product's own behaviour being asserted:
-    // a conversation days ago, then "Build this" pressed today (which posts a
-    // turn with body: null), then the friend replying to what the agent said.
+    // The sequence is driven through runTurn rather than hand-seeded, so it is
+    // runTurn's own behaviour being asserted: a conversation days ago, then a
+    // product-initiated turn (runTurn's own body: null contract — see "does
+    // not alert on the confirmation turn itself" below for what still calls
+    // it, now that nothing in the app does), then the friend replying to what
+    // the agent said.
     const DAY = 24 * 60 * 60 * 1000
     const monday = 1_000
 
     // Monday: a real exchange. This alerts, and that is not what is under test.
     await runTurn({ ...alerted().deps, now: () => monday }, input({ body: 'here is what I want' }))
 
-    // Thursday: they press "Build this" without typing. app/api/chat/route.ts
-    // sends body: null, and runTurn appends the agent's acknowledgment.
+    // Thursday: a product-initiated turn, called directly through runTurn —
+    // body: null appends the agent's acknowledgment. Nothing in the app sends
+    // this any more (the confirm button and route are gone); this test still
+    // drives runTurn's own contract for one directly.
     const thursday = monday + 3 * DAY
     await runTurn({ ...alerted().deps, now: () => thursday }, input({ body: null }))
 
@@ -931,8 +935,11 @@ describe('conversation-start alerting', () => {
 
   it('does not alert on the confirmation turn itself', async () => {
     // The other half, so the test above cannot be satisfied by alerting on
-    // every product-initiated turn: nobody typed, so nobody showed up. The
-    // confirm route has already sent its own spec_confirmed alert.
+    // every product-initiated turn: nobody typed, so nobody showed up. (This
+    // exercises runTurn's body: null path directly; nothing in the app sends
+    // that trigger any more now that the confirm button and route are gone,
+    // but runTurn's own contract for a product-initiated turn is still real
+    // and still worth pinning.)
     const { deps, calls } = alerted({ now: () => 1_000 })
     const outcome = await runTurn(deps, input({ body: null }))
     expect(calls).toEqual([])
@@ -999,12 +1006,13 @@ describe('the completion rule with propose_spec', () => {
         manual_logging: [], open_questions: [],
       },
     },
-    mockup_html: '<!doctype html>',
-    preview_html: '<!doctype html>',
-    // Every proposal carries its own delivery promise, computed from the
-    // record for THAT card — see Proposal.first. runTurn only ever passes it
-    // through, so its value is immaterial here; its presence is not.
-    first: true,
+    // mockup_html, preview_html and first are gone as of the mockup-loop
+    // removal (plan 2026-08-19-remove-the-mockup-loop, Task 4) — this fixture
+    // used to carry all three because it described a Proposal shape that no
+    // longer exists. runTurn only ever passes a Proposal through unopened, so
+    // nothing here depended on their VALUES, but keeping fields the real type
+    // no longer has would describe a shape this fixture is not proving
+    // anything about.
   }
 
   it('hands authoring a signal the request cannot abort', async () => {
@@ -1180,45 +1188,6 @@ describe('the completion rule with propose_spec', () => {
     expect(event).not.toBe('chat_empty_reply')
   })
 
-  it('hands the stage reporter down to authorSpec', async () => {
-    // The middle link in the chain that tells a friend which half of the
-    // minute they are in: the route makes the callback, authorSpec fires it,
-    // and runTurn is the only thing joining them. Dropping `onStage` from the
-    // object built here left the whole suite green — the panel's tests push a
-    // stage line in by hand and never ask the server for one.
-    const seen: 'mockup'[] = []
-    let received: ((stage: 'mockup') => void) | undefined
-    await runTurn(
-      {
-        db,
-        client: toolClient('sure', ['propose_spec']),
-        now: () => 1_000,
-        context: 'interview',
-        alert: noAlert,
-        authorSpec: async (authorInput) => {
-          received = authorInput.onStage
-          return PROPOSAL
-        },
-      },
-      {
-        accountId: 1,
-        sessionId: 's',
-        currentState: null,
-        body: 'hi',
-        signal: new AbortController().signal,
-        authoringSignal: new AbortController().signal,
-        onText: () => {},
-        onStage: (stage) => seen.push(stage),
-      },
-    )
-
-    // The callback the route supplied, not merely some function: a stage
-    // reporter wired to the wrong closure reports into nothing.
-    expect(received).toBeTypeOf('function')
-    received!('mockup')
-    expect(seen).toEqual(['mockup'])
-  })
-
   it('still records the missing arm even when the reply text was truncated, not merely absent', async () => {
     // The other trigger the reviewer named: a tool-calling turn whose
     // stop_reason is not end_turn/tool_use (e.g. max_tokens) is `proposed
@@ -1355,6 +1324,11 @@ describe('the completion rule with propose_spec', () => {
       }
     }
 
+    // Nothing in the application writes spec_confirmations any more
+    // (lib/db/specs.ts's confirmSpec is gone), but a friend who confirmed
+    // something last month said a real thing, and the agent should still see
+    // it — readConfirmations and the confirmation-note merge both survive.
+    // Inserted directly, as tests/db/specs.test.ts's own fixtures now do.
     function confirmOne(at: number): void {
       const specId = insertSpec(db, {
         accountId: 1,
@@ -1364,7 +1338,9 @@ describe('the completion rule with propose_spec', () => {
         mockupHtml: '<p>mock</p>',
         at,
       })
-      confirmSpec(db, { specId, accountId: 1, at })
+      db.prepare(
+        'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
+      ).run(specId, 1, at)
     }
 
     async function turn(seen: Parameters<typeof capturingClient>[0]) {

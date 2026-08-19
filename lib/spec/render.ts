@@ -2,8 +2,15 @@ import type { LegacySpecPayload } from './legacy'
 import type { DataRequirement, EntryWidget, Panel, Screen, SpecVersion, ValueSpec } from './schema'
 
 /** The metadata both renderers stamp below the title: who this build contract
- * is for, which confirmed version it is, and when it was confirmed. Shared
- * because the two renderers agree on exactly this much. */
+ * is for, which version it is, and the version's date — a historical
+ * confirmation's timestamp where one exists (nothing confirms any more, but
+ * `spec_confirmations` keeps every row it already holds), the version's own
+ * `at` otherwise (lib/db/specs.ts's currentSpec, scripts/export-spec.ts).
+ * `confirmedAt` keeps its name rather than being renamed to something like
+ * `dateAt`: every call site (this file, scripts/export-spec.ts,
+ * app/admin/[user]/page.tsx) already reads it that way, and a rename here
+ * would touch all three for a label change alone. Shared because the two
+ * renderers agree on exactly this much. */
 type RenderMeta = { slug: string; version: number; confirmedAt: number }
 
 /**
@@ -51,7 +58,7 @@ function list(items: string[]): string {
 }
 
 /**
- * A confirmed spec, as the build contract on disk (the OLD six-field shape).
+ * A spec, as the build contract on disk (the OLD six-field shape).
  *
  * Rendered from the stored payload rather than stored as text, so improving
  * how a spec reads lets every past spec be re-exported in the new format
@@ -60,7 +67,7 @@ function list(items: string[]): string {
  *
  * FROZEN in the same sense lib/spec/legacy.ts is: this renders rows nobody
  * can ever fix (specs rejects UPDATE), so its behaviour must not move even
- * as renderSpecMarkdown below takes over new confirmations. Renamed from
+ * as renderSpecMarkdown below takes over every new spec. Renamed from
  * `renderSpecMarkdown` — body otherwise untouched.
  */
 export function renderLegacyMarkdown(
@@ -79,12 +86,12 @@ export function renderLegacyMarkdown(
 
   return `# ${safeMarkdown(payload.title)}
 
-<!-- Generated from the confirmed spec record by scripts/pull-spec.sh.
+<!-- Generated from the spec record by scripts/pull-spec.sh.
      Do not hand-edit: the next pull overwrites this file. -->
 
 - **User:** ${meta.slug}
 - **Spec version:** v${meta.version}
-- **Confirmed:** ${new Date(meta.confirmedAt).toISOString()}
+- **Version date:** ${new Date(meta.confirmedAt).toISOString()}
 
 ## Summary
 
@@ -217,7 +224,7 @@ function collectEnteredValues(screensInOrder: Screen[]): ValueSpec[] {
  * The new whole-surface spec, as the build contract on disk.
  *
  * Emits, in a fixed order: an H1 title with the generated-file banner; the
- * slug/version/confirmed metadata list; `## What changed`; `## Summary`;
+ * slug/version/date metadata list; `## What changed`; `## Summary`;
  * `## Background`; `## Screens` (each screen in `order`, each panel carrying
  * its id); `## Entered by hand` (derived — see collectEnteredValues);
  * `## Data requirements`; `## Open questions`. Deterministic: a pure
@@ -237,12 +244,12 @@ export function renderSpecMarkdown(version: SpecVersion, meta: RenderMeta): stri
 
   return `# ${safeMarkdown(version.title)}
 
-<!-- Generated from the confirmed spec record by scripts/pull-spec.sh.
+<!-- Generated from the spec record by scripts/pull-spec.sh.
      Do not hand-edit: the next pull overwrites this file. -->
 
 - **User:** ${meta.slug}
 - **Spec version:** v${meta.version}
-- **Confirmed:** ${new Date(meta.confirmedAt).toISOString()}
+- **Version date:** ${new Date(meta.confirmedAt).toISOString()}
 
 ## What changed
 

@@ -1,12 +1,15 @@
 // tests/chat/confirmations.test.ts
 //
 // The agent could not see confirmations at all before this module: runTurn's
-// context is transcripts, and /api/spec/confirm writes to specs,
+// context is transcripts, and pressing "Build this" used to write to specs,
 // spec_confirmations and metrics — none of which reach the model. The observed
 // symptom was the agent re-proposing an identical version after one had been
-// confirmed. These tests pin the fix and, more importantly, pin the two
-// properties that make it safe: nothing is persisted, and the note lands
-// somewhere the API will actually accept.
+// confirmed. Nothing confirms any more (the button and /api/spec/confirm are
+// both gone), but spec_confirmations keeps every row it already holds, and a
+// friend who confirmed something last month said a real thing the agent
+// should still see. These tests pin that read path and, more importantly,
+// pin the two properties that make it safe: nothing is persisted, and the
+// note lands somewhere the API will actually accept.
 import { describe, expect, it } from 'vitest'
 import {
   applyConfirmationNote,

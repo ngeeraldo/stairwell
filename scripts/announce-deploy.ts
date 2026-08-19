@@ -1,8 +1,10 @@
 // scripts/announce-deploy.ts
 //
 // Turns one build's friend-facing notes into "your build landed", posted
-// into one account's chat, once per confirmed spec version. Run BY NICO, by
-// hand, right after a deploy that shipped that specific account's build.
+// into one account's chat, once per spec version that has been built (keyed
+// off notes/v<n>.md existing, not off any confirmation — nothing confirms
+// any more). Run BY NICO, by hand, right after a deploy that shipped that
+// specific account's build.
 //
 // DRAFTS BY DEFAULT and only sends on --send: this writes into an
 // append-only transcript a real person reads, and transcripts rejects
@@ -76,7 +78,7 @@ export type AnnounceOutcome = {
     | 'announced'
     | 'drafted'
     | 'already_announced'
-    | 'no_confirmed_spec'
+    | 'no_build_notes'
     | 'notes_missing'
     | 'notes_invalid'
     | 'draft_failed'
@@ -144,7 +146,7 @@ export async function runAnnounce(
     }
   }
 
-  const target = announceTarget(deps.db, opts.slug)
+  const target = announceTarget(deps.db, opts.slug, deps.usersDir)
   if (!target.ok) {
     return {
       kind: target.reason,
@@ -154,8 +156,15 @@ export async function runAnnounce(
             // does not carry one (see lib/chat/announce.ts). Reworded rather
             // than printing a literal placeholder, which reads at a terminal
             // as a forgotten template value.
-            `the confirmed build for '${opts.slug}' was already announced — nothing to do`
-          : `no confirmed spec for '${opts.slug}'`,
+            `the build for '${opts.slug}' was already announced — nothing to do`
+          : // Distinct from notes_missing/NotesMissingError below: this is
+            // "no version of this account has notes at ALL" — nothing has
+            // been built yet — while notes_missing names one specific
+            // version's missing file. Told apart because the two need
+            // different next actions at a terminal: this one says "build
+            // something first", that one says "write the notes for what you
+            // already built".
+            `no build notes for '${opts.slug}' — nothing has been built yet`,
       warnings,
     }
   }
@@ -356,7 +365,7 @@ export function exitCodeFor(kind: AnnounceOutcome['kind']): number {
     'notes_missing',
     'notes_invalid',
     'draft_failed',
-    'no_confirmed_spec',
+    'no_build_notes',
     'body_file_invalid',
   ]
   return refusal.includes(kind) ? 1 : 0

@@ -67,12 +67,18 @@ export type TurnInput = {
    * What the friend typed — or `null` for a turn the PRODUCT started rather
    * than the person.
    *
-   * The only such turn today is a confirmation: pressing "Build this" used to
-   * record the decision and say nothing, so the acknowledgment agent-v4
-   * promises sat waiting for the friend's next message. It arrives immediately
-   * now, which means a turn with no user message behind it. No user row is
-   * written on that path — nobody typed anything, and `transcripts` cannot be
-   * corrected later.
+   * Nothing sends `null` any more. The only such turn ever was a
+   * confirmation: pressing "Build this" used to record the decision and say
+   * nothing, so this let agent-v4's promised acknowledgment arrive
+   * immediately — a turn with no user message behind it — instead of
+   * waiting for the friend's next message. Nothing confirms any more
+   * (lib/db/specs.ts's confirmSpec is gone), and app/api/chat/route.ts no
+   * longer accepts the `trigger` that produced this. Kept, not deleted:
+   * this file's own tests exercise the shape directly, and it is the
+   * general contract for ANY future product-initiated turn, not solely the
+   * confirmation one that used to be the only example of it. No user row is
+   * written on that path — nobody typed anything, and `transcripts` cannot
+   * be corrected later.
    */
   body: string | null
   /**
@@ -95,8 +101,11 @@ export type TurnInput = {
    * nothing.
    *
    * A dropped connection is now a DELAY, not a loss: authoring runs to
-   * completion, `specs` gets its row, and app/[user]/page.tsx serves the card
-   * on the friend's next load. Nothing is lost that was paid for.
+   * completion and `specs` gets its row regardless of whether the connection
+   * that started the turn is still open. Nothing is lost that was paid for —
+   * there is no more card for app/[user]/page.tsx to serve on the friend's
+   * next load, but the row is still there, still real, and still what Nico
+   * builds from.
    *
    * Still a signal rather than nothing, because the abort path in
    * lib/spec/author.ts is correct and worth keeping for a caller that really
@@ -106,20 +115,15 @@ export type TurnInput = {
   authoringSignal: AbortSignal
   onText: (text: string) => void
   /**
-   * Reports the crossing from writing the spec to drawing the preview, so the
-   * panel can say which half of the wait a friend is in. See AuthorInput.
-   */
-  onStage?: (stage: 'mockup') => void
-  /**
    * Fires once the assistant row and its chat_turn metric are COMMITTED, before
    * authoring starts.
    *
    * Exists so the panel can stop lying. `{done:true}` only arrives after the
-   * whole turn including authoring, so a connection that dropped during the
-   * preview looked identical to one that dropped before anything was written,
-   * and the panel said "interrupted - not saved" about a reply that was sitting
-   * in an append-only table. It said that in production on 2026-08-18 about
-   * transcripts row 150.
+   * whole turn including authoring, so a connection that dropped while a spec
+   * was being authored looked identical to one that dropped before anything
+   * was written, and the panel said "interrupted - not saved" about a reply
+   * that was sitting in an append-only table. It said that in production on
+   * 2026-08-18 about transcripts row 150.
    *
    * Deliberately fires only on the `usable` path, where an assistant row really
    * was appended. A turn that proposed without saying anything
@@ -267,7 +271,8 @@ export async function runTurn(
   // wiring mistake — an alert that never fires would look exactly like an
   // alert that fired.
   // Not for an agent-initiated turn: the alert means "a friend showed up",
-  // and a confirmation already has its own alert on the confirm route.
+  // and nobody did — the product started this one. (Nothing produces one any
+  // more; see TurnInput.body's own comment.)
   if (arrived && input.body !== null) {
     alert(input.accountId)
   }
@@ -490,7 +495,6 @@ export async function runTurn(
         // NOT input.signal — see authoringSignal's docstring. Passing the
         // request's signal here is what made a wifi hop destroy a proposal.
         signal: input.authoringSignal,
-        onStage: input.onStage,
       })
     } catch {
       // Defense in depth. authorSpec's own contract (lib/spec/author.ts) is

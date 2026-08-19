@@ -1,6 +1,6 @@
 // lib/chat/context.ts
 import type { PlatformDb } from '@/lib/db/platform'
-import { hasConfirmedSpec } from '@/lib/db/specs'
+import { hasSpec } from '@/lib/db/specs'
 
 /**
  * The run kind stamped on every metrics row (architecture-overview.md line
@@ -13,8 +13,9 @@ export type ChatContext = 'interview' | 'tweak'
  * nothing reads this to decide behaviour, and after the unified proposal loop
  * there is only one loop to branch to. It answers architecture-overview line
  * 136's question — how much cost goes into winning someone over versus
- * keeping them — and the boundary is still CONFIRMATION, because a spec that
- * was offered and not accepted has not ended the interview.
+ * keeping them — and the boundary is now simply WHETHER A SPEC EXISTS: with
+ * nothing left to confirm, the newest spec is the contract the moment it is
+ * proposed, so an account's first spec is what ends the interview.
  *
  * The value 'tweak' is kept rather than renamed even though the tweak/build
  * distinction is gone everywhere else: metrics is append-only and cannot be
@@ -22,5 +23,5 @@ export type ChatContext = 'interview' | 'tweak'
  * wording change. See the unified-loop ledger, D11.
  */
 export function contextFor(db: PlatformDb, accountId: number): ChatContext {
-  return hasConfirmedSpec(db, accountId) ? 'tweak' : 'interview'
+  return hasSpec(db, accountId) ? 'tweak' : 'interview'
 }

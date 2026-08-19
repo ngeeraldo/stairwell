@@ -16,7 +16,7 @@ import {
 import { contextFor } from '@/lib/chat/context'
 import { AGENT_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import { runTurn } from '@/lib/chat/turn'
-import { conversationAlerter } from '@/lib/alerts/ntfy'
+import { alerter, conversationAlerter } from '@/lib/alerts/ntfy'
 import { authorSpec as authorSpecImpl } from '@/lib/spec/author'
 import { HEARTBEAT_LINE, startHeartbeat } from '@/lib/chat/heartbeat'
 
@@ -63,24 +63,24 @@ export async function POST(request: Request) {
     return new Response(null, { status: 403 })
   }
 
-  let payload: { body?: unknown; trigger?: unknown }
+  let payload: { body?: unknown }
   try {
-    payload = (await request.json()) as { body?: unknown; trigger?: unknown }
+    payload = (await request.json()) as { body?: unknown }
   } catch {
     return new Response(null, { status: 400 })
   }
-  const typed = typeof payload.body === 'string' ? payload.body.trim() : ''
-
-  // A turn the PRODUCT starts rather than the person. Today there is exactly
-  // one: pressing "Build this" used to record the decision and say nothing, so
-  // agent-v4's promised acknowledgment waited for the friend's next message —
-  // silence at the moment they had just committed to something.
-  //
-  // `body: null` is what tells runTurn no user row belongs in the transcript.
-  // Nobody typed anything, and that table cannot be corrected afterwards.
-  const confirmationTurn = payload.trigger === 'confirmation'
-  const body = confirmationTurn ? null : typed
-  if (body !== null && !body) return new Response(null, { status: 400 })
+  // No `trigger` field any more. This endpoint used to also accept
+  // `{trigger: 'confirmation'}` — a body-less, product-initiated turn sent
+  // right after pressing "Build this", so runTurn's promised acknowledgment
+  // arrived immediately instead of waiting for the friend's next message.
+  // Nothing confirms any more (lib/db/specs.ts's confirmSpec is gone, and so
+  // is the button that sent this), so accepting it left an authenticated
+  // friend able to spend a model call on a `body: null` turn nobody could
+  // otherwise produce. TurnInput.body stays `string | null` in
+  // lib/chat/turn.ts — that shape is real, tested infrastructure independent
+  // of this route — but this route now only ever passes a string.
+  const body = typeof payload.body === 'string' ? payload.body.trim() : ''
+  if (!body) return new Response(null, { status: 400 })
 
   // Resolved BEFORE the ReadableStream. Inside start() a construction failure
   // would land after the 200 and its headers had already gone out, and before
@@ -188,45 +188,46 @@ export async function POST(request: Request) {
       // run forever.
       const authoringSignal = new AbortController().signal
 
+      // Shared by both alerters below: NTFY_TOPIC read at call time rather
+      // than at module scope — the same reason chatClient() is deferred — a
+      // configuration problem should fail the request that needed it, not
+      // the module import that also serves the 401 and 400 paths.
+      const alertDeps = {
+        topic: process.env.NTFY_TOPIC,
+        fetch: globalThis.fetch,
+        db,
+        now: Date.now,
+      }
+      // The general, kind-based sender — used below for the two outcomes
+      // authoring can produce. conversationAlerter (passed into runTurn as
+      // `alert`) is a second, separately bound instance of the same
+      // function; kept as its own call so TurnDeps.alert's `(accountId) =>
+      // void` type is unchanged, which is what stops a future edit from
+      // awaiting a push notification on the critical path of a friend's chat
+      // turn.
+      const sendAlert = alerter(alertDeps)
+
       const outcome = await runTurn(
         {
           db,
           client: turnClient,
           now: Date.now,
           context,
-          // Built per request, and NTFY_TOPIC read at call time rather than
-          // at module scope — the same reason chatClient() is deferred: a
-          // configuration problem should fail the request that needed it,
-          // not the module import that also serves the 401 and 400 paths.
-          alert: conversationAlerter({
-            topic: process.env.NTFY_TOPIC,
-            fetch: globalThis.fetch,
-            db,
-            now: Date.now,
-          }),
-          authorSpec: (proposeInput) => {
-            // Emitted here, not before runTurn: the waiting state is only
-            // true once the reply has finished streaming and the authoring
-            // call actually starts — this callback fires exactly then.
-            if (!request.signal.aborted) {
-              controller.enqueue(line({ authoring: true }))
-            }
-            return authorSpecImpl({ db, client: turnClient, now: Date.now, context }, proposeInput)
-          },
+          alert: conversationAlerter(alertDeps),
+          authorSpec: (proposeInput) =>
+            authorSpecImpl({ db, client: turnClient, now: Date.now, context }, proposeInput),
         },
         {
           accountId: session.account_id,
           sessionId: sessionId!,
           currentState,
           body,
-          // A real transition, forwarded as it happens: the spec came back and
-          // validated, and the slow half — drawing the preview — is starting.
-          onStage: (stage) => controller.enqueue(line({ stage })),
           // The exchange is committed. Sent before authoring begins, so a
-          // connection that dies during the preview still leaves the browser
-          // knowing the reply was saved — which is the difference between
-          // "your message is safe, the preview is late" and "nothing
-          // happened". Guarded like every other enqueue on this stream.
+          // connection that dies while a spec is being authored still leaves
+          // the browser knowing the reply was saved — which is the
+          // difference between "your message is safe, the build is still
+          // coming" and "nothing happened". Guarded like every other enqueue
+          // on this stream.
           onSaved: () => {
             if (!request.signal.aborted) controller.enqueue(line({ saved: true }))
           },
@@ -241,15 +242,20 @@ export async function POST(request: Request) {
         },
       ).finally(stopHeartbeat)
 
-      // Only when a proposal was ATTEMPTED. An ordinary turn — the tool was
-      // never called — emits neither line, distinct from an attempt that
-      // failed.
-      if (!request.signal.aborted) {
-        if (outcome.proposal) {
-          controller.enqueue(line({ proposal: outcome.proposal }))
-        } else if (outcome.proposalFailed) {
-          controller.enqueue(line({ proposal_error: true }))
-        }
+      // TWO SIGNALS THE CONFIRMATION CARD USED TO CARRY, replaced here at the
+      // point that already knows the outcome — see lib/alerts/ntfy.ts's
+      // ALERT_TEXT for why each exists. Deliberately NOT awaited: the
+      // alerter's own contract (lib/alerts/ntfy.ts) is to never throw and
+      // never reject, and a push notification must never delay or fail the
+      // friend's reply — same reasoning as the conversation-start alert
+      // above, which the route has never awaited either. Silent when the
+      // tool was never called: `outcome.proposal` and `outcome.proposalFailed`
+      // are both absent/false on an ordinary turn, so no build signal fires
+      // for something nobody asked for.
+      if (outcome.proposal) {
+        void sendAlert('spec_authored', session.account_id)
+      } else if (outcome.proposalFailed) {
+        void sendAlert('spec_failed', session.account_id)
       }
 
       // THE TURN ITSELF FAILED, upstream, and the friend needs to be told which
@@ -268,9 +274,9 @@ export async function POST(request: Request) {
       // also a turn with no assistant row, so it must not emit this line
       // either. Any new outcome kind that does not append a row must stay
       // outside this branch. NOT suppressed by a failed proposal: a completed
-      // chat turn whose preview failed is still a completed chat turn — the
-      // assistant row for it exists and the friend really did receive that
-      // reply.
+      // chat turn whose spec authoring failed is still a completed chat turn
+      // — the assistant row for it exists and the friend really did receive
+      // that reply.
       if (outcome.kind === 'completed' && !request.signal.aborted) {
         controller.enqueue(line({ done: true }))
       }

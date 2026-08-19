@@ -22,8 +22,9 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 | `docs/superpowers/specs/2026-08-15-user-db-migrations-design.md` | How a friend's tables change shape without losing rows. Read before writing any migration. Closes step-6a ledger residual 2. |
 | `docs/superpowers/ledgers/friend-timezone.md` | Why the day belongs to the friend, and what the bug cost. |
 | `users/devone/` | The worked reference. Its README: "Copy this folder's shape when building a real dashboard." |
-| `users/<slug>/spec.md` + `mockup.html` | The build contract for this friend. |
+| `users/<slug>/spec.md`, `current.md` and the conversation | The build contract for this friend. No mockup — §8. |
 | `docs/runbook.md` | The operator sequence around the build — step 7 is the commands, in order. This file is why they are what they are; that one does not repeat it. |
+| `docs/dashboard-ui-ux-guidelines.md` | How a dashboard should LOOK and behave: the default stack (shadcn on Tailwind, Recharts), the fluid 375–1200px container, the four non-happy panel states, formatting, and what animation may and may not imply. Defaults — a friend's own request outranks them, subject to the three limits that file names. |
 
 ---
 
@@ -110,7 +111,8 @@ this does not go stale again the next time a line moves.
   notice a build that forgot to rewrite it — `lib/build/currentState.ts`.
 - A folder has four legitimate-or-not states, and only one is a defect
   (`tests/users/conventions.test.ts`):
-  - **pulled** — `spec.md`/`mockup.html` only. Not started; allowed.
+  - **pulled** — `spec.md` only (no `mockup.html` any more — mockup-loop
+    removal). Not started; allowed.
   - **scaffolded** — all five `REQUIRED` entries, but `migrations/` holds no
     `.sql`. `new-dashboard.sh` just ran and nobody has designed a shape.
     Allowed; the dashboard says "Under construction" and the friend's
@@ -332,19 +334,24 @@ Sacred data.
 
 ## 8. The build contract
 
-- `spec.md` + `mockup.html` are the build contract for user dashboards. Build
-  toward the mockup. Feasibility doubts → flag to Nico, don't guess — CLAUDE.md.
+- `spec.md`, `current.md`, and the code are the build contract for user
+  dashboards — nothing pulls the conversation itself into the repo; read it
+  live in `/admin` if `spec.md` alone leaves a question. There is no mockup —
+  nothing composes or serves mockup HTML any more, and `mockup.html` is gone
+  from every folder (mockup-loop removal). Feasibility doubts → flag to Nico,
+  don't guess — CLAUDE.md > Build contract.
 - Feasibility doubts go back to the friend via `ask-user.ts`, not into a guess —
   `docs/runbook.md` step 7.
-- Both files are **written by `./scripts/pull-spec.sh` and overwritten on every
-  pull**. Hand edits do not survive. If the spec is wrong, the fix is a new
-  confirmed version in chat — `docs/runbook.md` step 6, CLAUDE.md > Never do
-  these.
-- A confirmed spec version is **whole-surface** — it describes the friend's
-  entire dashboard, not one conversation's worth of changes — CLAUDE.md.
+- `spec.md` is **written by `./scripts/pull-spec.sh` and overwritten on every
+  pull**. Hand edits do not survive. If the spec is wrong, the fix is asking
+  for a change in chat and pulling again — `docs/runbook.md` step 6.
+- A spec version is **whole-surface** — it describes the friend's entire
+  dashboard, not one conversation's worth of changes. Nothing confirms a
+  version any more; the newest spec row is the contract the moment
+  `propose_spec` writes it — CLAUDE.md > Schema & module rules.
 - The spec-writer emits a PATCH against a current-shape base; the stored row
   is still the whole surface, so the build contract above is unchanged —
-  CLAUDE.md > Dashboard folder conventions.
+  CLAUDE.md > Schema & module rules.
 
 ---
 

@@ -15,7 +15,6 @@ import { readStoredSpec, type StoredSpec } from '@/lib/spec/stored'
 import { diffVersions, type SpecDiff } from '@/lib/spec/diff'
 import { renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 import { buildTimeline } from '@/lib/chat/timeline'
-import { MockupDialog } from '@/app/[user]/MockupDialog'
 import { AdminTabs } from './AdminTabs'
 
 /**
@@ -230,32 +229,29 @@ function readOrUndefined(payload: string): StoredSpec | undefined {
  * so Nico reads the conversation the way the user experienced it — a
  * transcript with a hole where the proposal happened is a broken transcript."
  *
- * Not literally app/[user]/ChatPanel.tsx's SpecCard: that one carries the
- * confirm controls, and the admin portal is read-only by a standing rule
- * (lib/auth/authorize.ts). What is shared is the SHAPE — version label, title,
- * what changed, the mockup — and, through MockupDialog, the identical
- * full-screen affordance the friend gets.
+ * Not the friend's own SpecCard — that component is gone from
+ * app/[user]/ChatPanel.tsx along with its confirm controls, since a friend no
+ * longer confirms anything. This pane still renders every proposal as a card,
+ * though: it is Nico's permanent visual record of what was offered at each
+ * point in the conversation, read-only by a standing rule
+ * (lib/auth/authorize.ts), unaffected by whatever the friend's own screen
+ * currently shows. What it shares with the old friend-facing card is the
+ * SHAPE — version label, title, what changed. It no longer shows the mockup:
+ * MockupDialog and the route it read from are gone as of the mockup-loop
+ * removal (plan 2026-08-19-remove-the-mockup-loop, Task 6) — nothing composes
+ * or serves mockup HTML any more.
  */
 function InlineCard({
-  slug,
   version,
   stored,
   openQuestions,
   comparison,
 }: {
-  slug: string
   version: number
   stored: StoredSpec | undefined
   openQuestions: string[]
   comparison: BaseComparison | undefined
 }) {
-  const title =
-    stored === undefined
-      ? 'Unreadable proposal'
-      : stored.kind === 'version'
-        ? stored.version.title
-        : stored.payload.title
-
   return (
     <li data-spec-version={version} className="rounded-lg border bg-card p-4">
       <p className="text-xs font-medium text-muted-foreground">v{version}</p>
@@ -282,9 +278,6 @@ function InlineCard({
             <LegacyBody payload={stored.payload} />
           )}
           {comparison && <BaseComparisonView comparison={comparison} />}
-          <div className="mt-3">
-            <MockupDialog src={`/admin/mockup/${slug}/${version}`} title={title} />
-          </div>
         </>
       )}
     </li>
@@ -364,7 +357,6 @@ export default async function TranscriptPane({
                   return (
                     <InlineCard
                       key={`spec-${item.proposal.id}`}
-                      slug={user}
                       version={item.proposal.version}
                       stored={stored}
                       openQuestions={
@@ -429,11 +421,17 @@ export default async function TranscriptPane({
         }
         spec={
           current === undefined || currentStored === undefined ? (
-            <p className="py-4 text-sm text-muted-foreground">No confirmed spec yet.</p>
+            <p className="py-4 text-sm text-muted-foreground">No spec yet.</p>
           ) : (
             <div className="py-4">
               <p className="mb-3 text-xs text-muted-foreground">
-                {`v${current.version} — confirmed ${new Date(current.confirmed_at!).toISOString()}`}
+                {/* currentSpec (lib/db/specs.ts) now returns the newest spec
+                    whether or not it was ever confirmed, so confirmed_at can
+                    genuinely be null — fall back to the spec's own authored
+                    timestamp, same as lib/spec/author.ts's
+                    currentVersionBlock and scripts/export-spec.ts. Worded "as
+                    of", not "confirmed": nothing confirms any more. */}
+                {`v${current.version} — as of ${new Date(current.confirmed_at ?? current.at).toISOString()}`}
               </p>
               {/*
                 REAL MARKDOWN, not preformatted text. The build contract is
@@ -452,39 +450,16 @@ export default async function TranscriptPane({
                       ? renderSpecMarkdown(currentStored.version, {
                           slug: user,
                           version: current.version,
-                          confirmedAt: current.confirmed_at!,
+                          confirmedAt: current.confirmed_at ?? current.at,
                         })
                       : renderLegacyMarkdown(currentStored.payload, {
                           slug: user,
                           version: current.version,
-                          confirmedAt: current.confirmed_at!,
+                          confirmedAt: current.confirmed_at ?? current.at,
                         }),
                   )}
                 </ReactMarkdown>
               </div>
-            </div>
-          )
-        }
-        mockup={
-          current === undefined ? (
-            <p className="py-4 text-sm text-muted-foreground">No confirmed mockup yet.</p>
-          ) : (
-            <div className="space-y-3 py-4">
-              <MockupDialog
-                src={`/admin/mockup/${user}/${current.version}`}
-                title={`v${current.version}`}
-              />
-              {/* Sealed off exactly like the friend's own preview. An empty
-                  sandbox grants nothing — no scripts, no same-origin, no
-                  forms, no top-level navigation. The admin portal is not a
-                  softer target than the chat surface it is reviewing.
-                  tests/spec/sandbox.test.ts pins this. */}
-              <iframe
-                title={`Preview of v${current.version}`}
-                src={`/admin/mockup/${user}/${current.version}`}
-                sandbox=""
-                className="h-[70vh] w-full rounded-md border bg-background"
-              />
             </div>
           )
         }

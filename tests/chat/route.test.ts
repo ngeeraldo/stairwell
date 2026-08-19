@@ -26,7 +26,6 @@ type Behaviour =
   | 'no-credential'
   | 'propose-ok'
   | 'propose-fail'
-  | 'propose-staged'
   | 'propose-slow'
   | 'stream-error'
 const behaviour: { value: Behaviour } = { value: 'ok' }
@@ -124,19 +123,21 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
   return {
     ...actual,
     // Takes its input, because one of the things the route is on the hook for
-    // is the callback it puts IN that input. A double declaring no parameters
-    // cannot notice a missing `onStage`, which is why the route's half of the
-    // stage wiring went unpinned.
+    // is which signal it puts IN that input (see authoringSignals below).
+    //
+    // Used to also call `input.onStage?.('mockup')` unconditionally, on every
+    // path, to prove that the route's suppression of stage lines (the "no
+    // proposal or stage lines reach the browser" describe block below) was
+    // real rather than an artifact of nothing ever calling onStage in the
+    // first place. `AuthorInput.onStage` is gone now, along with the model
+    // call it used to announce (mockup-loop removal, plan
+    // 2026-08-19-remove-the-mockup-loop, Task 6) — there is nothing left to
+    // call, so that assertion now rests on the route emitting no stage line
+    // by construction rather than on a suppressed callback.
     authorSpec: async (
       _deps: unknown,
       input: import('@/lib/spec/author').AuthorInput,
     ) => {
-      if (behaviour.value === 'propose-staged') {
-        // What the real authorSpec does at the same point: the spec came back
-        // and validated, and the slow call is starting.
-        input.onStage?.('mockup')
-        return PROPOSAL_FIXTURE
-      }
       authoringSignals.push(input.signal)
       if (behaviour.value === 'propose-slow') {
         slowAuthoring.onEnter?.()
@@ -147,8 +148,12 @@ vi.mock('@/lib/spec/author', async (importOriginal) => {
         })
         return PROPOSAL_FIXTURE
       }
-      if (behaviour.value === 'propose-ok') return PROPOSAL_FIXTURE
-      if (behaviour.value === 'propose-fail') return undefined
+      if (behaviour.value === 'propose-ok') {
+        return PROPOSAL_FIXTURE
+      }
+      if (behaviour.value === 'propose-fail') {
+        return undefined
+      }
       throw new Error('authorSpec called on a turn that never proposed')
     },
   }
@@ -331,6 +336,52 @@ describe('POST /api/chat', () => {
     })
   })
 
+  it('alerts spec_authored when authoring returns a proposal', async () => {
+    // Wired at the ROUTE, not inside authorSpec — the point that already
+    // knows the outcome. NTFY_TOPIC stays unset (beforeEach), so this lands
+    // as an alert_failed/no_topic row, same proof-of-attempt pattern as the
+    // "wires a real alerter" test above: no network reached, but the kind on
+    // the row proves the call was made.
+    await signIn(false)
+    behaviour.value = 'propose-ok'
+    const res = await post({ body: 'help me build a dashboard' })
+    await res.text()
+
+    const rows = handle!
+      .prepare("SELECT data FROM metrics WHERE event LIKE 'alert%' ORDER BY id")
+      .all() as { data: string }[]
+    const kinds = rows.map((r) => JSON.parse(r.data).kind)
+    expect(kinds).toEqual(['conversation_started', 'spec_authored'])
+  })
+
+  it('alerts spec_failed when authoring returns nothing', async () => {
+    await signIn(false)
+    behaviour.value = 'propose-fail'
+    const res = await post({ body: 'help me build a dashboard' })
+    await res.text()
+
+    const rows = handle!
+      .prepare("SELECT data FROM metrics WHERE event LIKE 'alert%' ORDER BY id")
+      .all() as { data: string }[]
+    const kinds = rows.map((r) => JSON.parse(r.data).kind)
+    expect(kinds).toEqual(['conversation_started', 'spec_failed'])
+  })
+
+  it('alerts neither spec_authored nor spec_failed on a turn that never proposed', async () => {
+    // The tool was never called, so there is nothing to alert on — an
+    // ordinary turn must not manufacture a build signal.
+    await signIn(false)
+    behaviour.value = 'ok'
+    const res = await post({ body: 'hi' })
+    await res.text()
+
+    const rows = handle!
+      .prepare("SELECT data FROM metrics WHERE event LIKE 'alert%' ORDER BY id")
+      .all() as { data: string }[]
+    const kinds = rows.map((r) => JSON.parse(r.data).kind)
+    expect(kinds).toEqual(['conversation_started'])
+  })
+
   it('answers a LOCKED session — the chat surface survives the lock', async () => {
     // architecture-overview.md line 59. This is the property that makes the
     // two-tier session worth having, so it is pinned at the endpoint and not
@@ -384,6 +435,20 @@ describe('POST /api/chat', () => {
     expect(readTranscript(handle!, accountId)).toHaveLength(0)
   })
 
+  it('no longer accepts a confirmation trigger — an old-shaped POST 400s like any other bodiless one', async () => {
+    // This route used to special-case `{trigger: 'confirmation'}`, sending a
+    // body-less, product-initiated turn straight into runTurn (no `body`
+    // needed). Nothing confirms any more, so that field is just an unknown
+    // property now: no `body` string means a 400, exactly like any other
+    // request with nothing to say, and no model call is spent and no row is
+    // written on it.
+    const { accountId } = await signIn(false)
+    expect((await post({ trigger: 'confirmation' })).status).toBe(400)
+
+    const { readTranscript } = await import('@/lib/db/appendOnly')
+    expect(readTranscript(handle!, accountId)).toHaveLength(0)
+  })
+
   it('beats while the authoring call is slow, so the connection never goes silent', async () => {
     // The regression this exists for: between the reply finishing and the
     // proposal coming back, the route used to send nothing for 47-97 seconds,
@@ -401,8 +466,8 @@ describe('POST /api/chat', () => {
       const got = await lines(res)
 
       expect(got.filter((l) => (l as { hb?: number }).hb === 1)).toHaveLength(3)
-      // The beats did not displace anything: the real turn still completed.
-      expect(got.some((l) => (l as { proposal?: unknown }).proposal)).toBe(true)
+      // The beats did not displace anything: the real turn still completed —
+      // `done` only arrives after runTurn has awaited authoring to the end.
       expect(got.at(-1)).toEqual({ done: true })
     } finally {
       vi.useRealTimers()
@@ -505,73 +570,40 @@ describe('POST /api/chat', () => {
   })
 })
 
-describe('POST /api/chat — the proposal lines', () => {
-  it('emits authoring, then proposal, then done', async () => {
+describe('POST /api/chat — no proposal or stage lines reach the browser', () => {
+  // The card, the two buttons and the two-stage progress bar are gone from
+  // the friend's screen (app/[user]/ChatPanel.tsx). This describe block pins
+  // the absence on the WIRE, not just in the panel: a deletion with no test
+  // can be silently undone by a future edit that re-adds the enqueue calls
+  // without anyone noticing the panel already ignores them.
+
+  it('streams only the reply, saved and done — even on a turn that triggers authoring', async () => {
+    // THE CASE THAT MATTERS MOST: authoring really did run (runTurn still
+    // calls authorSpec — only the wire messages went), and still nothing
+    // about it reaches the browser. A test against an ORDINARY turn (the
+    // tool never called) would pass for the wrong reason — there'd be
+    // nothing to suppress in the first place.
     await signIn(false)
     behaviour.value = 'propose-ok'
 
     const res = await post({ body: 'help me build a dashboard' })
     const seen = await lines(res)
-    expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual([
-      't',
-      // Ahead of `authoring`, and that order is load-bearing: authoring is the
-      // window where the connection dies, so the browser has to already know
-      // the reply was saved by the time it opens.
-      'saved',
-      'authoring',
-      'proposal',
-      'done',
-    ])
 
-    const proposalLine = seen.find((l) => 'proposal' in (l as object)) as {
-      proposal: { version: number }
-    }
-    expect(proposalLine.proposal.version).toBe(1)
-  })
+    // authorSpec really was invoked for this turn — the absence below is a
+    // suppression, not an accident of nothing happening.
+    expect(authoringSignals).toHaveLength(1)
 
-  it('forwards the mockup stage as its own line, between authoring and proposal', async () => {
-    // THE SERVER HALF OF "WHICH HALF OF THE WAIT ARE WE IN".
-    //
-    // tests/chat/panelWiring.test.tsx proves the panel advances when a stage
-    // line arrives — by pushing one in by hand, through a fake fetch that no
-    // route code runs. Nothing asked the ROUTE to produce one. Deleting
-    // `onStage:` from app/api/chat/route.ts left the entire suite green while
-    // the friend watched one unchanging sentence for the whole minute.
-    //
-    // The ORDER is asserted, not just the presence: a stage line ahead of the
-    // authoring line is dropped by applyLine (a stray stage with no wait in
-    // flight must not conjure one), so arriving in the wrong place is the same
-    // as not arriving.
-    await signIn(false)
-    behaviour.value = 'propose-staged'
-
-    const res = await post({ body: 'help me build a dashboard' })
-    const seen = await lines(res)
-
-    expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual([
-      't',
-      'saved',
-      'authoring',
-      'stage',
-      'proposal',
-      'done',
-    ])
-    expect(seen).toContainEqual({ stage: 'mockup' })
-  })
-
-  it('emits proposal_error when authoring fails, and STILL emits done', async () => {
-    // A completed chat turn whose preview failed is still a completed chat
-    // turn: the assistant row for it exists, and the friend really did
-    // receive that reply. done must not be suppressed.
-    await signIn(false)
-    behaviour.value = 'propose-fail'
-
-    const res = await post({ body: 'help me build a dashboard' })
-    const seen = await lines(res)
-    expect(seen).toContainEqual({ authoring: true })
-    expect(seen).toContainEqual({ proposal_error: true })
-    expect(seen).toContainEqual({ done: true })
+    // No 'stage' line, because there is no longer a stage to report:
+    // AuthorInput.onStage and the model call it used to announce are gone
+    // (mockup-loop removal, plan 2026-08-19-remove-the-mockup-loop, Task 6).
+    // This assertion used to prove the route SUPPRESSED a callback the mocked
+    // authorSpec called unconditionally; now it proves the same absence by
+    // construction — nothing on either side has a stage left to emit.
+    expect(seen.map((l) => Object.keys(l as object)).flat()).toEqual(['t', 'saved', 'done'])
+    expect(seen.some((l) => 'authoring' in (l as object))).toBe(false)
+    expect(seen.some((l) => 'stage' in (l as object))).toBe(false)
     expect(seen.some((l) => 'proposal' in (l as object))).toBe(false)
+    expect(seen.some((l) => 'proposal_error' in (l as object))).toBe(false)
   })
 
   it('emits neither authoring nor proposal lines on an ordinary turn', async () => {
@@ -583,6 +615,22 @@ describe('POST /api/chat — the proposal lines', () => {
     expect(
       seen.some((l) => 'authoring' in (l as object) || 'proposal' in (l as object) || 'proposal_error' in (l as object)),
     ).toBe(false)
+  })
+
+  it('still emits done when authoring fails — a completed chat turn is still a completed chat turn', async () => {
+    // The assistant row for it exists, and the friend really did receive
+    // that reply; a failed proposal must not suppress it. There is no more
+    // `proposal_error` line to check for — nothing on the friend's screen
+    // ever reported that failure to begin with.
+    await signIn(false)
+    behaviour.value = 'propose-fail'
+
+    const res = await post({ body: 'help me build a dashboard' })
+    const seen = await lines(res)
+    expect(seen).toContainEqual({ done: true })
+    expect(seen.some((l) => 'authoring' in (l as object))).toBe(false)
+    expect(seen.some((l) => 'proposal' in (l as object))).toBe(false)
+    expect(seen.some((l) => 'proposal_error' in (l as object))).toBe(false)
   })
 })
 

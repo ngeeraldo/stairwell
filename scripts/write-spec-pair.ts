@@ -1,8 +1,22 @@
 // scripts/write-spec-pair.ts
 //
-// Writes a confirmed spec's two output files (spec.md, mockup.html) into a
-// directory as a single unit. Used by scripts/pull-spec.sh, which is a thin
-// wrapper: fetch the JSON from export-spec.ts, hand it to this module.
+// Writes a confirmed spec's output file (spec.md) into a directory. Used by
+// scripts/pull-spec.sh, which is a thin wrapper: fetch the JSON from
+// export-spec.ts, hand it to this module.
+//
+// USED TO WRITE TWO FILES — spec.md and mockup.html, as a single atomic unit
+// — before the mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop,
+// Task 6): nothing composes or serves mockup HTML any more, so
+// export-spec.ts stopped emitting it and this module dropped the second
+// file. The name (`writeSpecPair`, this file's own) is unchanged — renaming
+// it was not part of that task, and a "pair" now reads as "the pair of
+// temp-write and commit-rename", not "two files".
+//
+// The atomicity GUARANTEE is weaker with one file — there is no longer a
+// second file whose absence or staleness could make a half-written pair look
+// wrong — but the ROLLBACK behaviour is still worth keeping: a half-written
+// spec.md (a partial write, or a commit rename that fails partway) is worse
+// than an untouched one.
 //
 // This used to be a `node -e` string embedded in pull-spec.sh. It moved out
 // specifically so the atomic-write guarantee below is a plain, directly
@@ -25,7 +39,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 
-export type SpecPairContent = { spec_md: string; mockup_html: string }
+export type SpecContent = { spec_md: string }
 
 /**
  * The filesystem operations writeSpecPair needs, as an injectable seam —
@@ -54,22 +68,22 @@ export const REAL_FS_OPS: FsOps = {
 }
 
 /**
- * Write `content` into `dir/spec.md` and `dir/mockup.html`. Four guards, in
- * order, each independently fault-injectable and independently tested:
+ * Write `content` into `dir/spec.md`. Four guards, in order, each
+ * independently fault-injectable and independently tested:
  *
- *   1. Precondition — refuse upfront if either final path exists and is
- *      not a plain file (most plausibly: a stray directory). Nothing is
- *      touched if this fires.
- *   2. Write — both payloads go to same-directory temp files first. If the
- *      second write throws, whatever temp file already exists is removed
- *      before the error propagates.
- *   3. Move-aside — any EXISTING final pair is renamed to `.bak` paths
- *      before the new one is committed. If the second move-aside throws,
- *      whichever one already moved is put straight back.
- *   4. Commit — the two temp files are renamed into their final paths. If
- *      the second commit rename throws, whichever of the two new files
- *      already landed is removed and the old pair is restored from its
- *      backup (or left absent, for a first-ever write with no prior pair).
+ *   1. Precondition — refuse upfront if the final path exists and is not a
+ *      plain file (most plausibly: a stray directory). Nothing is touched
+ *      if this fires.
+ *   2. Write — the payload goes to a same-directory temp file first. If the
+ *      write throws, the temp file (if it landed at all) is removed before
+ *      the error propagates.
+ *   3. Move-aside — an EXISTING final file is renamed to a `.bak` path
+ *      before the new one is committed. If that rename throws, nothing has
+ *      been committed yet — the temp file is cleaned up and the original is
+ *      left exactly where it was.
+ *   4. Commit — the temp file is renamed into its final path. If that
+ *      rename throws, the backup (if there was one) is restored, so an
+ *      ordinary failure here never leaves spec.md missing or half-written.
  *
  * What none of the four can cover, and no amount of code here can close: a
  * kill signal (SIGKILL) landing anywhere in this sequence — the process is
@@ -80,104 +94,76 @@ export const REAL_FS_OPS: FsOps = {
  */
 export function writeSpecPair(
   dir: string,
-  content: SpecPairContent,
+  content: SpecContent,
   fsOps: FsOps = REAL_FS_OPS,
 ): void {
   const fs = fsOps
   fs.mkdirSync(dir, { recursive: true })
 
   const specPath = join(dir, 'spec.md')
-  const mockupPath = join(dir, 'mockup.html')
   const specTmp = join(dir, '.spec.md.tmp')
-  const mockupTmp = join(dir, '.mockup.html.tmp')
   const specBackup = join(dir, '.spec.md.bak')
-  const mockupBackup = join(dir, '.mockup.html.bak')
 
   // 1. Precondition.
-  for (const p of [specPath, mockupPath]) {
-    if (fs.existsSync(p) && !fs.statSync(p).isFile()) {
-      throw new Error(`${p} exists and is not a regular file — refusing to write`)
-    }
+  if (fs.existsSync(specPath) && !fs.statSync(specPath).isFile()) {
+    throw new Error(`${specPath} exists and is not a regular file — refusing to write`)
   }
 
-  // 2. Write both payloads to temp files before touching either final
-  // path. If the second write throws (disk full, a permission change, the
-  // process killed between them), clean up whatever was already written
-  // and exit — spec.md and mockup.html are untouched either way.
+  // 2. Write the payload to a temp file before touching the final path. If
+  // the write throws (disk full, a permission change, the process killed
+  // mid-write), clean up whatever was already written and exit — spec.md is
+  // untouched either way.
   try {
     fs.writeFileSync(specTmp, content.spec_md)
-    fs.writeFileSync(mockupTmp, content.mockup_html)
   } catch (err) {
-    for (const p of [specTmp, mockupTmp]) {
-      try {
-        fs.unlinkSync(p)
-      } catch {}
-    }
+    try {
+      fs.unlinkSync(specTmp)
+    } catch {}
     throw err
   }
 
-  // 3. Move any EXISTING pair aside before committing the new one, so a
-  // failure below can put it straight back. Track success with booleans,
-  // not existsSync on the backup path afterward — a backup path can exist
-  // for reasons unrelated to whether the rename onto it, this run,
-  // actually succeeded.
+  // 3. Move an EXISTING file aside before committing the new one, so a
+  // failure below can put it straight back. Tracked with a boolean, not
+  // existsSync on the backup path afterward — a backup path can exist for
+  // reasons unrelated to whether the rename onto it, this run, actually
+  // succeeded.
   const hadSpec = fs.existsSync(specPath)
-  const hadMockup = fs.existsSync(mockupPath)
   let specBackedUp = false
-  let mockupBackedUp = false
 
   try {
     if (hadSpec) {
       fs.renameSync(specPath, specBackup)
       specBackedUp = true
     }
-    if (hadMockup) {
-      fs.renameSync(mockupPath, mockupBackup)
-      mockupBackedUp = true
-    }
   } catch (err) {
-    // Nothing new has been committed yet — just put back what this step
-    // already moved, then clean up the temp files and fail.
-    if (specBackedUp) fs.renameSync(specBackup, specPath)
-    if (mockupBackedUp) fs.renameSync(mockupBackup, mockupPath)
-    for (const p of [specTmp, mockupTmp]) {
-      try {
-        fs.unlinkSync(p)
-      } catch {}
-    }
+    // Nothing new has been committed yet — just clean up the temp file and
+    // fail. The original spec.md is exactly where it was: this rename never
+    // reached the point of moving it.
+    try {
+      fs.unlinkSync(specTmp)
+    } catch {}
     throw err
   }
 
-  // 4. Commit: rename each temp file into place. Each call is a single,
-  // near-instant same-directory syscall (no data copy) — about as small a
-  // window as fs gives without hand-rolled two-phase-commit machinery this
-  // single-operator tool does not need. If the SECOND rename throws for an
-  // ordinary, catchable reason (ENOENT, EPERM, a quota error), undo
-  // whichever of the two already landed and restore the old pair from its
-  // backup — an ordinary failure here must not leave spec.md holding the
-  // new proposal next to a stale (or missing) mockup.html, which is worse
-  // than either being absent: nothing about the pair LOOKS wrong.
+  // 4. Commit: rename the temp file into place. A single, near-instant
+  // same-directory syscall (no data copy) — about as small a window as fs
+  // gives without hand-rolled two-phase-commit machinery this
+  // single-operator tool does not need. If it throws for an ordinary,
+  // catchable reason (ENOENT, EPERM, a quota error), restore the old file
+  // from its backup — an ordinary failure here must not leave spec.md
+  // missing, which is worse than either the old or the new content.
   try {
     fs.renameSync(specTmp, specPath)
-    fs.renameSync(mockupTmp, mockupPath)
   } catch (err) {
     try {
       fs.unlinkSync(specPath)
     } catch {}
-    try {
-      fs.unlinkSync(mockupPath)
-    } catch {}
     if (specBackedUp) fs.renameSync(specBackup, specPath)
-    if (mockupBackedUp) fs.renameSync(mockupBackup, mockupPath)
-    // A failed rename() never moves its source: whichever of specTmp/
-    // mockupTmp did NOT make it into place (most commonly the second one,
-    // since the first already succeeded and so is already gone) is still
-    // sitting here and must not be left behind next to a restored pair.
-    for (const p of [specTmp, mockupTmp]) {
-      try {
-        fs.unlinkSync(p)
-      } catch {}
-    }
+    // A failed rename() never moves its source: specTmp is still sitting
+    // here and must not be left behind next to a restored file.
+    try {
+      fs.unlinkSync(specTmp)
+    } catch {}
     throw err
   }
 
@@ -185,11 +171,6 @@ export function writeSpecPair(
   if (specBackedUp) {
     try {
       fs.unlinkSync(specBackup)
-    } catch {}
-  }
-  if (mockupBackedUp) {
-    try {
-      fs.unlinkSync(mockupBackup)
     } catch {}
   }
 }
@@ -201,6 +182,6 @@ if (process.argv[1]?.endsWith('write-spec-pair.ts')) {
     console.error('usage: tsx scripts/write-spec-pair.ts <dir> <json>')
     process.exit(2)
   }
-  writeSpecPair(dir, JSON.parse(json) as SpecPairContent)
-  console.log(`Wrote ${dir}/spec.md and ${dir}/mockup.html`)
+  writeSpecPair(dir, JSON.parse(json) as SpecContent)
+  console.log(`Wrote ${dir}/spec.md`)
 }
