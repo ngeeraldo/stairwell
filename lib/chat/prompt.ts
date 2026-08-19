@@ -81,6 +81,15 @@ export const MOCKUP_PROMPT = 'mockup-v3.md'
  * that authored it. This is what makes reuse possible at all — a screen a
  * patch did not touch keeps its already-drawn fragment rather than being
  * redrawn (and re-billed) alongside the ones that changed.
+ *
+ * HISTORICAL as of the mockup-loop removal (plan
+ * 2026-08-19-remove-the-mockup-loop, Task 4): no production code calls this
+ * anymore. `lib/spec/author.ts` no longer draws a mockup at all — a proposal
+ * is the spec call alone. Kept, not deleted, for the same reason MOCKUP_PROMPT
+ * above is: `mockup_prompt_sha` rows written before this cutover point at
+ * this file's hash, and prompts are added, never edited or removed
+ * (CLAUDE.md) — an already-written hash must keep resolving to real prompt
+ * text.
  */
 export const MOCKUP_SCREENS_PROMPT = 'mockup-v4.md'
 

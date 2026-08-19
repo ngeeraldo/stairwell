@@ -1,44 +1,25 @@
 // lib/spec/author.ts
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
-import {
-  currentSpec,
-  hasSpecBelow,
-  insertSpec,
-  readSpecs,
-  type SpecRecord,
-} from '@/lib/db/specs'
+import { currentSpec, insertSpec, readSpecs, type SpecRecord } from '@/lib/db/specs'
 import { toMessages } from '@/lib/chat/history'
-import {
-  MOCKUP_SCREENS_PROMPT,
-  SPEC_PATCH_PROMPT,
-  SPEC_PROMPT,
-  loadPrompt,
-} from '@/lib/chat/prompt'
+import { SPEC_PATCH_PROMPT, SPEC_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import type { ChatContext } from '@/lib/chat/context'
 import {
   CHAT_EFFORT,
   CHAT_MODEL,
   ChatStreamError,
   UNKNOWN_ERROR,
-  isTransient,
   type ChatClient,
   type ProposeResult,
   type Served,
   type Usage,
 } from '@/lib/chat/client'
-import {
-  SCREEN_MOCKUP_JSON_SCHEMA,
-  SPEC_JSON_SCHEMA,
-  SpecShapeError,
-  type SpecDraft,
-} from './schema'
-import { parseScreenMockups, parseSpecDraft, sealVersion } from './validate'
+import { SPEC_JSON_SCHEMA, SpecShapeError, type SpecDraft } from './schema'
+import { parseSpecDraft, sealVersion } from './validate'
 import { renderLegacyMarkdown } from './render'
 import { readStoredSpec, type StoredSpec } from './stored'
 import { applyPatch, parsePatch, PATCH_JSON_SCHEMA, type SpecPatch } from './patch'
-import { affectedScreens, composeMockup } from './mockupCompose'
-import { insertScreenMockups, readScreenMockups } from '@/lib/db/screenMockups'
 
 /**
  * One proposal, as it reaches the card — whichever way it got there.
@@ -60,44 +41,19 @@ export type Proposal = {
   /**
    * The spec row's own timestamp, so the card can be placed in conversation
    * order rather than collected at the bottom (onboarding ledger D5).
-   *
-   * It rides on the proposal for the same reason `first` does: a card that
-   * arrives mid-conversation through the NDJSON line has no page render behind
-   * it, so anything the page computed once cannot describe it.
    */
   at: number
   spec: StoredSpec
-  mockup_html: string
-  /**
-   * The scoped preview: only the screens THIS patch touched, carried-forward
-   * screens omitted. This is what the friend's card renders while it is being
-   * proposed.
-   *
-   * `mockup_html` above is the OTHER one — the whole composed document, which
-   * is what `specs.mockup_html` stores and what pull-spec.sh, mockup.html and
-   * the admin pane read. That one must never be scoped: it is the build
-   * contract, and a builder reading it needs every screen, touched or not.
-   * For a first version (or a legacy base's one-time whole-surface fallback)
-   * every screen IS affected, so the two happen to be equal — not because
-   * this field is skipped, but because scoping to "everything" degenerates to
-   * the whole document.
-   */
-  preview_html: string
-  /**
-   * Whether THIS card is the account's first dashboard, and therefore which
-   * delivery promise it makes (ledger D9). Server-computed, per card, and
-   * carried on the proposal itself rather than passed down the page.
-   *
-   * It has to ride here because the two ways a card reaches the screen do not
-   * share a moment in time: the page-load card is built by app/[user]/page.tsx
-   * during a render, but a card proposed mid-conversation arrives through the
-   * `proposal` NDJSON line and the page never re-renders. A boolean computed
-   * once per page load and applied to every card said "at the latest, it'll be
-   * here tomorrow morning" about a one-word relabel proposed an hour later —
-   * exactly the contradiction D9 exists to prevent, on the most load-bearing
-   * promise in the pilot.
-   */
-  first: boolean
+  // mockup_html, preview_html and first all lived here through the mockup
+  // loop and are gone as of the mockup-loop removal (plan
+  // 2026-08-19-remove-the-mockup-loop, Task 4): the card that rendered a
+  // preview and read `first` for its delivery promise no longer exists
+  // (Task 2), and this function no longer draws a preview to describe (this
+  // task). `mockup_html` and `preview_html` were the composed document and
+  // the scoped-to-what-changed excerpt of it; `first` was whether this was
+  // the account's first-ever dashboard. specs.mockup_html the COLUMN stays —
+  // see the insertSpec call below — this is only the field that used to
+  // carry its value on the returned proposal.
 }
 
 export type AuthorDeps = {
@@ -112,17 +68,16 @@ export type AuthorInput = {
   conversationId: string
   signal: AbortSignal
   /**
-   * Fired when authoring crosses from writing the spec to drawing the preview.
-   *
-   * A REAL boundary, not a timer: the spec call has returned and validated, and
-   * a separate model call is about to start. It matters because the two halves
-   * are nothing like the same length — the spec is quick, the preview is most
-   * of the minute a friend spends watching — so reporting the crossing is the
-   * difference between "something is happening" and "it is on the slow part
-   * now, which is normal".
-   *
-   * Optional, because the two callers that do not stream anywhere (scripts,
-   * tests) have nobody to tell.
+   * HISTORICAL as of the mockup-loop removal (plan
+   * 2026-08-19-remove-the-mockup-loop, Task 4): no production code calls this
+   * anymore. It used to fire when authoring crossed from writing the spec to
+   * drawing the mockup — a real boundary, because the two halves took nothing
+   * like the same time and a friend watching needed to know which one they
+   * were in. There is only one model call now, so there is no crossing left
+   * to report. Kept, not deleted: a test double elsewhere in the suite still
+   * types its mock against `AuthorInput` and calls this field (out of this
+   * task's scope — a later task removes it), so removing the field here would
+   * be a needless compile break for that file.
    */
   onStage?: (stage: 'mockup') => void
 }
@@ -139,81 +94,9 @@ export type AuthorInput = {
  */
 export const MAX_SPEC_ATTEMPTS = 2
 
-/**
- * How many times the MOCKUP call may run for one proposal.
- *
- * Two, and for a different reason than MAX_SPEC_ATTEMPTS above. That retry is
- * for a draft the validator rejected, and it deliberately does not fire for
- * API errors on the grounds that "another sample will not fix" them. That
- * reasoning is right for a truncated or unparsable reply and WRONG for a
- * capacity error, which is transient by definition — see `isTransient`.
- *
- * The asymmetry that justifies paying for a retry here: by the time the mockup
- * call runs, the spec call has already returned a VALIDATED draft and been
- * billed for it. Losing the mockup throws all of that away and gives the
- * friend nothing, where a second attempt costs one more mockup call. On
- * 2026-08-18 a proposal died exactly this way, discarding 4704 billed output
- * tokens of good spec.
- *
- * Two and not more because the friend is watching a spinner the whole time and
- * this is the slow call: a third attempt could push the wait past three
- * minutes for a promise of "about a minute".
- */
-export const MAX_MOCKUP_ATTEMPTS = 2
-
 /** Honest defaults for a call that failed before the API reported anything. */
 const NO_USAGE: Usage = { input: 0, output: 0, cache_read: 0, cache_creation: 0 }
 const NO_SERVED: Served = { model_served: CHAT_MODEL, fallback_fired: false }
-
-/**
- * Everything about the MOCKUP call, under its own flat names (ledger D15).
- *
- * The four standard counters (`input`/`output`/`cache_read`/`cache_creation`)
- * and `prompt_sha` mean "the spec call" on every row this module writes, so
- * grouping or joining the metrics log by them is never corrupted by the second
- * call. The mockup call's own numbers and its prompt's hash ride alongside
- * under these names instead.
- *
- * `mockup_prompt_sha` is what ties a stored `mockup_html` to the exact prompt
- * text that produced it (ledger D13). It cannot live on `specs` — that table
- * takes no new column — and `metrics` cannot be backfilled, so a row written
- * without it is a preview whose provenance is lost for good.
- *
- * Null, never zero or a placeholder, when the call did not get that far: zero
- * is a claim that nothing was billed, and that is false for a call that
- * returned (or truncated) before something downstream rejected it. Flat rather
- * than nested, because the step-4 ledger already records spreading a nested
- * `usage` beside flat counters as a hazard in `chat_error`.
- *
- * One function for the whole group so a new metrics site cannot pick up the
- * counters and silently omit the sha, or the other way round.
- */
-function mockupFields(
-  usage: Usage | undefined,
-  promptSha: string | null,
-  attempt: number,
-): {
-  mockup_input: number | null
-  mockup_output: number | null
-  mockup_cache_read: number | null
-  mockup_cache_creation: number | null
-  mockup_prompt_sha: string | null
-  mockup_attempt: number
-} {
-  return {
-    mockup_input: usage?.input ?? null,
-    mockup_output: usage?.output ?? null,
-    mockup_cache_read: usage?.cache_read ?? null,
-    mockup_cache_creation: usage?.cache_creation ?? null,
-    mockup_prompt_sha: promptSha,
-    // WHICH mockup attempt produced this row, so a retry that saved a proposal
-    // is visible in the log rather than looking like a first-try success.
-    // Zero means the call never happened (a meta-only patch draws nothing) —
-    // distinct from one, which means it ran and did not need retrying. A count
-    // and nothing else: no screen id, no title (CLAUDE.md > metrics bound).
-    mockup_attempt: attempt,
-  }
-}
 
 /**
  * A failure message fit for an append-only table: the SHAPE of the failure,
@@ -264,17 +147,19 @@ function metricMessage(error: unknown): string {
  * writer was asked for, and how many ops it proposed. Factored out narrowly —
  * unified-loop ledger residual 10 predicted this file's five hand-built
  * `appendMetric` sites would need a builder once a sixth arrived, and Task 13
- * added a sixth. This pair is pure mechanical repetition with no per-site
- * decision in it, so pulling it out costs nothing.
+ * added a sixth (`mockup_failed`, for the mockup call's own failure mode).
+ * The mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop, Task 4)
+ * deleted that site along with the call it reported on, leaving five again.
+ * This pair is pure mechanical repetition with no per-site decision in it,
+ * so pulling it out costs nothing.
  *
- * Deliberately NOT a wrapper around appendMetric itself: `mockup_failed`
- * reports the SPEC call's counters on purpose, `spec_aborted` reports honest
- * zeros on purpose, `kind` is computed differently at every site, and
- * `message` is present at some and absent at others. Residual 10's own
- * reasoning is that factoring those would either push them back out to the
- * call sites anyway, or quietly make one site's rule the default for all six
- * — exactly the hiding of distinctions it was written to prevent. This
- * helper stops at the one pair that has no such distinction to hide.
+ * Deliberately NOT a wrapper around appendMetric itself: `spec_aborted`
+ * reports honest zeros on purpose, `kind` is computed differently at every
+ * site, and `message` is present at some and absent at others. Residual 10's
+ * own reasoning is that factoring those would either push them back out to
+ * the call sites anyway, or quietly make one site's rule the default for all
+ * of them — exactly the hiding of distinctions it was written to prevent.
+ * This helper stops at the one pair that has no such distinction to hide.
  *
  * `ops_count` is a COUNT, never the ops themselves: `metrics` is append-only
  * and the standing bound is counts, never content — an op carries panel ids
@@ -372,11 +257,11 @@ function retryMessage(problem: string): string {
  *
  * Returns undefined on EVERY failure path, expected or not — this function
  * never throws. It runs AFTER the chat turn's assistant row is already
- * appended, and a failed preview must not retroactively turn a delivered
- * reply into a failed turn: a throw here would propagate out of runTurn into
- * the route's ReadableStream AFTER the reply was already saved, killing the
- * stream with no `{done:true}`, no `controller.close()`, and no failure
- * metric anywhere to explain why.
+ * appended, and a failed authoring call must not retroactively turn a
+ * delivered reply into a failed turn: a throw here would propagate out of
+ * runTurn into the route's ReadableStream AFTER the reply was already saved,
+ * killing the stream with no `{done:true}`, no `controller.close()`, and no
+ * failure metric anywhere to explain why.
  *
  * The whole body sits inside one outer try/catch specifically so a failure
  * with no dedicated branch — loadPrompt (PROMPT_DIR resolves against
@@ -386,10 +271,12 @@ function retryMessage(problem: string): string {
  * turn.ts additionally wraps its own call to this function as a second,
  * belt-and-braces layer.
  *
- * Two model calls, in order: the spec (retried once on a validation failure),
- * then the mockup from the VALIDATED draft. `insertSpec` runs only after both
- * have succeeded — `mockup_html` is NOT NULL and `specs` rejects UPDATE, so a
- * row written without its preview could never be repaired (ledger D7).
+ * One model call: the spec, retried once on a validation failure. As of the
+ * mockup-loop removal (plan 2026-08-19-remove-the-mockup-loop, Task 4) there
+ * is no second call drawing a preview from the validated draft — `insertSpec`
+ * runs once the spec validates, passing `mockupHtml: ''` for the NOT NULL
+ * column that call used to fill (see the insertSpec call below for why the
+ * column stays).
  */
 export async function authorSpec(
   deps: AuthorDeps,
@@ -408,20 +295,6 @@ export async function authorSpec(
   // whole defect: a successful, billed propose() followed by a later throw
   // used to log NO_USAGE/NO_SERVED, zeroing out tokens that were real.
   let result: ProposeResult | undefined
-  // Same, for the mockup call. Undefined until that call returns.
-  let mockupResult: ProposeResult | undefined
-  // The mockup prompt's own hash, populated the moment its file is read and
-  // read by the outer catch too. Declared here for the same reason promptSha
-  // is: a row that names the wrong prompt — or no prompt — is a stored
-  // mockup_html nobody can trace back to the text that produced it, in two
-  // tables that can never be backfilled.
-  let mockupPromptSha: string | null = null
-  // Which mockup attempt is running, and afterwards which one produced the
-  // outcome. Declared out here beside mockupPromptSha, and for the same
-  // reason: the outer catch reports it too, and a row claiming attempt 1 for a
-  // failure that had already burned its retry would understate what was spent.
-  // Stays 0 when the call never happens.
-  let mockupAttempt = 0
   // Which spec attempt produced the outcome. Every row this function writes
   // carries it, so the log distinguishes "the model got it right first time"
   // from "it took the retry". Zero means no spec call was made at all — the
@@ -521,9 +394,8 @@ export async function authorSpec(
       // ops_count from an EARLIER attempt's successfully-parsed-but-
       // inapplicable patch onto a row that never held one. That is a
       // permanently wrong row: `metrics` rejects UPDATE. The post-loop uses
-      // (sealVersion, spec_proposed, mockup_failed) are unaffected — they run
-      // only after the winning attempt reassigned `patch` in that same
-      // iteration.
+      // (sealVersion, spec_proposed) are unaffected — they run only after the
+      // winning attempt reassigned `patch` in that same iteration.
       patch = undefined
       const attemptMessages =
         feedback === undefined
@@ -671,166 +543,6 @@ export async function authorSpec(
     // loop guarantees.
     if (draft === undefined || result === undefined) return undefined
 
-    let mockupHtml: string
-    let previewHtml: string
-    let fragments: Map<string, string>
-    try {
-      // Both halves of the loaded prompt are kept: the text goes to the model
-      // and the sha onto every row below, so the preview this call produces
-      // stays tied to the exact prompt text that produced it.
-      // Announced before the call, not after: the point is to say what is
-      // happening NOW, and this call is the long one.
-      input.onStage?.('mockup')
-
-      // Fragments this version keeps unchanged, taken from the version the
-      // patch was applied to. A version confirmed BEFORE this existed has
-      // none at all.
-      const carried =
-        current === undefined ? new Map<string, string>() : readScreenMockups(db, current.id)
-      fragments = new Map(carried)
-
-      // Which screens THIS patch touched, in draft.screens order. `base` is
-      // the SpecVersion the patch was applied to (undefined on both
-      // whole-surface paths, where `ops` is null too and affectedScreens
-      // treats that as "everything is affected"). affectedScreens needs the
-      // screens array, not the whole version.
-      //
-      // CORRECTED 2026-08-17 (final review, Important 2): unioned with every
-      // screen in draft.screens that `carried` has no fragment for. Without
-      // this, a version confirmed BEFORE spec_screen_mockups existed has no
-      // fragments at all, so a set_meta-only patch on one — affected.length
-      // === 0 from the ops alone — leaves `fragments` empty and
-      // composeMockup throws on EVERY attempt, forever: `specs` is
-      // append-only, so there is no backfill path for those pre-branch rows.
-      // Treating "no carried fragment" as "affected" makes the first patch
-      // after this deploy redraw what it lacks and the account heals itself.
-      // This does not compose around the hole (ledger D7 stands unchanged):
-      // nothing is left missing at compose time, it is drawn instead.
-      const patchAffected = affectedScreens(base?.screens ?? null, draft.screens, patch?.ops ?? null)
-      const missingCarried = draft.screens
-        .map((s) => s.id)
-        .filter((id) => !carried.has(id) && !patchAffected.includes(id))
-      const affected = [...patchAffected, ...missingCarried]
-
-      // NO AFFECTED SCREENS MEANS NO CALL. A meta-only patch changes the spec
-      // and no pixel, so every fragment carries forward untouched and there is
-      // nothing to draw. Skipping is not an optimisation here — asking for a
-      // mockup of zero screens would send an empty list and get back
-      // something that could only be wrong. mockupResult stays undefined, and
-      // the metrics helper already reports null for a call that never
-      // happened.
-      if (affected.length > 0) {
-        const mockupPrompt = loadPrompt(MOCKUP_SCREENS_PROMPT)
-        mockupPromptSha = mockupPrompt.sha
-        // RETRIED ON A TRANSIENT FAILURE, unlike the spec call above.
-        //
-        // Only the model call is inside this loop. parseScreenMockups and
-        // composeMockup stay outside it deliberately: those failures mean the
-        // reply was complete and WRONG (a screen omitted, a fragment that will
-        // not compose), and re-rolling the same request is not a fix for
-        // either — it is the "another sample will not fix it" case, which here
-        // really does apply.
-        //
-        // `isTransient` decides, never a status code read inline: a mid-stream
-        // overloaded_error carries no status at all, which is precisely the
-        // failure this loop was added for.
-        while (true) {
-          mockupAttempt += 1
-          try {
-            mockupResult = await client.propose({
-              system: mockupPrompt.text,
-              // Only the affected screens, from the VALIDATED draft (ledger
-              // D7) — a mockup generated from anything else could show a panel
-              // the spec does not contain, which is a promise made on the
-              // friend's behalf.
-              messages: [
-                {
-                  role: 'user',
-                  content: JSON.stringify({
-                    title: draft.title,
-                    screens: draft.screens.filter((s) => affected.includes(s.id)),
-                  }),
-                },
-              ],
-              signal: input.signal,
-              schema: SCREEN_MOCKUP_JSON_SCHEMA,
-            })
-            break
-          } catch (error) {
-            const shape = error instanceof ChatStreamError ? error.shape : UNKNOWN_ERROR
-            // Three separate reasons to give up, and the abort check is not
-            // redundant with isTransient's own: the signal can have been
-            // aborted by the time we get here even when the throw itself was a
-            // capacity error, and nobody is waiting for the answer.
-            if (
-              mockupAttempt >= MAX_MOCKUP_ATTEMPTS ||
-              !isTransient(shape) ||
-              input.signal.aborted
-            ) {
-              throw error
-            }
-          }
-        }
-
-        for (const f of parseScreenMockups(mockupResult.input, affected)) {
-          fragments.set(f.screenId, f.html)
-        }
-      }
-
-      // The WHOLE document: this is specs.mockup_html, the build contract on
-      // disk and what the admin pane renders. Throws (as a SpecShapeError,
-      // so metricMessage redacts it) if any screen still has no fragment —
-      // in practice that means the model omitted a requested screen from its
-      // reply, since `affected` above now guarantees every carried-less
-      // screen was asked for.
-      mockupHtml = composeMockup(draft.screens, fragments)
-      // The friend's card: only what changed. For v1 (and the legacy
-      // one-time whole-surface fallback), affected IS every screen, so this
-      // degenerates to the whole dashboard — correct, because on a first
-      // version everything is new. An EMPTY affected list falls back to the
-      // whole dashboard too: a meta-only change has no screen to point at,
-      // and a blank card is worse than a redundant one at the moment someone
-      // is deciding whether to confirm.
-      previewHtml =
-        affected.length > 0 ? composeMockup(draft.screens, fragments, affected) : mockupHtml
-    } catch (error) {
-      // mockup_html is NOT NULL, and a spec row with no preview is a card the
-      // friend cannot read. Both calls land or neither does.
-      //
-      // The four standard counters are the SPEC call's, not the mockup
-      // call's — see ledger D15. On the success path those tokens ride on
-      // spec_proposed; no spec_proposed is written here, so this row is their
-      // only home, and every other row in the log means the same thing by
-      // those four names. The mockup call's own usage rides alongside under
-      // mockup_* names: from its ProposeResult when the call returned and the
-      // validator rejected it, from the error shape when it truncated, and
-      // null when it failed before any response came back.
-      //
-      // An abort during the mockup call lands here too rather than in a
-      // spec_aborted row, deliberately: spec_aborted carries NO_USAGE (honest
-      // only for a call that never returned), and the spec call's real tokens
-      // would vanish from the log. The message says it was aborted.
-      const shape = error instanceof ChatStreamError ? error.shape : UNKNOWN_ERROR
-      appendMetric(db, {
-        accountId: input.accountId,
-        event: 'spec_error',
-        at: now(),
-        data: {
-          ...result.usage,
-          ...metricBase,
-          ...result.served,
-          kind: 'mockup_failed',
-          status: shape.status,
-          type: shape.type,
-          attempt,
-          message: metricMessage(error),
-          ...modeFields(mode, patch),
-          ...mockupFields(mockupResult?.usage ?? shape.usage, mockupPromptSha, mockupAttempt),
-        },
-      })
-      return undefined
-    }
-
     // The one place a SpecVersion is constructed on this path, and the lineage
     // pointer comes from the RECORD, never from anything the model wrote:
     // `parseSpecDraft` rejects a draft carrying one outright, because a
@@ -838,8 +550,8 @@ export async function authorSpec(
     // permanent wrong row in an append-only table (ledger D2).
     //
     // Re-read here rather than reused from the `current` above, and the gap
-    // between the two is the whole point. Everything between them is two model
-    // calls that can run three minutes, and the confirm buttons on the card
+    // between the two is the whole point. Everything between them is the spec
+    // call, which can run past a minute, and the confirm buttons on the card
     // already on screen are gated by `confirming`, not by `busy` — so that
     // card stays clickable for the entire wait while the friend watches
     // "Putting together a preview…". A friend who presses "Build this" in that
@@ -872,22 +584,17 @@ export async function authorSpec(
       conversationId: input.conversationId,
       promptSha,
       payload: sealed,
-      mockupHtml,
+      // specs.mockup_html is NOT NULL and `specs` rejects UPDATE — altering
+      // the column would be schema surgery on an append-only table that
+      // already holds real rows, which is out of scope for lib/db/reshape.ts
+      // (proves zero rows first) and lib/db/migrate.ts (data-preserving
+      // surgery) alike. '' is honest and readable instead: a row with
+      // mockup_html = '' is one authored after the mockup-loop removal
+      // (plan 2026-08-19-remove-the-mockup-loop, Task 4), not a row that
+      // failed to get its preview.
+      mockupHtml: '',
       at,
     })
-    // The fragments belong to THIS version. Written after the spec row
-    // exists because they key on its id, and before the proposal returns so
-    // the next patch can carry them forward. All of a version's fragments
-    // land or none do (insertScreenMockups' own transaction) — `fragments`
-    // holds one entry per screen in `draft.screens` by construction: every
-    // screen is either carried from `current` or freshly drawn above, and
-    // composeMockup already threw if either source left a gap.
-    insertScreenMockups(
-      db,
-      id,
-      draft.screens.map((s) => ({ screenId: s.id, html: fragments.get(s.id)! })),
-      at,
-    )
     // Read back rather than counting: version is derived from position, and
     // this is the one place that must agree with what the admin pane
     // renders. No non-null assertion: a miss here is exactly the kind of
@@ -909,16 +616,6 @@ export async function authorSpec(
         version,
         attempt,
         ...modeFields(mode, patch),
-        // Both calls returned and both were billed — usually. `mockupResult`
-        // is undefined on the one legitimate exception: an affected list of
-        // zero screens skips the mockup call entirely (a meta-only patch),
-        // and `mockupFields` already reports null rather than fabricating
-        // usage for a call that never happened. On every other path both
-        // calls returned, and without this the success path would be the one
-        // where a returning model call's usage reaches no metrics row at all
-        // — and the one stored mockup_html nobody could tie back to its
-        // prompt.
-        ...mockupFields(mockupResult?.usage, mockupPromptSha, mockupAttempt),
       },
     })
 
@@ -931,16 +628,6 @@ export async function authorSpec(
       // attached the server's lineage pointer. The tag is a statement of fact
       // about the payload.
       spec: { kind: 'version', version: sealed },
-      mockup_html: mockupHtml,
-      preview_html: previewHtml,
-      // Asked of the record, for THIS version, at the moment the row exists —
-      // the same question app/[user]/page.tsx asks of the page-load card, and
-      // the same helper, so the two answers cannot drift. Bounded by `version`
-      // rather than "has this account ever had a spec at all": the instant a
-      // friend's very first card is on screen the unbounded reading flips, and
-      // that card — a whole first dashboard, nothing built yet — would start
-      // describing itself as a small change landing within hours.
-      first: !hasSpecBelow(db, input.accountId, version),
     }
   } catch (error) {
     // Anything with no dedicated branch above. promptSha may or may not be
@@ -949,8 +636,7 @@ export async function authorSpec(
     // before client.propose() returned anything. If propose() already
     // succeeded — insertSpec, the version read-back, or the spec_proposed
     // append itself is what threw — result carries the real, billed
-    // counters and those are what must be reported, not zero. Same for the
-    // mockup call's own fields, which are null until it gets that far.
+    // counters and those are what must be reported, not zero.
     //
     // The message goes through metricMessage for a reason that is easy to
     // miss: currentVersionBlock reads the CURRENT spec, so a stored row that
@@ -984,7 +670,6 @@ export async function authorSpec(
         attempt,
         message: metricMessage(error),
         ...modeFields(mode, patch),
-        ...mockupFields(mockupResult?.usage, mockupPromptSha, mockupAttempt),
       },
     })
     return undefined
