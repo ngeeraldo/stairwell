@@ -83,6 +83,7 @@ export type AnnounceOutcome = {
     | 'notes_missing'
     | 'notes_invalid'
     | 'current_state_missing'
+    | 'current_state_invalid'
     | 'current_state_stale'
     | 'draft_failed'
     // --body-file named a path that could not be read as UTF-8 text — a typo,
@@ -129,7 +130,11 @@ const SHELL_MARKERS = ['ssh ', 'scp ', 'npx tsx', '$DROPLET', '$STAIRWELL', '$FR
  *
  * ORDER MATTERS. The target is resolved FIRST: an already-announced version
  * must not pay for a drafting call, and a missing notes file must refuse
- * before one too.
+ * before one too. The current.md staleness gate (design §4.1) sits right
+ * after that, still before any of the three body-producing branches
+ * (--body-file, --plain, or readBuildNotes + draft) — a refusal there must
+ * not pay for a drafting call either, and it applies to all three, not just
+ * the drafted path.
  */
 export async function runAnnounce(
   deps: AnnounceDeps,
@@ -185,12 +190,14 @@ export async function runAnnounce(
   try {
     currentState = readCurrentState(opts.slug, deps.usersDir)
   } catch (error) {
-    // readCurrentState throws when the file EXISTS and does not parse. Same
-    // outcome kind as absent — there is no usable description either way —
-    // but carry the parser's own message, which names the section or the
-    // frontmatter line that failed.
+    // readCurrentState throws when the file EXISTS and does not parse — a
+    // builder error, distinct from absent (current_state_missing below).
+    // "write one" and "you wrote it wrong" are different operator actions,
+    // same reasoning as the notes_missing/notes_invalid split above. Carry
+    // the parser's own message, which names the section or the frontmatter
+    // line that failed.
     return {
-      kind: 'current_state_missing',
+      kind: 'current_state_invalid',
       message: error instanceof CurrentStateError ? error.message : String(error),
       warnings,
     }
@@ -410,6 +417,7 @@ export function exitCodeFor(kind: AnnounceOutcome['kind']): number {
     'notes_missing',
     'notes_invalid',
     'current_state_missing',
+    'current_state_invalid',
     'current_state_stale',
     'draft_failed',
     'no_build_notes',

@@ -551,7 +551,10 @@ describe('the current.md gate', () => {
     mkdirSync(join(usersDir, 'sam'), { recursive: true })
     writeFileSync(join(usersDir, 'sam', 'current.md'), 'not a current state')
     const outcome = await runAnnounce(deps, { slug: 'sam', send: false, plain: false })
-    expect(outcome.kind).toBe('current_state_missing')
+    // Distinct from current_state_missing (absent): "write one" and "you
+    // wrote it wrong" are different operator actions, same split as
+    // notes_missing/notes_invalid.
+    expect(outcome.kind).toBe('current_state_invalid')
     expect(outcome.message).toContain('frontmatter')
   })
 
@@ -571,9 +574,10 @@ describe('the current.md gate', () => {
     expect(deps.client.propose).not.toHaveBeenCalled()
   })
 
-  it('exits non-zero on both refusals', () => {
+  it('exits non-zero on all three refusal kinds', () => {
     expect(exitCodeFor('current_state_stale')).toBe(1)
     expect(exitCodeFor('current_state_missing')).toBe(1)
+    expect(exitCodeFor('current_state_invalid')).toBe(1)
   })
 })
 
@@ -654,6 +658,7 @@ describe('exitCodeFor', () => {
       'no_build_notes',
       'body_file_invalid',
       'current_state_missing',
+      'current_state_invalid',
       'current_state_stale',
     ]
     const ok: AnnounceOutcome['kind'][] = ['drafted', 'announced', 'already_announced']

@@ -37,10 +37,15 @@ export type CurrentState = {
   slug: string
   /**
    * The spec version this describes, or 0 for a dashboard that predates the
-   * spec loop (devone, devtwo — hand-written, never had a spec). The announce
-   * gate compares this against a version being announced, which is always
-   * >= 1, so a 0 file can never satisfy it. That is correct: those dashboards
-   * have nothing to announce.
+   * spec loop (devone, devtwo — hand-written, never had a spec). Those
+   * dashboards have no notes/v<n>.md files and no `specs` rows either, so
+   * scripts/announce-deploy.ts's target resolution (`announceTarget` in
+   * lib/chat/announce.ts) returns `no_build_notes` for either slug before an
+   * announce target ever resolves — the version comparison below never runs
+   * for them at all. A `version: 0` file is a second, independent backstop:
+   * a version being announced is always >= 1, so if either account ever
+   * gained a real spec+notes pair, a stale 0 here would still be caught by
+   * that comparison rather than by the absence of notes.
    */
   version: number
   /** Everything after the frontmatter, verbatim. */
