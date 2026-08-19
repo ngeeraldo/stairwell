@@ -44,7 +44,7 @@ balance?" is a good way to unstick them. A person with one clear want gets a
 morning surface built around that one want, and that is a complete answer.
 
 There is one living description of their dashboard, and it is written by the
-builder after each build: what exists right now, given to you above. The spec
+builder after each build: what exists right now, given to you below. The spec
 is not that description — it is a record of what was asked for, which the build
 necessarily departs from. Trust the description of what exists. Underneath,
 every conversation is about the same question — what should the next version of

@@ -1,11 +1,12 @@
 // tests/chat/route.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PlatformDb } from '@/lib/db/platform'
 import { CHAT_EFFORT, CHAT_MODEL } from '@/lib/chat/client'
 import { AGENT_PROMPT, loadPrompt } from '@/lib/chat/prompt'
+import { CURRENT_STATE_BLOCK } from '@/lib/chat/turn'
 
 const cookieSlot: { value: { value: string } | undefined } = { value: undefined }
 let sessionCookieName = 'sid'
@@ -30,6 +31,14 @@ type Behaviour =
   | 'stream-error'
 const behaviour: { value: Behaviour } = { value: 'ok' }
 
+/**
+ * The system prompt the mocked client actually received on the last call.
+ * Captured here (rather than added to `behaviour`) because it's read-only
+ * from a test's point of view — set by the stream double, read by
+ * `current.md` coverage below.
+ */
+const lastSystem: { value: string | undefined } = { value: undefined }
+
 vi.mock('@/lib/chat/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/chat/client')>()
   return {
@@ -39,7 +48,8 @@ vi.mock('@/lib/chat/client', async (importOriginal) => {
         throw new actual.MissingCredentialError()
       }
       return {
-        async stream({ onText, onUsage, onServed }: any) {
+        async stream({ system, onText, onUsage, onServed }: any) {
+          lastSystem.value = system
           onUsage({ input: 5, cache_read: 0, cache_creation: 0 })
           onServed({ model_served: actual.CHAT_MODEL })
           const served = {
@@ -161,11 +171,17 @@ beforeEach(() => {
   authoringSignals.length = 0
   slowAuthoring.release = undefined
   slowAuthoring.onEnter = undefined
+  lastSystem.value = undefined
+  // Most tests want the real repo's users/ tree (signIn's slug 'devone' has a
+  // real users/devone/current.md from Task 3). Only the current.md-failure
+  // test below overrides this, and cleans up after itself in afterEach.
+  delete process.env.USERS_DIR
 })
 
 afterEach(() => {
   handle?.close()
   delete process.env.PLATFORM_DB
+  delete process.env.USERS_DIR
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -638,5 +654,66 @@ describe('POST /api/chat — no credential', () => {
       { saved: true },
       { done: true },
     ])
+  })
+})
+
+describe('POST /api/chat — a current.md that exists but does not parse', () => {
+  // Missing "## Deliberately not included" on purpose — this is what makes
+  // parseCurrentState (and therefore readCurrentState) throw.
+  const MALFORMED = `---
+slug: devone
+version: 4
+---
+
+## What this is for
+A dashboard whose builder left a section out.
+
+## Screens
+One screen.
+
+## Panels
+A panel.
+
+## What can be entered
+Nothing.
+`
+
+  it('degrades to no state block, rather than taking the request down, and records the failure', async () => {
+    // A real file on disk, under a USERS_DIR this test owns — not the real
+    // repo's users/devone/, which has a valid current.md from Task 3.
+    const usersDir = join(dir, 'users')
+    mkdirSync(join(usersDir, 'devone'), { recursive: true })
+    writeFileSync(join(usersDir, 'devone', 'current.md'), MALFORMED)
+    process.env.USERS_DIR = usersDir
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await signIn(false)
+    const res = await post({ body: 'hi' })
+
+    // THE REGRESSION THIS COVERS: readCurrentState throws on an unparseable
+    // file, and that used to sit uncaught inside ReadableStream.start() —
+    // no reply, no assistant row, no chat_error metric, on a surface whose
+    // whole design promise is that it keeps working when other things fail.
+    expect(res.status).toBe(200)
+    expect(await lines(res)).toEqual([
+      { t: 'hello ' },
+      { t: 'friend' },
+      { saved: true },
+      { done: true },
+    ])
+
+    // The agent talked as if no dashboard were described — the same
+    // degradation an ABSENT current.md produces, not a labelled-but-empty
+    // block.
+    expect(lastSystem.value).not.toContain(CURRENT_STATE_BLOCK)
+
+    // Not silent: logDbFailure's one stderr line, so an operator can tell a
+    // malformed current.md apart from an absent one.
+    expect(
+      errorSpy.mock.calls.some(([line]) =>
+        String(line).includes('current_state_failed'),
+      ),
+    ).toBe(true)
+    errorSpy.mockRestore()
   })
 })

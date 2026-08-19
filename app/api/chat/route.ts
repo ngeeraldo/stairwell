@@ -6,6 +6,7 @@ import { resolveState } from '@/lib/session/resolve'
 import { isAdmin } from '@/lib/auth/authorize'
 import { findAccountById } from '@/lib/auth/accounts'
 import { readCurrentState } from '@/lib/build/currentState'
+import { logDbFailure } from '@/lib/db/failureLog'
 import {
   CHAT_EFFORT,
   CHAT_MODEL,
@@ -132,7 +133,27 @@ export async function POST(request: Request) {
       // has gone missing must not take down a chat request, and reads the
       // same as an account with no built dashboard.
       const slug = findAccountById(db, session.account_id)?.slug
-      const currentState = slug ? (readCurrentState(slug)?.body ?? null) : null
+
+      // WRAPPED, same reasoning as app/[user]/page.tsx's ensureOpeningMessage
+      // wrap. readCurrentState throws when current.md EXISTS but fails to
+      // parse — correct as a builder-facing signal (the folder sweep and
+      // instrumentation.ts both want that loud) but wrong here: this route's
+      // own header comment promises the chat surface "keeps working when the
+      // key is gone," and a malformed file the builder wrote must not take
+      // the whole chat request down with it — no reply, no assistant row, no
+      // chat_error metric. Degrading to null is exactly the graceful
+      // degradation this surface promises: the agent talks as if no
+      // dashboard were described yet, the same as the ordinary "not built
+      // yet" case. Not silent — logDbFailure records it so an operator can
+      // tell a malformed current.md apart from an absent one.
+      let currentState: string | null = null
+      if (slug) {
+        try {
+          currentState = readCurrentState(slug)?.body ?? null
+        } catch (error) {
+          logDbFailure('current_state_failed', slug, error)
+        }
+      }
 
       // NOTHING GOES DOWN THIS CONNECTION WHILE THE SLOW WORK RUNS.
       //
