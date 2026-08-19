@@ -293,21 +293,28 @@ describe('loadPrompt', () => {
     }
   })
 
-  it('points ANNOUNCE_PROMPT at v2, and keeps v1 as a distinct, unedited file', () => {
-    // Task 9: v1's "do not repeat what they already know" instruction was
-    // premised on a confirmation and a preview the mockup-loop removal
-    // deleted. A new file, not an edit — announce-v1.md already stamped its
-    // hash on real transcript rows (this repo's own prompt-versioning rule,
-    // CLAUDE.md > Onboarding). Pinning the constant's value here means a
-    // future accidental revert back to v1 fails a test instead of silently
-    // restoring the false premise.
-    expect(ANNOUNCE_PROMPT).toBe('announce-v2.md')
+  it('points ANNOUNCE_PROMPT at v3, and keeps v1 and v2 unedited on disk', () => {
+    // Two false premises removed in two steps, each a new file rather than an
+    // edit — announce-v1.md and v2 have both stamped their hash on real
+    // transcript rows (CLAUDE.md > Onboarding). v2 dropped v1's "they
+    // confirmed this design and read a preview"; v3 dropped v2's opening
+    // claim that the dashboard "was just rebuilt", which required knowing
+    // whether an earlier version was ever built — a question this codebase has
+    // answered wrongly three times (ledger D9, and lib/chat/announce.ts's
+    // plainBody). Pinning the constant means an accidental revert fails a test
+    // instead of quietly restoring a premise.
+    expect(ANNOUNCE_PROMPT).toBe('announce-v3.md')
     const v1 = loadPrompt('announce-v1.md')
-    const v2 = loadPrompt(ANNOUNCE_PROMPT)
-    expect(v2.sha).not.toBe(v1.sha)
-    // The false premise is gone from what actually ships...
-    expect(v2.text).not.toContain('They confirmed this design and read a')
-    // ...but v1 is untouched on disk, exactly as it shipped.
+    const v2 = loadPrompt('announce-v2.md')
+    const v3 = loadPrompt(ANNOUNCE_PROMPT)
+    expect(new Set([v1.sha, v2.sha, v3.sha]).size).toBe(3)
+
+    // Neither premise survives into what actually ships...
+    expect(v3.text).not.toContain('They confirmed this design and read a')
+    expect(v3.text).not.toContain('was just\nrebuilt')
+
+    // ...and both older files are untouched, exactly as they shipped.
     expect(v1.text).toContain('They confirmed this design and read a')
+    expect(v2.text).toContain('was just\nrebuilt')
   })
 })

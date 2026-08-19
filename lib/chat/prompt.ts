@@ -28,8 +28,15 @@ const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
  * propose_spec writes a spec in the background and the build arrives. The
  * agent now says briefly what it will have built, because the card that used
  * to say it is gone.
+ *
+ * v8 puts a question back where the button was. Reaching "when you have
+ * enough" no longer means proposing — the agent asks whether there is anything
+ * else they want in this build, once, and proposes on their next message
+ * whatever it says. Removing the card removed the moment a person could say
+ * "actually, one more thing", and people routinely give one want and remember
+ * the second only when asked. The bar in "When you have enough" is unchanged.
  */
-export const AGENT_PROMPT = 'agent-v7.md'
+export const AGENT_PROMPT = 'agent-v8.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output
@@ -118,8 +125,16 @@ export const MOCKUP_SCREENS_PROMPT = 'mockup-v4.md'
  * their dashboard — v2 tells the model to say briefly what it does instead
  * of withholding that. New file, not an edit: transcript rows already stamp
  * announce-v1.md's hash as their prompt_sha (CLAUDE.md > Data safety).
+ *
+ * v3 drops the first-vs-rebuilt distinction, which v2 still carried in its
+ * opening line ("their dashboard was just rebuilt"). There is one announcement
+ * now and the model is not told which build this is, because knowing meant
+ * answering "was an EARLIER version ever built" and every cheap way of asking
+ * that has been wrong at least once — see lib/chat/announce.ts's plainBody for
+ * the three, and ledger D9. v3 says the same thing either way and forbids
+ * phrasings that only make sense for one of them.
  */
-export const ANNOUNCE_PROMPT = 'announce-v2.md'
+export const ANNOUNCE_PROMPT = 'announce-v3.md'
 
 export type LoadedPrompt = { text: string; sha: string }
 

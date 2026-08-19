@@ -173,6 +173,8 @@ Server (single VPS)
   always-on chat (agent as PM, user present)
     → discovery (proportional to ambiguity — may be one turn)
     → readiness gate (want / cost accepted / context of use known)
+    → "anything else before I build this?" — asked once, the only
+      confirmation left now the card is gone
     → propose_spec
     → spec version N+1 written, schema-validated, appended — nothing to
       confirm; this write is what used to require confirmation

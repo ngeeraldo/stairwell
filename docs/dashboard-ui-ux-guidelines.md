@@ -101,10 +101,8 @@ When a delta's good-direction is ambiguous, ask in the interview; never
 guess.
 
 **Timezone.** All day-boundary logic (streaks, "today," daily
-rollups) uses the user's timezone, stated explicitly per user at
-onboarding and stored — never the server's, never inferred at render
-time. Server and tests stay pinned UTC; user-facing day math converts
-at the edge.
+rollups) belongs to the user's day, never the server's. A dashboard is
+handed the day and the zone and never works either out for itself.
 
 ## Delight / Animation
 All interactivy should feel delightful and alive, nothing should feel static.

@@ -252,10 +252,16 @@ above, and it holds.
 
 ## Step 5 — The agent authors a spec
 
-There is nothing for a friend to confirm any more. When the agent decides it
-has enough — `platform/prompts/agent-v7.md`'s "When you have enough" — it
-calls `propose_spec`, which writes a spec in the background and ends there:
-no card, no button, no confirmation event. The newest spec row IS the build
+There is no card to confirm any more, but there is still a question. When the
+agent decides it has enough — `platform/prompts/agent-v8.md`'s "When you have
+enough" — it does NOT propose yet: it says so and asks whether there is
+anything else they want in this build, once. On their next message, whatever
+it says, it calls `propose_spec`, which writes a spec in the background and
+ends there: no card, no button, no confirmation event.
+
+That question is the confirmation now. It exists because removing the card
+removed the moment a person could say "actually, one more thing" — people
+routinely give one want and remember the second only when asked. The newest spec row IS the build
 contract the moment it exists (`lib/db/specs.ts`'s `currentSpec`), so the
 instant one exists there is something to import — `scripts/export-spec.ts`
 refuses only an account with no spec at all, never one that merely has not
@@ -679,7 +685,7 @@ Posts into **that one account's** chat, **once per spec version**.
 Safe to re-run: an already-announced version is reported, not repeated.
 
 Run it by hand, per friend, and keep it that way. `deploy.sh` deploys the whole
-service, so calling the announcer from it would post "your dashboard is live"
+service, so calling the announcer from it would post "your dashboard just updated"
 into *every* account's chat on *every* push — a permanent line in an
 append-only transcript for every account that was not the reason for that
 deploy.
@@ -720,7 +726,7 @@ is here because getting it wrong is expensive and quiet.
 | Fix a wrong spec by asking for a change in chat, then re-running `pull-spec.sh` | `spec.md` is a projection of the record, not a source, and the next pull overwrites it. The source is the record. |
 | Ship every shape change as a new numbered migration — `002_…`, then `003_…` | A friend's database records only which NUMBER it reached, so editing an applied file silently changes what that number means. The manifest's checksum refuses the session rather than letting it through. |
 | Add a new prompt version — `agent-v3.md` | `prompt_sha` is stamped on transcript and spec rows that already exist, so editing `agent-v2.md` changes what an already-written hash points at. Prompts are added, and that is a data-safety property. |
-| Run `announce-deploy.ts` by hand, once per friend, at step 9 | `deploy.sh` deploys the whole service. Calling the announcer from it would post "your dashboard is live" into every account's chat on every push — a permanent line in an append-only transcript. |
+| Run `announce-deploy.ts` by hand, once per friend, at step 9 | `deploy.sh` deploys the whole service. Calling the announcer from it would post "your dashboard just updated" into every account's chat on every push — a permanent line in an append-only transcript. |
 | Write `notes/v<n>.md` before announcing, and never edit one afterwards | It is the only record of what shipped, and step 9 speaks from it. An edited note changes what an already-sent, permanent announcement was based on. |
 | Rewrite `current.md` on every build, and never let it accumulate | It is what the chat agent reads to know what exists. A note is added and never edited because an announcement was based on it; `current.md` is the opposite and must be REPLACED, because an agent that has to replay a changelog to work out the current state is back to guessing. |
 | Read the drafted announcement, then send it back with `--send --body-file` | `transcripts` rejects DELETE. `--send` alone re-drafts — a fresh model sample, not the sentence you read — so reading a draft only gates what gets written when `--body-file` sends that exact draft back verbatim, with no model call. |

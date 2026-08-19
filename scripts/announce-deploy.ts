@@ -203,7 +203,7 @@ export async function runAnnounce(
   } else if (opts.plain) {
     // The valve. No notes read, no model call: this exists for the moment the
     // API is down and the announcement still has to go out.
-    body = plainBody(target.headline, target.first)
+    body = plainBody(target.headline)
   } else {
     let notes: BuildNotes
     try {

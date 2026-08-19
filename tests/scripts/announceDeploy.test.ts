@@ -226,7 +226,7 @@ describe('runAnnounce', () => {
     const client = failingClient()
     const out = await runAnnounce({ ...deps, client }, { slug: 'sam', send: true, plain: true })
     expect(out.kind).toBe('announced')
-    expect(lastTranscriptBody(db)).toMatch(/^Your dashboard is live: /)
+    expect(lastTranscriptBody(db)).toMatch(/^Your dashboard just updated: /)
     expect(client.propose).not.toHaveBeenCalled()
   })
 
