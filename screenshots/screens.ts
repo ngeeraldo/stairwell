@@ -348,12 +348,26 @@ export const SCREENS: Screen[] = [
     routeFile: 'app/admin/[user]/page.tsx',
     state: 'admin',
     live: true,
+    // THIS SCREEN IS THE ONLY PLACE the admin pane's own turn styling is
+    // reviewed. page.tsx renders a turn with its own markup — `border` for a
+    // user turn, `bg-muted/40` for an assistant one — shared with no other
+    // component, so the friend's chat screens photograph something else and
+    // cannot stand in for it.
+    //
+    // It is also the only place all three stored spec payload shapes are seen
+    // rendering. `specs` rejects UPDATE, so legacy, whole-surface and change
+    // rows are all permanent; a fixture exercising one arm would let the other
+    // two rot to "Unreadable proposal (corrupt payload)" with the whole suite
+    // green. scripts/shots.ts's `admin` seeder puts one of each on this
+    // account for that reason.
     assertions: [
       'Reading measure is roughly 680px at 1440 — not the full window width.',
-      'User and agent turns are clearly distinguishable at a glance.',
-      'A proposal card appears INLINE in conversation order, not collected at the end.',
+      'User and agent turns are clearly distinguishable at a glance — an adjacent pair sits between the first card and the confirmation.',
+      'A proposal card appears INLINE in conversation order, not collected at the end: turns appear both before and after a card.',
       'A confirmation appears as an event at the point it happened.',
-      'The newest turn is at the bottom and the pane is scrolled to it.',
+      'The newest item is at the bottom and the pane is scrolled to it.',
+      'THREE cards render, one per stored payload shape, and none of them reads "Unreadable proposal (corrupt payload)": v1 LEGACY (its "Manual logging" section is the giveaway — no other shape has one), v2 WHOLE-SURFACE (a screen with panels, and a value labelled with its source kind), v3 CHANGE (an "add panel — …" line, and no screens at all).',
+      'v1 is the oldest and the tallest, so its TITLE line sits just above the fold — the card itself is in frame from its summary down. That is expected, not a missing card.',
     ],
   },
   {
@@ -365,7 +379,8 @@ export const SCREENS: Screen[] = [
     live: true,
     assertions: [
       'The spec renders as real markdown — headings are headings, lists are lists. Not a wall of preformatted text.',
-      'A version label and a confirmation timestamp sit at the top.',
+      'A version label and an "as of" timestamp sit at the top. NOT a confirmation timestamp: nothing confirms any more, currentSpec returns the newest row whether or not it was ever confirmed, and the newest row here (v3) has no spec_confirmations row — so page.tsx falls back to the spec\'s own authored time (`current.confirmed_at ?? current.at`).',
+      'The current version is CHANGE-shaped, so the document is the change-only one: "What changed", then "Changes" with an "Add panel — …" heading under it. No screens section, because a change-only spec has no screens.',
     ],
   },
   {

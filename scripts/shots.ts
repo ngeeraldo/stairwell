@@ -526,12 +526,20 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
    *
    * DELIBERATELY TERSE, and that is a layout constraint rather than laziness.
    * The transcript pane scrolls to the newest item and the viewport is 900px
-   * (screenshots/screens.ts, VIEWPORT_HEIGHT), so three cards plus a
-   * confirmation only fit in one frame if each card is short. The opening two
-   * turns now sit above the fold at 1440 as a result: admin-transcript's
-   * "user and agent turns are clearly distinguishable" is reviewed on the
-   * friend's own chat screens instead. Lengthening any string here pushes the
-   * legacy card off the top, which is the one arm nothing else photographs.
+   * (screenshots/screens.ts, VIEWPORT_HEIGHT), so everything this screen has
+   * to show only fits in one frame if each card is short: three cards, an
+   * adjacent user/assistant pair, and the confirmation event. The budget is
+   * spent down to about one line of slack, so LENGTHENING ANY STRING HERE, or
+   * adding a field that renders, pushes the LEGACY card off the top — and that
+   * is the one arm no other screen photographs.
+   *
+   * Two fields are left empty to buy that room, and neither is empty by
+   * accident: v2 and v3 both carry `data_requirements: []`, and v2 carries
+   * `based_on_version: null` rather than 1, which is what suppresses the
+   * "Changes from v1" BaseComparisonView box. Both of those renders are real
+   * and neither is currently photographed anywhere — an accepted cost of the
+   * three-card ruling, recorded here so it is a decision rather than a
+   * discovery. If this pane ever gets a taller viewport, put them back first.
    */
   admin: async (dbPath) => {
     const { openPlatformDb } = await import('../lib/db/platform')
@@ -584,6 +592,19 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
         at: base + 2000,
       })
 
+      // Two SHORT turns immediately after the legacy card, and they are load-
+      // bearing for two of admin-transcript's assertions rather than being
+      // scene-setting. A turn AFTER a card is the only thing that can show a
+      // card is INLINE in conversation order rather than collected at the end,
+      // and an adjacent user/assistant pair is the only thing that can show
+      // this pane's own turn styling (page.tsx renders them with its own
+      // markup — `border` for a user turn, `bg-muted/40` for an assistant one,
+      // shared with no other component, so the friend's chat screens cannot
+      // stand in for it). Kept to one line each because the height budget
+      // below is real.
+      say('user', 'That is it. TEST', base + 3000)
+      say('assistant', 'Updating it now. TEST', base + 3500)
+
       // v2: the WHOLE-SURFACE shape. Nothing authors it any more, but
       // parseSpecVersion still reads it, and this is the card that proves the
       // reader's output still renders. based_on_version points at the legacy
@@ -618,9 +639,9 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
                 ],
               },
             ],
-            data_requirements: [{ table: 'walks', purpose: 'A row a day TEST.', status: 'new' }],
+            data_requirements: [],
             open_questions: [],
-            based_on_version: 1,
+            based_on_version: null,
             ops: null,
           }),
         ),
@@ -640,7 +661,7 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
             description: 'How many coffees this week, off the walk log TEST.',
           },
         ],
-        data_requirements: [{ table: 'walks', purpose: 'Already there TEST.', status: 'unchanged' }],
+        data_requirements: [],
         open_questions: [],
       })
       insertSpec(db, {

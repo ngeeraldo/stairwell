@@ -78,6 +78,25 @@ describe('draftFrom, reached through parseSpecVersion', () => {
     expect(parsed.open_questions).toEqual(['a', 'b'])
   })
 
+  // The blank-entry case above is the LAUNDERING side of textList
+  // (lib/spec/fields.ts): a blank string is dropped, deliberately. This is
+  // the throwing side, and the two must be tested together or the first one
+  // reads as permission for the second.
+  //
+  // It lived in tests/spec/patch.test.ts until the whole-surface authoring
+  // path was deleted, where it was written as a parsePatch case — but the
+  // rule it pins is textList's, not parsePatch's, and textList is live on two
+  // paths: draftFrom's open_questions for every stored whole-surface row (this
+  // one) and lib/spec/change.ts. A hand-rolled filter would drop 42 and let
+  // this pass, which is the "the answer became none" laundering arrayField's
+  // own comment warns against — in a row `specs` will never let anyone
+  // correct. legacy.test.ts covers lib/spec/legacy.ts's SEPARATE textList,
+  // not this one.
+  it('rejects a non-string open_questions entry rather than silently dropping it', () => {
+    expect(() => read(draft({ open_questions: ['keep', 42] }))).toThrow(SpecShapeError)
+    expect(() => read(draft({ open_questions: ['keep', 42] }))).toThrow(/open_questions/)
+  })
+
   it.each([
     ['a non-object', 42],
     ['zero screens', draft({ screens: [] })],
