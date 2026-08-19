@@ -23,8 +23,13 @@ const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
  * v6 the agent received no description of the dashboard at all and
  * reconstructed one from the conversation, which is why a second conversation
  * could discuss panels that were never built the way they were proposed.
+ *
+ * v7 removes the preview. There is no mockup and nothing to confirm: calling
+ * propose_spec writes a spec in the background and the build arrives. The
+ * agent now says briefly what it will have built, because the card that used
+ * to say it is gone.
  */
-export const AGENT_PROMPT = 'agent-v6.md'
+export const AGENT_PROMPT = 'agent-v7.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output
