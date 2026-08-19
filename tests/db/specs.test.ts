@@ -7,7 +7,6 @@ import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import {
   currentSpec,
   hasSpec,
-  hasSpecBelow,
   insertSpec,
   readSpecs,
   specByVersion,
@@ -88,39 +87,6 @@ describe('insertSpec / readSpecs', () => {
     const rows = readSpecs(db, account)
     expect(rows).toHaveLength(1)
     expect(rows[0]!.confirmed_at).toBe(5_000)
-  })
-})
-
-describe('hasSpecBelow — "is this card the first dashboard?"', () => {
-  // The bounded question, and the reason it is not hasSpec. See that
-  // function's docstring: the unbounded reading flips the instant a friend's
-  // very first card is on screen, which would make that same card start
-  // describing a whole first dashboard as a small change on the next page
-  // load.
-
-  it('is false for an account with nothing', () => {
-    write(1, 'one', 1_000)
-    expect(hasSpecBelow(db, 1, 1)).toBe(false)
-  })
-
-  it('is false when the ONLY spec is the one being asked about', () => {
-    // The card that IS the first dashboard. Nothing existed before it, so
-    // nothing sits below it.
-    write(1, 'one', 1_000)
-    expect(hasSpec(db, 1)).toBe(true)
-    expect(hasSpecBelow(db, 1, 1)).toBe(false)
-  })
-
-  it('is true once an EARLIER spec exists beneath the one being asked about', () => {
-    write(1, 'one', 1_000)
-    write(1, 'two', 2_000)
-    expect(hasSpecBelow(db, 1, 2)).toBe(true)
-  })
-
-  it('scopes to one account', () => {
-    write(2, 'theirs', 1_000)
-    write(1, 'mine', 2_000)
-    expect(hasSpecBelow(db, 1, 1)).toBe(false)
   })
 })
 

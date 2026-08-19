@@ -195,7 +195,6 @@ describe('announceTarget', () => {
     if (!target.ok) return
     expect(target.headline).toBe('Added a takeaway panel.')
     expect(target.version).toBe(1)
-    expect(target.first).toBe(true)
   })
 
   it('reports already_announced after a commit', () => {
@@ -275,19 +274,24 @@ describe('announceTarget', () => {
     const target = announceTarget(db, 'rebuildannounce', dir)
     expect(target.ok).toBe(true)
     if (!target.ok) return
-    expect(target.first).toBe(false)
-    expect(plainBody(target.headline, target.first)).toBe(
-      'Your dashboard was just rebuilt: Renamed the eating-out panel TEST.',
+    // The SAME sentence a first build gets. What this case still pins is
+    // which version was targeted — v2, the newest with a note — not a
+    // wording that no longer varies.
+    expect(target.version).toBe(2)
+    expect(plainBody(target.headline)).toBe(
+      'Your dashboard just updated: Renamed the eating-out panel TEST.',
     )
   })
 
-  // Ledger D9, the actual regression: hasSpecBelow (an earlier spec ROW
-  // exists) is not the same question as "was an earlier version actually
-  // built" the moment a spec can be authored without being built. A friend
-  // iterates in chat — v1 is authored and never built — then asks again and
-  // v2 IS built. The account's first-ever real build must still say "is
-  // live", not "was just rebuilt", even though a lower-numbered spec row
-  // exists.
+  // A friend iterates in chat — v1 is authored and never built — then asks
+  // again and v2 IS built. Announcing must target v2, the only version with a
+  // note, and skip the v1 row entirely.
+  //
+  // This case was originally written for ledger D9: a spec ROW existing is not
+  // proof a version was BUILT, and asking the wider question announced a
+  // genuinely first build as a rebuild. The wording no longer varies, so the
+  // wrong-sentence failure it caught cannot happen any more — but the
+  // targeting question it exercises is the same one, and is still live.
   it('still calls it a first launch when a lower version was authored but never built', async () => {
     const neverBuiltAccountId = await createAccount(db, {
       slug: 'neverbuiltannounce',
@@ -321,9 +325,9 @@ describe('announceTarget', () => {
     const target = announceTarget(db, 'neverbuiltannounce', dir)
     expect(target.ok).toBe(true)
     if (!target.ok) return
-    expect(target.first).toBe(true)
-    expect(plainBody(target.headline, target.first)).toBe(
-      'Your dashboard is live: The first thing actually built TEST.',
+    expect(target.version).toBe(2)
+    expect(plainBody(target.headline)).toBe(
+      'Your dashboard just updated: The first thing actually built TEST.',
     )
   })
 })
@@ -489,8 +493,12 @@ describe('commitAnnouncement', () => {
 })
 
 describe('plainBody', () => {
-  it('keeps both fixed sentences verbatim', () => {
-    expect(plainBody('X', true)).toBe('Your dashboard is live: X')
-    expect(plainBody('X', false)).toBe('Your dashboard was just rebuilt: X')
+  it('is ONE sentence, whatever the build', () => {
+    // Pinned verbatim because it is the fixed chrome a friend reads when the
+    // API is down and --plain sends it unrendered. There is deliberately no
+    // second form: choosing between two meant answering "was an earlier
+    // version ever built", and each cheap way of asking that has been wrong
+    // once (see plainBody's own docstring, and ledger D9).
+    expect(plainBody('X')).toBe('Your dashboard just updated: X')
   })
 })

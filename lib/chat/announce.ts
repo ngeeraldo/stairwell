@@ -106,8 +106,6 @@ export type AnnounceTarget =
       version: number
       /** The version's change_summary, or a legacy row's title. */
       headline: string
-      /** Whether this is the account's first dashboard (ledger D9). */
-      first: boolean
     }
   | { ok: false; reason: 'no_build_notes' | 'already_announced' }
 
@@ -148,42 +146,37 @@ export function announceTarget(db: PlatformDb, slug: string, usersDir?: string):
   const headline =
     stored.kind === 'version' ? stored.version.change_summary : stored.payload.title
 
-  // Deliberately NOT hasSpecBelow (lib/db/specs.ts) — that asks only whether
-  // an earlier spec ROW exists, and a spec can now be authored without ever
-  // being built. A friend iterating in chat can author v1 and never have it
-  // built, then author and build v2: hasSpecBelow(v2) sees v1's row and
-  // reports "not first", so the announcement would claim a rebuild on this
-  // account's first-ever dashboard (ledger D9 — this promise has been gotten
-  // wrong before). `first` has to ask the SAME question the spec lookup two
-  // lines up just asked — "does a notes file exist" — bounded to versions
-  // below this one, so the two questions can never disagree.
-  const first = !specs.some(
-    (s) => s.version < spec.version && existsSync(notesPath(slug, s.version, usersDir)),
-  )
-
   return {
     ok: true,
     accountId: account.id,
     specId: spec.id,
     version: spec.version,
     headline,
-    first,
   }
 }
 
 /**
- * The two fixed sentences, unchanged and still fixed chrome.
+ * ONE sentence, for every announcement there will ever be.
  *
- * "Rebuilt" is false on the one morning it matters most: a first build had
- * nothing to rebuild. `first` is computed by announceTarget, above, bounded
- * to whether a LOWER version has a notes file on disk — not whether an
- * earlier spec row merely exists (ledger D9: this promise has been gotten
- * wrong before by asking the wider question).
+ * There used to be two, chosen by a `first` flag: "is live" for an account's
+ * first dashboard and "was just rebuilt" for every version after it. That
+ * distinction is gone, and deleting it IS the fix rather than a simplification
+ * that gave one up.
+ *
+ * Ledger D9 is the reason. Getting `first` right means knowing whether an
+ * EARLIER version was ever built, and every cheap way of asking that has been
+ * wrong at least once: "has a confirmation" broke when confirmations went
+ * away, and "an earlier spec row exists" broke the moment a spec could be
+ * authored without being built — a friend who iterates in chat, leaves v1
+ * unbuilt, then builds v2, was told their first-ever dashboard had been
+ * rebuilt. Three separate defects on one branch, all of them a wrong sentence
+ * written permanently into a transcript that rejects DELETE.
+ *
+ * A sentence that does not depend on the distinction cannot get it wrong, and
+ * "just updated" is true of a first build and a one-word relabel alike.
  */
-export function plainBody(headline: string, first: boolean): string {
-  return first
-    ? `Your dashboard is live: ${headline}`
-    : `Your dashboard was just rebuilt: ${headline}`
+export function plainBody(headline: string): string {
+  return `Your dashboard just updated: ${headline}`
 }
 
 /**
