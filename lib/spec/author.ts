@@ -121,8 +121,18 @@ const NO_SERVED: Served = { model_served: CHAT_MODEL, fallback_fired: false }
  *
  * The retry path deliberately does NOT go through this: the model gets the
  * full message, quoted ids and all.
+ *
+ * EXPORTED FOR DIRECT TESTING, and that is the honest way to pin it: no
+ * `SpecShapeError` reachable from `parseSpecChangeDraft` interpolates spec
+ * content into its message (the change shape carries no ids, and every
+ * message on that path is a field path plus a fixed enum list), so a
+ * path-level test asserting a redacted metrics row would be fiction — it
+ * would pass just as well against a function that redacted nothing. The
+ * redaction is a standing guard on an append-only table nobody can correct,
+ * which is exactly why it must not be one refactor away from silent deletion.
+ * tests/spec/author.test.ts drives it directly instead.
  */
-function metricMessage(error: unknown): string {
+export function metricMessage(error: unknown): string {
   if (error instanceof SpecShapeError) return error.message.replace(/"[^"]*"/g, '"…"')
   return error instanceof Error ? error.message : String(error)
 }

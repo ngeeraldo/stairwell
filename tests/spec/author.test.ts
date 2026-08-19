@@ -9,7 +9,8 @@ import { insertSpec, readSpecs } from '@/lib/db/specs'
 import { CHAT_MODEL, ChatStreamError, type ChatClient, type Usage } from '@/lib/chat/client'
 import { parseStoredChange } from '@/lib/spec/change'
 import { readStoredSpec } from '@/lib/spec/stored'
-import { authorSpec } from '@/lib/spec/author'
+import { SpecShapeError } from '@/lib/spec/schema'
+import { authorSpec, metricMessage } from '@/lib/spec/author'
 
 let dir: string
 let db: PlatformDb
@@ -191,6 +192,69 @@ function seedConversation(): void {
     at: 2,
   })
 }
+
+/**
+ * metricMessage, driven directly.
+ *
+ * NOT reachable as a path test: no SpecShapeError the change validator can
+ * throw interpolates spec content, so every message that actually reaches this
+ * function today is a field path plus a fixed enum list, and a row-level
+ * assertion would pass just as well against a function that redacted nothing
+ * (verified: deleting the redaction leaves the whole suite green). The
+ * redaction guards `metrics`, which rejects UPDATE — a row written unredacted
+ * can never be corrected — so it is pinned here, at the function, rather than
+ * left one refactor away from silent deletion.
+ *
+ * The class scoping is pinned in BOTH directions on purpose. It is not an
+ * accident of implementation: SpecShapeError is the class whose quoting
+ * convention this regex matches, and widening the redaction to every Error
+ * would blank quoted substrings out of infrastructure messages (a SQLite
+ * constraint name, a path) that are the whole diagnostic value of an
+ * unexpected_error row.
+ */
+describe('metricMessage', () => {
+  it('blanks a single quoted value out of a SpecShapeError', () => {
+    // 'spec payload: ' is the class's own prefix (lib/spec/schema.ts), spelled
+    // out rather than computed: this test is what a stored row looks like, and
+    // deriving the expectation from the error would let a regression in the
+    // prefix pass unnoticed.
+    expect(metricMessage(new SpecShapeError('duplicate panel id "divorce_lawyer_fund"'))).toBe(
+      'spec payload: duplicate panel id "…"',
+    )
+  })
+
+  it('blanks every quoted value when the message names more than one', () => {
+    // The real two-value shape: two quoted ids and an unquoted enum word after
+    // them, so the redaction has to strip both without eating the diagnosis.
+    expect(
+      metricMessage(
+        new SpecShapeError('panel "walked_today" annotates "walk_flag", which is not synced'),
+      ),
+    ).toBe('spec payload: panel "…" annotates "…", which is not synced')
+  })
+
+  it('leaves a SpecShapeError with nothing quoted exactly as it is', () => {
+    // This is what every change-path message actually looks like today. The
+    // row stays diagnostic: a structural message loses nothing.
+    const message = 'changes[0].action is not one of add, change, remove'
+    expect(metricMessage(new SpecShapeError(message))).toBe(`spec payload: ${message}`)
+  })
+
+  it('does NOT redact a plain Error, even one carrying quotes', () => {
+    // The asymmetry is load-bearing. A plain Error here is infrastructure — a
+    // SQLite constraint, a filesystem path — and its quoted substrings are the
+    // diagnosis, not a friend's words. The invariant that keeps this safe is on
+    // the WRITER (every content-interpolating throw must be a SpecShapeError),
+    // and this test is what makes that a decision rather than an oversight.
+    expect(metricMessage(new Error('NOT NULL constraint failed: specs."conversation_id"'))).toBe(
+      'NOT NULL constraint failed: specs."conversation_id"',
+    )
+  })
+
+  it('stringifies a non-Error throw rather than dropping it', () => {
+    expect(metricMessage('a bare string')).toBe('a bare string')
+  })
+})
 
 describe('authorSpec', () => {
   it('inserts one spec and records spec_proposed', async () => {
