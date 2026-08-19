@@ -11,10 +11,11 @@
 //
 // FROZEN, with one live edge. Every parser below reads the whole-surface
 // shape, which nothing authors any more — they run on the way OUT of the
-// database, from parseSpecVersion. The live edge is the six helpers exported
-// at the bottom: lib/spec/change.ts reuses record, text, textList,
-// arrayField, oneOf, nonEmptyArray and requirement — seven of them — rather
-// than writing a second copy of "is this status valid".
+// database, from parseSpecVersion. The live edge is the EIGHT helpers
+// exported at the bottom, seven of which lib/spec/change.ts reuses — record,
+// text, textList, arrayField, oneOf, nonEmptyArray and requirement — rather
+// than writing a second copy of "is this status valid". The eighth, integer,
+// is exported alongside them but has no reader outside this file today.
 import {
   FIELD_TYPES,
   REQUIREMENT_STATUSES,

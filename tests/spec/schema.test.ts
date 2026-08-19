@@ -46,10 +46,12 @@ describe('SCREEN_MOCKUP_JSON_SCHEMA', () => {
     for (const node of nodes) expect(node.additionalProperties).toBe(false)
   })
 
-  it('has no minItems — zero affected screens is a legitimate call shape', () => {
-    // lib/spec/mockupCompose.ts: a meta-only patch touches no screen, and
-    // that empty result is legitimate (lib/spec/author.ts skips the call on
-    // it rather than the schema forbidding it).
+  it('has no minItems — zero affected screens was a legitimate call shape', () => {
+    // Historical, like the constant itself. A meta-only patch touched no
+    // screen, and that empty result was legitimate: the caller skipped the
+    // call on it rather than the schema forbidding it. Both the caller and
+    // the composer that consumed the result are deleted (mockup-loop
+    // removal), so this pins the frozen constant, not live behaviour.
     expect(JSON.stringify(SCREEN_MOCKUP_JSON_SCHEMA)).not.toContain('minItems')
   })
 })
