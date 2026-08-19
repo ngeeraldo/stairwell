@@ -980,7 +980,14 @@ describe('authorSpec', () => {
     })
 
     it('writes no spec_screen_mockups row', async () => {
-      await authorSpec(deps(fake().client), INPUT)
+      const proposal = await authorSpec(deps(fake().client), INPUT)
+      // A zero count is not proof by itself — it is also what a total
+      // authoring failure looks like (nothing written at all). Assert the
+      // spec row actually landed first, so this test can only pass by
+      // proving "a spec was written, and it has no mockup rows" rather than
+      // "nothing happened".
+      expect(proposal).toBeDefined()
+      expect(readSpecs(db, 1)).toHaveLength(1)
       const row = db
         .prepare('SELECT COUNT(*) AS n FROM spec_screen_mockups')
         .get() as { n: number }

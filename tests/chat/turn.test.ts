@@ -1002,12 +1002,13 @@ describe('the completion rule with propose_spec', () => {
         manual_logging: [], open_questions: [],
       },
     },
-    mockup_html: '<!doctype html>',
-    preview_html: '<!doctype html>',
-    // Every proposal carries its own delivery promise, computed from the
-    // record for THAT card — see Proposal.first. runTurn only ever passes it
-    // through, so its value is immaterial here; its presence is not.
-    first: true,
+    // mockup_html, preview_html and first are gone as of the mockup-loop
+    // removal (plan 2026-08-19-remove-the-mockup-loop, Task 4) — this fixture
+    // used to carry all three because it described a Proposal shape that no
+    // longer exists. runTurn only ever passes a Proposal through unopened, so
+    // nothing here depended on their VALUES, but keeping fields the real type
+    // no longer has would describe a shape this fixture is not proving
+    // anything about.
   }
 
   it('hands authoring a signal the request cannot abort', async () => {
