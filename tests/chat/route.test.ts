@@ -338,6 +338,52 @@ describe('POST /api/chat', () => {
     })
   })
 
+  it('alerts spec_authored when authoring returns a proposal', async () => {
+    // Wired at the ROUTE, not inside authorSpec — the point that already
+    // knows the outcome. NTFY_TOPIC stays unset (beforeEach), so this lands
+    // as an alert_failed/no_topic row, same proof-of-attempt pattern as the
+    // "wires a real alerter" test above: no network reached, but the kind on
+    // the row proves the call was made.
+    await signIn(false)
+    behaviour.value = 'propose-ok'
+    const res = await post({ body: 'help me build a dashboard' })
+    await res.text()
+
+    const rows = handle!
+      .prepare("SELECT data FROM metrics WHERE event LIKE 'alert%' ORDER BY id")
+      .all() as { data: string }[]
+    const kinds = rows.map((r) => JSON.parse(r.data).kind)
+    expect(kinds).toEqual(['conversation_started', 'spec_authored'])
+  })
+
+  it('alerts spec_failed when authoring returns nothing', async () => {
+    await signIn(false)
+    behaviour.value = 'propose-fail'
+    const res = await post({ body: 'help me build a dashboard' })
+    await res.text()
+
+    const rows = handle!
+      .prepare("SELECT data FROM metrics WHERE event LIKE 'alert%' ORDER BY id")
+      .all() as { data: string }[]
+    const kinds = rows.map((r) => JSON.parse(r.data).kind)
+    expect(kinds).toEqual(['conversation_started', 'spec_failed'])
+  })
+
+  it('alerts neither spec_authored nor spec_failed on a turn that never proposed', async () => {
+    // The tool was never called, so there is nothing to alert on — an
+    // ordinary turn must not manufacture a build signal.
+    await signIn(false)
+    behaviour.value = 'ok'
+    const res = await post({ body: 'hi' })
+    await res.text()
+
+    const rows = handle!
+      .prepare("SELECT data FROM metrics WHERE event LIKE 'alert%' ORDER BY id")
+      .all() as { data: string }[]
+    const kinds = rows.map((r) => JSON.parse(r.data).kind)
+    expect(kinds).toEqual(['conversation_started'])
+  })
+
   it('answers a LOCKED session — the chat surface survives the lock', async () => {
     // architecture-overview.md line 59. This is the property that makes the
     // two-tier session worth having, so it is pinned at the endpoint and not

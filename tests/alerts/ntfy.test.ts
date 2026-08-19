@@ -5,7 +5,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openPlatformDb, type PlatformDb } from '@/lib/db/platform'
 import { createAccount } from '@/lib/auth/accounts'
-import { conversationAlerter, NTFY_ORIGIN } from '@/lib/alerts/ntfy'
+import {
+  conversationAlerter,
+  // Aliased: this file already has a local `alerter()` test helper (below)
+  // that wraps `conversationAlerter` for the existing single-kind tests.
+  // Importing the module's own kind-based `alerter` under its own name would
+  // collide with that helper, so the two new tests below drive the raw
+  // export directly under this alias instead of renaming the existing
+  // helper (and touching every test that already calls it).
+  alerter as sendAlert,
+  ALERT_TEXT,
+  NTFY_ORIGIN,
+} from '@/lib/alerts/ntfy'
 
 let dir: string
 let db: PlatformDb
@@ -219,5 +230,57 @@ describe('conversationAlerter', () => {
     const calls: Call[] = []
     await alerter({ topic: 'a/b', fetch: fakeFetch(calls, ok) })(userId)
     expect(calls[0]!.url).toBe(`${NTFY_ORIGIN}/a%2Fb`)
+  })
+})
+
+describe('alerter — spec_authored and spec_failed', () => {
+  // Two signals that died when the confirmation step was removed:
+  // `spec_confirmed` used to tell Nico there was work to do, and a visible
+  // `spec_error` used to mean a friend watched a card fail to arrive. Both
+  // replacements carry a slug and a fixed phrase — the metrics bound applied
+  // to a push notification — and nothing else.
+  it('sends a slug and a fixed phrase for an authored spec', async () => {
+    // Guarded explicitly: `body.includes(ALERT_TEXT.spec_authored)` would
+    // pass EVEN BEFORE this key exists, because a string coerces a missing
+    // (undefined) value to the literal text "undefined" on both sides of the
+    // comparison. This line is what actually turns red before Step 3.
+    expect(ALERT_TEXT.spec_authored).toBeTypeOf('string')
+
+    const calls: Call[] = []
+    await sendAlert({ topic: 'topic-abc', fetch: fakeFetch(calls, ok), db, now: () => 1_000 })(
+      'spec_authored',
+      userId,
+    )
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.init?.body).toContain('devtwo')
+    expect(calls[0]!.init?.body).toContain(ALERT_TEXT.spec_authored)
+  })
+
+  it('has a kind for an authoring failure', async () => {
+    // In the background nobody is watching. The friend has asked for
+    // something and nothing exists; this is the only thing that says so.
+    expect(ALERT_TEXT.spec_failed).toBeTypeOf('string')
+
+    const calls: Call[] = []
+    await sendAlert({ topic: 'topic-abc', fetch: fakeFetch(calls, ok), db, now: () => 1_000 })(
+      'spec_failed',
+      userId,
+    )
+    expect(calls[0]!.init?.body).toContain(ALERT_TEXT.spec_failed)
+  })
+
+  it('carries nothing the friend wrote, for either kind', async () => {
+    const calls: Call[] = []
+    const send = sendAlert({
+      topic: 'topic-abc',
+      fetch: fakeFetch(calls, ok),
+      db,
+      now: () => 1_000,
+    })
+    await send('spec_authored', userId)
+    await send('spec_failed', userId)
+    for (const call of calls) {
+      expect(call.init?.body).not.toMatch(/divorce_lawyer_fund/)
+    }
   })
 })

@@ -16,7 +16,7 @@ import {
 import { contextFor } from '@/lib/chat/context'
 import { AGENT_PROMPT, loadPrompt } from '@/lib/chat/prompt'
 import { runTurn } from '@/lib/chat/turn'
-import { conversationAlerter } from '@/lib/alerts/ntfy'
+import { alerter, conversationAlerter } from '@/lib/alerts/ntfy'
 import { authorSpec as authorSpecImpl } from '@/lib/spec/author'
 import { HEARTBEAT_LINE, startHeartbeat } from '@/lib/chat/heartbeat'
 
@@ -188,22 +188,32 @@ export async function POST(request: Request) {
       // run forever.
       const authoringSignal = new AbortController().signal
 
+      // Shared by both alerters below: NTFY_TOPIC read at call time rather
+      // than at module scope — the same reason chatClient() is deferred — a
+      // configuration problem should fail the request that needed it, not
+      // the module import that also serves the 401 and 400 paths.
+      const alertDeps = {
+        topic: process.env.NTFY_TOPIC,
+        fetch: globalThis.fetch,
+        db,
+        now: Date.now,
+      }
+      // The general, kind-based sender — used below for the two outcomes
+      // authoring can produce. conversationAlerter (passed into runTurn as
+      // `alert`) is a second, separately bound instance of the same
+      // function; kept as its own call so TurnDeps.alert's `(accountId) =>
+      // void` type is unchanged, which is what stops a future edit from
+      // awaiting a push notification on the critical path of a friend's chat
+      // turn.
+      const sendAlert = alerter(alertDeps)
+
       const outcome = await runTurn(
         {
           db,
           client: turnClient,
           now: Date.now,
           context,
-          // Built per request, and NTFY_TOPIC read at call time rather than
-          // at module scope — the same reason chatClient() is deferred: a
-          // configuration problem should fail the request that needed it,
-          // not the module import that also serves the 401 and 400 paths.
-          alert: conversationAlerter({
-            topic: process.env.NTFY_TOPIC,
-            fetch: globalThis.fetch,
-            db,
-            now: Date.now,
-          }),
+          alert: conversationAlerter(alertDeps),
           authorSpec: (proposeInput) =>
             authorSpecImpl({ db, client: turnClient, now: Date.now, context }, proposeInput),
         },
@@ -231,6 +241,22 @@ export async function POST(request: Request) {
           },
         },
       ).finally(stopHeartbeat)
+
+      // TWO SIGNALS THE CONFIRMATION CARD USED TO CARRY, replaced here at the
+      // point that already knows the outcome — see lib/alerts/ntfy.ts's
+      // ALERT_TEXT for why each exists. Deliberately NOT awaited: the
+      // alerter's own contract (lib/alerts/ntfy.ts) is to never throw and
+      // never reject, and a push notification must never delay or fail the
+      // friend's reply — same reasoning as the conversation-start alert
+      // above, which the route has never awaited either. Silent when the
+      // tool was never called: `outcome.proposal` and `outcome.proposalFailed`
+      // are both absent/false on an ordinary turn, so no build signal fires
+      // for something nobody asked for.
+      if (outcome.proposal) {
+        void sendAlert('spec_authored', session.account_id)
+      } else if (outcome.proposalFailed) {
+        void sendAlert('spec_failed', session.account_id)
+      }
 
       // THE TURN ITSELF FAILED, upstream, and the friend needs to be told which
       // kind of nothing they got. Without this line the panel could only fall

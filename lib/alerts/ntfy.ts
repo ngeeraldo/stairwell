@@ -44,7 +44,23 @@ export const ALERT_TIMEOUT_MS = 5_000
  */
 export const ALERT_TEXT = {
   conversation_started: 'started a conversation',
+  // Nothing sends this any more — the confirmation step it fired on is gone
+  // (removed alongside the mockup loop, plan
+  // 2026-08-19-remove-the-mockup-loop). Kept rather than deleted: this key
+  // is the wording an already-sent push notification was built from, the
+  // same reason a prompt file is added rather than edited (CLAUDE.md > Data
+  // safety). Removing it would make that wording unrecoverable for free.
   spec_confirmed: 'confirmed a spec',
+  // The confirmation card is gone, so this is now the ONLY way Nico learns a
+  // friend wants a build — without it the only signal is reading transcripts
+  // by hand. Fired from app/api/chat/route.ts, at the point that already
+  // knows authoring succeeded (plan 2026-08-19-remove-the-mockup-loop,
+  // Task 5).
+  spec_authored: 'asked for a build',
+  // Authoring now happens in the background where nobody is watching — the
+  // friend has asked for something and nothing exists. Fired from the same
+  // call site as spec_authored, on the sibling outcome.
+  spec_failed: 'asked for a build, and writing the spec failed',
   migration_failed: 'could not log in — migration failed',
 } as const
 
