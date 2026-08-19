@@ -112,7 +112,7 @@ architectural changes; do not relitigate decided items).
   - `queries.ts` — every SQL statement, as pure functions taking a `UserDb`
   - `dashboard.tsx` — default-export server component, **no SQL**
   - `tests/` — at least one `*.test.ts`
-  - `notes/` — `README.md`, plus `v<n>.md` for every confirmed version that was
+  - `notes/` — `README.md`, plus `v<n>.md` for every version that was
     BUILT. **Added, never edited**, for the same reason prompts are:
     `scripts/announce-deploy.ts` speaks from this file, so an edit changes what
     an already-sent, permanently-stored announcement was based on. Four fixed
@@ -154,16 +154,19 @@ architectural changes; do not relitigate decided items).
   Same no-user-values bound as `notes/`: describe shape, never a row, a
   value, or a merchant. `version: 0` means "predates the spec loop" —
   `devone` and `devtwo` are hand-written and never had a spec version.
-- `spec.md` and `mockup.html` are written by `./scripts/pull-spec.sh <slug>`
-  and are absent until a spec is confirmed. `synthetic.db` is generated and
-  gitignored. `<slug>.db` arrived in step 6a and is described next.
-- A confirmed spec **version** is whole-surface — it describes the user's
-  entire dashboard, not just one conversation's worth of changes.
-  `specs.payload` (platform database) holds it; `version` is derived from row
-  position, never stored, so it can neither drift nor race; `based_on_version`
-  is supplied by the server from the account's current confirmed version,
-  never authored by the model — a model-authored lineage pointer would be a
-  hallucination becoming a permanent row in an append-only table.
+- `spec.md` is written by `./scripts/pull-spec.sh <slug>` and is absent until
+  an account has any spec at all. `synthetic.db` is generated and gitignored.
+  `<slug>.db` arrived in step 6a and is described next.
+- A spec **version** is whole-surface — it describes the user's entire
+  dashboard, not just one conversation's worth of changes. `specs.payload`
+  (platform database) holds it; `version` is derived from row position, never
+  stored, so it can neither drift nor race; `based_on_version` is supplied by
+  the server from the account's current version, never authored by the
+  model — a model-authored lineage pointer would be a hallucination becoming
+  a permanent row in an append-only table. **Nothing confirms a version any
+  more.** The newest spec row IS the build contract the moment `propose_spec`
+  writes it (`lib/db/specs.ts`'s `currentSpec`) — there is no card, no button,
+  and no separate confirmation event on the write path.
   The MODEL is asked only for the change: against a current-shape base it
   emits a PATCH (`lib/spec/patch.ts`, eight ops — `set_meta`, `add_screen`,
   `update_screen`, `remove_screen`, `add_panel`, `replace_panel`,
@@ -178,47 +181,21 @@ architectural changes; do not relitigate decided items).
   Three paths author, not two: `patch` against a current-shape base; `whole`
   for a first version, which has no base to patch; `whole` for a legacy base,
   which carries no ids for an op to name and can never gain any.
-- The ops name exactly which screens a patch touched
-  (`lib/spec/mockupCompose.ts`'s `affectedScreens`), and the mockup call draws
-  only those screens' fragments, carrying every other screen's fragment
-  forward from `spec_screen_mockups` unchanged. **`specs.mockup_html` is still
-  the whole composed document, and it is still the build contract** —
-  `pull-spec.sh`, `users/<slug>/mockup.html`, the admin Mockup tab, and
-  `dashboard.tsx`'s build target all read it unscoped, because a builder needs
-  every screen, touched or not. What is scoped is the FRIEND'S CARD: it renders
-  `Proposal.preview_html`, composed from only the affected screens, so
-  confirming a one-word relabel does not ask someone to re-review a dashboard
-  they already approved. For a first version (or a legacy base's one-time
-  whole-surface fallback) every screen is affected, so the two documents are
-  equal — not because scoping is skipped, but because "everything" is what
-  scoping degenerates to. **The stylesheet lives in `lib/spec/mockupCompose.ts`,
-  never in a fragment or a prompt, because fragments drawn weeks apart, by
-  separate model calls, have to match** when composed into one document — a
-  stylesheet re-emitted per fragment could disagree with itself screen to
-  screen, and the unchanged screens would visibly shift every time a neighbour
-  was edited. A fragment may carry its own `<style>` block on top; `composeMockup`
-  scopes it to that screen automatically (prefixing selectors under
-  `#screen-<id>`) so a rule meant for today's edit cannot restyle a screen
-  nobody touched.
-- **The mockup CSP is a privacy-promise guard, not a styling rule.** Mockup
-  HTML is generated from interview content, so any external fetch it makes is
-  a channel that can leak transcript-derived content to a third party the
-  moment a friend opens their own preview. Two layers, because a header
-  cannot reach every surface that serves this content: `app/mockup/[version]/route.ts`
-  and `app/admin/mockup/[user]/[version]/route.ts` set a
-  `content-security-policy` header (`sandbox; default-src 'none'; style-src
-  'unsafe-inline'; img-src data:` — no font-src, since a mockup matches the
-  app's own system font stack) — but `app/[user]/ChatPanel.tsx` renders a
-  friend's own scoped preview card with `srcDoc`, not `src`, which no route
-  ever serves and therefore carries no header at all. `lib/spec/mockupCompose.ts`'s
-  `composeMockup` writes the SAME policy as a `<meta
-  http-equiv="Content-Security-Policy">` inside the composed document's own
-  `<head>` instead, so the guarantee travels WITH the document into `srcDoc`.
-  Plus a source-level strip (`stripExternalReferences` in the same file) that
-  drops any `src=`/`href=`/`url(...)` reference it cannot prove is safe, and
-  drops every `<meta>` tag out of a fragment outright — a `<meta
-  http-equiv="refresh">` redirect is a NAVIGATION, which CSP's fetch
-  directives do not govern, so nothing else in this stack closes it.
+- `specs.mockup_html` is written as `''` on every row now — `insertSpec` still
+  fills a NOT NULL column, but nothing composes or serves mockup HTML any
+  more (mockup-loop removal). `spec_screen_mockups` and `spec_confirmations`
+  are still append-only tables and still hold every row they ever held — real
+  history an append-only table may never prune — but the application no
+  longer writes to either: the confirmation button that wrote
+  `spec_confirmations` is gone, and the per-screen mockup call that wrote
+  `spec_screen_mockups` is gone with it.
+- **The mockup CSP guard is gone, because the thing it guarded is gone — not
+  because the promise it made got weaker.** It existed because mockup HTML
+  was generated from interview content and rendered to a friend as `srcDoc`;
+  any external fetch inside it would have been a channel leaking
+  transcript-derived content to a third party. Nothing renders
+  model-generated HTML to a person any more, so there is no surface left for
+  that guarantee to travel with.
 - `specs` rejects UPDATE, so a row written before the unified proposal loop
   can never be rewritten into the current shape — it is read as legacy
   forever. Read every stored spec payload through `lib/spec/stored.ts`, the
@@ -418,11 +395,11 @@ architectural changes; do not relitigate decided items).
 ## Onboarding
 - The end-to-end operator process — invite, spec import, build, deploy,
   announce — is docs/runbook.md. It runs as one of two flows: **A** for a friend
-  who has never had a dashboard, **B** for a new confirmed version of one that
+  who has never had a dashboard, **B** for a new spec version of one that
   exists. It is Nico's, run by hand; nothing in it is automated, and several
   steps are deliberately not.
-- **Dashboard work happens on a `<slug>/v<n>` branch, one per confirmed spec
-  version, never on `main`** — main is the line `deploy.sh` pulls, so a
+- **Dashboard work happens on a `<slug>/v<n>` branch, one per spec version,
+  never on `main`** — main is the line `deploy.sh` pulls, so a
   half-built dashboard there blocks every unrelated fix. Nico creates the branch
   and runs anything that scaffolds a folder; check `git branch --show-current`
   before writing code and stop if it says `main`. Never create a branch named
@@ -455,19 +432,21 @@ architectural changes; do not relitigate decided items).
 - **A build that could not deliver something goes back to the chat, never into
   the announcement.** The announcement is an update, not a disclosure: what
   shipped, and any in-spirit adjustment that makes it work better. Anything in
-  the confirmed spec that did NOT land goes in `## Open`, which the friend
+  the spec that did NOT land goes in `## Open`, which the friend
   never sees, and routes back through `scripts/ask-user.ts` or a new proposal.
   `announce-deploy.ts` warns when that section is non-empty.
 
 ## Build contract
-- spec.md + mockup.html in the user's folder are the build contract for
-  **user dashboards** (`users/<name>/`, `app/[user]/`).
-  Build toward the mockup. Feasibility doubts → flag to Nico, don't guess.
+- `spec.md` in the user's folder, the conversation it was pulled from,
+  `current.md`, and the code are the build contract for **user dashboards**
+  (`users/<name>/`, `app/[user]/`). There is no mockup — nothing composes or
+  serves mockup HTML any more (mockup-loop removal), and `mockup.html` is
+  gone from every folder. Feasibility doubts → flag to Nico, don't guess.
 - **Platform auth pages** (`app/(auth)/login`, `app/(auth)/unlock`, `app/admin`)
-  are NOT covered by any mockup.html. Their contract is the step-1a design doc,
-  docs/superpowers/specs/2026-08-10-step1-auth-and-test-gate-design.md (§3 owns
-  this layout). Absence of a mockup is not a reason to leave an auth-page gap
-  unfixed — check the design doc instead.
+  are NOT covered by `spec.md` either. Their contract is the step-1a design
+  doc, docs/superpowers/specs/2026-08-10-step1-auth-and-test-gate-design.md
+  (§3 owns this layout). Absence of a spec is not a reason to leave an
+  auth-page gap unfixed — check the design doc instead.
 - Deploys go out through deploy/deploy.sh only — never by editing files on
   the droplet. Tests gate the restart, and deploy/smoke.sh gates success:
   **a deploy that starts the process but does not serve correctly is a failed
@@ -581,25 +560,21 @@ architectural changes; do not relitigate decided items).
 - Metrics log and chat transcripts are append-only. Never migrate, rewrite,
   or "clean up" these files.
 - `spec_screen_mockups` (platform database) is append-only too, same trigger
-  pair as `specs`. It holds one row per `(spec_id, screen_id)` — the per-screen
-  mockup fragment a version's screen was drawn with. **A table, not more JSON
-  in `payload`, for two separate reasons:** `specs.payload` is read on every
-  proposal to build the writer's current-version block, and putting rendered
-  HTML in it would feed the mockup back into the model's own input; and
-  `specs.mockup_html` is one opaque composed document — splicing a screen back
-  out of it would mean asking the model to emit stable per-screen markers to
-  splice on, which makes a guarantee depend on model compliance with a
-  formatting rule (exactly what unified-loop ledger D19 says not to do).
-  `lib/db/screenMockups.ts`
-  appends and reads; `lib/spec/mockupCompose.ts` is the only place that
-  composes fragments into a document.
+  pair as `specs`. It holds one row per `(spec_id, screen_id)` — the
+  per-screen mockup fragment a version's screen was drawn with, back when a
+  version's screen was drawn at all. `lib/db/screenMockups.ts` still appends
+  and reads; nothing composes fragments into a document any more —
+  `lib/spec/mockupCompose.ts`, the one file that did, is deleted along with
+  every route that served its output (mockup-loop removal). The table stays
+  exactly as it is: real rows written while the mockup loop ran, and an
+  append-only table forgets nothing on purpose.
 - **TWO metric events are load-bearing for correctness rather than purely
   observational, and neither is disposable telemetry.**
   - `deploy_announced` — `announceTarget` (`lib/chat/announce.ts`, called from
     `runAnnounce` in `scripts/announce-deploy.ts`) reads it to decide whether
-    it has already spoken for a confirmed spec version, so pruning or
-    archiving one makes a weeks-old build announce itself again into an
-    append-only transcript (unified-loop ledger D16).
+    it has already spoken for a spec version, so pruning or archiving one
+    makes a weeks-old build announce itself again into an append-only
+    transcript (unified-loop ledger D16).
   - `first_session_start` — `app/[user]/page.tsx` reads it to decide whether
     this account has ever reached the shell before. Pruning one makes a
     months-old account report a first session again, and nothing afterwards
