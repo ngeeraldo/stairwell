@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pull one user's confirmed spec into the repo. Run from the repo root on the
+# Pull one user's current spec into the repo. Run from the repo root on the
 # LAPTOP:
 #   ./scripts/pull-spec.sh devtwo
 #   ./scripts/pull-spec.sh devtwo --local
@@ -25,7 +25,7 @@
 # REAL platform database on the droplet.
 #
 # This script is a thin wrapper and does no file writing itself: fetch the
-# confirmed spec as JSON from export-spec.ts, hand it to write-spec-pair.ts.
+# current spec as JSON from export-spec.ts, hand it to write-spec-pair.ts.
 #
 # export-spec.ts prints nothing on stdout unless it has a result ready (it
 # refuses an account with no spec at all, and a corrupt stored payload throws
@@ -62,7 +62,7 @@ main() {
     # here only by luck: platform/dev/ does not exist in the droplet's checkout,
     # because git will not create a directory whose only contents are
     # gitignored. Had it existed, this would have written synthetic data into
-    # users/<name>/spec.md as if it were the friend's real confirmed spec.
+    # users/<name>/spec.md as if it were the friend's real spec.
     # export-spec.ts now refuses to run without PLATFORM_DB rather than
     # guessing; this line is what supplies it.
     #

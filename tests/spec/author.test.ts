@@ -449,7 +449,7 @@ describe('authorSpec', () => {
   })
 
   describe('the current version handed to the writer', () => {
-    it('gives the writer the current confirmed version as JSON', async () => {
+    it('gives the writer the current version as JSON', async () => {
       // Id stability is the whole point of the new shape, so the ids have to
       // arrive in a form the writer can copy verbatim.
       confirmed(CURRENT_V1)
@@ -471,12 +471,12 @@ describe('authorSpec', () => {
       // the empty arm — that distinction is gone, because currentSpec no
       // longer asks about confirmation (lib/db/specs.ts). An account with a
       // spec, confirmed or not, now gets the "current version" arm instead —
-      // see "gives the writer the current confirmed version as JSON" above.
+      // see "gives the writer the current version as JSON" above.
       const client = fake()
       await authorSpec(deps(client.client), INPUT)
 
       const sent = JSON.stringify(client.specCalls()[0]!.messages)
-      expect(sent).toMatch(/no confirmed spec/i)
+      expect(sent).toMatch(/no spec for this account/i)
       expect(sent).toMatch(/empty/i)
       expect(sent).not.toContain('walked_today')
     })
@@ -726,7 +726,7 @@ describe('authorSpec', () => {
       expect(sent.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'user'])
       expect(sent[0]!.content).toBe('what should I track?')
       expect(sent[1]!.content).toBe('sure thing')
-      expect(sent[2]!.content).toMatch(/no confirmed spec/i)
+      expect(sent[2]!.content).toMatch(/no spec for this account/i)
       expect(sent[3]!.content).toBe('Write the spec now.')
     })
 
@@ -791,7 +791,7 @@ describe('authorSpec', () => {
       values: [{ kind: 'entered', id: 'eating_out_flag', description: 'One tap per day.' }],
     }
 
-    /** A current confirmed version with two panels, so a patch has something
+    /** A current version with two panels, so a patch has something
      * to remove and something left over to prove the rest survived untouched. */
     const TWO_PANEL_CURRENT = {
       ...GOOD_DRAFT,

@@ -14,7 +14,9 @@
 Friend's phone/browser
   ├── Dashboard (their code + their data, behind their login)
   └── Persistent chat window (toggleable/hidden) — the agent surface for the
-        one proposal loop (§6): discovery → propose_spec → preview → confirm
+        one proposal loop (§6): discovery → propose_spec (authored straight to
+        the platform database, in the background — no preview, nothing to
+        confirm)
         └──► you ──► Claude Code ──► tests pass ──► deploy
               ──► you run the announce command, by hand, never automatic
               ──► agent announces in chat, above
@@ -22,9 +24,11 @@ Friend's phone/browser
 Server (single VPS)
   ├── /users/<name>/
   │     ├── dashboard code        (bespoke per user)
-  │     ├── spec.md               (agent-emitted, user-confirmed build spec —
-  │     │                          rendered from the latest confirmed version)
-  │     ├── mockup.html           (agent-rendered UI preview — the build contract)
+  │     ├── spec.md               (agent-emitted build spec — rendered from
+  │     │                          the newest authored version; nothing
+  │     │                          confirms it, so the newest version IS the
+  │     │                          contract, pulled into the repo explicitly
+  │     │                          by `./scripts/pull-spec.sh`)
   │     ├── schema.sql            (their table shapes)
   │     ├── seed.py               (synthetic data generator)
   │     ├── synthetic.db          (regenerated per session)
@@ -33,8 +37,10 @@ Server (single VPS)
   ├── Admin portal (Nico only, read-only): spec versions with their diffs,
   │     and transcripts (the `requests` table is dead schema, unused since
   │     step 1 — superseded by the spec-version list, unified-loop ledger D12)
-  ├── Alerts → ntfy.sh push (session start; spec confirmed, now on every
-  │     confirmed version however small — the "run to the computer" signal)
+  ├── Alerts → ntfy.sh push (session start; spec authored — fires the moment a
+  │     friend's request produces a spec, replacing the old "spec confirmed"
+  │     signal now that nothing confirms; and spec authoring failed — the
+  │     "run to the computer" signals)
   ├── Plaid sync (runs at login)
   └── Metrics log (from day one)
 ```
@@ -53,7 +59,7 @@ Server (single VPS)
 - **What there IS, since the onboarding build, is a way in.** Four screens a person passes through exactly once — an invite link, the privacy promise, the password that becomes their encryption key, and then the shell — plus a returning login and an honest forgot-password dead end. They exist because the encryption is real: the password must exist before the first byte is written, and there is no reset, so both facts have to be said plainly before an account exists rather than discovered afterwards. Spec: `onboarding-ux-spec.md`.
 - **Every login lands in one shell** (`app/[user]/Shell.tsx`) for the product's whole life: the chat surface and a content area, with the content area holding a placeholder card until a dashboard is deployed and the dashboard afterwards. No first-run mode, no conditional routing. The chat is open by default during the interview and collapsed once a dashboard exists — the morning glance is dashboard-first. Which arrangement those two occupy is decided by CSS at a breakpoint, never by JavaScript.
 - **First join:** the agent opens with a prompted chat message that kicks off the interview conversationally — what they worry about, what they'd want to see every morning, what accounts they have, what they'll realistically log.
-- Interview ends with a **concrete spec version presented back for confirmation, alongside a rendered mockup**: the agent generates an HTML preview of the expected dashboard (synthetic numbers, rough styling) rendered inline in chat — HTML, not generated images, so the preview is honest and cheap. Every spec version is **whole-surface** — it describes the user's entire dashboard, all screens and panels, not just what the latest conversation touched — and **every change ships through a newly confirmed version, including small ones**: there is no fast path that deploys without a confirmation, however trivial the change looks. The preview card **leads with what changed** relative to the version before it (for version 1, "what changed" is the whole dashboard). On confirmation, the agent **emits a structured `spec.md` + `mockup.html`** rendered from that version, saved to the user's folder — rendered in the admin portal and consumed directly by Claude Code, which builds toward *"make the code match this version."* The preview is a contract, not an illustration.
+- Interview ends with the agent **authoring a concrete spec version directly** — no preview, nothing to confirm (removed alongside the mockup loop, plan 2026-08-19-remove-the-mockup-loop). Every spec version is still **whole-surface** — it describes the user's entire dashboard, all screens and panels, not just what the latest conversation touched — and **every change ships through the newest authored version, including small ones**: there is no separate fast path, because there is no longer a slow path to be faster than — authoring itself IS what used to be the confirmation step. The agent tells the friend briefly what it will have built, since the card that used to say it is gone. The newest version is the build contract the instant it exists (`lib/db/specs.ts`'s `currentSpec`) — pulled into the repo explicitly with `./scripts/pull-spec.sh`, rendered in the admin portal, and consumed directly by Claude Code, which builds toward *"make the code match this version."*
 - Dashboard delivered **next morning** — first exposure happens inside the morning ritual being tested. 7am text with the link (delivery nudges stay out-of-app; everything else lives in the chat).
 - The agent system prompt (interview opening + ongoing behavior) is the highest-leverage artifact in the pilot; iterate on it by hand.
 
@@ -168,9 +174,10 @@ Server (single VPS)
     → discovery (proportional to ambiguity — may be one turn)
     → readiness gate (want / cost accepted / context of use known)
     → propose_spec
-    → spec version N+1 written, schema-validated, appended
-    → preview card (leads with what changed vs. version N) — Build this / Not quite yet
-    → confirm → ntfy → Nico + Claude Code build to "make the code match spec vN+1"
+    → spec version N+1 written, schema-validated, appended — nothing to
+      confirm; this write is what used to require confirmation
+    → ntfy (spec_authored) → Nico + Claude Code build to "make the code match
+      spec vN+1"
     → deploy → Nico runs the announce command → agent announces in chat
     → loop
   ```
@@ -181,7 +188,7 @@ Server (single VPS)
   transcript for every account not being deployed for.
   Friends know you're behind it; the agent framing gives permission to ask freely. Explicit first-join line: "send anything, any time — every request is data I need." (Optional: a text/Telegram relay for when they're not in the app, but the chat is the canonical channel and the log of record.)
 - **`propose_spec` asks the writer for only the change.** Against a
-  current-shape base — a confirmed version already in the unified-loop
+  current-shape base — a version already in the unified-loop
   shape — the writer emits a PATCH (`lib/spec/patch.ts`) instead of the whole
   surface, and the server applies it (`applyPatch`, `lib/spec/author.ts`)
   before validating the result through `parseSpecDraft`, the same validator a
@@ -189,30 +196,34 @@ Server (single VPS)
   base rather than regenerated. A first version has no base to patch, and a
   legacy base carries no ids for an op to name, so both still author the
   whole surface — the stored version row is whole-surface JSON either way,
-  so nothing downstream (preview, diff, admin pane) needs to know which path
+  so nothing downstream (diff, admin pane) needs to know which path
   produced it.
-- **The preview is proportional to the change, not to the dashboard.** The ops
-  say exactly which screens a patch touched, so the mockup call draws only
-  those, and the friend's card shows only those — a one-word relabel no longer
-  asks someone to re-review a five-screen dashboard to confirm it. Per-screen
-  fragments live in their own table (`spec_screen_mockups`), because
-  `specs.mockup_html` remains one opaque, composed document and stays the
-  build contract read unscoped everywhere else (`pull-spec.sh`, the admin
-  Mockup tab, the builder). The shared stylesheet lives outside any one
-  fragment, since fragments composed into one document may be drawn weeks
-  apart by separate calls and have to agree with each other.
+- **There is no mockup any more, and nothing is scoped for a preview's
+  sake.** The per-screen mockup call, `spec_screen_mockups`, the composed-
+  document stylesheet and the admin Mockup tab described below were removed
+  alongside the confirmation step (plan 2026-08-19-remove-the-mockup-loop) —
+  nothing renders model-generated HTML to a person any more. The PATCH shape
+  above still bounds what the WRITER touches; it no longer needs to also
+  bound a rendered preview, because there is no preview to bound.
 - Response expectation: small changes within a few hours; consistency over speed.
-- **Live-build + notify:** a request comes in, you build live via Claude Code against the newly confirmed version, and when the deploy lands the agent posts in chat ("your eating-out panel is live"). No scheduled studio sessions — the chat is the whole loop.
-- **The confirmed version *is* the approval gate, and it is never optional.** No version deploys unconfirmed, regardless of how trivial the change looks. This replaces an earlier, deferred idea of a separate message-mirror → headless-build → diff-summary-and-screenshot approval step: the preview card already leads with what changed, and the confirm button already is that gate, so there is nothing further to build.
+- **Live-build + notify:** a request comes in, you build live via Claude Code against the newest version, and when the deploy lands the agent posts in chat ("your eating-out panel is live"). No scheduled studio sessions — the chat is the whole loop.
+- **Authoring itself is the only gate, and it is not a confirmation.** There is
+  no separate approval step any more: a spec version is written the moment
+  `propose_spec` validates, an alert tells Nico, and Nico decides by hand
+  whether and when to build toward it (`docs/runbook.md`). This replaces both
+  the earlier, deferred message-mirror → headless-build → diff-summary
+  approval idea and the confirm-button gate that itself later replaced it —
+  the newest version is always the contract, and nothing waits on a friend's
+  click to become one.
 
 ### 7. Admin portal (Nico only) + real-time alerts
-- **Read-only portal behind your admin login:** a user list ordered by LAST ACTIVITY (the question it is opened to answer is who has been using it), and per-user three tabs — **Transcript**, with proposal cards and confirmations rendered inline in conversation order, because a transcript with a hole where the proposal happened is a broken transcript; **Spec**, the current confirmed version as rendered markdown; **Mockup**, served from the same route and shown with the same full-screen affordance the friend gets, so Nico reviews it the way they saw it. Manual refresh only — nothing polls. There is no metrics pane: `app/admin/[user]/page.tsx` reads no metrics, and the metrics log is queried directly (§9). The original third pane, a "request queue (open asks with timestamps — doubles as a metrics view)," is superseded: the `requests` table it would have read from has been dead schema since step 1 — nothing ever wrote to it — and every request now lives as a spec-version diff instead (unified-loop ledger D12).
+- **Read-only portal behind your admin login:** a user list ordered by LAST ACTIVITY (the question it is opened to answer is who has been using it), and per-user two tabs (`AdminTabs`) — **Transcript**, with a card for every proposal rendered inline in conversation order (no confirm controls and no mockup any more — a friend no longer confirms anything, and nothing composes or serves mockup HTML — but still Nico's permanent visual record of what was offered), plus any historical confirmation a pre-existing account made, because a transcript with a hole where a proposal happened is a broken transcript; **Spec**, the current version as rendered markdown, with its diff against the version it was based on. There is no Mockup tab — it was removed along with the rest of the mockup loop (plan 2026-08-19-remove-the-mockup-loop). Manual refresh only — nothing polls. There is no metrics pane: `app/admin/[user]/page.tsx` reads no metrics, and the metrics log is queried directly (§9). The original third pane, a "request queue (open asks with timestamps — doubles as a metrics view)," is superseded: the `requests` table it would have read from has been dead schema since step 1 — nothing ever wrote to it — and every request now lives as a spec-version diff instead (unified-loop ledger D12).
 - Transcript visibility is already covered by the onboarding promise ("I'll see what you tell the agent") — no new privacy surface.
-- **Alerts via ntfy.sh** (free push; phone app subscribes to a topic, server curls it): (1) session start — first message after 30+ min silence, debounced; (2) spec confirmed — now fires on every confirmed version, however small, not just the first — the "run to the computer" signal.
+- **Alerts via ntfy.sh** (free push; phone app subscribes to a topic, server curls it): (1) session start — first message after 30+ min silence, debounced; (2) spec authored — fires the moment a friend's request produces a spec, replacing the old "spec confirmed" signal now that nothing confirms; (3) spec authoring failed — the friend asked for something and writing it out broke. (1) and (2)/(3) together are the "run to the computer" signals.
 
 ### 8. Agent system prompt (the chatbot spec)
 - A living, page-length artifact — draft v1 rough, iterate weekly against real transcripts starting with your own step-4 interview. Never "done."
-- Must cover: persona & tone; interview behavior (**monitoring-first framing** — what they'd keep an eye on, what apps they check, what they worry about; goals optional/emergent, never demanded; plus accounts and what they'll realistically log); **spec-confirmation output contract** (the structured format that becomes `spec.md` + the HTML mockup generation — the load-bearing pieces); honest expectation-setting (a first-ever build arrives next morning, later changes within a few hours — never promise instant, matching §6's timing); escalation rules (feasibility questions it can't answer get flagged to Nico, not guessed at).
+- Must cover: persona & tone; interview behavior (**monitoring-first framing** — what they'd keep an eye on, what apps they check, what they worry about; goals optional/emergent, never demanded; plus accounts and what they'll realistically log); **spec-authoring output contract** (the structured format that becomes `spec.md` — no mockup generation any more; the agent briefly says what it will have built instead, since there is no preview card to say it for it); honest expectation-setting (a first-ever build arrives next morning, later changes within a few hours — never promise instant, matching §6's timing); escalation rules (feasibility questions it can't answer get flagged to Nico, not guessed at).
 
 ### 9. Metrics pipeline — build in week one, from user #1
 Retention curves cannot be reconstructed retroactively, and they are the fundraise.

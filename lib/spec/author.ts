@@ -184,7 +184,7 @@ function modeFields(
 function currentVersionBlock(current: SpecRecord | undefined): string {
   if (current === undefined) {
     return (
-      'There is no confirmed spec for this account yet. The current spec is ' +
+      'There is no spec for this account yet. The current spec is ' +
       'empty and this is version 1: assign every screen, panel, and value id ' +
       'fresh.'
     )
@@ -193,7 +193,7 @@ function currentVersionBlock(current: SpecRecord | undefined): string {
   const stored = readStoredSpec(current.payload)
   if (stored.kind === 'version') {
     return (
-      `The dashboard's current confirmed version is v${current.version}, ` +
+      `The dashboard's current version is v${current.version}, ` +
       'below as JSON. Reuse its ids exactly for anything that is still the ' +
       'same thing, even where you are renaming or reshaping it.\n\n' +
       JSON.stringify(stored.version, null, 2)
@@ -201,7 +201,7 @@ function currentVersionBlock(current: SpecRecord | undefined): string {
   }
 
   return (
-    `The dashboard's current confirmed version is v${current.version}. It ` +
+    `The dashboard's current version is v${current.version}. It ` +
     'predates the current format and carries no ids, so it is written out ' +
     'below as prose rather than JSON. Treat it as what already exists, and ' +
     'assign every screen, panel, and value id in your version fresh.\n\n' +
@@ -538,21 +538,22 @@ export async function authorSpec(
     //
     // Re-read here rather than reused from the `current` above, and the gap
     // between the two is the whole point. Everything between them is the spec
-    // call, which can run past a minute, and the confirm buttons on the card
-    // already on screen are gated by `confirming`, not by `busy` — so that
-    // card stays clickable for the entire wait while the friend watches
-    // "Putting together a preview…". A friend who presses "Build this" in that
-    // window changes what the newest confirmed version IS, and a pointer read
-    // before the call would name the version it superseded. `specs` rejects
-    // UPDATE, so that row could never be repaired: the admin pane's diff and
-    // the spec_confirmed counts for this version would be computed against the
-    // wrong base forever.
+    // call, which can run 47-97 seconds across two model calls (see
+    // RunTurnInput.authoringSignal, lib/chat/turn.ts) — authoring now runs in
+    // the BACKGROUND, decoupled from the friend's own connection, so nothing
+    // stops them sending another message, and triggering another authorSpec
+    // call, while this one is still in flight. A friend who does that changes
+    // what the newest spec IS before this call's insert lands, and a lineage
+    // pointer read before the call would name the version this one
+    // superseded. `specs` rejects UPDATE, so that row could never be
+    // repaired: the admin pane's diff for this version would be computed
+    // against the wrong base forever.
     //
     // A version is a WHOLE-SURFACE spec and the build contract is "the newest
-    // confirmed version", so the base that means something is the one this
-    // version would supersede when confirmed — which is the record at write
-    // time. That the writer was shown an older version is a separate fact, and
-    // it is one the transcript and the prompt already carry.
+    // spec" (nothing confirms any more), so the base that means something is
+    // the one this version would supersede at write time. That the writer was
+    // shown an older version is a separate fact, and it is one the transcript
+    // and the prompt already carry.
     const sealed = sealVersion(
       draft,
       currentSpec(db, input.accountId)?.version ?? null,

@@ -240,16 +240,17 @@ export const SPEC_JSON_SCHEMA = {
 
 /**
  * The mockup call's contract. One field, so the reply cannot arrive wrapped
- * in prose or a markdown fence — the friend's preview is an iframe srcDoc and
- * a stray ``` would render as text inside their dashboard.
+ * in prose or a markdown fence — the friend's preview was an iframe srcDoc
+ * and a stray ``` would have rendered as text inside their dashboard.
  *
  * HISTORICAL as of Task 18 (final review, Minor 8): no production code calls
  * this anymore — superseded by the scoped, per-screen call below
  * (SCREEN_MOCKUP_JSON_SCHEMA) and lib/spec/mockupCompose.ts's composeMockup,
- * which draws only the screens a patch touched instead of the whole document
- * every time. Kept, not deleted, for the same reason lib/chat/prompt.ts's
- * MOCKUP_PROMPT is: nothing may retroactively change what an already-stamped
- * `mockup_prompt_sha` points at.
+ * which drew only the screens a patch touched instead of the whole document
+ * every time. Both that successor and composeMockup were later deleted too,
+ * along with the rest of the mockup loop. Kept, not deleted, for the same
+ * reason lib/chat/prompt.ts's MOCKUP_PROMPT is: nothing may retroactively
+ * change what an already-stamped `mockup_prompt_sha` points at.
  */
 export const MOCKUP_JSON_SCHEMA = {
   type: 'object',

@@ -18,7 +18,7 @@ import { existsSync } from 'node:fs'
 import type { PlatformDb } from '@/lib/db/platform'
 import { appendMetric, appendTranscript } from '@/lib/db/appendOnly'
 import { conversationIdFor } from '@/lib/chat/conversation'
-import { readSpecs, hasSpecBelow } from '@/lib/db/specs'
+import { readSpecs } from '@/lib/db/specs'
 import { notesPath } from '@/lib/build/notes'
 import { readStoredSpec } from '@/lib/spec/stored'
 import { findAccountBySlug } from '@/lib/auth/accounts'
@@ -133,9 +133,8 @@ export function announceTarget(db: PlatformDb, slug: string, usersDir?: string):
   // newest first and take the first one a notes file exists for on disk,
   // never parsing it here (a parse failure is runAnnounce's to report, with
   // its own message).
-  const spec = readSpecs(db, account.id).find((s) =>
-    existsSync(notesPath(slug, s.version, usersDir)),
-  )
+  const specs = readSpecs(db, account.id)
+  const spec = specs.find((s) => existsSync(notesPath(slug, s.version, usersDir)))
   if (!spec) return { ok: false, reason: 'no_build_notes' }
   if (alreadyAnnounced(db, account.id, spec.id)) {
     return { ok: false, reason: 'already_announced' }
@@ -149,13 +148,26 @@ export function announceTarget(db: PlatformDb, slug: string, usersDir?: string):
   const headline =
     stored.kind === 'version' ? stored.version.change_summary : stored.payload.title
 
+  // Deliberately NOT hasSpecBelow (lib/db/specs.ts) — that asks only whether
+  // an earlier spec ROW exists, and a spec can now be authored without ever
+  // being built. A friend iterating in chat can author v1 and never have it
+  // built, then author and build v2: hasSpecBelow(v2) sees v1's row and
+  // reports "not first", so the announcement would claim a rebuild on this
+  // account's first-ever dashboard (ledger D9 — this promise has been gotten
+  // wrong before). `first` has to ask the SAME question the spec lookup two
+  // lines up just asked — "does a notes file exist" — bounded to versions
+  // below this one, so the two questions can never disagree.
+  const first = !specs.some(
+    (s) => s.version < spec.version && existsSync(notesPath(slug, s.version, usersDir)),
+  )
+
   return {
     ok: true,
     accountId: account.id,
     specId: spec.id,
     version: spec.version,
     headline,
-    first: !hasSpecBelow(db, account.id, spec.version),
+    first,
   }
 }
 
@@ -163,10 +175,10 @@ export function announceTarget(db: PlatformDb, slug: string, usersDir?: string):
  * The two fixed sentences, unchanged and still fixed chrome.
  *
  * "Rebuilt" is false on the one morning it matters most: a first build had
- * nothing to rebuild. Bounded by hasSpecBelow, the same question and the
- * same helper the delivery promise on the card uses (ledger D9), so the
- * sentence that promised the build and the sentence announcing it cannot
- * disagree about which one this was.
+ * nothing to rebuild. `first` is computed by announceTarget, above, bounded
+ * to whether a LOWER version has a notes file on disk — not whether an
+ * earlier spec row merely exists (ledger D9: this promise has been gotten
+ * wrong before by asking the wider question).
  */
 export function plainBody(headline: string, first: boolean): string {
   return first

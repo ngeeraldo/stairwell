@@ -1,8 +1,10 @@
 // scripts/announce-deploy.ts
 //
 // Turns one build's friend-facing notes into "your build landed", posted
-// into one account's chat, once per confirmed spec version. Run BY NICO, by
-// hand, right after a deploy that shipped that specific account's build.
+// into one account's chat, once per spec version that has been built (keyed
+// off notes/v<n>.md existing, not off any confirmation — nothing confirms
+// any more). Run BY NICO, by hand, right after a deploy that shipped that
+// specific account's build.
 //
 // DRAFTS BY DEFAULT and only sends on --send: this writes into an
 // append-only transcript a real person reads, and transcripts rejects

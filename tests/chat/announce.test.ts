@@ -237,8 +237,8 @@ describe('announceTarget', () => {
     expect(target.headline).toBe('A legacy dashboard TEST')
   })
 
-  // Ledger D9: a promise made to a person, gotten wrong twice already. A
-  // SECOND build for an account must not read as its first launch.
+  // Ledger D9: a promise made to a person, gotten wrong before. A SECOND
+  // BUILT version for an account must not read as its first launch.
   it('calls a second build a rebuild, not a first-time launch', async () => {
     const rebuildAccountId = await createAccount(db, {
       slug: 'rebuildannounce',
@@ -265,8 +265,11 @@ describe('announceTarget', () => {
       mockupHtml: MOCKUP,
       at: 2_000,
     })
-    // Only the second (higher) version has notes — the walk should find it
-    // first and never need to fall back to the first version's notes.
+    // BOTH versions were actually built this time — v1's notes exist too, not
+    // just v2's. That is what makes this genuinely "a second build": the
+    // scenario below (v1 authored-never-built) is a different one, and must
+    // NOT read as a rebuild.
+    writeNote(dir, 'rebuildannounce', 1)
     writeNote(dir, 'rebuildannounce', 2)
 
     const target = announceTarget(db, 'rebuildannounce', dir)
@@ -275,6 +278,52 @@ describe('announceTarget', () => {
     expect(target.first).toBe(false)
     expect(plainBody(target.headline, target.first)).toBe(
       'Your dashboard was just rebuilt: Renamed the eating-out panel TEST.',
+    )
+  })
+
+  // Ledger D9, the actual regression: hasSpecBelow (an earlier spec ROW
+  // exists) is not the same question as "was an earlier version actually
+  // built" the moment a spec can be authored without being built. A friend
+  // iterates in chat — v1 is authored and never built — then asks again and
+  // v2 IS built. The account's first-ever real build must still say "is
+  // live", not "was just rebuilt", even though a lower-numbered spec row
+  // exists.
+  it('still calls it a first launch when a lower version was authored but never built', async () => {
+    const neverBuiltAccountId = await createAccount(db, {
+      slug: 'neverbuiltannounce',
+      role: 'user',
+      password: 'TEST-neverbuiltannounce',
+    })
+    insertSpec(db, {
+      accountId: neverBuiltAccountId,
+      conversationId: 'conv-neverbuiltannounce',
+      promptSha: 'sha-neverbuiltannounce-0001',
+      payload: currentPayload({ change_summary: 'An idea that never got built TEST.' }),
+      mockupHtml: MOCKUP,
+      at: 1_000,
+    })
+
+    insertSpec(db, {
+      accountId: neverBuiltAccountId,
+      conversationId: 'conv-neverbuiltannounce',
+      promptSha: 'sha-neverbuiltannounce-0002',
+      payload: currentPayload({
+        change_summary: 'The first thing actually built TEST.',
+        based_on_version: 1,
+      }),
+      mockupHtml: MOCKUP,
+      at: 2_000,
+    })
+    // Only v2 has notes. v1's spec row exists but was never built — no notes
+    // file for it, ever.
+    writeNote(dir, 'neverbuiltannounce', 2)
+
+    const target = announceTarget(db, 'neverbuiltannounce', dir)
+    expect(target.ok).toBe(true)
+    if (!target.ok) return
+    expect(target.first).toBe(true)
+    expect(plainBody(target.headline, target.first)).toBe(
+      'Your dashboard is live: The first thing actually built TEST.',
     )
   })
 })

@@ -333,10 +333,11 @@ Sacred data.
 
 ## 8. The build contract
 
-- `spec.md`, the conversation it was pulled from, `current.md`, and the code
-  are the build contract for user dashboards. There is no mockup — nothing
-  composes or serves mockup HTML any more, and `mockup.html` is gone from
-  every folder (mockup-loop removal). Feasibility doubts → flag to Nico,
+- `spec.md`, `current.md`, and the code are the build contract for user
+  dashboards — nothing pulls the conversation itself into the repo; read it
+  live in `/admin` if `spec.md` alone leaves a question. There is no mockup —
+  nothing composes or serves mockup HTML any more, and `mockup.html` is gone
+  from every folder (mockup-loop removal). Feasibility doubts → flag to Nico,
   don't guess — CLAUDE.md > Build contract.
 - Feasibility doubts go back to the friend via `ask-user.ts`, not into a guess —
   `docs/runbook.md` step 7.

@@ -117,21 +117,24 @@ export function hasSpec(db: PlatformDb, accountId: number): boolean {
 }
 
 /**
- * Whether a spec exists at a version BELOW `version` — i.e. whether anything
- * already existed before the proposal at `version` existed.
+ * Whether a spec exists at a version BELOW `version` — i.e. whether an
+ * earlier spec ROW was ever authored, regardless of whether it was ever
+ * built.
  *
- * Deliberately NOT hasSpec above, and the difference is a promise made to a
- * person. "Is the card on screen this account's first dashboard" is not "has
- * this account ever had a spec at all": the instant a friend's very first
- * card is on screen, the unbounded reading flips, and on the next reload that
- * same card — a whole first dashboard, nothing built yet — starts describing
- * itself as a small change landing within hours. Bounding the question by the
- * displayed version keeps it true for the card that IS the first dashboard,
- * and turns it false only once an EARLIER spec already existed underneath it.
+ * Deliberately NOT hasSpec above: "has an earlier version of THIS one been
+ * authored" is not "has this account ever had a spec at all". But it is also
+ * no longer what decides what a friend is told about their first dashboard —
+ * see lib/chat/announce.ts's `first`, which used to be bounded by this
+ * function and is not any more. Authoring and building are two different
+ * events now (a friend can iterate in chat and leave a version un-built), so
+ * an earlier spec ROW existing proves someone asked for something, never that
+ * anything shipped; announce.ts bounds its promise on notes/v<n>.md existing
+ * on disk instead (ledger D9 — bounding a friend-facing promise on mere row
+ * existence here once announced a genuinely first build as a rebuild).
  *
  * hasSpec keeps its unbounded meaning because lib/chat/context.ts asks a
  * genuinely different question of it — interview vs tweak is about the
- * account's history, not about any one card.
+ * account's history, not about any one version.
  *
  * Walks readSpecs rather than adding a WHERE clause, for the same reason
  * specByVersion does: version is derived from position, and a second
@@ -139,8 +142,9 @@ export function hasSpec(db: PlatformDb, accountId: number): boolean {
  *
  * It used to be bounded on CONFIRMATION rather than mere existence — the
  * distinction mattered when a draft nobody accepted built nothing. Nothing is
- * confirmed any more, so every spec row IS the thing that gets built, and
- * existence is now the only question there is to ask.
+ * confirmed any more, but (per the paragraph above) a spec row is still not
+ * proof of a build, which is exactly why this function no longer answers the
+ * friend-facing question it was written for.
  */
 export function hasSpecBelow(
   db: PlatformDb,

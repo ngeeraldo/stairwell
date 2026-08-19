@@ -906,18 +906,22 @@ describe('conversation-start alerting', () => {
     // account HAS spoken before, so firstHumanWords is false, and the
     // acknowledgment row is seconds old, so `started` is false too.
     //
-    // The sequence is the real one, driven through runTurn rather than
-    // hand-seeded, so it is the product's own behaviour being asserted:
-    // a conversation days ago, then "Build this" pressed today (which posts a
-    // turn with body: null), then the friend replying to what the agent said.
+    // The sequence is driven through runTurn rather than hand-seeded, so it is
+    // runTurn's own behaviour being asserted: a conversation days ago, then a
+    // product-initiated turn (runTurn's own body: null contract — see "does
+    // not alert on the confirmation turn itself" below for what still calls
+    // it, now that nothing in the app does), then the friend replying to what
+    // the agent said.
     const DAY = 24 * 60 * 60 * 1000
     const monday = 1_000
 
     // Monday: a real exchange. This alerts, and that is not what is under test.
     await runTurn({ ...alerted().deps, now: () => monday }, input({ body: 'here is what I want' }))
 
-    // Thursday: they press "Build this" without typing. app/api/chat/route.ts
-    // sends body: null, and runTurn appends the agent's acknowledgment.
+    // Thursday: a product-initiated turn, called directly through runTurn —
+    // body: null appends the agent's acknowledgment. Nothing in the app sends
+    // this any more (the confirm button and route are gone); this test still
+    // drives runTurn's own contract for one directly.
     const thursday = monday + 3 * DAY
     await runTurn({ ...alerted().deps, now: () => thursday }, input({ body: null }))
 

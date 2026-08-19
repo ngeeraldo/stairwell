@@ -424,11 +424,12 @@ human saw it" are different claims.
 
 ### 7.3 Build toward the spec
 
-There is no mockup. The build contract is `spec.md`, the conversation it was
-pulled from, `current.md` (what the dashboard already is, if this is not its
-first version), and the code. Feasibility doubts go back to the friend rather
-than into a guess — `scripts/ask-user.ts`, step 4 — and you build on their
-answer.
+There is no mockup. The build contract is `spec.md`, `current.md` (what the
+dashboard already is, if this is not its first version), and the code —
+nothing pulls the conversation itself into the repo; read it live in `/admin`
+if `spec.md` alone leaves a question. Feasibility doubts go back to the
+friend rather than into a guess — `scripts/ask-user.ts`, step 4 — and you
+build on their answer.
 
 Everything about *how* to build lives in build-rules: what a dashboard is handed
 and may not do (§3), multi-screen specs and the tab strip you must not draw
@@ -646,8 +647,11 @@ other line — the `DRY RUN` notice, the `## Open` warning — to **stderr**, so
 variables above, as a backstop for a file assembled some other way.
 
 The draft is written from `notes/v$V.md` — what shipped, plus any in-spirit
-adjustment worth mentioning — and from what they have already been told, so it
-does not repeat the preview back at them. **Read it before sending.**
+adjustment worth mentioning — and from what they have already been told.
+There is no preview and nothing was confirmed in advance, so this message is
+the first look they get: it names what it actually shows, rather than
+assuming they have already seen it (`platform/prompts/announce-v2.md`).
+**Read it before sending.**
 `transcripts` rejects DELETE; this is the first generated sentence this system
 puts in there, and a bad one is permanent.
 

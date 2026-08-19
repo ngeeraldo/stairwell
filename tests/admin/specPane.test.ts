@@ -394,6 +394,12 @@ describe('the spec pane', () => {
     const element = await Pane({ params: Promise.resolve({ user: 'neverconfirmed' }) })
     const html = renderToStaticMarkup(element)
     expect(html).not.toContain('1970')
+    // A positive anchor, not just the negative one above — without it this
+    // assertion would pass just as well if the pane rendered nothing at all
+    // (same fix as tests/scripts/exportSpec.test.ts's sibling assertion on
+    // the same fallback). confirmed_at is null here, so the fallback to the
+    // spec's own `at` (REALISTIC_AT) is exactly what has to show up.
+    expect(html).toContain(new Date(REALISTIC_AT).toISOString())
   })
 
   it('renders the diff against the version a current row was based on', async () => {

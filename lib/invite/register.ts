@@ -86,7 +86,7 @@ export async function registerFromInvite(
     // The third and last place the runner fires. It creates the database AND
     // applies whatever migrations exist, which for a brand-new friend is
     // usually none at all — their folder is scaffolded days later, when Nico
-    // builds a dashboard from their confirmed spec.
+    // builds a dashboard from their spec.
     //
     // onboarding-ux-spec.md S2 still holds, by a different mechanism than
     // before: the file exists the moment the password does, because this call

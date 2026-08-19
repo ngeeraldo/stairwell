@@ -274,9 +274,9 @@ export async function POST(request: Request) {
       // also a turn with no assistant row, so it must not emit this line
       // either. Any new outcome kind that does not append a row must stay
       // outside this branch. NOT suppressed by a failed proposal: a completed
-      // chat turn whose preview failed is still a completed chat turn — the
-      // assistant row for it exists and the friend really did receive that
-      // reply.
+      // chat turn whose spec authoring failed is still a completed chat turn
+      // — the assistant row for it exists and the friend really did receive
+      // that reply.
       if (outcome.kind === 'completed' && !request.signal.aborted) {
         controller.enqueue(line({ done: true }))
       }

@@ -40,7 +40,7 @@ export const AGENT_PROMPT = 'agent-v7.md'
 export const SPEC_PROMPT = 'spec-v2.md'
 
 /**
- * The PATCH-authoring prompt, used when there is a current confirmed version in
+ * The PATCH-authoring prompt, used when there is a current version in
  * the current shape to change. v1 and a legacy base still go through
  * SPEC_PROMPT and emit the whole surface — see lib/spec/author.ts.
  */
@@ -64,12 +64,17 @@ export const SPEC_PATCH_PROMPT = 'spec-v3.md'
  * restraint section (the verdict is the screen; `shows` is a ceiling, not a
  * floor), and tells the model NOT to add a banner. The honesty signal moved
  * from the numbers to a banner injected at serve time by lib/spec/banner.ts —
- * a guard the model cannot forget, which "£000.00" was not.
+ * a guard the model could not forget, which "£000.00" was not. (Describes the
+ * mechanism as it existed at the time: `lib/spec/banner.ts` was itself
+ * deleted along with the rest of the mockup loop — see MOCKUP_SCREENS_PROMPT's
+ * own docstring, below.)
  *
  * HISTORICAL as of Task 18 (final review, Minor 8): no production code calls
  * this anymore. The Task 18 cutover to a scoped, per-screen mockup call
  * (MOCKUP_SCREENS_PROMPT below, SCREEN_MOCKUP_JSON_SCHEMA, `composeMockup`)
- * superseded the whole-document call this prompt drove. Kept, not deleted:
+ * superseded the whole-document call this prompt drove — and that successor
+ * was later deleted too, along with MOCKUP_SCREENS_PROMPT itself (see its own
+ * docstring). Kept, not deleted:
  * `mockup_prompt_sha` rows written before that cutover point at this file's
  * hash, and prompts are added, never edited or removed (CLAUDE.md) — an
  * already-written hash must keep resolving to real prompt text.

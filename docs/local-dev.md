@@ -156,13 +156,16 @@ from then on.
     the write path" below. Neither account can reach the other's URL at all;
     both get a 404, not a 403.
 
-## Pulling a confirmed spec into the repo
+## Pulling a spec into the repo
 
-Once a friend confirms a spec in chat, it lives in the platform database, not
-in the repo — `users/<name>/spec.md` and `users/<name>/mockup.html` are a
-projection of that record, pulled explicitly. `scripts/pull-spec.sh` writes
-both files; it **overwrites both on every pull**, so hand edits to either
-file do not survive the next run.
+Once a friend's request produces a spec in chat, it lives in the platform
+database, not in the repo — `users/<name>/spec.md` is a projection of it,
+pulled explicitly. Nothing confirms any more: the newest spec IS the build
+contract the moment it is authored (`lib/db/specs.ts`'s `currentSpec`).
+`scripts/pull-spec.sh` writes `spec.md` alone now — it used to write a pair
+with `mockup.html` too, but nothing composes or serves mockup HTML any more
+(plan 2026-08-19-remove-the-mockup-loop). It **overwrites `spec.md` on every
+pull**, so hand edits do not survive the next run.
 
 ```bash
 ./scripts/pull-spec.sh devtwo
@@ -181,10 +184,14 @@ data locally. For that:
 `PLATFORM_DB` is unset — it never falls back to a synthetic database, because
 the same code path also runs on the droplet against the real one, where a
 silent fallback would write fake data into a friend's `spec.md` as if it were
-their real confirmed spec. `--local` supplies `platform/dev/synthetic.db`
+their real spec. `--local` supplies `platform/dev/synthetic.db`
 itself when you have not set `PLATFORM_DB` in your shell, so the command
 above works with no setup — that default lives in the safe, always-local
-wrapper, not in the script it calls. It is the only form Claude runs.
+wrapper, not in the script it calls. It is the only form Claude runs. **It
+still needs an actual spec row to pull**: a freshly-seeded
+`platform/dev/synthetic.db` (First-time setup, above) has accounts but no
+spec rows — nothing scripted inserts one — so this only produces output once
+an account has asked for something in chat at least once.
 
 ## Announcing a build, or asking a question, in a friend's chat
 
@@ -197,14 +204,41 @@ wiring either of these in would post into every account's chat on every
 push, which is a permanent lie in an append-only transcript for every
 account that was not the reason for that deploy.
 
+An announcement is keyed off `users/<name>/notes/v<n>.md` existing on disk —
+the record that a version was actually **built**, never off a confirmation
+(nothing confirms any more). `users/devtwo/notes/` ships with only a
+`README.md`, so `announce-deploy.ts devtwo` refuses with `no_build_notes`
+until one exists. Write a throwaway one to try the mechanism locally — it is
+not a real build record, so remove it afterward if you do not want it
+sitting in your working tree (it is a real, tracked path, not gitignored):
+
+```bash
+cat > users/devtwo/notes/v1.md <<'EOF'
+---
+slug: devtwo
+version: 1
+built_at: 2026-08-19
+---
+
+## What shipped
+A local walkthrough note, TEST — not a real build record.
+
+## Built differently
+
+## Open
+
+## Notes for the next build
+EOF
+```
+
 ```bash
 PLATFORM_DB=platform/dev/synthetic.db npx tsx scripts/announce-deploy.ts devtwo --plain
 ```
 
-DRY RUN by default — this prints the confirmed version's `change_summary`
+DRY RUN by default — this prints the newest built version's `change_summary`
 (or, for a legacy row with none, its `title`) without posting anything; add
-`--send` to actually write it into `devtwo`'s chat, once per confirmed spec
-version. Safe to re-run either way: a version already announced is reported,
+`--send` to actually write it into `devtwo`'s chat, once per version that has
+notes. Safe to re-run either way: a version already announced is reported,
 not repeated.
 
 `--plain` is in the example on purpose: without it, drafting goes through the
