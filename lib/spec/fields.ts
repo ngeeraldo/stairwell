@@ -280,4 +280,10 @@ export function parseSpecDraft(raw: unknown): SpecDraft {
 // textList and integer are exported for lib/spec/patch.ts, which reuses them
 // for its own open_questions and update_screen.order fields rather than
 // re-implementing the same rule a second time.
-export { record, text, textList, integer, arrayField }
+//
+// oneOf, nonEmptyArray and requirement are exported for lib/spec/change.ts —
+// the LIVE shape. This file is otherwise a frozen reader (see its header),
+// and handing out a string-validation helper is not authoring a new shape.
+// `requirement` in particular must not be copied: two implementations of the
+// data_requirements parser would be two answers to "is this status valid".
+export { record, text, textList, integer, arrayField, oneOf, nonEmptyArray, requirement }

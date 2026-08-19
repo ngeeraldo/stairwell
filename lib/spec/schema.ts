@@ -1,5 +1,18 @@
 // lib/spec/schema.ts
 //
+// FROZEN, in the same sense lib/spec/legacy.ts is — with one exception named
+// below. `Screen`, `Panel`, `ValueSpec`, `EntryWidget`, `SpecDraft` and
+// `SpecVersion` describe the WHOLE-SURFACE shape, which nothing authors any
+// more (lib/spec/change.ts owns what is written now). They stay because
+// `specs` rejects UPDATE: rows in this shape can never be rewritten, and
+// parseSpecVersion re-validates every one of them on the way out.
+//
+// THE EXCEPTION, and it is deliberate: `SpecShapeError`, `DataRequirement`
+// and `REQUIREMENT_STATUSES` are shared, live vocabulary. lib/spec/change.ts
+// imports all three, the same way frozen legacy.ts already imports
+// SpecShapeError from here. An error class and a data-requirement status are
+// not a payload shape.
+//
 // The shape of one spec VERSION: a whole-surface description of a person's
 // dashboard, as it would be after the change being proposed.
 //
