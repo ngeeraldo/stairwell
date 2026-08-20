@@ -2,11 +2,12 @@
 
 // users/run9/TrendChart.tsx
 //
-// The 7-day daily trend, as a bar chart. A CLIENT component — not the only
-// one under users/ any more: lib/ui/WriteAction.tsx (arm 3, imported into
-// dashboard.tsx for the log and correction controls) is also 'use client'.
-// This file is the only one run9 OWNS, though; WriteAction is platform code
-// this dashboard imports rather than writes.
+// The 7-day daily trend, as a bar chart. A CLIENT component — still the only
+// 'use client' file under users/, but no longer the only client component in
+// run9's render: lib/ui/WriteAction.tsx (arm 3, imported into dashboard.tsx
+// for the log and correction controls) is 'use client' too. It lives under
+// lib/, because it is platform code this dashboard imports rather than
+// writes; this file is the one run9 OWNS.
 //
 // ─── why this is allowed to exist, and what guards it ───
 //

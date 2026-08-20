@@ -428,18 +428,19 @@ architectural changes; do not relitigate decided items).
   chrome that explains nothing. The anchor shape is the point, not incidental:
   it keeps the active screen IN THE URL. `activeScreen` resolves `?screen=`
   there before a dashboard ever sees it, so deep links and bookmarks work, and
-  `dashboard_open`'s `trigger` field (below) stays meaningful — it means
-  "refresh" only because this app has no client-side navigation, the same fact
-  the `trigger` bullet below names for a client-side `<Link>`. A dashboard
-  drawing its own `<Tabs>` in component state would bypass all three: no URL,
-  no working deep link, and no `dashboard_open` row for the switch at all —
-  `screen_order` freezes at whatever screen first rendered, silently breaking
-  the next bullet's own rule that a tab switch always writes another row.
+  every screen switch is a real page render. A dashboard drawing its own
+  `<Tabs>` in component state would bypass all three: no URL, no working deep
+  link, and no `dashboard_open` row for the switch at all — `screen_order`
+  freezes at whatever screen first rendered, silently breaking the next
+  bullet's own rule that a tab switch always writes another row. The `trigger`
+  bullet below names a DIFFERENT hazard: a client-side `<Link>` under
+  `app/[user]/` DOES reach the server, as an RSC fetch, where a switch made in
+  component state issues no request at all.
   (`app/[user]/page.tsx` also CALLS the dashboard — `Dashboard(...)`, never
   `<Dashboard />` — so its body runs inside the page's own `try`/`catch`; a
   nested function component's body would be deferred to React's own render
   pass, OUTSIDE that catch. That residual is accepted for all three component
-  arms above, though, so it is not what singles tabs out — chrome ownership
+  arms below, though, so it is not what singles tabs out — chrome ownership
   and the URL-state mechanics are.)
 - **`dashboard_open` writes one row per render, every render, with NO
   write-path dedup** — a tab switch re-runs the page and writes another row,

@@ -292,14 +292,16 @@ explains nothing.
 - **This app has no client-side navigation anywhere — screens included.**
   Platform tabs are plain `<a href="?screen=">` anchors, so the active screen
   lives in the URL. `activeScreen` (§3) resolves it there, deep links and
-  bookmarks work, and every screen switch is a real page render — which is
-  what makes `dashboard_open` write one row per render, every render, by
-  design (CLAUDE.md). A `<Tabs>` switching in component state bypasses all
-  three: no URL, no working deep link, and no row at all for the switch —
-  `screen_order` freezes at whatever screen first rendered. A DIFFERENT
-  hazard, a client-side `<Link>`/`router.push` under `app/[user]/`, does
-  reach the server, as an RSC fetch — that is what breaks the `rsc`-header
-  refresh detection `lib/metrics/renderTrigger.ts` depends on — CLAUDE.md.
+  bookmarks work, and every screen switch is a real page render. That each of
+  those renders then writes a row is a SEPARATE ruling — `dashboard_open` is
+  written once per render, every render, with no write-path dedup (CLAUDE.md);
+  the anchor shape is only what makes a tab switch a render in the first
+  place. A `<Tabs>` switching in component state bypasses all three: no URL,
+  no working deep link, and no row at all for the switch — `screen_order`
+  freezes at whatever screen first rendered. A DIFFERENT hazard, a client-side
+  `<Link>`/`router.push` under `app/[user]/`, does reach the server, as an RSC
+  fetch — that is what breaks the `rsc`-header refresh detection
+  `lib/metrics/renderTrigger.ts` depends on — CLAUDE.md.
 - **Exactly two things write to a user's real database, and they are
   enumerated** — CLAUDE.md:
   1. `lib/db/migrate.ts` — creates it and changes its SHAPE, at unlock, having
