@@ -110,8 +110,9 @@ export type AnnounceDeps = {
  * permanent row in a transcript that rejects DELETE.
  *
  * Every entry is drawn from the paste that made this necessary: the runbook's
- * own step-9 command block, sent to a friend on 2026-08-18 because `pbpaste`
- * read a clipboard that still held it.
+ * own announce command block (step 9 then, step 11 in docs/runbook-human.md
+ * now), sent to a friend on 2026-08-18 because `pbpaste` read a clipboard that
+ * still held it.
  *
  * This is the SECOND of two independent guards, and the weaker one. The first
  * is that stdout now carries only the body, so the documented flow never puts
@@ -248,7 +249,7 @@ export async function runAnnounce(
           `--body-file '${opts.bodyFile}' contains ${JSON.stringify(shellish)}, ` +
           'which reads as a shell command rather than a message to a friend. ' +
           'Nothing was sent. Re-draft and pipe it through `tee` — ' +
-          'docs/runbook.md step 9.',
+          'docs/runbook-human.md step 11.',
         warnings,
       }
     }
@@ -496,7 +497,8 @@ if (process.argv[1]?.endsWith('announce-deploy.ts')) {
       //   ssh ... announce-deploy.ts <slug> | tee /tmp/announce-<slug>.txt
       //
       // produces a file holding exactly the sentence, ready to hand straight
-      // back to --body-file. docs/runbook.md step 9 depends on this split.
+      // back to --body-file. docs/runbook-human.md step 11 depends on this
+      // split.
       //
       // It used to print the status line here too, which is why that step told
       // you to route the draft through the CLIPBOARD instead. That cost a real

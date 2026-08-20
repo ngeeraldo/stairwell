@@ -110,13 +110,18 @@ main() {
 
   # Deliberately prints only what this script alone knows: the folder it just
   # made, and the registry line for this slug. It does NOT restate the build
-  # sequence. It used to, and the copy went stale within two days of
-  # docs/runbook.md being written — the list here never learned about the
-  # <slug>/v<n> branch (so following it landed you on main, which the runbook
-  # now names as a thing never to do) and never learned about `npm run shots`
-  # (so it skipped the picture review CLAUDE.md requires before a commit).
+  # sequence. It used to, and the copy went stale within two days of the
+  # runbook being written — the list here never learned about the <slug>/v<n>
+  # branch (so following it landed you on main, which the runbook now names as
+  # a thing never to do) and never learned about `npm run shots` (so it skipped
+  # the picture review CLAUDE.md requires before a commit).
   # A second copy of a sequence is a second thing to keep true. One pointer is
   # not. tests/scripts/newDashboard.test.ts pins that this stays a pointer.
+  #
+  # It points at docs/runbook-human.md, not docs/runbook-ai.md: the person
+  # reading this terminal is Nico, mid-step-3, and his next moves are step 4
+  # (the registry line) and step 5 (pull the spec). The AI build is two steps
+  # away and he hands it over from there.
   cat <<MSG
 
 Created $dest
@@ -128,7 +133,7 @@ Add this line to DASHBOARDS in lib/dashboard/registry.ts:
 Until you do, tests/dashboard/registry.test.ts fails and the page renders
 the not-built placeholder.
 
-Next: docs/runbook.md, step 7 — it owns the build sequence from here.
+Next: docs/runbook-human.md, step 4 — it owns the sequence from here.
 Do not build on main; step 0 there says why, and this script cannot see
 which branch you are on.
 

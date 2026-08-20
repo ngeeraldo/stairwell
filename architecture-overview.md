@@ -214,7 +214,7 @@ Server (single VPS)
 - **Authoring itself is the only gate, and it is not a confirmation.** There is
   no separate approval step any more: a spec version is written the moment
   `propose_spec` validates, an alert tells Nico, and Nico decides by hand
-  whether and when to build toward it (`docs/runbook.md`). This replaces both
+  whether and when to build toward it (`docs/runbook-human.md`). This replaces both
   the earlier, deferred message-mirror → headless-build → diff-summary
   approval idea and the confirm-button gate that itself later replaced it —
   the newest version is always the contract, and nothing waits on a friend's

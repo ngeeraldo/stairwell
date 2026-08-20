@@ -481,10 +481,17 @@ architectural changes; do not relitigate decided items).
 
 ## Onboarding
 - The end-to-end operator process — invite, spec import, build, deploy,
-  announce — is docs/runbook.md. It runs as one of two flows: **A** for a friend
-  who has never had a dashboard, **B** for a new spec version of one that
+  announce — is docs/runbook-human.md. It runs as one of two flows: **A** for a
+  friend who has never had a dashboard, **B** for a new spec version of one that
   exists. It is Nico's, run by hand; nothing in it is automated, and several
   steps are deliberately not.
+- **Two of its eleven steps are handed to an AI builder, and those two are
+  docs/runbook-ai.md** — step 6 (migrations, `seed.py`, `queries.ts`,
+  `dashboard.tsx`, tests) and step 8 (`notes/v<n>.md`, rewrite `current.md`).
+  That file's Section 1 is the builder's bounds: it never commits, never
+  reaches the droplet, never runs `npm start`, and never creates the branch or
+  pulls the spec. It is a SEQUENCE and points at
+  docs/dashboard-build-rules.md for the substance rather than restating it.
 - **Dashboard work happens on a `<slug>/v<n>` branch, one per spec version,
   never on `main`** — main is the line `deploy.sh` pulls, so a
   half-built dashboard there blocks every unrelated fix. Nico creates the branch

@@ -165,7 +165,7 @@ describe('readCurrentState', () => {
 describe('platform/templates/dashboard/current.md.tmpl', () => {
   it('parses once __SLUG__ is substituted', () => {
     // Nothing else in the suite ever loads this file — it is copied by hand
-    // at step 7.5 (docs/runbook.md), not by scripts/new-dashboard.sh, so no
+    // at docs/runbook-ai.md §3.2, not by scripts/new-dashboard.sh, so no
     // scaffold test exercises it either. A heading typo in it would sit
     // unnoticed until a builder hit the throw live, mid-build. sed's own
     // substitution (`s/__SLUG__/.../g`, scripts/new-dashboard.sh) is mirrored

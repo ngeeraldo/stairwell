@@ -4,12 +4,11 @@
 //   npx tsx scripts/platform-query.ts --file <path-to-.sql> [--param <value> ...]
 //
 // Runs one SQL statement against the platform database and prints the rows
-// it returns. Built to replace hand-typed `sqlite3 platform.db '...'` in
-// docs/runbook.md — the droplet has no `sqlite3` binary, confirmed live
-// ("bash: line 1: sqlite3: command not found"), so the runbook's own
-// verification commands did not run. This does, because it ships with the
-// app: nothing to install on the droplet, and it deploys the moment the repo
-// does.
+// it returns. Built to replace hand-typed `sqlite3 platform.db '...'` in the
+// runbook's verification commands — the droplet has no `sqlite3` binary,
+// confirmed live ("bash: line 1: sqlite3: command not found"), so those
+// commands did not run. This does, because it ships with the app: nothing to
+// install on the droplet, and it deploys the moment the repo does.
 //
 // THIS READS THE PLATFORM DATABASE BY DESIGN, on the server, run by Nico —
 // same category as scripts/export-spec.ts and scripts/ask-user.ts. It is NOT
@@ -61,7 +60,7 @@ export type PlatformDb = Database.Database
  *
  * `params` exists so a query can be filtered (`WHERE slug = ?` / `--param
  * sam`) without ever splicing a value into the SQL text — the nested-quoting
- * trap docs/runbook.md warns about at :183-186 (a value containing an
+ * trap the runbook warned about (a value containing an
  * apostrophe breaks the single-inside-double-quote nesting an `ssh` command
  * relies on). Binding sidesteps that entirely: the value travels as a
  * separate argv entry, never as characters inside the SQL string.

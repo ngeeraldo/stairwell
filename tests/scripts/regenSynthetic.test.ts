@@ -284,7 +284,8 @@ describe('the CLI’s output', () => {
   // console.log. The defect these cover was NOT in the logic — regenerateAll
   // did exactly what it was written to do — it was that execFileSync's
   // stdio: 'pipe' captured each seed.py's stdout into a buffer nobody read, so
-  // the line docs/runbook.md step 7.2 tells you to watch for never reached a
+  // the line docs/runbook-ai.md §2.4 tells the builder to watch for never
+  // reached a
   // terminal. A test that stubs the console proves the string was passed to
   // console.log; only running the process proves a human would see it.
   function runCli(args: string[] = []): string {

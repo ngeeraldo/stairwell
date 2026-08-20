@@ -396,7 +396,10 @@ describe('runAnnounce', () => {
         bodyFile: writeBody('ssh nowhere'),
       })
       expect(out.message).toContain('ssh ')
-      expect(out.message).toContain('step 9')
+      // The step the message sends you back to, by its number in
+      // docs/runbook-human.md. It was step 9 in docs/runbook.md, before that
+      // file was split into a human runbook and docs/runbook-ai.md.
+      expect(out.message).toContain('step 11')
     })
 
     it('refuses on a DRY RUN too, before anyone is tempted to add --send', async () => {
@@ -741,7 +744,8 @@ describe('scripts/announce-deploy.ts (CLI)', () => {
 
   // ── STDOUT IS THE BODY AND NOTHING ELSE ──────────────────────────────────
   //
-  // docs/runbook.md step 9 pipes a dry run through `tee` to produce the file
+  // docs/runbook-human.md step 11 pipes a dry run through `tee` to produce
+  // the file
   // it then hands to --body-file. That only works if the status line stays off
   // stdout. It did not, which is why the step routed the draft through the
   // clipboard instead, which is how three shell commands ended up in a real

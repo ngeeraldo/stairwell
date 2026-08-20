@@ -53,8 +53,8 @@ export function userSlugsWithSeeds(usersDir: string): string[] {
  *
  * Every seed.py ends with a line describing what it produced — "run8: 42
  * synthetic taps across 42 days -> ..." — and the scaffold's prints "no shape
- * yet, empty database". docs/runbook.md step 7.2 tells you to watch for that
- * second one, because a migration that did not land leaves a database with no
+ * yet, empty database". docs/runbook-ai.md §2.4 tells the builder to watch for
+ * that second one, because a migration that did not land leaves a database with no
  * tables and nothing that errors: an empty database is a LEGITIMATE state
  * (it is what a friend has on day one), so nothing else in the pipeline
  * objects, and per-user tests would not catch it either — they build their

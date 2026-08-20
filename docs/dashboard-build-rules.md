@@ -23,7 +23,8 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 | `docs/superpowers/ledgers/friend-timezone.md` | Why the day belongs to the friend, and what the bug cost. |
 | `users/devone/` | The worked reference. Its README: "Copy this folder's shape when building a real dashboard." |
 | `users/<slug>/spec.md`, `conversation.md`, `current.md` | The build contract for this friend: what changes, what they meant, what already exists. No mockup — §8. |
-| `docs/runbook.md` | The operator sequence around the build — step 7 is the commands, in order. This file is why they are what they are; that one does not repeat it. |
+| `docs/runbook-ai.md` | The two steps the AI builder owns, in order: Step 6 (migrations, seeder, dashboard) and Step 8 (notes, `current.md`). Section 1 is its bounds — what it never does, and when it stops and asks. That file is the SEQUENCE and points here for the substance; this file is why the sequence is what it is, and does not repeat it. |
+| `docs/runbook-human.md` | The surrounding operator sequence Nico runs by hand — invite, pull the spec, branch, hand over, look at it on a screen, commit, deploy, announce. |
 | `docs/dashboard-ui-ux-guidelines.md` | How a dashboard should LOOK and behave: the default stack (shadcn on Tailwind, Recharts), the fluid 375–1200px container, the four non-happy panel states, formatting, and what animation may and may not imply. Defaults — a friend's own request outranks them, subject to the three limits that file names. |
 
 ---
@@ -49,7 +50,7 @@ this does not go stale again the next time a line moves.
 - `queries.ts` holds **every** SQL statement, as pure functions taking a
   `UserDb`; `dashboard.tsx` holds **no SQL** — CLAUDE.md.
 - `notes/` holds `README.md` plus a `v<n>.md` per BUILT version, added never
-  edited — CLAUDE.md, `docs/runbook.md` step 7. Enforced differently from the
+  edited — CLAUDE.md, `docs/runbook-ai.md` §3.1. Enforced differently from the
   other five: `tests/users/conventions.test.ts`'s own `REQUIRED` constant
   lists only the first five and decides the scaffolded/built/partial split
   below from those alone; `notes/`'s PRESENCE is checked by a separate
@@ -138,7 +139,10 @@ this does not go stale again the next time a line moves.
   CORRECTED (runbook split): this cited `docs/runbook.md` step 7, which no
   longer carries the reasoning — the runbook keeps the line to paste, this file
   keeps why it matters. The `app/[user]/page.tsx:76` it also cited had drifted
-  to 141; by name now, same lesson as Minor 7 above.
+  to 141; by name now, same lesson as Minor 7 above. `docs/runbook.md` has
+  since been split into `docs/runbook-human.md` and `docs/runbook-ai.md` and no
+  longer exists; the line to paste is the human file's step 4, and the builder
+  is told to CHECK for it rather than add it (`docs/runbook-ai.md` §1.2).
 - Scaffold with `./scripts/new-dashboard.sh <slug>`; do not copy by hand —
   CLAUDE.md.
 
@@ -323,7 +327,10 @@ What that means when you are building:
   dashboard does not throw; only a picture says whether it reads as "waiting"
   or as "broken". `npm run synthetic -- --empty` rebuilds every
   `users/*/synthetic.db` from its migrations with no rows, and `npm run
-  synthetic` puts the sample data back — CLAUDE.md, `docs/runbook.md` step 7.4.
+  synthetic` puts the sample data back — CLAUDE.md, `docs/runbook-human.md`
+  step 7. That step is NICO'S, not the builder's: `docs/runbook-ai.md` ends at
+  tests, because whether an empty screen reads as "waiting" or as "broken" is
+  the one question only a person looking at it can answer.
   The `screenshots/screens.ts` empty-state screen does NOT cover this: it is
   pinned to devtwo and photographs the platform chrome, per §12 below.
 - **A day before the friend started is not a day they failed.** devtwo's
@@ -354,11 +361,18 @@ Sacred data.
   mockup — nothing composes or serves mockup HTML any more, and `mockup.html` is
   gone from every folder (mockup-loop removal). Feasibility doubts → flag to
   Nico, don't guess — CLAUDE.md > Build contract.
-- Feasibility doubts go back to the friend via `ask-user.ts`, not into a guess —
-  `docs/runbook.md` step 7.
+- Feasibility doubts never become a guess. The builder finishes everything not
+  blocked on the answer and reports to NICO, who decides — `docs/runbook-ai.md`
+  §1.4, `docs/runbook-human.md` step 6. `scripts/ask-user.ts` still exists and
+  still puts an operator-typed question into the friend's chat, which is the
+  route the 2026-08-17 design §3.5 named for a `## Open` entry, but it is Nico's
+  to reach for and rare: the friend confirmed a spec, and adjusting it afterwards
+  is the ordinary path. The builder never runs it —
+  `docs/runbook-human.md` > Reference.
 - **Both pulled files are written by `./scripts/pull-spec.sh` and overwritten on
   every pull.** Hand edits do not survive. If the spec is wrong, the fix is
-  asking for a change in chat and pulling again — `docs/runbook.md` step 6.
+  asking for a change in chat and pulling again — `docs/runbook-human.md`
+  step 5.
 - **`conversation.md` is gitignored and must stay that way.** It is the friend's
   raw transcript, not a designed artifact; the guard hook covers `.db` and
   `.env`, not markdown, so two `.gitignore` lines and `tests/repo/gitignore.test.ts`
@@ -464,4 +478,5 @@ not a test — no pixel diffing — CLAUDE.md, onboarding ledger D16.
 It photographs **platform** screens against its own temp database, and the only
 user database it reads is a copy of devone's synthetic one, so it cannot
 photograph a friend's dashboard — `scripts/shots.ts`. To look at a built
-dashboard, see `docs/runbook.md` step 7, "See it on a screen".
+dashboard, see `docs/runbook-human.md` step 7 — the manual pass Nico runs
+after the builder hands back.
