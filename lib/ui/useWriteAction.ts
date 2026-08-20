@@ -65,12 +65,40 @@ export function useWriteAction(action: string): {
   // shared flag from the fetch's own `finally` would un-pend the SIBLING
   // controls a beat early, while the numbers on screen were still stale, which
   // is the choppiness this whole change exists to remove, in a smaller form.
+  //
+  // THIS RESTS ON TWO NEXT INTERNALS, not on anything React's public contract
+  // promises, so name them: `router.refresh()` dispatches its own state update
+  // inside the transition passed to `startTransition`, and that update is a
+  // thenable Next entangles into React's async-action lane — which is what
+  // keeps `isPending` true from the fetch through the refreshed render's
+  // commit rather than only through the fetch. A Next upgrade that stopped
+  // doing either would make `isPending` resolve as soon as the fetch settles,
+  // which is exactly the choppiness this comment is warning the next reader
+  // about — check this behaviour again after any Next major bump.
   useEffect(() => {
     if (!isPending && owns.current) {
       owns.current = false
       endWrite(action)
     }
   }, [isPending, action])
+
+  // UNMOUNT CLEANUP, separate from the effect above. Without this, a control
+  // that unmounts mid-flight — e.g. `{count > 0 && <WriteAction .../>}` losing
+  // its condition while a write it started is still in flight — never runs
+  // the effect above again (there is no later commit with isPending false to
+  // trigger it), so `owns.current` and the shared flag are stranded true
+  // forever: every sibling on that route stays disabled with no error and no
+  // way to recover short of a reload. Also covers `action` changing mid-flight,
+  // which would otherwise clear the NEW url's owns ref while leaving the OLD
+  // url's shared flag set.
+  useEffect(() => {
+    return () => {
+      if (owns.current) {
+        owns.current = false
+        endWrite(action)
+      }
+    }
+  }, [action])
 
   const fire = useCallback(
     (payload: Record<string, string>) => {
@@ -84,11 +112,34 @@ export function useWriteAction(action: string): {
         try {
           const body = new FormData()
           for (const [key, value] of Object.entries(payload)) body.append(key, value)
-          const response = await fetch(action, { method: 'POST', body })
+          // The header is what tells the route this is a fetch, not a native
+          // form post — see lib/http/redirect.ts's writeAnswer. A native post
+          // cannot set a header, so its absence is the honest signal for "let
+          // the 303 through": fetch defaults to redirect:'follow', so a 303
+          // here would make the browser render the whole dashboard a second
+          // time and append a second dashboard_open row to an append-only
+          // table before router.refresh() below adds a third.
+          const response = await fetch(action, {
+            method: 'POST',
+            body,
+            headers: { 'X-Stairwell-Write': '1' },
+          })
+          if (response.status === 401 || response.status === 403) {
+            // A locked or expired session, not a failed write: the keymap has
+            // a 4h idle TTL and every deploy restart wipes it, so a friend
+            // with the tab open across either loses their key mid-session.
+            // WRITE_FAILED would tell them to "try again" forever — the
+            // control can never succeed until they unlock again, with no path
+            // back to /unlock from an inline error. router.refresh() re-runs
+            // the server component instead, whose own session guard is what
+            // actually sends them there.
+            router.refresh()
+            return
+          }
           if (!response.ok) {
-            // The route answers 400/403/404/500 with an empty body by design —
-            // it never returns a message, so there is nothing to surface but
-            // the fact of the failure.
+            // The route answers 400/404/500 with an empty body by design — it
+            // never returns a message, so there is nothing to surface but the
+            // fact of the failure.
             setError(WRITE_FAILED)
             return
           }

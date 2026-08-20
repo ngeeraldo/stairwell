@@ -6,7 +6,7 @@ import { openUserDataForWrite } from '@/lib/db/userData'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getDb } from '@/lib/db/instance'
 import { dashboardLoaderFor } from '@/lib/dashboard/registry'
-import { relativeRedirect } from '@/lib/http/redirect'
+import { writeAnswer } from '@/lib/http/redirect'
 import { getKey } from '@/lib/session/keymap'
 import { resolveState } from '@/lib/session/resolve'
 import { SESSION_COOKIE } from '@/lib/session/store'
@@ -28,7 +28,7 @@ import { dayKey } from '@/lib/time/dayKey'
  * 4. only then: key, open, write, close.
  */
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ user: string }> },
 ) {
   const { user } = await params
@@ -120,5 +120,10 @@ export async function POST(
     at: Date.now(),
   })
 
-  return relativeRedirect(`/${user}`)
+  // A native form post gets the host-relative 303 (the app runs behind a
+  // reverse proxy, so request.url names the internal origin — see
+  // lib/http/redirect.ts); a fetch-initiated write gets 204, so the browser
+  // never follows a redirect it would otherwise render into a second
+  // dashboard_open row.
+  return writeAnswer(request, `/${user}`)
 }

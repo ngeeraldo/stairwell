@@ -6,7 +6,7 @@
 // through Caddy while working fine on localhost.
 import { describe, expect, it } from 'vitest'
 import { NextRequest } from 'next/server'
-import { middlewareRedirect, relativeRedirect } from '@/lib/http/redirect'
+import { middlewareRedirect, relativeRedirect, writeAnswer } from '@/lib/http/redirect'
 
 describe('relativeRedirect', () => {
   it('emits a host-relative Location, never an absolute one', () => {
@@ -53,6 +53,36 @@ describe('relativeRedirect', () => {
   it('rejects a path that is not host-relative at all', () => {
     expect(() => relativeRedirect('https://evil.example/login')).toThrow()
     expect(() => relativeRedirect('login')).toThrow()
+  })
+})
+
+describe('writeAnswer', () => {
+  it('answers a fetch-initiated write (the header set) with 204 and no Location', () => {
+    const request = new Request('http://x', {
+      method: 'POST',
+      headers: { 'X-Stairwell-Write': '1' },
+    })
+    const response = writeAnswer(request, '/run9')
+    expect(response.status).toBe(204)
+    expect(response.headers.get('location')).toBeNull()
+  })
+
+  it('answers a native form post (no header) with the 303 relativeRedirect gives', () => {
+    // The whole no-JS path rides on this branch: a browser posting a real
+    // <form> can never set X-Stairwell-Write, so it always lands here.
+    const request = new Request('http://x', { method: 'POST' })
+    const response = writeAnswer(request, '/run9')
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/run9')
+  })
+
+  it('treats any value other than the exact string "1" as a native post', () => {
+    const request = new Request('http://x', {
+      method: 'POST',
+      headers: { 'X-Stairwell-Write': 'true' },
+    })
+    const response = writeAnswer(request, '/run9')
+    expect(response.status).toBe(303)
   })
 })
 

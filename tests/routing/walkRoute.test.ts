@@ -432,6 +432,29 @@ describe('POST /api/users/[user]/walk', () => {
     expect(response.headers.get('location')).toBe('/devtwo')
   })
 
+  it('answers a fetch-initiated write with 204, never a redirect the browser would follow', async () => {
+    // Same discriminator as the pee route: a 303 here would be followed by
+    // fetch's default redirect:'follow', rendering the whole dashboard again
+    // and appending a SECOND dashboard_open row before router.refresh() adds
+    // a third. See lib/http/redirect.ts's writeAnswer.
+    const POST = await arrange()
+    const response = await POST(
+      new Request('http://x', {
+        method: 'POST',
+        headers: { 'X-Stairwell-Write': '1' },
+      }),
+      params('devtwo'),
+    )
+    expect(response.status).toBe(204)
+    expect(response.headers.get('location')).toBeNull()
+  })
+
+  it('still answers a native form post — no header — with the 303 redirect', async () => {
+    const POST = await arrange()
+    const response = await POST(new Request('http://x', { method: 'POST' }), params('devtwo'))
+    expect(response.status).toBe(303)
+  })
+
   it('returns a bodyless 500 and records dashboard_write_error when the encrypted open fails, instead of throwing', async () => {
     // Pre-create devtwo.db under a DIFFERENT key, unmocked and for real, so
     // the route's own open — with the session's real key — hits

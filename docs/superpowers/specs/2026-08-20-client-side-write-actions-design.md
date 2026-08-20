@@ -168,6 +168,45 @@ the other is a page-wide lock wearing a correctness argument.
 run9's `disabled={count === 0}` on −1 stays exactly as it is. It is the
 affordance; the route still enforces the bound.
 
+### 3.5 How a write route answers (ruled, fix round 1)
+
+`fetch` defaults to `redirect: 'follow'`. A write route that always answers
+success with the 303 it has given a form POST since before this change would
+have that 303 followed automatically, by the browser, as a second credentialed
+GET of the whole dashboard — session resolve, SQLCipher open, every query, a
+`dashboard_open` row — and then `router.refresh()` inside the same
+`useWriteAction` transition renders it a **third** time and appends a
+**second** `dashboard_open` row. §7.1 below says this change is "metric-neutral:
+one open per tap before, one after"; unguarded, it is two, into a table that
+is append-only and therefore cannot be corrected after the fact.
+
+**The fix is a response-shape split, not a client-side workaround.**
+
+- A **native form POST** — the no-JS path §3.1 keeps — gets the 303 it has
+  always gotten. The browser follows it and lands back on the dashboard,
+  which is the entire no-JS behaviour; nothing here changes it.
+- A **fetch-initiated write** gets **204 No Content** and nothing else. 204 is
+  a 2xx, so `response.ok` in `useWriteAction` still means what it always
+  meant — the write happened — without the route needing to compose or
+  serialise a body.
+
+**The discriminator is a request header**, `X-Stairwell-Write: 1`, set by
+`useWriteAction`'s `fetch` call and checked by
+`lib/http/redirect.ts`'s `writeAnswer(request, path)`, which every write
+route calls in place of `relativeRedirect` directly. A native `<form>` submit
+cannot set a request header, so its absence is the honest, un-spoofable
+signal that this is the no-JS path and the 303 is safe to send.
+
+**Why not `redirect: 'manual'` on the client instead.** Considered and
+rejected: a manual-mode fetch that hits a redirect gets back an
+*opaqueredirect* response — `status: 0`, `ok: false`, body unreadable —
+regardless of whether the thing the redirect pointed at would itself have
+succeeded or failed. "Opaque" is the operative word: `useWriteAction` cannot
+tell a successful write that happened to redirect from a redirect to an error
+page, so every success would read as `WRITE_FAILED`. A response the route
+shapes on purpose is legible on both ends; a mode flag that hides the
+response from the client is not.
+
 ---
 
 ## 4. The component rule, stated in three arms

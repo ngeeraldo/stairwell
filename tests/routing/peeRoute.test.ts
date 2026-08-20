@@ -171,10 +171,15 @@ async function arrange(opts: { lock?: boolean; slug?: string; migrate?: boolean 
 const params = (user: string) => ({ params: Promise.resolve({ user }) })
 
 /** A form submit, the way the dashboard's own <form method="post"> sends one. */
-function submit(action?: string): Request {
+function submit(action?: string, headers?: Record<string, string>): Request {
   const body = new URLSearchParams()
   if (action !== undefined) body.set('action', action)
-  return new Request('http://x', { method: 'POST', body })
+  return new Request('http://x', { method: 'POST', body, headers })
+}
+
+/** A WriteAction submit: same body, plus the header only fetch can set. */
+function fetchSubmit(action?: string): Request {
+  return submit(action, { 'X-Stairwell-Write': '1' })
 }
 
 /**
@@ -444,6 +449,26 @@ describe('POST /api/users/[user]/pee — correcting', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('POST /api/users/[user]/pee — how it answers (lib/http/redirect.ts writeAnswer)', () => {
+  it('answers a fetch-initiated write with 204, never a redirect the browser would follow', async () => {
+    // A 303 here would be followed by fetch's default redirect:'follow',
+    // rendering the whole dashboard again and appending a SECOND
+    // dashboard_open row before router.refresh() adds a third.
+    const POST = await arrange()
+    const res = await POST(fetchSubmit('add'), params('run9'))
+    expect(res.status).toBe(204)
+    expect(res.headers.get('location')).toBeNull()
+    expect(peeRows()).toHaveLength(1)
+  })
+
+  it('still answers a native form post — no header — with the 303 redirect', async () => {
+    const POST = await arrange()
+    const res = await POST(submit('add'), params('run9'))
+    expect(res.status).toBe(303)
+    expect(res.headers.get('location')).toBe('/run9')
   })
 })
 

@@ -52,6 +52,31 @@ export function relativeRedirect(path: string, status = 303): NextResponse {
   return new NextResponse(null, { status, headers: { location: path } })
 }
 
+/**
+ * How a write route answers.
+ *
+ * A NATIVE FORM POST gets the 303 it has always got: the browser follows it
+ * and lands back on the dashboard, which is the whole no-JS path.
+ *
+ * A FETCH-INITIATED WRITE gets 204 and nothing else. It must NOT get the
+ * redirect: fetch defaults to redirect:'follow', so a 303 would make the
+ * browser render the entire dashboard a second time and append a second
+ * dashboard_open row to an append-only table — and `response.ok` would then
+ * describe that page render rather than the write. The header is the
+ * discriminator because a native form post cannot set one.
+ *
+ * `redirect: 'manual'` on the client was considered and rejected instead: an
+ * opaqueredirect response reports status 0 and `ok: false` regardless of
+ * whether the target actually succeeded, so `lib/ui/useWriteAction.ts` could
+ * not tell a successful write from a redirect to an error page. A header the
+ * server can branch on is the only shape where both paths answer honestly.
+ */
+export function writeAnswer(request: Request, path: string): Response {
+  return request.headers.get('X-Stairwell-Write') === '1'
+    ? new Response(null, { status: 204 })
+    : relativeRedirect(path)
+}
+
 // A bare host, optionally with a port. Deliberately rejects anything containing
 // '/', '@', whitespace or a scheme, so a malformed header cannot be spliced into
 // the origin below and change where the redirect points.
