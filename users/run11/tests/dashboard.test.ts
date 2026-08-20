@@ -1,8 +1,23 @@
 // users/run11/tests/dashboard.test.ts
 //
-// What run11 actually sees. queries.test.ts proves the arithmetic; this proves
-// the two panels put it on a screen, and — the part that matters most here —
-// that the panel NEVER shows a verdict it cannot stand behind.
+// What run11 actually sees. queries.test.ts, walkLog.test.ts and
+// noGoTemp.test.ts prove the arithmetic; this proves the panels put it on a
+// screen, and — the part that matters most here — that the decider NEVER shows
+// a verdict it cannot stand behind.
+//
+// TWO SCREENS as of spec v2, so `render` takes one. `screen` arrives already
+// resolved against this module's own `screens` export (`activeScreen` in
+// app/[user]/page.tsx does that before a dashboard sees anything), which is
+// why the tests below pass ids from that array rather than arbitrary strings.
+//
+// WHAT THIS CANNOT SEE: the walk log's calendar is a CLIENT component
+// (users/run11/MonthCalendar.tsx), and JSON.stringify of the returned element
+// tree never runs its body — the same limitation lib/ui/useWriteAction.ts
+// records about its own guard. So the assertions below reach the calendar's
+// PROPS and stop there. That is deliberate rather than a gap papered over:
+// every rule the calendar applies lives in `calendarGrid` in queries.ts, where
+// walkLog.test.ts exercises it directly, and the component itself decides
+// nothing.
 //
 // THIS DASHBOARD'S CHARACTERISTIC FAILURE IS A CONFIDENT WRONG ANSWER, not a
 // throw. It answers one question with one word, so an old forecast rendered
@@ -40,11 +55,49 @@ function freshDb(): UserDb {
   return db
 }
 
-function render(db: UserDb, today = TODAY): string {
+function render(db: UserDb, today = TODAY, screen?: string): string {
   // JSON.stringify drops each element's `type` (a function is not JSON) and
   // keeps props and children — which is exactly what this needs: the copy each
   // panel chose, and the action URL the write control was handed.
-  return JSON.stringify(Dashboard({ slug: 'run11', db, today, timeZone: 'UTC' }))
+  return JSON.stringify(Dashboard({ slug: 'run11', db, today, timeZone: 'UTC', screen }))
+}
+
+/**
+ * Every string and number in the returned element tree, in order.
+ *
+ * JSX splits an interpolated sentence into an ARRAY of children — "At ",
+ * "95°F", " or hotter…" — so a JSON assertion cannot see a sentence that has a
+ * value in the middle of it, which is most of the interesting copy on this
+ * dashboard. This flattens the tree to the text a reader would actually see.
+ * `render` above stays for assertions about PROPS (an action URL, a payload, a
+ * disabled flag), which this deliberately drops.
+ */
+function text(node: unknown): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(text).join('')
+  const props = (node as { props?: { children?: unknown } }).props
+  return props === undefined ? '' : text(props.children)
+}
+
+/** What the screen READS AS, rather than what it is made of. */
+function renderText(db: UserDb, today = TODAY, screen?: string): string {
+  return text(Dashboard({ slug: 'run11', db, today, timeZone: 'UTC', screen }))
+}
+
+/** The walk log screen, by its declared id. */
+function renderLog(db: UserDb, today = TODAY): string {
+  return render(db, today, 'walk_log')
+}
+
+/** Exactly what the walk-log route's `mark` arm writes. */
+function markWalk(db: UserDb, day: string) {
+  db.prepare('INSERT OR IGNORE INTO walk_log (day, at) VALUES (?, ?)').run(day, 0)
+}
+
+/** Exactly what the no-go-temp route's upsert writes. */
+function setNoGo(db: UserDb, value: number) {
+  db.prepare('INSERT INTO walk_settings (id, heat_no_go_f, set_at) VALUES (1, ?, 0)').run(value)
 }
 
 /**
@@ -82,12 +135,25 @@ function houstonDay(db: UserDb, day = TODAY) {
 }
 
 describe('users/run11 — screens', () => {
-  it('declares the one screen the spec asks for', () => {
-    // One screen, so app/[user]/page.tsx draws no tab strip at all. The title
-    // is what spec.md calls it ("Add screen — Walk the dog?"); the id and
-    // order are the builder's, since a change-only spec carries no ids, and
+  it('declares the two screens spec v2 asks for, decider first', () => {
+    // TWO screens as of spec v2, so app/[user]/page.tsx now draws a tab strip
+    // — from this exact array, which is why the array is asserted whole rather
+    // than by length. The titles are what spec.md calls them; the ids and
+    // orders are the builder's, since a change-only spec carries no ids, and
     // users/run11/current.md's `## Screens` is where they are written down.
-    expect(screens).toEqual([{ id: 'walk_the_dog', title: 'Walk the dog?', order: 1 }])
+    expect(screens).toEqual([
+      { id: 'walk_the_dog', title: 'Walk the dog?', order: 1 },
+      { id: 'walk_log', title: 'Walk log', order: 2 },
+    ])
+  })
+
+  it('keeps walk_the_dog FIRST, which is what makes it the landing screen', () => {
+    // `activeScreen` sorts by order and falls back to the lowest, so this is
+    // the whole of spec v2's "'Walk the dog?' stays first and stays the
+    // landing page" — there is no other switch for it. Asserted separately
+    // from the array above so a reordering failure says which rule it broke.
+    const lowest = [...screens].sort((a, b) => a.order - b.order)[0]!
+    expect(lowest.id).toBe('walk_the_dog')
   })
 })
 
@@ -338,6 +404,244 @@ describe('users/run11 — next good window', () => {
       seedFetch(db, TODAY, 14 * 60)
       const json = render(db)
       expect(json).toContain('-minute stretch today or tomorrow clears rain, heat and daylight')
+    } finally {
+      db.close()
+    }
+  })
+})
+
+describe('users/run11 — the no-go temperature control', () => {
+  it('shows the default 90°F, and its band, before he has set anything', () => {
+    // spec v2: "if nothing has been set yet it defaults to the current 90°F so
+    // the screen behaves exactly as it does today on first load."
+    const db = freshDb()
+    try {
+      const reads = renderText(db)
+      expect(reads).toContain('My no-go temperature')
+      // The band is the five degrees below, spelled out — he sets one number
+      // and gets two, so the second one has to be visible.
+      expect(reads).toContain('At 90°F or hotter it’s a no. 85–90°F is “go, but short and shady”.')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('shows what he SET, and moves the band with it', () => {
+    // The wiring assertion. A control reading its own default while the stored
+    // row said something else is the confident-wrong-answer failure wearing a
+    // different hat: the verdict would be judged against one number and the
+    // control would display another.
+    const db = freshDb()
+    try {
+      setNoGo(db, 95)
+      const reads = renderText(db)
+      expect(reads).toContain('At 95°F or hotter it’s a no. 90–95°F')
+      expect(reads).not.toContain('85–90°F')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('posts to a route of its OWN, not the one the calendar writes', () => {
+    // lib/ui/WriteAction.tsx groups pending by ACTION URL. Sharing a route with
+    // the walk log would put forty calendar squares into a pending state every
+    // time he nudged the temperature, and vice versa.
+    const db = freshDb()
+    try {
+      const json = render(db)
+      expect(json).toContain('/api/users/run11/no-go-temp')
+      expect(json).toContain('"action":"raise"')
+      expect(json).toContain('"action":"lower"')
+      expect(json).not.toContain('/api/users/run11/walk-log')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('DISABLES the control at each end of its range rather than hiding it', () => {
+    // A disappearing button reads as a broken screen. The route enforces the
+    // same bound — this is the affordance, not the rule.
+    const db = freshDb()
+    try {
+      setNoGo(db, 105)
+      const top = render(db)
+      expect(top).toContain('"disabled":true')
+      // The other direction is still available at the top of the range, so the
+      // assertion above cannot be passing because BOTH are disabled.
+      expect(top).toContain('"disabled":false')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('judges the verdict against HIS number, not against 90', () => {
+    // The whole point of the change, asserted on the screen rather than in the
+    // query layer: one forecast, two settings, two different headlines.
+    const db = freshDb()
+    try {
+      seedDay(db, TODAY, () => 92)
+      seedFetch(db, TODAY, 12 * 60)
+      expect(render(db)).toContain('Don’t go')
+
+      setNoGo(db, 95)
+      const relaxed = render(db)
+      expect(relaxed).toContain('Go — short one, shade')
+      expect(relaxed).not.toContain('Don’t go')
+    } finally {
+      db.close()
+    }
+  })
+})
+
+describe('users/run11 — the walk log screen', () => {
+  it('renders on an EMPTY log without throwing, and says so in words', () => {
+    // A friend's first session on this screen: his own database, with nothing
+    // in it. Not a confident zero, and not a month of days he "missed" — he
+    // could not have logged anything before the screen existed.
+    const db = emptyDbFromMigrations('run11')
+    try {
+      const reads = renderText(db, TODAY, 'walk_log')
+      expect(reads).toContain('No walks logged yet')
+      expect(reads).toContain('Nothing logged yet')
+      // Never a confident zero — spec v2 asks for this by name.
+      expect(reads).not.toContain('0%')
+      // \b so "the last 30 days" in the panel's own waiting copy does not
+      // read as a zero-day streak.
+      expect(reads).not.toMatch(/\b0 days\b/)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('reads NOTHING from the forecast, and the decider reads no walk', () => {
+    // spec v2 is explicit that the log "reads nothing from the forecast and
+    // shares no data with the decider". Asserted both ways round, because
+    // either half leaking would be invisible on a screen that looked fine.
+    const db = freshDb()
+    try {
+      houstonDay(db)
+      seedFetch(db, TODAY, 14 * 60)
+      markWalk(db, '2026-08-19')
+
+      const log = renderLog(db)
+      expect(log).not.toContain('77006')
+      expect(log).not.toContain('Next good window')
+      expect(log).not.toContain('Right now')
+
+      const decider = render(db)
+      expect(decider).not.toContain('Current streak')
+      expect(decider).not.toContain('Month calendar')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('counts a streak ending TODAY and says it includes today', () => {
+    const db = freshDb()
+    try {
+      for (const day of ['2026-08-18', '2026-08-19', '2026-08-20']) markWalk(db, day)
+      const json = renderLog(db)
+      expect(json).toContain('3 days')
+      expect(json).toContain('Including today.')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('says the streak runs THROUGH YESTERDAY when today is not marked', () => {
+    // THE EDGE spec v2 asked to have decided, on the screen. He marks from his
+    // desk later in the day, so the common case is a streak that has not been
+    // extended yet — and a panel that silently counted today would be claiming
+    // a walk he has not logged.
+    const db = freshDb()
+    try {
+      for (const day of ['2026-08-18', '2026-08-19']) markWalk(db, day)
+      const json = renderLog(db)
+      expect(json).toContain('2 days')
+      expect(json).toContain('Through yesterday — today isn’t marked yet.')
+      expect(json).not.toContain('Including today.')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('shows a real zero differently from an empty log', () => {
+    // He HAS logged walks and the run has ended. Saying when the last one was
+    // is what stops "0" reading as though the log had been lost.
+    const db = freshDb()
+    try {
+      markWalk(db, '2026-08-15')
+      const json = renderLog(db)
+      expect(json).toContain('No streak going')
+      expect(json).toContain('5 days')
+      expect(json).not.toContain('No walks logged yet')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('says "since you started" while the log is younger than the window', () => {
+    // The pre-existence rule on the screen. One mark yesterday is 1 of 2 days,
+    // not 1 of 30 — this project has shipped the other answer once already.
+    const db = freshDb()
+    try {
+      markWalk(db, '2026-08-19')
+      const json = renderLog(db)
+      expect(json).toContain('1 of the 2 days since you started.')
+      expect(json).not.toContain('of the last 30 days')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('reads "of the last 30 days" once the log is older than the window', () => {
+    const db = freshDb()
+    try {
+      // A mark six weeks back, then fifteen of the last thirty days.
+      markWalk(db, '2026-07-06')
+      for (let n = 1; n <= 15; n += 1) {
+        markWalk(db, new Date(Date.parse(`${TODAY}T00:00:00Z`) - n * 86_400_000)
+          .toISOString()
+          .slice(0, 10))
+      }
+      expect(renderText(db, TODAY, 'walk_log')).toContain('50%15 of the last 30 days.')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('hands the calendar its own route, the friend’s day, and every mark', () => {
+    // The calendar is a client component, so its body never runs here — these
+    // are the PROPS it is handed, which is the whole of what this file can
+    // see. What it does with them is `calendarGrid`'s job and walkLog.test.ts
+    // proves that separately.
+    const db = freshDb()
+    try {
+      markWalk(db, '2026-08-19')
+      markWalk(db, '2026-07-30')
+      const json = renderLog(db)
+      expect(json).toContain('/api/users/run11/walk-log')
+      expect(json).toContain('"today":"2026-08-20"')
+      expect(json).toContain('"marked":["2026-07-30","2026-08-19"]')
+      // A rolling year of history is reachable even though the first mark is
+      // only three weeks old — back-filling is half of what he asked for.
+      expect(json).toContain('"earliest":"2025-09"')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('falls back to the DECIDER for an unknown or absent screen', () => {
+    // `activeScreen` already resolves an unrecognised `?screen=` to the
+    // lowest-order screen before a dashboard sees it, so this is defence in
+    // depth — but it is also what makes `/run11` with no query string the
+    // decider, which spec v2 states directly.
+    const db = freshDb()
+    try {
+      houstonDay(db)
+      seedFetch(db, TODAY, 14 * 60)
+      expect(render(db, TODAY, undefined)).toContain('Right now')
+      expect(render(db, TODAY, 'walk_the_dog')).toContain('Right now')
     } finally {
       db.close()
     }

@@ -13,6 +13,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import type Database from 'better-sqlite3-multiple-ciphers'
 import { emptyDbFromMigrations } from '@/tests/support/userMigrations'
 import {
+  DEFAULT_HEAT_NO_GO_F,
   THRESHOLDS,
   WALK_MINUTES,
   ceilToStep,
@@ -22,9 +23,24 @@ import {
   nextGoodWindow,
   readWalk,
   rightNow,
+  shadeFloorF,
   shiftDay,
   timeline,
 } from '@/users/run11/queries'
+
+/**
+ * The heat band these tests judge against.
+ *
+ * A LITERAL PAIR, the same way every time in this file is a literal. The no-go
+ * cutoff became the friend's own number in spec v2, so it is a parameter on
+ * every function below rather than a constant they reach for — and a test that
+ * did not name it would be asserting against whatever the default happened to
+ * be that week. It is seeded from DEFAULT_HEAT_NO_GO_F so these cases keep
+ * describing the band a friend who has set nothing actually gets; the cases
+ * that are ABOUT the number being his live in walkSettings.test.ts.
+ */
+const NO_GO = DEFAULT_HEAT_NO_GO_F
+const SHADE = shadeFloorF(NO_GO)
 
 const DAY = '2026-08-20'
 const NEXT = '2026-08-21'
@@ -88,16 +104,16 @@ describe('the three checks', () => {
   })
 
   it('reads heat at the BOUNDARIES, in both directions', () => {
-    flatDay(DAY, THRESHOLDS.heatShortF - 1)
+    flatDay(DAY, SHADE - 1)
     sun(DAY, SUNRISE, SUNSET)
     const noon = 12 * 60
-    expect(readWalk(timeline(db, DAY), { day: DAY, sunriseMinute: SUNRISE, sunsetMinute: SUNSET }, noon)!.verdict).toBe('go')
+    expect(readWalk(timeline(db, DAY), { day: DAY, sunriseMinute: SUNRISE, sunsetMinute: SUNSET }, noon, NO_GO)!.verdict).toBe('go')
 
-    db.prepare('UPDATE forecast_hours SET feels_like_f = ?').run(THRESHOLDS.heatShortF)
-    expect(readWalk(timeline(db, DAY), { day: DAY, sunriseMinute: SUNRISE, sunsetMinute: SUNSET }, noon)!.verdict).toBe('short')
+    db.prepare('UPDATE forecast_hours SET feels_like_f = ?').run(SHADE)
+    expect(readWalk(timeline(db, DAY), { day: DAY, sunriseMinute: SUNRISE, sunsetMinute: SUNSET }, noon, NO_GO)!.verdict).toBe('short')
 
-    db.prepare('UPDATE forecast_hours SET feels_like_f = ?').run(THRESHOLDS.heatNoGoF)
-    const hot = readWalk(timeline(db, DAY), { day: DAY, sunriseMinute: SUNRISE, sunsetMinute: SUNSET }, noon)!
+    db.prepare('UPDATE forecast_hours SET feels_like_f = ?').run(NO_GO)
+    const hot = readWalk(timeline(db, DAY), { day: DAY, sunriseMinute: SUNRISE, sunsetMinute: SUNSET }, noon, NO_GO)!
     expect(hot.verdict).toBe('no')
     expect(hot.blockers).toEqual(['heat'])
   })
@@ -107,7 +123,7 @@ describe('the three checks', () => {
     flatDay(DAY, 80)
     db.prepare('UPDATE forecast_hours SET feels_like_f = 99 WHERE minute_of_day = ?').run(11 * 60)
     sun(DAY, SUNRISE, SUNSET)
-    const reading = rightNow(db, DAY, 10 * 60 + 40)
+    const reading = rightNow(db, DAY, 10 * 60 + 40, NO_GO)
     expect(reading.state).toBe('ok')
     expect(reading.state === 'ok' && reading.reading.peakFeelsLikeF).toBe(99)
     expect(reading.state === 'ok' && reading.reading.verdict).toBe('no')
@@ -118,17 +134,17 @@ describe('the three checks', () => {
     sun(DAY, SUNRISE, SUNSET)
     // The last start that still finishes before sunset.
     const lastStart = SUNSET - WALK_MINUTES
-    expect(rightNow(db, DAY, lastStart).state === 'ok' && rightNow(db, DAY, lastStart).state).toBe('ok')
-    const justOk = rightNow(db, DAY, lastStart)
+    expect(rightNow(db, DAY, lastStart, NO_GO).state === 'ok' && rightNow(db, DAY, lastStart, NO_GO).state).toBe('ok')
+    const justOk = rightNow(db, DAY, lastStart, NO_GO)
     expect(justOk.state === 'ok' && justOk.reading.verdict).toBe('go')
 
-    const tooLate = rightNow(db, DAY, lastStart + 1)
+    const tooLate = rightNow(db, DAY, lastStart + 1, NO_GO)
     expect(tooLate.state === 'ok' && tooLate.reading.blockers).toEqual(['dark'])
 
     // BEFORE SUNRISE IS ALSO DARK. spec v1 writes only the sunset half; a
     // walk at 4am is the case that shows why both are needed, and it is why
     // "the first window tomorrow morning" is not midnight.
-    const predawn = rightNow(db, DAY, 4 * 60)
+    const predawn = rightNow(db, DAY, 4 * 60, NO_GO)
     expect(predawn.state === 'ok' && predawn.reading.blockers).toEqual(['dark'])
   })
 
@@ -136,7 +152,7 @@ describe('the three checks', () => {
     flatDay(DAY, 99)
     db.prepare('UPDATE forecast_hours SET precip_chance = 80').run()
     sun(DAY, SUNRISE, SUNSET)
-    const reading = rightNow(db, DAY, 23 * 60)
+    const reading = rightNow(db, DAY, 23 * 60, NO_GO)
     expect(reading.state === 'ok' && reading.reading.blockers).toEqual(['rain', 'heat', 'dark'])
   })
 
@@ -144,15 +160,15 @@ describe('the three checks', () => {
     // No forecast_days row at all. An unknown sunset is not a licence to send
     // someone out at dusk.
     flatDay(DAY, 78)
-    const reading = rightNow(db, DAY, 12 * 60)
+    const reading = rightNow(db, DAY, 12 * 60, NO_GO)
     expect(reading.state === 'ok' && reading.reading.blockers).toEqual(['dark'])
   })
 })
 
 describe('coverage', () => {
   it('reports no_forecast on an EMPTY database', () => {
-    expect(rightNow(db, DAY, 12 * 60)).toEqual({ state: 'no_forecast' })
-    expect(nextGoodWindow(db, DAY, 12 * 60)).toBeNull()
+    expect(rightNow(db, DAY, 12 * 60, NO_GO)).toEqual({ state: 'no_forecast' })
+    expect(nextGoodWindow(db, DAY, 12 * 60, NO_GO)).toBeNull()
   })
 
   it('reports "uncovered" rather than a verdict when the walk runs past the last hour', () => {
@@ -161,7 +177,7 @@ describe('coverage', () => {
     // the failure mode this state prevents.
     for (let h = 0; h < 12; h += 1) hour(DAY, h)
     sun(DAY, SUNRISE, SUNSET)
-    expect(rightNow(db, DAY, 23 * 60 + 30)).toEqual({ state: 'uncovered' })
+    expect(rightNow(db, DAY, 23 * 60 + 30, NO_GO)).toEqual({ state: 'uncovered' })
   })
 
   it('reads ACROSS MIDNIGHT into the next day’s hours', () => {
@@ -171,7 +187,7 @@ describe('coverage', () => {
     flatDay(DAY, 78)
     flatDay(NEXT, 99)
     sun(DAY, SUNRISE, SUNSET)
-    const reading = rightNow(db, DAY, 23 * 60 + 50)
+    const reading = rightNow(db, DAY, 23 * 60 + 50, NO_GO)
     expect(reading.state).toBe('ok')
     expect(reading.state === 'ok' && reading.reading.peakFeelsLikeF).toBe(99)
   })
@@ -190,7 +206,7 @@ describe('next good window', () => {
   })
 
   it('finds the evening window and reports it as bounded by DARK', () => {
-    const found = nextGoodWindow(db, DAY, 14 * 60)!
+    const found = nextGoodWindow(db, DAY, 14 * 60, NO_GO)!
     expect(found.isTomorrow).toBe(false)
     expect(found.day).toBe(DAY)
     expect(found.startMinute).toBe(18 * 60)
@@ -206,7 +222,7 @@ describe('next good window', () => {
   it('never offers a window in the past', () => {
     // Asked at 18:30, the window that opened at 18:00 is not the answer —
     // the next STEP from now is.
-    const found = nextGoodWindow(db, DAY, 18 * 60 + 30)!
+    const found = nextGoodWindow(db, DAY, 18 * 60 + 30, NO_GO)!
     expect(found.startMinute).toBe(18 * 60 + 30)
     expect(found.startMinute).toBeGreaterThanOrEqual(ceilToStep(18 * 60 + 30))
   })
@@ -216,7 +232,7 @@ describe('next good window', () => {
     for (let h = 0; h < 24; h += 1) hour(NEXT, h, { feels: h < 10 ? 82 : 99 })
     sun(NEXT, SUNRISE + 1, SUNSET - 1)
 
-    const found = nextGoodWindow(db, DAY, 21 * 60)!
+    const found = nextGoodWindow(db, DAY, 21 * 60, NO_GO)!
     expect(found.isTomorrow).toBe(true)
     expect(found.day).toBe(NEXT)
     // Sunrise is 6:54; the first scan step at or after it is 7:00. NOT 00:00,
@@ -241,7 +257,7 @@ describe('next good window', () => {
       const wet = h < 8 || h >= 12
       hour(DAY, h, { feels: 80, mm: wet ? 0.6 : 0, chance: wet ? 65 : 5 })
     }
-    const found = nextGoodWindow(db, DAY, 8 * 60)!
+    const found = nextGoodWindow(db, DAY, 8 * 60, NO_GO)!
     expect(found.startMinute).toBe(8 * 60)
     // 11:30 would run to 12:10 and catch the storm, so 11:20 is the last out.
     expect(found.lastStartMinute).toBe(11 * 60 + 20)
@@ -254,7 +270,7 @@ describe('next good window', () => {
     // too hot" about hours nobody has would be inventing a reason.
     db.prepare('DELETE FROM forecast_hours').run()
     for (let h = 8; h <= 12; h += 1) hour(DAY, h, { feels: 80 })
-    const found = nextGoodWindow(db, DAY, 8 * 60)!
+    const found = nextGoodWindow(db, DAY, 8 * 60, NO_GO)!
     expect(found.startMinute).toBe(8 * 60)
     expect(found.closedBy).toBeNull()
   })
@@ -262,13 +278,13 @@ describe('next good window', () => {
   it('returns null when neither day clears the checks', () => {
     for (let h = 0; h < 24; h += 1) hour(NEXT, h, { feels: 99 })
     sun(NEXT, SUNRISE, SUNSET)
-    expect(nextGoodWindow(db, DAY, 21 * 60)).toBeNull()
+    expect(nextGoodWindow(db, DAY, 21 * 60, NO_GO)).toBeNull()
   })
 
   it('counts a "short one, shade" stretch as a window — spec v1 sets it at 90°F', () => {
     // 88°F is the middle verdict for "Right now" and still a window here.
-    const found = nextGoodWindow(db, DAY, 14 * 60)!
-    const reading = rightNow(db, DAY, found.startMinute)
+    const found = nextGoodWindow(db, DAY, 14 * 60, NO_GO)!
+    const reading = rightNow(db, DAY, found.startMinute, NO_GO)
     expect(reading.state === 'ok' && reading.reading.verdict).toBe('short')
   })
 })
