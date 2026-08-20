@@ -263,6 +263,43 @@ export function scrollToNewest(el: { scrollTop: number; scrollHeight: number } |
 }
 
 /**
+ * How far from the bottom still counts as "at the bottom", in pixels.
+ *
+ * Not zero, and the reason is render order: a streamed chunk is in the DOM
+ * before the effect that measures runs, so the container is already taller than
+ * it was when the friend was last at the bottom. Exact equality would read
+ * every single chunk as "they scrolled up" and the panel would never follow
+ * anything.
+ */
+export const NEAR_BOTTOM_SLACK = 64
+
+/**
+ * Is the friend still parked at the bottom of the transcript?
+ *
+ * This is the whole reason the panel may now follow a reply as it streams. The
+ * standing objection to per-chunk anchoring was real — dragging someone back
+ * down the instant they scroll up to re-read something mid-reply takes the
+ * scrollbar away from them — and the answer is to ask first rather than to stop
+ * following. Scrolled to the bottom means "keep me there"; scrolled up means
+ * "leave me alone", until they come back down.
+ *
+ * A plain predicate over the three numbers rather than a hook, for the same
+ * reason as scrollToNewest above: a rule that only exists inside a `useEffect`
+ * is a rule no test in this suite can drive.
+ *
+ * Null is PINNED, not unpinned. The ref is null on the render before the <ol>
+ * exists, and treating that as "they scrolled up" would leave the follow
+ * permanently switched off from first paint.
+ */
+export function isNearBottom(
+  el: { scrollTop: number; scrollHeight: number; clientHeight: number } | null,
+  slack: number = NEAR_BOTTOM_SLACK,
+): boolean {
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= slack
+}
+
+/**
  * What the friend looks at between pressing send and the first word arriving.
  *
  * STOCK shadcn `Skeleton` and nothing else — Nico's ruling. It is
@@ -440,6 +477,7 @@ export function Timeline({
   thinking = false,
   onRetry,
   listRef,
+  onScroll,
 }: {
   turns: Turn[]
   busy: boolean
@@ -451,9 +489,19 @@ export function Timeline({
    * calls need not supply one.
    */
   listRef?: React.RefObject<HTMLOListElement | null>
+  /**
+   * Fires on the container's own scroll events, so ChatPanel can record
+   * whether the friend is still parked at the bottom. Optional for the same
+   * reason listRef is.
+   */
+  onScroll?: () => void
 }) {
   return (
-    <ol ref={listRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto text-sm">
+    <ol
+      ref={listRef}
+      onScroll={onScroll}
+      className="min-h-0 flex-1 space-y-4 overflow-y-auto text-sm"
+    >
       {turns.map((turn, index) => (
         <TurnRow key={`turn-${index}`} turn={turn} busy={busy} onRetry={onRetry} />
       ))}
@@ -474,21 +522,41 @@ export default function ChatPanel({
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
 
-  // Anchor to the newest item whenever the number of turns changes (first
-  // paint, and every send), and again once a reply finishes — `itemCount`
-  // alone anchors when a turn STARTS, and a long reply would otherwise grow
-  // past the fold while it streams. `busy` flipping false is what re-anchors
-  // once the answer has actually arrived.
+  // WHETHER THE FRIEND IS STILL AT THE BOTTOM, recorded from their own scroll
+  // events. A ref and not state: nothing renders differently because of it, and
+  // a setState per scroll event would re-render the whole transcript while a
+  // reply is streaming into it.
   //
-  // Deliberately NOT on every streamed chunk. Following the text token by
-  // token would yank a friend back down the moment they scrolled up to
-  // re-read something mid-reply, and the turn they are watching was already
-  // anchored when it started. The cost is that a long reply grows past the
-  // fold; the alternative takes the scrollbar away from them, which is worse.
+  // Starts true, because a fresh panel is at the bottom by construction (the
+  // first effect below puts it there) and the only thing that can move it since
+  // is a scroll, which is exactly what updates this.
+  const pinned = useRef(true)
+
+  // Anchor to the newest item whenever the number of turns changes (first
+  // paint, and every send), as the newest reply GROWS, and once more when the
+  // turn ends.
+  //
+  // `bodyLength` is the one that matters and the one that was missing. Anchoring
+  // on `itemCount` and `busy` alone meant a reply was anchored when it STARTED
+  // and then not again until the whole turn finished — and on a turn that calls
+  // propose_spec, "the whole turn" includes the 47-97 second authoring call
+  // (see lib/chat/turn.ts's authoringSignal). The agent's "here's what I'm
+  // having built" message landed below the fold and stayed there for a minute,
+  // so the moment a friend said "that's everything" the screen appeared not to
+  // answer. `busy` stays in the list: a turn can end without adding a character
+  // (an interrupted marker, a retry button) and that still changes the height.
+  //
+  // This used to be deliberately NOT per-chunk, on the grounds that following
+  // token by token yanks back a friend who scrolled up mid-reply. That
+  // objection is real and is now answered directly by `pinned` rather than by
+  // refusing to follow: someone at the bottom is kept there, and someone who
+  // scrolled away is left alone until they come back.
   const itemCount = panel.turns.length
+  const bodyLength = panel.turns[panel.turns.length - 1]?.body.length ?? 0
   useEffect(() => {
+    if (!pinned.current) return
     scrollToNewest(listRef.current)
-  }, [itemCount, busy])
+  }, [itemCount, bodyLength, busy])
 
   async function send(text: string) {
     if (!text.trim() || busy) return
@@ -551,6 +619,9 @@ export default function ChatPanel({
     <section aria-label="Chat" className="flex h-full min-h-0 flex-col gap-4">
       <Timeline
         listRef={listRef}
+        onScroll={() => {
+          pinned.current = isNearBottom(listRef.current)
+        }}
         turns={panel.turns}
         busy={busy}
         thinking={isThinking(panel.turns, busy)}

@@ -16,6 +16,7 @@
 // needs, and the build lands without anyone confirming anything).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as React from 'react'
+import { act } from 'react'
 import { mount, click, type, flush } from '@/tests/support/dom'
 import ChatPanel from '@/app/[user]/ChatPanel'
 
@@ -115,6 +116,85 @@ describe('ChatPanel wiring', () => {
 
     expect(list.scrollTop).toBe(900)
 
+    await unmount()
+  })
+
+  it('follows the reply as it streams, before the turn is anywhere near done', async () => {
+    // THE PROPOSE-TURN BUG. `{done:true}` only arrives after authoring, which
+    // is 47-97 seconds of model calls (lib/chat/turn.ts, authoringSignal) — so
+    // a panel that re-anchored only when `busy` flipped false left the agent's
+    // "here's what I'm having built" message below the fold for the whole of
+    // it. The friend confirmed, and the screen appeared not to answer.
+    //
+    // A hand-driven ReadableStream rather than a complete body: the point is
+    // that the scroll moves while the stream is still OPEN. A body containing
+    // {done:true} would flip `busy` in the same flush and pass even against
+    // the old effect.
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body)))
+
+    const { container, unmount } = await mount(<ChatPanel initial={[]} />)
+    const list = container.querySelector('ol')!
+    Object.defineProperty(list, 'scrollHeight', { value: 900, configurable: true })
+
+    await type(container.querySelector('textarea'), "that's everything")
+    await click(container.querySelector('button[type="submit"]'))
+    await flush()
+
+    list.scrollTop = 0
+    controller.enqueue(
+      new TextEncoder().encode(`${JSON.stringify({ t: 'Getting that built now.' })}\n`),
+    )
+    await flush()
+
+    // Still mid-turn: the stream is open and Send is disabled.
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    expect(list.scrollTop).toBe(900)
+
+    controller.close()
+    await flush()
+    await unmount()
+  })
+
+  it('leaves the scrollbar alone once the friend has scrolled up', async () => {
+    // The objection that kept per-chunk anchoring out: following token by token
+    // would drag someone back down the moment they scrolled up to re-read
+    // something mid-reply. jsdom reports 0 for clientHeight, so scrolling to 0
+    // against a 900px scrollHeight is unambiguously "scrolled up" — and the
+    // scroll event is what the panel listens to, exactly as a browser fires it.
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body)))
+
+    const { container, unmount } = await mount(<ChatPanel initial={[]} />)
+    const list = container.querySelector('ol')!
+    Object.defineProperty(list, 'scrollHeight', { value: 900, configurable: true })
+
+    await type(container.querySelector('textarea'), 'tell me a long story')
+    await click(container.querySelector('button[type="submit"]'))
+    await flush()
+
+    list.scrollTop = 0
+    await act(async () => {
+      list.dispatchEvent(new Event('scroll', { bubbles: true }))
+    })
+
+    controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ t: 'once upon a time' })}\n`))
+    await flush()
+
+    expect(list.scrollTop).toBe(0)
+
+    controller.close()
+    await flush()
     await unmount()
   })
 

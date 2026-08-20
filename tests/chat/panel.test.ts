@@ -12,6 +12,8 @@ import {
   startTurn,
   TurnRow,
   scrollToNewest,
+  isNearBottom,
+  NEAR_BOTTOM_SLACK,
   type PanelState,
 } from '@/app/[user]/ChatPanel'
 import { HEARTBEAT_LINE } from '@/lib/chat/heartbeat'
@@ -135,6 +137,45 @@ describe('scrollToNewest', () => {
     // The ref is null on the render before the <ol> exists, and a chat that
     // threw on first paint would be a worse bug than the one this fixes.
     expect(() => scrollToNewest(null)).not.toThrow()
+  })
+})
+
+describe('isNearBottom', () => {
+  // The predicate that decides whether a streamed chunk is allowed to move the
+  // scrollbar. It is what lets the panel follow a reply as it arrives WITHOUT
+  // yanking back a friend who scrolled up mid-reply — the objection that kept
+  // per-chunk anchoring out until now, and the reason the panel instead waited
+  // for `busy` to flip false. On a turn that calls propose_spec that wait is
+  // the whole authoring call: the reply landed, and the panel sat on it for
+  // 47-97 seconds with the text below the fold.
+  const el = (scrollTop: number, scrollHeight = 1000, clientHeight = 400) => ({
+    scrollTop,
+    scrollHeight,
+    clientHeight,
+  })
+
+  it('is true when the list is scrolled to the very bottom', () => {
+    expect(isNearBottom(el(600))).toBe(true)
+  })
+
+  it('is true within the slack, so a part-rendered chunk still counts as pinned', () => {
+    // A chunk lands in the DOM before the effect runs, so by the time the
+    // measurement happens the container is already taller than it was when the
+    // friend was last at the bottom. Exact equality would read that as "they
+    // scrolled up" on every single chunk and never follow at all.
+    expect(isNearBottom(el(600 - NEAR_BOTTOM_SLACK))).toBe(true)
+  })
+
+  it('is false once they have scrolled up past the slack', () => {
+    expect(isNearBottom(el(600 - NEAR_BOTTOM_SLACK - 1))).toBe(false)
+    expect(isNearBottom(el(0))).toBe(false)
+  })
+
+  it('is true when there is no list yet — the default is to follow', () => {
+    // Same render-order reason as scrollToNewest(null): the ref is null before
+    // the <ol> exists. Defaulting to "pinned" means a first paint anchors,
+    // rather than a missing element permanently disabling the follow.
+    expect(isNearBottom(null)).toBe(true)
   })
 })
 

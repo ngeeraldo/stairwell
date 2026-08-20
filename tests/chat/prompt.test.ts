@@ -295,6 +295,20 @@ describe('loadPrompt', () => {
     }
   })
 
+  it('points AGENT_PROMPT at v9, and keeps v8 unedited on disk', () => {
+    // The live interview prompt, pinned so a revert fails a test rather than
+    // quietly restoring what v9 removed: v8 asked the agent to describe back
+    // what was being built and never said how long the friend would wait.
+    // Prompts are added, never edited (CLAUDE.md > Data safety) — every
+    // transcript row written while v8 shipped stamps its hash, so the file
+    // must stay on disk and stay byte-identical.
+    expect(AGENT_PROMPT).toBe('agent-v9.md')
+    const v8 = loadPrompt('agent-v8.md')
+    const v9 = loadPrompt(AGENT_PROMPT)
+    expect(v8.sha).not.toBe(v9.sha)
+    expect(existsSync(promptPath('agent-v8.md'))).toBe(true)
+  })
+
   it('points ANNOUNCE_PROMPT at v3, and keeps v1 and v2 unedited on disk', () => {
     // Two false premises removed in two steps, each a new file rather than an
     // edit — announce-v1.md and v2 have both stamped their hash on real

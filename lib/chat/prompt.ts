@@ -35,8 +35,19 @@ const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
  * whatever it says. Removing the card removed the moment a person could say
  * "actually, one more thing", and people routinely give one want and remember
  * the second only when asked. The bar in "When you have enough" is unchanged.
+ *
+ * v9 changes what the proposing message itself says, in the two ways it was
+ * getting wrong. It no longer describes back what is being built: v7 asked for
+ * that ("say briefly what you are having built") because the card that used to
+ * say it had just been removed, but the friend has only just finished
+ * describing the thing, so the summary spends the whole message on the one
+ * thing in it they already know. And it now says WHEN — the next morning for a
+ * first dashboard, a few hours for a change, the same timings "What to promise"
+ * has always carried — because that is the thing they cannot know, at the only
+ * moment it matters. Before v9 someone said "that's everything" and got a
+ * receipt with no date on it.
  */
-export const AGENT_PROMPT = 'agent-v8.md'
+export const AGENT_PROMPT = 'agent-v9.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output
