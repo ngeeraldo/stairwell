@@ -210,8 +210,42 @@ describe('users/run9 — the glance and its controls', () => {
       seed(db, '2026-08-19', 2)
       const json = render(db)
       expect(json).toContain('/api/users/run9/pee')
-      expect(json).toContain('"value":"add"')
-      expect(json).toContain('"value":"remove"')
+      expect(json).toContain('"payload":{"action":"add"}')
+      expect(json).toContain('"payload":{"action":"remove"}')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('wires the log button to WriteAction with the right action URL and payload', () => {
+    // Asserts the NEW control, not a substring that would also match the old
+    // <form>/<input> markup. `action` (the URL prop) and `payload` (the body)
+    // are both checked together, in one string, so a control wired to the
+    // right URL with the wrong payload — or vice versa — fails this test.
+    const db = freshDb()
+    try {
+      seed(db, '2026-08-19', 2)
+      const json = render(db)
+      expect(json).toContain(
+        '"action":"/api/users/run9/pee","payload":{"action":"add"},"size":"lg"',
+      )
+      expect(json).toContain('"pendingLabel":"Logging…"')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('wires the −1/+1 correction controls to WriteAction with the right payloads', () => {
+    const db = freshDb()
+    try {
+      seed(db, '2026-08-19', 2)
+      const json = render(db)
+      expect(json).toContain(
+        '"action":"/api/users/run9/pee","payload":{"action":"remove"},"variant":"outline","size":"sm"',
+      )
+      expect(json).toContain(
+        '"action":"/api/users/run9/pee","payload":{"action":"add"},"variant":"outline","size":"sm"',
+      )
     } finally {
       db.close()
     }

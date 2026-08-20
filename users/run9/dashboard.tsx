@@ -10,18 +10,17 @@
 // either — the write route files a tap under the friend's day, and a
 // dashboard computing its own would let the two disagree about the calendar.
 //
-// COMPOSITION, and why it is not the host-elements-only shape devone and
-// devtwo use. Nico's ruling of 2026-08-19 splits imported components in two:
-// purely presentational ones (shadcn's Card, Button) are trusted, while
-// data-computing ones (Recharts) are a sanctioned exception guarded by the
-// states rule — degenerate data renders the panel's empty state as host
-// elements and NEVER mounts the component. `chartable` below is that guard,
-// and it is why the empty-database first render shows an empty state rather
-// than a chart. The accepted residual is a throw on well-formed props landing
-// outside app/[user]/page.tsx's try/catch. See ./TrendChart.tsx's header.
+// COMPOSITION. docs/dashboard-build-rules.md states the component rule in
+// three arms: presentational components (shadcn's Card, Button) are trusted;
+// data-computing ones (Recharts) are sanctioned and guarded by the states rule;
+// interaction controls (lib/ui/WriteAction.tsx) are sanctioned and are the
+// default for every write. `chartable` below is the states guard, and it is
+// why the empty-database first render shows an empty state rather than a
+// chart. The accepted residual for all three is a throw on well-formed props
+// landing outside app/[user]/page.tsx's try/catch. See ./TrendChart.tsx.
 import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { WriteAction } from '@/lib/ui/WriteAction'
 import { TrendChart } from './TrendChart'
 import { TREND_DAYS, countOn, dailyTrend, firstLoggedDay, weeklyAverage } from './queries'
 
@@ -118,26 +117,28 @@ export default function Run9Dashboard({ slug, db, today }: DashboardProps) {
           </p>
 
           {/*
-            A form POST, not a client-side fetch: it keeps this a server
-            component, works with JavaScript off, and matches every other
-            control in the app (the logout button, devtwo's tap). The press
-            feedback is shadcn's own `active:translate-y-px` — interaction
-            motion, which responds to the user rather than impersonating live
-            data.
+            THE DEFAULT WRITE CONTROL (lib/ui/WriteAction.tsx). It still POSTs
+            to the platform route — the route is still the only writable handle
+            and still the only place the four ordered auth checks live — but it
+            patches the page in place rather than navigating: press, the
+            controls sharing this route go pending, and when the server answers
+            the count, the trend and the average update together.
+
+            It renders a real form underneath, so this still works with
+            JavaScript off; that path is the original redirect, unchanged.
           */}
-          <form method="post" action={`/api/users/${slug}/pee`}>
-            <input type="hidden" name="action" value="add" />
-            <Button
-              type="submit"
-              size="lg"
-              // Deliberately taller than any stock size: the spec asks for a
-              // button "comfortable to hit on a phone one-handed", and shadcn's
-              // tallest default is 36px, under the 44px touch-target floor.
-              className="h-16 w-full text-base"
-            >
-              Log one
-            </Button>
-          </form>
+          <WriteAction
+            action={`/api/users/${slug}/pee`}
+            payload={{ action: 'add' }}
+            size="lg"
+            // Deliberately taller than any stock size: the spec asks for a
+            // button "comfortable to hit on a phone one-handed", and shadcn's
+            // tallest default is 36px, under the 44px touch-target floor.
+            className="h-16 w-full text-base"
+            pendingLabel="Logging…"
+          >
+            Log one
+          </WriteAction>
 
           {/*
             THE CORRECTION CONTROL, rendered inside this card rather than as a
@@ -152,32 +153,28 @@ export default function Run9Dashboard({ slug, db, today }: DashboardProps) {
           */}
           <div className="flex items-center gap-2 pt-1">
             <span className="text-xs text-muted-foreground">Miscounted?</span>
-            <form method="post" action={`/api/users/${slug}/pee`}>
-              <input type="hidden" name="action" value="remove" />
-              <Button
-                type="submit"
-                variant="outline"
-                size="sm"
-                // DISABLED AT ZERO, which is the spec's "should not be able to
-                // take the count below zero" said in the UI. The route enforces
-                // it too — this is the affordance, not the rule.
-                disabled={count === 0}
-                aria-label="Remove one from today"
-              >
-                −1
-              </Button>
-            </form>
-            <form method="post" action={`/api/users/${slug}/pee`}>
-              <input type="hidden" name="action" value="add" />
-              <Button
-                type="submit"
-                variant="outline"
-                size="sm"
-                aria-label="Add one to today"
-              >
-                +1
-              </Button>
-            </form>
+            <WriteAction
+              action={`/api/users/${slug}/pee`}
+              payload={{ action: 'remove' }}
+              variant="outline"
+              size="sm"
+              // DISABLED AT ZERO, which is the spec's "should not be able to
+              // take the count below zero" said in the UI. The route enforces
+              // it too — this is the affordance, not the rule.
+              disabled={count === 0}
+              aria-label="Remove one from today"
+            >
+              −1
+            </WriteAction>
+            <WriteAction
+              action={`/api/users/${slug}/pee`}
+              payload={{ action: 'add' }}
+              variant="outline"
+              size="sm"
+              aria-label="Add one to today"
+            >
+              +1
+            </WriteAction>
           </div>
         </CardContent>
       </Card>
