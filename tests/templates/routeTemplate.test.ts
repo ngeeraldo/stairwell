@@ -140,9 +140,12 @@ describe('platform/templates/route/route.ts.tmpl, the write-route worked example
     expect(text).not.toMatch(/\brun\d+\b/i)
     expect(text).not.toMatch(/\bdevone\b/i)
     expect(text).not.toMatch(/\bdevtwo\b/i)
-    // 'the walk route' named app/api/users/[user]/walk/route.ts — devtwo's,
-    // and gone with devtwo. The comments that cited it now describe the shape
-    // (a day-keyed table) instead of the instance.
+    // 'the walk route' named app/api/users/[user]/walk/route.ts. Both it and
+    // devtwo are still here today; the route exists to serve devtwo alone, so
+    // it GOES WITH devtwo at pilot end — which is this sweep's whole
+    // justification, not a claim that either is already gone. The comments
+    // that cited it now describe the shape (a day-keyed table) instead of the
+    // instance.
     expect(text).not.toMatch(/walk/i)
   })
 

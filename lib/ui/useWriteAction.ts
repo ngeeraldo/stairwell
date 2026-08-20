@@ -40,9 +40,19 @@ export const WRITE_FAILED = "Couldn't save that — nothing was recorded. Try ag
  * which is precisely what `relativeRedirect` says about its own guard.
  *
  * It THROWS rather than rendering a disabled control: a bad action is a
- * builder's typo in code, visible on the first render in `npm run dev` and in
- * that dashboard's own tests, not a runtime condition a friend can reach.
- * Silently refusing would ship a dead button nobody notices.
+ * builder's typo in a source literal, not a runtime condition a friend can
+ * reach. Silently refusing would ship a dead button nobody notices.
+ *
+ * WHAT ACTUALLY CATCHES IT is `npm run dev` — the first render of the page —
+ * and the `npm run shots` screenshot gate, which boots the app and captures
+ * every live screen, so the client component's body really runs there.
+ * NOT the dashboard's own tests, and an earlier version of this comment
+ * wrongly said otherwise. `users/run9/tests/dashboard.test.ts` and
+ * `users/devtwo/tests/dashboard.test.ts` assert over
+ * `JSON.stringify(Dashboard({...}))` — they inspect the returned ELEMENT TREE
+ * and never render it with react-dom, so a client component's body never
+ * executes and this function is never reached from any per-dashboard test.
+ * A builder relying on `npx vitest run users/<slug>` alone would see green.
  */
 export function assertHostRelativeAction(action: string): void {
   if (!action.startsWith('/') || action.startsWith('//')) {
@@ -120,8 +130,10 @@ export function useWriteAction(action: string): {
   // — users/devtwo/dashboard.tsx runs through it on its only happy path.
   // devtwo renders `{done ? <p>Marked for today.</p> : <WriteAction .../>}`,
   // so the successful write that sets `done` is exactly the refresh that
-  // unmounts the control which owns the in-flight flag. Every friend's first
-  // tap of every day takes this path.
+  // unmounts the control which owns the in-flight flag — devtwo's first tap of
+  // any day runs through it. (run9's three controls all render
+  // unconditionally, the -1 disabled rather than removed, so run9 does not
+  // reach this. One live case is enough to keep the effect.)
   //
   // Without this, a control that unmounts mid-flight never runs the effect
   // above again (there is no later commit with isPending false to trigger
