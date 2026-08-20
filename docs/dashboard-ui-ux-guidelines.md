@@ -113,6 +113,15 @@ Data is static after login sync — nothing may pulse, tick, shimmer, or
 count up on its own in a way that suggests live updates. A number
 animates when the user changes it, not when it renders.
 
+**A write control shows its own progress; the value lands when it is true.**
+Pressing a control that writes puts it — and every control writing the same
+route — into a visible pending state immediately. The number itself moves when
+the server confirms, not before, and every value affected by that write moves
+together. This is the counter example below, resolved: the press feedback is
+the control responding, not the count running ahead of the database. A
+dashboard never reloads the page to show a write; `lib/ui/WriteAction.tsx` is
+the default and does this for you.
+
 **The glance is never gated on motion.** No entrance choreography, no
 staggered panel fade-ins, no count-up-from-zero on load. The dashboard
 is readable the frame it renders; delight lives in interaction, not
@@ -131,4 +140,7 @@ Ex. A simple counter app that has an 'up' and 'down' button and the count as a n
 
 **Good:**
  - Button scales down slightly on press, back up on release.
- - The number pops — a quick scale up/down — when the user changes it.
+ - The button shows it is working the moment it is pressed.
+ - The number pops — a quick scale up/down — when the write lands, which is
+   when the server has confirmed it. Never before: an optimistic number is a
+   number that can be wrong.

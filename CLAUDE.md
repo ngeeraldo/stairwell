@@ -462,19 +462,41 @@ architectural changes; do not relitigate decided items).
   this rule, not an exception to it.
 - A dashboard may **render** an entry widget — a form for hand-logging or
   annotating data — but the widget POSTs to a platform route, same as the
-  walk route above. The read-only-handle rule above is unchanged and
+  write-route template above. The read-only-handle rule above is unchanged and
   unweakened by this: no dashboard component ever holds a writable handle,
   only a route does. Annotating synced data follows the shared-module
   annotations rule (Schema & module rules): the user's own tables, never
   edits to a shared-module table.
+- **A dashboard write updates the page in place and NEVER navigates** (Nico's
+  ruling, 2026-08-20). `lib/ui/WriteAction.tsx` is the default control and
+  owns the mechanics: press → the controls sharing that route go pending →
+  the server answers → every affected value patches in together. No optimistic
+  state, so no rollback path and nothing on screen can disagree with the
+  database. Pending is grouped by ACTION URL, never by page. It renders a real
+  form, so the no-JS path is the original redirect. The route is unchanged and
+  is still the only writable handle. The **component rule** this depends on has
+  three arms — presentational (trusted), data-computing (sanctioned, guarded by
+  the states rule), interaction controls (sanctioned, the default) — stated in
+  full in docs/dashboard-build-rules.md §3, with the try/catch residual that
+  applies to all three. Design:
+  docs/superpowers/specs/2026-08-20-client-side-write-actions-design.md.
+- **`dashboard_open` carries `trigger`** — `'nav'` or `'refresh'`, a render
+  cause and never a user value. Rows predating the 2026-08-20 deploy have no
+  such key and decode as `nav`. It exists because a tap has ALWAYS written an
+  open (the route redirects and the page reloads), so this makes an existing
+  ambiguity readable rather than preventing a new one. It reads Next's `rsc`
+  header, which means "refresh" only because this app has NO client-side
+  navigation — the tab strip is deliberately plain anchors. A client-side
+  `<Link>` under `app/[user]/` breaks it; see `lib/metrics/renderTrigger.ts`.
 - Per-user `tests/` should cover write paths (inserts, annotation joins) when
-  the dashboard has one, not just rendering — `users/devtwo/tests/write.test.ts`
-  is the worked example, and `platform/templates/dashboard/tests/dashboard.test.ts.tmpl`
-  carries a commented stub for a scaffolded one. This is a convention and a
-  scaffold, not a sweep gate: `tests/users/conventions.test.ts` cannot tell
-  whether a given dashboard *has* a write path — that lives in a platform
-  route and a spec version, neither of which is a file in the user's folder —
-  so demanding a write test of a read-only dashboard would be a false failure.
+  the dashboard has one, not just rendering —
+  `platform/templates/dashboard/tests/dashboard.test.ts.tmpl` is the worked
+  example, a full commented write test to copy and adapt, not the bare stub
+  it used to be. This is a convention and a scaffold, not a sweep gate:
+  `tests/users/conventions.test.ts` cannot tell whether a given dashboard
+  *has* a write path — that lives in a platform route and a spec version,
+  neither of which is a file in the user's folder — so demanding a write test
+  of a read-only dashboard would be a false failure.
 - Everything a dashboard shows in DEV is synthetic, and
   the page says so with the banner on every synthetic render. Real per-user
   data arrived in step 6a; Plaid-sourced data is step 6b.

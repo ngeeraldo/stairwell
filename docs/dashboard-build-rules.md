@@ -172,10 +172,30 @@ resolves any of them itself** — CLAUDE.md.
 - **The handle is read-only on both paths** — `openUserDataForRead` resolves
   which database and opens it read-only in either world. Pinned at both ends,
   because they fail independently — CLAUDE.md, `tests/db/userData.test.ts`.
-- Compose only host elements. A nested function component's body is deferred to
-  Next's render pass, outside the page's try/catch, so a throw there 500s the
-  page after `dashboard_open` was already written —
-  `platform/templates/dashboard/dashboard.tsx.tmpl`.
+- **The component rule, in three arms** — Nico's ruling of 2026-08-19, extended
+  2026-08-20. A dashboard composes host elements plus components from these
+  three classes, and nothing else:
+  1. **Presentational** — shadcn's `Card`, `Button`, anything that renders
+     props as markup without deriving values from them. **Trusted.** This has
+     always been true in the code: every dashboard already nests `<Card>` and
+     `<Button>`.
+  2. **Data-computing** — Recharts, and anything deriving scales, layout or
+     geometry from values. **Sanctioned, guarded by the states rule:**
+     degenerate data (empty, single-point, all-identical, NaN) renders the
+     panel's empty state as host elements and never mounts the component. The
+     empty-database first render must show empty states, not charts.
+  3. **Interaction controls** — a component whose job is to accept a press and
+     post it. **Sanctioned, and the default for every write** (see §4). Its
+     guard is structural: it derives nothing from user values, so it has no
+     degenerate-input case a states check would catch.
+  **The residual, for all three:** they render outside `app/[user]/page.tsx`'s
+  try/catch, because a nested function component's body is deferred to React's
+  render pass and a throw there 500s the page after `dashboard_open` is already
+  written. For arm 3 that residual sits on the happy path, which is why the
+  mechanism is platform code in `lib/ui/` tested once, not per-user code —
+  the catch exists because bespoke per-user code is the least-reviewed code in
+  the repo, and a shared primitive is not that —
+  `docs/superpowers/specs/2026-08-20-client-side-write-actions-design.md` §4.
 - **Screens are declared, and the platform draws the tabs — never the
   dashboard.** `DashboardModule.screens` is required and its
   `id`/`title`/`order` mirror `lib/spec/schema.ts`'s `Screen` — a FROZEN
@@ -244,6 +264,19 @@ explains nothing.
 - A dashboard may **render** an entry widget, but the widget POSTs to a platform
   route. No dashboard component ever holds a writable handle, only a route does
   — CLAUDE.md.
+- **The write updates the page IN PLACE. It never navigates** — Nico's ruling,
+  2026-08-20. Use `lib/ui/WriteAction.tsx`; it is the default and you write none
+  of the mechanics. The contract it implements:
+  > press → the controls sharing that route go pending → the server answers →
+  > every affected value patches in together, in place, no navigation.
+  Nothing on screen moves before the server answers, so there is no optimistic
+  state and no rollback path. The pending state ends when the refreshed tree
+  COMMITS, not when the POST returns — otherwise the count and the chart update
+  a frame apart. Pending is grouped by ACTION URL, never by page: two controls
+  writing the same route lock together, two controls writing different routes
+  do not. `WriteAction` renders a real form, so the no-JS path is the original
+  redirect, unchanged —
+  `docs/superpowers/specs/2026-08-20-client-side-write-actions-design.md` §2-3.
 - **Exactly two things write to a user's real database, and they are
   enumerated** — CLAUDE.md:
   1. `lib/db/migrate.ts` — creates it and changes its SHAPE, at unlock, having
@@ -254,13 +287,13 @@ explains nothing.
 - Every write goes through a platform route, which is the only place the four
   ordered auth checks live — CLAUDE.md.
 - A friend who logs anything needs **their own route** alongside
-  `app/api/users/[user]/walk/route.ts` — the worked example, not a thing to
+  `platform/templates/route/route.ts.tmpl` — the worked example, not a thing to
   refactor into a shared one. Budget for it while you are reading the spec: a
   dashboard with an entry widget is two pieces of work, and the route is where
   the four ordered auth checks live — CLAUDE.md > Dashboard folder conventions.
 - Per-user `tests/` should cover write paths when the dashboard has one, not just
-  rendering. `users/devtwo/tests/write.test.ts` is the worked example. This is a
-  convention and a scaffold, not a sweep gate — CLAUDE.md.
+  rendering. `platform/templates/dashboard/tests/dashboard.test.ts.tmpl` is the
+  worked example. This is a convention and a scaffold, not a sweep gate — CLAUDE.md.
 
 ---
 

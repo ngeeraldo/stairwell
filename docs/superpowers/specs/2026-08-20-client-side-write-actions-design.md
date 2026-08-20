@@ -446,7 +446,8 @@ Measured p95: *(pending — probe not yet run)*
 - `tests/ui/writeAction.test.tsx` — pending state through to commit, the
   success path, the failure path leaving the screen unmoved, and the no-JS
   form shape (a real `<form method="post">` with the right hidden inputs).
-- `tests/routing/dashboardOpenTrigger.test.ts` — the §7.2 red test.
+- `tests/routing/dashboardRegion.test.ts` — the §7.2 red test, added to the
+  suite that already owns the page's metric harness rather than a new file.
 - `users/run9/tests/` and `users/devtwo/tests/` updated for the changed
   controls. run9's existing write-path and render tests must stay green
   unchanged in substance — the surface does not change.

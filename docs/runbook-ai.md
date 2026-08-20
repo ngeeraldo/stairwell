@@ -215,11 +215,16 @@ not exist yet:
   converting a timestamp a row already holds is legitimate; asking a clock what
   day it is never is. Anything needing "today" or "this month" takes it as a
   parameter. This has shipped as a bug once: `docs/superpowers/ledgers/friend-timezone.md`.
-- **Compose only host elements** — `<div>`, `<section>`, `<ul>`. Never return a
-  nested function component. `app/[user]/page.tsx` calls the dashboard directly
-  so its body runs inside the page's `try`/`catch`; a nested component's body is
-  deferred to React's own render pass, outside that catch, and a throw there
-  500s the page *after* the `dashboard_open` metric row is written.
+- **The component rule has three arms**, and only the first is unconditional.
+  **Presentational** components (shadcn's `Card`, `Button`) are trusted.
+  **Data-computing** ones (Recharts) are sanctioned but must be guarded by the
+  states rule — degenerate data renders the empty state as host elements and
+  never mounts the component. **Interaction controls** (`lib/ui/WriteAction.tsx`)
+  are sanctioned and are the DEFAULT for every write. Everything else is host
+  elements. All three render outside `app/[user]/page.tsx`'s try/catch, so a
+  throw in one 500s the page after the `dashboard_open` row is written — which
+  is why arm 3 is platform code you import rather than code you write.
+  Build-rules §3 has the full statement.
 - **The platform draws the tab strip, never the dashboard.** Export
   `screens: DashboardScreen[]` with at least one entry — a registered dashboard
   declaring zero throws. `?screen=` is resolved against your list by
@@ -256,7 +261,7 @@ At least one `*.test.ts` under `users/$SLUG/tests/`. What it must cover:
 - **Every query's edges**, against a fixture the test builds from the migrations
   — the gap day, the zero, the boundary of a window.
 - **The write path**, if §2.6 applied: the insert, and any annotation join.
-  `users/devtwo/tests/write.test.ts` is the worked example.
+  `platform/templates/dashboard/tests/dashboard.test.ts.tmpl` is the worked example.
 - **Data survival**, if you wrote a migration above 001 (§2.2).
 
 A platform route also needs a test under `tests/`, which is what Gate B wants
