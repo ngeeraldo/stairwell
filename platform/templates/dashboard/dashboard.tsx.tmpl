@@ -82,6 +82,25 @@ import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
 //   }
 export const screens: DashboardScreen[] = [{ id: 'morning', title: 'Morning', order: 1 }]
 
+// A WRITE CONTROL, if the spec asks for one. This is the DEFAULT — a write
+// control patches the page in place and never navigates. lib/ui/WriteAction.tsx
+// owns the pending state, the POST and the refresh; you write none of it.
+//
+//   import { WriteAction } from '@/lib/ui/WriteAction'
+//
+//   <WriteAction
+//     action={`/api/users/${slug}/<verb>`}
+//     payload={{ action: 'add' }}
+//     pendingLabel="Saving…"
+//   >
+//     Log one
+//   </WriteAction>
+//
+// The route it posts to is yours to write — copy
+// platform/templates/route/route.ts.tmpl, which carries the four ordered auth
+// checks. A dashboard with an entry widget is TWO pieces of work; budget for
+// the route while you are reading the spec.
+
 export default function Dashboard({ slug }: DashboardProps) {
   return (
     <section>
