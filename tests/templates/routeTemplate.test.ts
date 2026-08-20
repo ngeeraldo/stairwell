@@ -16,6 +16,21 @@
 // here notices the text rotting. This is that something: a content sweep in
 // the style of tests/users/noLocalDay.test.ts, reading the template's own
 // text and asserting on it, not executing it.
+//
+// TWO SEPARATE THINGS ARE PINNED BELOW, and they are not interchangeable.
+// The CODE test locates the four `if` checks by the statement each one
+// actually executes (resolveState/canSeeUserSpace/dashboardLoaderFor/the
+// accountId-and-key guard) and asserts their positions in the file are
+// strictly increasing — that is the actual security property, and it is the
+// one that fails if somebody reorders the real `if` blocks. The DOCBLOCK test
+// asserts the four numbered phrases in the top comment stay in the order they
+// claim to describe — a real but narrower guarantee: this file's comments are
+// load-bearing (a copier reads the docblock before the body), so a docblock
+// that stops matching the code it describes is its own defect, but it is NOT
+// a stand-in for pinning the code. A docblock thirty lines above the body can
+// go stale while every `if` below it is reordered and the docblock test would
+// never notice — which is exactly why the code test exists as its own,
+// separately-named assertion rather than being trusted to cover both.
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -23,29 +38,60 @@ import { describe, expect, it } from 'vitest'
 const TEMPLATE = resolve(__dirname, '..', '..', 'platform', 'templates', 'route', 'route.ts.tmpl')
 const text = readFileSync(TEMPLATE, 'utf8')
 
+/** Plain substring count — no regex, so callers never have to escape one. */
+function occurrences(needle: string): number {
+  return text.split(needle).length - 1
+}
+
+/** Asserts each phrase appears exactly once and returns their indices, in the order given. */
+function orderedIndices(phrases: string[]): number[] {
+  return phrases.map((phrase) => {
+    expect(occurrences(phrase), `expected exactly one occurrence of: ${phrase}`).toBe(1)
+    return text.indexOf(phrase)
+  })
+}
+
+function assertStrictlyIncreasing(indices: number[], label: (i: number) => string): void {
+  for (let i = 1; i < indices.length; i++) {
+    expect(indices[i], `${label(i)} must appear after ${label(i - 1)}`).toBeGreaterThan(
+      indices[i - 1]!,
+    )
+  }
+}
+
 describe('platform/templates/route/route.ts.tmpl, the write-route worked example', () => {
-  it('states the four ordered checks, IN ORDER', () => {
-    // Order is the property being pinned. A test that only checked presence
-    // would still pass on a file with checks 2 and 3 swapped — these four
-    // phrases are the docblock's own enumeration of the order, so asserting
-    // their indices are strictly increasing is asserting the order itself,
-    // not just that all four words showed up somewhere.
+  it('runs the four checks IN ORDER — pins the CODE, not the comments', () => {
+    // This is the actual security property. Each match string is the
+    // statement the check executes, not prose about it, so a reorder of the
+    // real `if` blocks moves the match itself and this goes red — a
+    // reordered but untouched docblock thirty lines above cannot save it.
+    // Each pattern is chosen to appear exactly once in the file — orderedIndices
+    // asserts that per pattern — so an index can't accidentally resolve to
+    // some other mention (e.g. the import line, or a comment referencing it).
+    const checks = [
+      'resolveState(',
+      'canSeeUserSpace(',
+      'dashboardLoaderFor(',
+      'accountId === undefined || !key',
+    ]
+    const indices = orderedIndices(checks)
+    assertStrictlyIncreasing(indices, (i) => `check ${i + 1} (${checks[i]})`)
+  })
+
+  it('states the four ordered checks in the docblock — pins the NARRATIVE', () => {
+    // A narrower, separate guarantee from the test above: the top comment's
+    // own four-item enumeration stays in the order it claims. Worth pinning
+    // on its own because this file's comments are load-bearing — a copier
+    // reads the docblock first — but this alone does NOT prove the code
+    // below still runs in that order; see the code test above for that.
     const phrases = [
       'unlocked — not merely authenticated',
       'ownership — 404, never 403',
       'a registered dashboard — otherwise any authenticated slug',
       'only then: key, open, write, close',
     ]
-    const indices = phrases.map((phrase) => {
-      const index = text.indexOf(phrase)
-      expect(index, `expected to find: ${phrase}`).toBeGreaterThanOrEqual(0)
-      return index
-    })
-    for (let i = 1; i < indices.length; i++) {
-      expect(indices[i], `check ${i + 1} must appear after check ${i}`).toBeGreaterThan(
-        indices[i - 1]!,
-      )
-    }
+    const indices = orderedIndices(phrases)
+    assertStrictlyIncreasing(indices, (i) => `docblock item ${i + 1}`)
   })
 
   it('answers with writeAnswer, never relativeRedirect', () => {
