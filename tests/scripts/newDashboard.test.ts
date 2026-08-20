@@ -104,7 +104,7 @@ describe('scripts/new-dashboard.sh', () => {
     () => {
       // The epilogue used to list `npm run synthetic`, `npx vitest` and
       // `pull-spec.sh` as a three-step flow of its own. That copy went stale
-      // within two days of docs/runbook.md being written: it never learned
+      // within two days of the runbook being written: it never learned
       // about the <slug>/v<n> branch, so following it built on main, and it
       // never learned about `npm run shots`, so it skipped the picture review
       // CLAUDE.md requires before a commit.
@@ -113,11 +113,18 @@ describe('scripts/new-dashboard.sh', () => {
       // sitting underneath a stale command list is exactly the state this
       // replaced — the reader follows the commands and never reaches the line
       // telling them not to.
+      //
+      // The HUMAN runbook, specifically. docs/runbook.md was split into
+      // docs/runbook-human.md (the operator sequence) and docs/runbook-ai.md
+      // (the two steps the AI builder owns), and the reader of this output is
+      // the operator who just ran the scaffold — not the builder, which is two
+      // steps later and handed over from the human file.
       const sandbox = makeSandbox()
       const { status, output } = run(sandbox, ['devthree'])
 
       expect(status).toBe(0)
-      expect(output).toContain('docs/runbook.md')
+      expect(output).toContain('docs/runbook-human.md')
+      expect(output).not.toContain('docs/runbook.md')
       expect(output).toMatch(/do not build on main/i)
 
       for (const restated of ['npm run synthetic', 'npx vitest', 'pull-spec.sh', 'npm run shots']) {

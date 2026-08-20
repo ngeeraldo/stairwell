@@ -35,7 +35,7 @@
 //
 // It does not consume an invite, because there is no invite: this is not a
 // rehearsal of onboarding. Rehearsing onboarding uses a throwaway slug and the
-// real browser flow — docs/runbook.md, "Rehearsing the whole thing locally".
+// real browser flow — docs/local-dev.md.
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { findAccountBySlug, insertAccount } from '../lib/auth/accounts'
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
       'Refusing to run: NODE_ENV is production.\n\n' +
         'This script is a LOCAL dev convenience. In production an account is ' +
         'created by a friend accepting an invite, and nothing else may create ' +
-        'one — see docs/runbook.md steps 2-3.\n\n' +
+        'one — see docs/runbook-human.md step 2.\n\n' +
         'If you are on your laptop, you have probably inherited NODE_ENV from ' +
         'a `npm start` shell. Open a new terminal and re-run.',
     )

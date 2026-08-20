@@ -360,9 +360,9 @@ describe('users/ folder conventions', () => {
         .filter((m): m is RegExpExecArray => m !== null)
         .map((m) => Number(m[1]))
       const state = readCurrentState(slug, USERS)
-      // GUARDED, not `!`. docs/runbook.md:392 tells the builder to expect
-      // current.md to be absent between steps 7.2 (shape landed, so `built`
-      // is already true) and 7.5 (current.md written) — the previous test
+      // GUARDED, not `!`. docs/runbook-ai.md §2.8 tells the builder to expect
+      // current.md to be absent between §2.2 (shape landed, so `built` is
+      // already true) and §3.2 (current.md written) — the previous test
       // already reports that gap by name. An unguarded `!` here would instead
       // throw a null-deref TypeError, which drops this test's own message and
       // leaves whoever is reading red output no way to tell "current.md is

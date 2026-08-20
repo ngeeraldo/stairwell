@@ -715,7 +715,7 @@ else
 
   # The message has to carry the glob. Removing users/x/x.db without the *
   # leaves -wal and -shm holding the same rows, which is the exact mistake
-  # docs/runbook.md > Standing rules already calls out.
+  # docs/runbook-ai.md §1.1 already calls out.
   stray_out=$(
     (
       # shellcheck disable=SC1090

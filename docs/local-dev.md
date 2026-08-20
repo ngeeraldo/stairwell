@@ -250,7 +250,8 @@ not repeated.
 real Anthropic API and needs `ANTHROPIC_API_KEY` set (`deploy/required-env`),
 which a local walkthrough of this doc has no other reason to require. Drop
 `--plain` once you actually want to try the drafted-sentence path and have a
-key set — see `docs/runbook.md` step 9 for the full dry-run-then-send flow.
+key set — see `docs/runbook-human.md` step 11 for the full dry-run-then-send
+flow.
 
 ```bash
 PLATFORM_DB=platform/dev/synthetic.db npx tsx scripts/ask-user.ts devtwo "Want the streak to reset on a missed day, or just pause?"
@@ -288,8 +289,8 @@ npm run dev
 ```
 
 The conventions and what each file is for: `CLAUDE.md > Dashboard folder
-conventions`. `users/devone/` is a worked example. The full operator sequence
-around a build is `docs/runbook.md` step 7.
+conventions`. `users/devone/` is a worked example. The operator sequence around
+a build is `docs/runbook-human.md`; the build itself is `docs/runbook-ai.md`.
 
 ## Trying the write path
 
