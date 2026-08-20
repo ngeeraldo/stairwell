@@ -43,10 +43,12 @@ describe('platform/templates/dashboard/dashboard.tsx.tmpl, the scaffold every da
 
   it('never re-states "compose only host elements" as an absolute rule', () => {
     // The exact phrase this fix round deleted — case-insensitive, because
-    // the rule has shipped under at least two castings ("COMPOSE ONLY HOST
-    // ELEMENTS" here, "Compose only host elements" in CLAUDE.md and
-    // users/run9/TrendChart.tsx before their own fixes) and a casing change
-    // must not be what lets it back in.
+    // the rule has shipped under two castings: this file's own upper-cased
+    // "COMPOSE ONLY HOST ELEMENTS" (verify at 135831f:27) and the
+    // sentence-cased "Compose only host elements" that
+    // docs/dashboard-build-rules.md:175 and docs/runbook-ai.md:218 carried
+    // before task 8 replaced both (verify at 135831f^). A casing change must
+    // not be what lets either version back in.
     expect(text).not.toMatch(/compose only host elements/i)
   })
 

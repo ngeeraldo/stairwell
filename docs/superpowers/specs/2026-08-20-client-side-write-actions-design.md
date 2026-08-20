@@ -222,7 +222,7 @@ A dashboard composes host elements and components from these three classes:
    "purely presentational components are trusted like shadcn's."
 
 2. **Data-computing** — Recharts, and anything deriving scales, layout or
-   geometry from values. **Sanctioned, guarded by the states rule:** degenerate
+   geometry from values. **Sanctioned, guarded by a states check:** degenerate
    data (empty, single-point, all-identical, NaN) renders the panel's empty
    state as host elements and never mounts the component. The empty-database
    first render must show empty states, not charts. `chartable` in
