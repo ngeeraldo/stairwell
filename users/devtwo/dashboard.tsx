@@ -3,11 +3,12 @@
 // Built toward users/devtwo/mockup.html: today's yes/no with a tap control,
 // the streak, the 30-day percentage, and a 14-day row.
 //
-// ONE component with plain helpers, deliberately. The page calls this function
-// directly inside a try/catch; a nested React function component's body would
-// run later, during Next's render pass, outside that catch — turning a broken
-// panel into a 500 for the whole page instead of a degraded region.
+// ONE component with plain helpers, plus the platform's write control. The
+// page calls this function directly inside a try/catch. docs/dashboard-build-rules.md
+// states the component rule in three arms; WriteAction is arm 3, an
+// interaction control, sanctioned and the default for every write.
 import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
+import { WriteAction } from '@/lib/ui/WriteAction'
 import { currentStreak, last14, last30, walkedOn } from './queries'
 
 // devtwo predates the spec loop entirely — hand-written, with no spec.md to
@@ -33,11 +34,12 @@ export default function DevTwoDashboard({ slug, db, today }: DashboardProps) {
         {done ? (
           <p>Marked for today.</p>
         ) : (
-          // A form POST rather than client-side fetch: this keeps the
-          // dashboard a server component, and matches the logout control.
-          <form method="post" action={`/api/users/${slug}/walk`}>
-            <button type="submit">Tap to mark walked</button>
-          </form>
+          // The default write control (lib/ui/WriteAction.tsx): still a POST to
+          // the platform route, but it patches this page in place rather than
+          // navigating. A real form underneath, so it still works with JS off.
+          <WriteAction action={`/api/users/${slug}/walk`} payload={{}} pendingLabel="Marking…">
+            Tap to mark walked
+          </WriteAction>
         )}
       </section>
 

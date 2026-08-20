@@ -95,7 +95,20 @@ describe('users/devtwo/dashboard.tsx', () => {
     expect(json).toContain('NOT YET')
     // The control is the whole product. It must post to the write path.
     expect(json).toContain('/api/users/devtwo/walk')
-    expect(json).toContain('post')
+  })
+
+  it('wires the tap to WriteAction with the walk route and an empty payload', async () => {
+    // Asserts the NEW control by its own props — action and payload together
+    // in one string — rather than a substring that would also have matched
+    // the old <form>/<button> markup. The walk route reads no form field (see
+    // app/api/users/[user]/walk/route.ts), so an empty payload is correct,
+    // not a placeholder pending a field that never arrives.
+    walked(daysAgo(1))
+
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+
+    expect(json).toContain('"action":"/api/users/devtwo/walk","payload":{}')
+    expect(json).toContain('"pendingLabel":"Marking…"')
   })
 
   it('renders 14 day markers once anything has been logged', async () => {
