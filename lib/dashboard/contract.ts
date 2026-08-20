@@ -51,15 +51,15 @@ export type DashboardProps = {
    *
    * STILL OPTIONAL as of task 23, deliberately, and for a different reason
    * than task 22's original one (that reason — no dashboard declared
-   * `screens` yet — is gone now that all four do). `DashboardModule.screens`
+   * `screens` yet — is gone now that all three do). `DashboardModule.screens`
    * below was tightened to required because it has exactly one producer per
    * dashboard (the module's own export) and zero legitimate readers who don't
    * care about its value, so making it required costs nothing and buys real
-   * enforcement. `screen` is different: EVERY one of the four dashboards has
+   * enforcement. `screen` is different: EVERY one of the three dashboards has
    * exactly one screen and none branches on this prop, and every one of their
    * own tests calls the component directly with a DashboardProps object built
    * for readability, not completeness. Requiring it would force each of those
-   * call sites — dozens across four folders, plus every scaffold's tests
+   * call sites — dozens across three folders, plus every scaffold's tests
    * hereafter — to name a field their dashboard does not read, for no
    * type-safety gain: app/[user]/page.tsx's call site still writes
    * `screen: active?.id`, not `active.id` — `active` is computed from a
@@ -95,7 +95,7 @@ export type DashboardComponent = (
 export type DashboardScreen = { id: string; title: string; order: number }
 
 /**
- * REQUIRED as of task 23: all four dashboards registered in
+ * REQUIRED as of task 23: all three dashboards registered in
  * lib/dashboard/registry.ts now export `screens`, so
  * `Record<string, () => Promise<DashboardModule>>` enforces it at compile
  * time for every one of them — and for anything registered from here on —

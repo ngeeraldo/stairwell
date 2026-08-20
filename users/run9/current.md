@@ -69,8 +69,16 @@ day. The number is also drawn onto the trend chart as a dashed reference
 line, which is what makes the two panels read together.
 
 ## What can be entered
-Three controls, all plain form POSTs to `/api/users/[user]/pee`, all writing
-to `pee_logs`:
+Three controls, all `lib/ui/WriteAction.tsx` (the platform's default write
+control), all POSTing to `/api/users/[user]/pee`, all writing to `pee_logs`.
+WriteAction renders a real `<form method="post">` — so the no-JS path is a
+native post the route answers with a 303 — but with JavaScript it intercepts
+the submit, POSTs by fetch with an `X-Stairwell-Write: 1` header, and calls
+`router.refresh()`. The route answers that header with a bare 204 and the
+page patches in place. There is no navigation and no full reload on the
+JS path, and a new control here must not reintroduce one: a redirect followed
+by fetch renders the whole dashboard again and files a second permanent
+`dashboard_open` row.
 
 - **Log one** — writes one row, stamped with the current instant and the
   friend's day. No deduplication: every tap is a distinct occurrence, unlike

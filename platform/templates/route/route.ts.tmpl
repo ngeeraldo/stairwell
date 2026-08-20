@@ -37,9 +37,17 @@ import { dayKey } from '@/lib/time/dayKey'
  *    encrypted file to be created for a user who has no dashboard at all.
  * 4. only then: key, open, write, close.
  *
- * The dashboard control that posts here is lib/ui/WriteAction.tsx, which
- * expects an ordinary 2xx or a redirect; it never reads a response body, so
- * an empty-bodied error status is the right answer to every failure.
+ * The dashboard control that posts here is lib/ui/WriteAction.tsx. It never
+ * reads a response body, so an empty-bodied error status is the right answer
+ * to every failure.
+ *
+ * It must NOT be answered with a redirect. fetch defaults to
+ * redirect:'follow', so a 303 would be followed, the whole dashboard would
+ * render a second time, and a second permanent dashboard_open row would land
+ * in an append-only table — and `response.ok` would then describe that page
+ * render rather than the write. `writeAnswer` at the foot of this file is the
+ * one right answer: 204 to a fetch-initiated write, and the 303 only to a
+ * native no-JS form post, which cannot set the discriminating header.
  */
 export async function POST(
   request: Request,
@@ -96,15 +104,15 @@ export async function POST(
   // lib/time/dayKey.ts and docs/superpowers/ledgers/friend-timezone.md.
   const timeZone = await readTimeZone()
 
-  // ONE clock read for both columns. The walk route calls Date.now() twice —
-  // harmless in practice, but two reads can straddle midnight and file a row
-  // whose `day` and `at` disagree about the calendar, which is the exact class
-  // of bug the timezone ledger is about. There is no reason to inherit it.
+  // ONE clock read for both columns. A route that reads the clock once per
+  // column is harmless in practice, but two reads can straddle midnight and
+  // file a row whose `day` and `at` disagree about the calendar, which is the
+  // exact class of bug the timezone ledger is about. Read it once.
   const now = Date.now()
   const day = dayKey(now, timeZone)
 
   // The panel a metric row names. A CONSTANT chosen by the builder, never
-  // anything derived from what run9 logged: `metrics` is the unencrypted
+  // anything derived from what the friend logged: `metrics` is the unencrypted
   // platform database and carries a slug and a panel and nothing else — no
   // day, no count, no payload. That bound is what makes the login page's "I
   // can see when you use it ... but not what you log" true.
@@ -133,11 +141,12 @@ export async function POST(
   }
   try {
     if (action === 'add') {
-      // NO `OR IGNORE`, unlike the walk route, and the difference is the whole
-      // shape of this dashboard: `walks` is keyed by day because "walked
-      // today" cannot happen twice, whereas every tap here is a distinct
-      // occurrence and the dashboard is a COUNT of them. Deduplicating would
-      // silently discard the thing being counted.
+      // NO `OR IGNORE`, and the difference is the whole shape of a dashboard.
+      // A table keyed by day wants it, because a fact like "did the thing
+      // today" cannot happen twice; here every tap is a distinct occurrence
+      // and the dashboard is a COUNT of them, so deduplicating would silently
+      // discard the thing being counted. Decide which of the two this is
+      // before copying either.
       userDb.prepare('INSERT INTO <TABLE> (day, at) VALUES (?, ?)').run(day, now)
     } else {
       // BOTH SPEC BOUNDS ARE IN THIS ONE STATEMENT, not in a read-then-write

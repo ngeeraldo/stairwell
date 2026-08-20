@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as React from 'react'
 import { click, flush, mount } from '@/tests/support/dom'
 import { __resetWriteActionStore, isWriteInFlight } from '@/lib/ui/writeActionStore'
-import { WRITE_FAILED } from '@/lib/ui/useWriteAction'
+import { assertHostRelativeAction, WRITE_FAILED } from '@/lib/ui/useWriteAction'
 import { WriteAction } from '@/lib/ui/WriteAction'
 
 const refreshMock = vi.fn()
@@ -263,12 +263,13 @@ describe('WriteAction', () => {
   })
 
   it('does not strand the shared flag when the control unmounts mid-flight', async () => {
-    // Not reachable with today's three controls, but a control rendered
-    // conditionally (`{count > 0 && <WriteAction .../>}`) reaches this the
-    // moment the condition flips while a write it started is still in
-    // flight. Without the unmount-cleanup effect in useWriteAction.ts, every
-    // sibling control on that route stays disabled forever — no error, no
-    // recovery short of a reload.
+    // A LIVE PATH, not a hypothetical. users/devtwo/dashboard.tsx renders
+    // `{done ? <p>Marked for today.</p> : <WriteAction .../>}`, so on its
+    // only happy path the successful write sets `done` and the refreshed
+    // tree unmounts the very control that owns the in-flight flag — devtwo's
+    // first tap of every day is this test. Without the unmount-cleanup
+    // effect in useWriteAction.ts, every sibling control on that route stays
+    // disabled forever — no error, no recovery short of a reload.
     const { release } = deferredFetch()
     const { container, unmount } = await mount(
       <WriteAction action="/api/users/run9/pee" payload={{ action: 'add' }}>
@@ -319,5 +320,45 @@ describe('WriteAction', () => {
     expect(flagDuringRefresh).toBe(true)
 
     await unmount()
+  })
+  describe('the host-relative action guard', () => {
+    // WriteAction is the one sanctioned place a users/<slug>/dashboard.tsx can
+    // cause a network request, against a standing repo rule that a dashboard
+    // never knows a network exists. The guard bounds the URL it may name to
+    // this origin, exactly as relativeRedirect (lib/http/redirect.ts) bounds a
+    // Location — same two rejected shapes, same wording, and the same "defence
+    // in depth for future callers, not a live hole" standing.
+    it('rejects a protocol-relative or absolute action, and accepts a host-relative one', () => {
+      // '//evil.test/...' is the one that matters: it is not a path at all, it
+      // is another ORIGIN, and fetch would send the friend's payload there.
+      expect(() => assertHostRelativeAction('//evil.test/api')).toThrow(/host-relative/)
+      expect(() => assertHostRelativeAction('https://evil.test/api')).toThrow(/host-relative/)
+      expect(() => assertHostRelativeAction('api/users/run9/pee')).toThrow(/host-relative/)
+      expect(() => assertHostRelativeAction('')).toThrow(/host-relative/)
+      expect(() => assertHostRelativeAction('/api/users/run9/pee')).not.toThrow()
+    })
+
+    it('throws from the render, so a bad action never reaches fetch or the no-JS form', async () => {
+      // Wired, not merely defined. The hook calls the guard before any React
+      // hook, so WriteAction throws while rendering — the <form action=...>
+      // the no-JS path submits is never produced either. React logs the throw
+      // on its way out; silenced so a deliberately-red render is not mistaken
+      // for a broken suite.
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        await expect(
+          mount(
+            <WriteAction action="//evil.test/api" payload={{ action: 'add' }}>
+              Log one
+            </WriteAction>,
+          ),
+        ).rejects.toThrow(/host-relative/)
+      } finally {
+        consoleError.mockRestore()
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
   })
 })

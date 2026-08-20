@@ -406,8 +406,8 @@ architectural changes; do not relitigate decided items).
   are the builder's and `current.md`'s `## Screens` is where they are written
   down for the next build and for the agent. `DashboardProps.screen` stays OPTIONAL —
   not for the sequencing reason that made it optional to begin with (no
-  dashboard exported `screens` yet), which is gone now that all four do, but
-  because every one of the four dashboards on this branch has exactly one
+  dashboard exported `screens` yet), which is gone now that all three do, but
+  because every one of the three dashboards on this branch has exactly one
   screen and none of them branches on it, and every one of their own tests
   calls the component with a hand-built props object that would otherwise
   need to name a field it never reads for no type-safety gain. `?screen=` is

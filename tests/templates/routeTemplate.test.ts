@@ -130,6 +130,33 @@ describe('platform/templates/route/route.ts.tmpl, the write-route worked example
     expect(text).not.toMatch(/pee/i)
   })
 
+  it('names no friend and no friend-specific route — it outlives users/', () => {
+    // The stated reason this file lives under platform/ (its own docblock) is
+    // that everything under users/ is deleted at pilot end, so a doc pointing
+    // into a folder that no longer exists goes dead. A template that names a
+    // slug, or a sibling route that only exists to serve one, breaks that on
+    // the same day. The `pee` sweep above is the same rule for the folder this
+    // file was copied FROM; this one is the rule for every other folder.
+    expect(text).not.toMatch(/\brun\d+\b/i)
+    expect(text).not.toMatch(/\bdevone\b/i)
+    expect(text).not.toMatch(/\bdevtwo\b/i)
+    // 'the walk route' named app/api/users/[user]/walk/route.ts — devtwo's,
+    // and gone with devtwo. The comments that cited it now describe the shape
+    // (a day-keyed table) instead of the instance.
+    expect(text).not.toMatch(/walk/i)
+  })
+
+  it('answers a fetch-initiated write with 204, and says so in the docblock', () => {
+    // Item 1 of the final whole-branch review: the docblock used to tell a
+    // copier that WriteAction "expects an ordinary 2xx or a redirect", which
+    // is precisely what the 204/303 split forbids on the fetch path. The CODE
+    // test above pins writeAnswer; this pins the PROSE a copier reads first,
+    // for the same reason the four-checks narrative is pinned separately from
+    // the four checks.
+    expect(text).toMatch(/must NOT be answered with a redirect/)
+    expect(text).not.toMatch(/expects an ordinary 2xx or a redirect/)
+  })
+
   it('names two distinct panel placeholders, not one repeated', () => {
     // A single placeholder reused on both branches of the ternary reads as a
     // no-op and gives a copier no signal that add and remove need different

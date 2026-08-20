@@ -160,7 +160,7 @@ Server (single VPS)
   `Screen` type exactly), and the platform — never the dashboard itself —
   draws a plain tab strip above whatever the dashboard renders, from that
   array. One screen renders no tab chrome at all: a single tab explains
-  nothing, which is why all four dashboards on this branch are visually
+  nothing, which is why all three dashboards on this branch are visually
   unchanged by this feature today. `dashboard_open` records which screen was
   open as `screen_order`, an integer position, never the screen's id — see
   CLAUDE.md > Dashboard folder conventions ("Metrics never carry user

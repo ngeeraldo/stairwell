@@ -140,8 +140,9 @@ async function dashboardRegion(
  * to render later — it lives entirely inside renderDashboard's own try/catch.
  *
  * Renders NOTHING for one screen (or fewer): a single tab is chrome that
- * explains nothing, and all four dashboards on this branch are one screen
- * today, so this is a visual no-op for every one of them right now.
+ * explains nothing, and all three dashboards on this branch (devone, devtwo,
+ * run9) are one screen today, so this is a visual no-op for every one of them
+ * right now.
  *
  * Labels and order come from the dashboard's OWN declared `screens` — never
  * a second source that could drift from what the confirmed spec promised.
@@ -187,7 +188,7 @@ async function renderDashboard(
     // CORRECTED 2026-08-17 (final review, Minor 5): this used to say
     // `screens` is undefined for every dashboard registered on this branch —
     // true only through task 22. As of task 23, `DashboardModule.screens` is
-    // REQUIRED (lib/dashboard/contract.ts) and all four registered
+    // REQUIRED (lib/dashboard/contract.ts) and all three registered
     // dashboards declare it, so `screens === undefined` cannot happen through
     // any real registry entry today. The `undefined` branch below stays as
     // defense in depth, not a live case: a `Promise<DashboardModule>`

@@ -23,6 +23,36 @@ import {
 export const WRITE_FAILED = "Couldn't save that — nothing was recorded. Try again."
 
 /**
+ * The action URL must be host-relative, exactly as `relativeRedirect`
+ * (lib/http/redirect.ts) requires of a Location.
+ *
+ * Same rejection, same two shapes, and the same reasoning transplanted one
+ * layer out: a value starting `//` is protocol-relative and resolves to a
+ * DIFFERENT ORIGIN, and anything not starting `/` is resolved against the
+ * current page. Either would make this hook fetch a third party — carrying a
+ * friend's payload and their cookies — from inside a dashboard.
+ *
+ * That matters here specifically because WriteAction is now the one sanctioned
+ * place a `users/<slug>/dashboard.tsx` can cause a network request at all,
+ * against a standing repo rule that a dashboard never knows a network exists.
+ * Every action in the repo today is a template literal ending in a fixed verb,
+ * so this is defence in depth for future callers rather than a live hole —
+ * which is precisely what `relativeRedirect` says about its own guard.
+ *
+ * It THROWS rather than rendering a disabled control: a bad action is a
+ * builder's typo in code, visible on the first render in `npm run dev` and in
+ * that dashboard's own tests, not a runtime condition a friend can reach.
+ * Silently refusing would ship a dead button nobody notices.
+ */
+export function assertHostRelativeAction(action: string): void {
+  if (!action.startsWith('/') || action.startsWith('//')) {
+    throw new Error(
+      `useWriteAction: action must be host-relative and not protocol-relative, got '${action}'`,
+    )
+  }
+}
+
+/**
  * The mechanics behind WriteAction: POST, refresh, pending, error.
  *
  * Exported as an escape hatch for anything a labelled button cannot express —
@@ -44,6 +74,10 @@ export function useWriteAction(action: string): {
   pending: boolean
   error: string | null
 } {
+  // BEFORE any hook, so the throw is unconditional and cannot depend on state.
+  // WriteAction calls this at the top of its own body, so an unguarded action
+  // never reaches the `<form action=...>` it renders for the no-JS path either.
+  assertHostRelativeAction(action)
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -82,15 +116,20 @@ export function useWriteAction(action: string): {
     }
   }, [isPending, action])
 
-  // UNMOUNT CLEANUP, separate from the effect above. Without this, a control
-  // that unmounts mid-flight — e.g. `{count > 0 && <WriteAction .../>}` losing
-  // its condition while a write it started is still in flight — never runs
-  // the effect above again (there is no later commit with isPending false to
-  // trigger it), so `owns.current` and the shared flag are stranded true
-  // forever: every sibling on that route stays disabled with no error and no
-  // way to recover short of a reload. Also covers `action` changing mid-flight,
-  // which would otherwise clear the NEW url's owns ref while leaving the OLD
-  // url's shared flag set.
+  // UNMOUNT CLEANUP, separate from the effect above, and NOT defence in depth
+  // — users/devtwo/dashboard.tsx runs through it on its only happy path.
+  // devtwo renders `{done ? <p>Marked for today.</p> : <WriteAction .../>}`,
+  // so the successful write that sets `done` is exactly the refresh that
+  // unmounts the control which owns the in-flight flag. Every friend's first
+  // tap of every day takes this path.
+  //
+  // Without this, a control that unmounts mid-flight never runs the effect
+  // above again (there is no later commit with isPending false to trigger
+  // it), so `owns.current` and the shared flag are stranded true forever:
+  // every sibling on that route stays disabled with no error and no way to
+  // recover short of a reload. Do not delete this as speculative. Also covers
+  // `action` changing mid-flight, which would otherwise clear the NEW url's
+  // owns ref while leaving the OLD url's shared flag set.
   useEffect(() => {
     return () => {
       if (owns.current) {

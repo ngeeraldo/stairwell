@@ -485,3 +485,29 @@ Two stale things, neither blocking, neither fixed here:
    (§0.1). This design fixes the two known instances; nothing gates against a
    third appearing. No test in this repo can see a doc going false — that is
    the standing gap this design does not close.
+5. **The central behavioural claim — "pending ends when the refreshed tree
+   COMMITS, not when the POST returns" (§2) — is verified by hand, once, and
+   by no test.** It rests on two Next internals, named at the effect in
+   `lib/ui/useWriteAction.ts`: that `router.refresh()` dispatches its state
+   update inside the transition passed to `startTransition`, and that Next
+   entangles that update into React's async-action lane, which is what holds
+   `isPending` true through the refreshed render's commit rather than only
+   through the fetch. Neither is a public React or Next contract.
+   `tests/ui/writeAction.test.tsx` mocks `useRouter().refresh` as a
+   synchronous `vi.fn()`, so it can only prove the WEAKER half — that the
+   shared flag survives until `refresh` is CALLED. It cannot distinguish that
+   from "survives until the refreshed tree commits", and it is honest about
+   pinning only what it pins. The stronger half was confirmed exactly once, by
+   hand, in a browser.
+
+   **The failure is silent and cosmetic, which is what makes it a residual
+   rather than a bug.** A Next upgrade that stopped doing either would make
+   `isPending` resolve as soon as the fetch settles, un-pending every sibling
+   control a beat early while the numbers on screen are still stale — the
+   choppiness this whole design exists to remove, in a smaller form. The suite
+   stays green, `tsc` stays clean, `next build` stays clean. The only
+   mitigation is the comment at the effect telling the next reader to re-check
+   in a browser after a Next major bump, and a reader who forgets gets no
+   signal at all. Closing it properly needs a test that drives a real
+   `router.refresh()` against a real server render, which is a browser-level
+   harness this repo does not have and this branch is not the place to add.

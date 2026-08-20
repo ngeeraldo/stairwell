@@ -21,6 +21,12 @@ import { useWriteAction, WRITE_FAILED } from './useWriteAction'
  * It holds no writable database handle and knows no SQL. The route it posts to
  * is still the only thing that writes, and still the only place the four
  * ordered auth checks live.
+ *
+ * `action` is checked host-relative before anything renders —
+ * `assertHostRelativeAction` in useWriteAction.ts, which the hook call below
+ * runs first. This is the one sanctioned place a dashboard can cause a network
+ * request, so the URL it can name is bounded to this origin, mirroring
+ * `relativeRedirect`'s guard on a Location.
  */
 export function WriteAction({
   action,

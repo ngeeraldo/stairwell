@@ -6,7 +6,7 @@ import { openUserDataForWrite } from '@/lib/db/userData'
 import { logDbFailure } from '@/lib/db/failureLog'
 import { getDb } from '@/lib/db/instance'
 import { dashboardLoaderFor } from '@/lib/dashboard/registry'
-import { relativeRedirect } from '@/lib/http/redirect'
+import { writeAnswer } from '@/lib/http/redirect'
 import { getKey } from '@/lib/session/keymap'
 import { resolveState } from '@/lib/session/resolve'
 import { SESSION_COOKIE } from '@/lib/session/store'
@@ -26,11 +26,15 @@ import { dayKey } from '@/lib/time/dayKey'
  *
  * ORPHANED, DELIBERATELY KEPT. users/run8/ was deleted on the simplify-loop
  * branch, so nothing routes here any more and the "run8's confirmed answer"
- * comments below now cite a folder that no longer exists. It stays because it
- * is the repo's only worked example of the four ordered checks below applied
- * to a WRITE (walk/ is the read-side sibling) — deleting it would leave the
- * next per-friend write route with a rule to follow and no worked instance of
- * following it.
+ * comments below now cite a folder that no longer exists.
+ *
+ * IT IS NO LONGER THE WORKED EXAMPLE, and this docblock used to say it was.
+ * platform/templates/route/route.ts.tmpl is — it is what
+ * docs/dashboard-build-rules.md and platform's own scaffold point a builder
+ * at, it is pinned by tests/templates/routeTemplate.test.ts, and it lives
+ * outside users/ so it survives the pilot. Copy THAT file, not this one. This
+ * one stays only as a second live reading of the four ordered checks below,
+ * next to a real table; it is not the thing to imitate.
  *
  * The order of the checks below is the security property, and is walk/'s
  * order unchanged:
@@ -168,5 +172,12 @@ export async function POST(
     at,
   })
 
-  return relativeRedirect(`/${user}`)
+  // writeAnswer, not relativeRedirect: a fetch-initiated write (the
+  // X-Stairwell-Write header, which only fetch can set) gets a bare 204,
+  // because fetch defaults to redirect:'follow' and a 303 would render the
+  // whole dashboard a second time and file a second permanent dashboard_open
+  // row. A native no-JS form post still gets the 303 it always got. This
+  // route has no caller today, but a docblock that invites copying must not
+  // ship the shape the platform forbids.
+  return writeAnswer(request, `/${user}`)
 }
