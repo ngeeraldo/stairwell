@@ -1,0 +1,197 @@
+// users/run11/tests/dashboard.test.ts
+//
+// SCAFFOLD TESTS. Everything here is about the folder being wired up, not
+// about run11's dashboard, because that has not been designed yet. Replace
+// these as you build — but keep the empty-database one, whatever else changes.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as React from 'react'
+import Dashboard, { screens } from '@/users/run11/dashboard'
+import { emptyDbFromMigrations } from '@/tests/support/userMigrations'
+
+// JSX compiles to React.createElement, which this component's module expects
+// to find globally — it is a server component rendered by calling it, not by
+// mounting it, so nothing else brings React into scope.
+beforeEach(() => {
+  vi.stubGlobal('React', React)
+})
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('users/run11', () => {
+  it('says it is not built yet', () => {
+    const db = emptyDbFromMigrations('run11')
+    try {
+      const json = JSON.stringify(
+        Dashboard({ slug: 'run11', db, today: '2026-01-01', timeZone: 'UTC' }),
+      )
+      expect(json).toContain('Under construction')
+      expect(json).toContain('run11')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('declares its placeholder screen — take a real id/title from spec.md once one exists', () => {
+    // `DashboardModule.screens` is required (lib/dashboard/contract.ts,
+    // task 23), so a scaffold must export one even before a spec confirms
+    // real ids/titles — this pins dashboard.tsx's own placeholder export.
+    // Once ./scripts/pull-spec.sh writes a real spec.md, replace this with
+    // the id/title from its own `## Screens` section instead — spec.md is
+    // the only legitimate source for a real screen id/title; never invent a
+    // second one. (Not users/devone or users/devtwo: both predate the spec
+    // loop and say so in their own comments, so pointing at them here would
+    // teach the opposite of this rule.)
+    expect(screens).toEqual([{ id: 'morning', title: 'Morning', order: 1 }])
+  })
+
+  it('renders on an EMPTY database without throwing', () => {
+    // KEEP THIS ONE. There is no synthetic fallback: a friend's first session
+    // renders THEIR database, and it has nothing in it. An empty dashboard is
+    // an ordinary state, not an error (2026-08-15 migrations design, §9), so
+    // anything that reaches for rows[0] without a guard is a defect this
+    // catches — before the friend does, on the first screen they ever see.
+    //
+    // It passes trivially today, because the scaffold reads no data at all.
+    // It stops being trivial the moment you write a query, which is exactly
+    // when it starts earning its place.
+    const db = emptyDbFromMigrations('run11')
+    try {
+      expect(
+        Dashboard({ slug: 'run11', db, today: '2026-01-01', timeZone: 'UTC' }),
+      ).toBeDefined()
+    } finally {
+      db.close()
+    }
+  })
+})
+
+// ─── what to add as you build ───
+//
+// THE DAY IS THE FRIEND'S. One instant, two zones, two different rendered
+// days — an assertion impossible for an implementation that reads any clock,
+// and one that means the same thing on every machine that runs it. The version
+// of this test that asserted the HOST's calendar date passed on a UTC host
+// while guarding a bug that cost a whole ledger
+// (docs/superpowers/ledgers/friend-timezone.md):
+//
+//   expect(someQuery(db, 'Asia/Tokyo')[0]!.day).toBe('2026-03-15')
+//   expect(someQuery(db, 'America/New_York')[0]!.day).toBe('2026-03-14')
+//
+// THE WRITE PATH, if this dashboard has one — a platform route that inserts
+// into its shape, copied from platform/templates/route/route.ts.tmpl. Cover
+// it here, not only the read side. The step-6a ledger's headline defect
+// existed ONLY where a write path and a read path met: seed.py always marked
+// today walked, and the dashboard hid its tap control once today was walked,
+// and each half was correct alone. Reviewing either in isolation could not
+// have found it — every write test below does BOTH, inserting through a copy
+// of the route's own statement and then reading back through queries.ts, not
+// one half alone.
+//
+// Everything from here down is commented out because a freshly scaffolded
+// folder has no migrations yet to build a fixture from (see this folder's
+// migrations/README.md.tmpl) — there is no shape for applyUserMigrations to
+// apply. Uncomment and adapt once migrations/001_initial.sql exists; delete
+// whichever half (write path, annotation join) this dashboard does not need.
+//
+//   import Database from 'better-sqlite3-multiple-ciphers'
+//   import type { UserDb } from '@/lib/db/userDb'
+//   import { applyUserMigrations } from '@/tests/support/userMigrations'
+//   // import { someQuery, annotatedRows } from '@/users/run11/queries'
+//
+//   let writeDb: UserDb
+//
+//   beforeEach(() => {
+//     writeDb = new Database(':memory:')
+//     applyUserMigrations(writeDb, 'run11')
+//   })
+//   afterEach(() => {
+//     writeDb.close()
+//   })
+//
+//   /**
+//    * The exact statement the write route runs on a tap, reproduced here
+//    * rather than imported: a platform route must not be imported by a
+//    * user's test any more than by a user's queries.ts (queries.ts's own
+//    * header names this same boundary, which is also why dayKey logic is
+//    * duplicated instead of shared). Because this is a COPY, nothing below
+//    * goes red if the route's own statement changes — only if the SHAPE it
+//    * writes does. A test under tests/routing/ is what would pin the route
+//    * itself, the same way tests/routing/walkRoute.test.ts pins the walk
+//    * route; this file only pins what queries.ts reads back.
+//    */
+//   function insertEntry(handle: UserDb, day: string): void {
+//     handle.prepare('INSERT INTO <TABLE> (day, at) VALUES (?, ?)').run(day, Date.now())
+//   }
+//
+//   describe("the <TABLE> table's shape, and what queries.ts reads back out of it", () => {
+//     it('a write becomes a row the read side can see', () => {
+//       insertEntry(writeDb, '2026-08-13')
+//       // expect(someQuery(writeDb, '2026-08-13')).toEqual(/* ... */)
+//     })
+//
+//     it('a second write on the same day composes the way the panel expects', () => {
+//       // Whether that means "counted twice" or "idempotent" is this
+//       // dashboard's own call — <TABLE> here stood in for `pee_logs`
+//       // (distinct occurrences, no OR IGNORE) in the worked example this
+//       // template is drawn from; a `walks`-shaped table would assert the
+//       // opposite. Say which one this dashboard is, in this comment, when
+//       // you uncomment it.
+//       insertEntry(writeDb, '2026-08-13')
+//       insertEntry(writeDb, '2026-08-13')
+//       // expect(someQuery(writeDb, '2026-08-13')).toEqual(/* ... */)
+//     })
+//   })
+//
+// AN ANNOTATION JOIN, if this dashboard annotates synced data — a shared
+// module's table (e.g. a future Plaid `transactions` table, step 6b) joined
+// against THIS user's own annotation table, keyed to the synced row's id.
+// Shared-module tables are never forked per user and an annotation is never
+// written as an edit to one (CLAUDE.md > Schema & module rules): a login sync
+// or a re-pull overwrites whatever a shared-module table holds, and an
+// annotation living inside it would be silently discarded the next time that
+// happens. So the annotation lives in a table THIS dashboard owns, and the
+// read side is a JOIN — never a write to the shared table.
+//
+//   /** Stands in for a row a sync would have written into a shared-module
+//    *  table. Never actually insert into a shared-module table from a user's
+//    *  own migrations or tests — CLAUDE.md's "NEVER forked per user" — this
+//    *  is a fixture standing in for what that sync would have produced. */
+//   function insertSyncedRow(handle: UserDb, id: number, day: string): void {
+//     handle.prepare('INSERT INTO <SYNCED_TABLE> (id, day) VALUES (?, ?)').run(id, day)
+//   }
+//
+//   function annotate(handle: UserDb, syncedId: number, note: string): void {
+//     // This user's OWN table, keyed to the synced row's id — never a column
+//     // added to <SYNCED_TABLE> itself.
+//     handle
+//       .prepare('INSERT INTO <TABLE>_annotations (synced_id, note) VALUES (?, ?)')
+//       .run(syncedId, note)
+//   }
+//
+//   describe('annotations join back to the synced rows they were made against', () => {
+//     it('a fresh annotation reads back attached to its synced row', () => {
+//       insertSyncedRow(writeDb, 1, '2026-08-13')
+//       // Synthetic only, per CLAUDE.md > Data safety — a real merchant or
+//       // memo never belongs in a fixture, even a commented one.
+//       annotate(writeDb, 1, 'COFFEE PALACE TEST')
+//       // expect(annotatedRows(writeDb)).toEqual([
+//       //   { id: 1, day: '2026-08-13', note: 'COFFEE PALACE TEST' },
+//       // ])
+//     })
+//
+//     it('a re-sync of the source row leaves the annotation untouched', () => {
+//       // The composed product, not the halves — the same SHAPE of defect
+//       // the step-6a ledger names: a sync that re-writes <SYNCED_TABLE> in
+//       // place must never touch <TABLE>_annotations, or an annotation a
+//       // friend made between two syncs is silently discarded. Reviewing the
+//       // sync or the annotation join in isolation could not catch this; only
+//       // running both, in order, does.
+//       insertSyncedRow(writeDb, 1, '2026-08-13')
+//       annotate(writeDb, 1, 'COFFEE PALACE TEST')
+//       insertSyncedRow(writeDb, 1, '2026-08-13') // the re-sync, e.g. INSERT OR REPLACE
+//       // expect(annotatedRows(writeDb)).toEqual([
+//       //   { id: 1, day: '2026-08-13', note: 'COFFEE PALACE TEST' },
+//       // ])
+//     })
+//   })
