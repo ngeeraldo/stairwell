@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Synthetic forecast generator for run11's dashboard.
+"""Synthetic generator for run11's dashboard — forecast, walk log, settings.
 
     python3 seed.py <target.db>
 
 Writes ONLY to argv[1].
 
-WHAT THIS IMITATES. In production these rows are written by
-app/api/users/[user]/forecast/route.ts from a public forecast for zip 77006 —
-nothing on this dashboard is typed in by hand. This generator stands in for
-that route so the dev screen has something to render, and it fills the same
-columns the same way: a local day key and a local minute-of-day resolved at
-write time, never recomputed from the instant at read time.
+WHAT THIS IMITATES, and it is TWO DIFFERENT THINGS as of spec v2:
+
+  * the FORECAST tables, written in production by
+    app/api/users/[user]/forecast/route.ts from a public forecast for zip
+    77006. Nothing there is typed in by hand.
+  * the WALK LOG and the SETTINGS row, which are nothing but hand entry: in
+    production every one of those rows exists because the friend pressed
+    something (app/api/users/[user]/walk-log/route.ts and .../no-go-temp).
+
+Both are filled the same way the routes fill them — a local day key resolved at
+write time, never recomputed from the instant at read time — so a synthetic
+database is the same shape of thing a real one is.
 
 NO LOUD-FAKE MARKER, and that is the rule being met rather than dodged. Every
-value here is a day key, an epoch or a number — 001_initial.sql has no
+value here is a day key, an epoch or a number — neither migration declares a
 free-text column at all — and a temperature cannot contain the word TEST and
 still be a temperature. tests/users/conventions.test.ts asks for the marker
 only where a seed produces free text, because free text is the only place a
@@ -42,9 +48,33 @@ is the same day the dashboard is handed and the panels are never empty. The
 FETCH INSTANT is the real current local time: the panel prints it as "as of",
 and a fixed hour would print a time that had not happened yet.
 
-The EMPTY state — what run11's own database holds before their first refresh —
-is built from the migrations alone by `npm run synthetic -- --empty`, so
-nothing here needs a mode for it and nothing here should grow one.
+THE WALK LOG PROFILE is shaped the same way, so every branch of the second
+screen is reachable by looking at it rather than only by reading a test:
+
+  * TODAY IS DELIBERATELY NOT MARKED, and yesterday is — so the screen shows
+    the one edge spec v2 asked to have decided, "Through yesterday — today
+    isn't marked yet", instead of the easy case. Tapping today's square on the
+    dev screen turns a five-day streak into a six-day one, which is also the
+    cheapest way to see the whole write path work end to end;
+  * a run of five consecutive days ending yesterday, then gaps of one and two
+    days — so the calendar has holes in it and the streak is visibly a RUN
+    rather than a count of marks;
+  * eighteen marked days inside the last thirty, which is 60% and is the exact
+    "18 of the last 30 days" framing that prompted the panel;
+  * marks reaching back about six weeks, so the window is a full thirty days
+    (the percentage panel reads "of the last 30 days" rather than "since you
+    started") and the calendar's back arrow has an earlier month to show.
+
+THE SETTING IS SEEDED AWAY FROM ITS DEFAULT, at 93°F rather than 90. A seeded
+90 would render identically whether the dashboard read the stored row or fell
+back to the constant, so the one thing this row exists to prove would be
+invisible. At 93 the shade band is 88-93 and the evening hour at 89°F reads as
+"short one, shade" instead of "Go" — a wiring mistake shows up on the screen.
+
+The EMPTY state — what run11's own database holds before their first refresh
+and before they have marked anything — is built from the migrations alone by
+`npm run synthetic -- --empty`, so nothing here needs a mode for it and nothing
+here should grow one.
 """
 
 import os
@@ -121,6 +151,29 @@ SUN_TOMORROW = ((6, 54), (19, 55))
 # for twenty hours reads as missing data rather than as a clear day, and it
 # would hide an off-by-one in the rain threshold behind a column of zeroes.
 DRY = (0.0, 10)
+
+# Days BEFORE today that count as walked. 0 would be today and is deliberately
+# absent — see the module docstring.
+#
+# Offsets 1-5 are the current run. 7-8, 10-12, 14, 16-17, 19-21 and 25-26 are
+# eighteen marked days inside the last thirty (offsets 0-29), which is the 60%
+# the percentage panel reads. 33 onwards sit outside that window and exist so
+# the window is a FULL thirty days rather than one bounded by the first mark,
+# and so the calendar's previous month is not empty.
+WALKED_DAYS_AGO = [
+    1, 2, 3, 4, 5,
+    7, 8,
+    10, 11, 12,
+    14,
+    16, 17,
+    19, 20, 21,
+    25, 26,
+    33, 34, 36,
+    40, 41, 45,
+]
+
+# The no-go feels-like the synthetic friend has set. NOT 90 — see the docstring.
+NO_GO_F = 93
 
 
 def hours_for(day, feels, precip, fetched_at):
@@ -205,13 +258,44 @@ def main() -> int:
             "INSERT INTO forecast_fetches (at, day, minute_of_day, ok) VALUES (?, ?, ?, 1)",
             (fetched_at, today.isoformat(), fetch_minute),
         )
+
+        # The hand-entered half. Cleared and rewritten for the same reason the
+        # forecast is: regenerating replaces the sample rather than doubling
+        # it. Unlike the forecast, this is NOT what the real route does — a
+        # friend's walk log is a history and nothing ever clears it. This is a
+        # sample being regenerated, not a refresh being imitated.
+        db.execute("DELETE FROM walk_log")
+        db.execute("DELETE FROM walk_settings")
+        db.executemany(
+            "INSERT INTO walk_log (day, at) VALUES (?, ?)",
+            [
+                # `at` is the instant of the MARK. Stamped at the local
+                # midday of the day itself rather than at `fetched_at`, so the
+                # sample reads as marks made day by day rather than as
+                # twenty-four rows entered in one second.
+                (
+                    (today - timedelta(days=ago)).isoformat(),
+                    int(
+                        datetime(
+                            *(today - timedelta(days=ago)).timetuple()[:3], 12, 0
+                        ).timestamp()
+                        * 1000
+                    ),
+                )
+                for ago in WALKED_DAYS_AGO
+            ],
+        )
+        db.execute(
+            "INSERT INTO walk_settings (id, heat_no_go_f, set_at) VALUES (1, ?, ?)",
+            (NO_GO_F, fetched_at),
+        )
         db.commit()
     finally:
         db.close()
 
     print(
-        f"run11: {len(hour_rows)} synthetic forecast hours across {len(day_rows)} days "
-        f"-> {target}"
+        f"run11: {len(hour_rows)} synthetic forecast hours across {len(day_rows)} days, "
+        f"{len(WALKED_DAYS_AGO)} walked days, no-go {NO_GO_F}F -> {target}"
     )
     return 0
 

@@ -1,36 +1,50 @@
-# run11 — spec v1
+# run11 — spec v2
 
 <!-- Generated from the spec record by scripts/pull-spec.sh.
      Do not hand-edit: the next pull overwrites this file. -->
 
 - **User:** run11
-- **Spec version:** v1
-- **Version date:** 2026-08-20T20:10:25.705Z
-- **Based on:** nothing — this is the first version
+- **Spec version:** v2
+- **Version date:** 2026-08-20T21:15:49.284Z
+- **Based on:** v1
 
 ## What changed
 
-New dog-walk timing screen for 77006 (Montrose) that answers, in one look at the desktop, whether right now is a good time to walk the dog and — if not — when the next good window is today. Verdict is based on rain, heat index, and whether a 40-minute walk finishes before dark.
+Two additions: you can now set your own no-go feels-like temperature right on the "Walk the dog?" screen, and there's a new "Walk log" screen where you mark off the days you took him out — with a current streak, a month calendar, and a percentage. Adding a second screen means the app now shows a tab strip.
 
 ## Changes
 
-### Add screen — Walk the dog?
+### Add panel — My no-go temperature
 
-A single desktop screen Nico opens during work breaks to decide whether to take the dog out right now. It should read as an answer, not a weather report: the verdict comes first and large, with the reasoning small underneath. Everything on it is pinned to zip 77006 (1900 Mason St, Montrose, Houston) and assumes a 40-minute walk — 0.7 miles out from the house and 0.7 miles back. This is the only screen in the dashboard for now, so it is the landing page.
+A small control on the "Walk the dog?" screen letting Nico set the no-go feels-like (heat index) number himself, replacing the currently hardcoded 90°F. He sets only the hard-no number; the middle "go but keep it short and shady" band is always the five degrees directly below whatever he picks (so setting 92 gives a shade band of 87–92). The value is stored in his own database as a single setting and persists between sessions; if nothing has been set yet it defaults to the current 90°F so the screen behaves exactly as it does today on first load. Changing it recomputes both the Right now verdict and the Next good window immediately, in place, with no page navigation. The Next good window panel keeps using only the no-go number and not the shade band, as it does now. All other threshold behaviour is unchanged: heat is still judged on apparent temperature at its worst point across the whole 40-minute walk, and the rain and daylight checks are untouched. This is the only new writable control on the decider screen besides Refresh.
 
-### Add panel — Right now
+### Change screen — Walk the dog?
 
-The top and largest panel. States plainly whether now is a good time to walk, as one of three verdicts: go, go but keep it short and shady, or don't go. Underneath, a one-line reason naming which condition failed — rain, heat, or darkness. The three checks, evaluated over the next 40 minutes starting now rather than at the current instant: rain (any precipitation expected during the walk is a no); heat index / feels-like temperature (above ~90°F is a no, 85–90°F is the 'short one, shade' middle verdict, below 85°F is fine); and daylight (the walk must finish before sunset, so a start later than 40 minutes before sunset is a no). These thresholds are a starting point Nico picked from my suggestion, not a firm preference — build them so they can be adjusted later once he sees how the dog actually handles it. Fed by a forecast for 77006, not manually entered.
+Still the landing screen and still pinned to 77006 with the same two panels stacked, verdict on top and next window under it. What changes is that it now also carries the no-go temperature control, and it is no longer the only screen — with the new Walk log screen added, the platform will draw a tab strip. "Walk the dog?" stays first and stays the landing page.
 
-### Add panel — Next good window
+### Add screen — Walk log
 
-Sits directly below the 'Right now' panel and only matters when the verdict is negative, though it can stay visible either way. Shows the next stretch of at least 40 continuous minutes today that clears all three checks — no rain, heat index below 90°F, and finishing before sunset — given as a start time and how long that window stays open (for example, 'from 7:10pm, good until dark'). If no qualifying window remains today, say so directly and give the first one tomorrow morning instead. Same forecast source as the panel above.
+A second screen, separate from the decider, for recording that a walk actually happened. Nico marks days from his laptop, usually later at his desk rather than on his phone right after the walk. It holds three things: the current streak of consecutive walked days; a month calendar with walked days marked; and a percentage of days walked. Marking is a single tap on a day's square on the calendar — tapping today's square marks today, and back-filling a missed day is the same tap on that earlier square. Tapping an already-marked day unmarks it, so a mis-tap is recoverable. One walk per day is all that's recorded; there's no count of walks within a day, no duration, and no notes. Everything here is entered by hand — this screen reads nothing from the forecast and shares no data with the decider. It should render sensibly on an empty log: no days marked, streak of zero, and a percentage panel that says there's nothing logged yet rather than showing a misleading zero or dividing by nothing.
+
+### Add panel — Current streak
+
+On the Walk log screen. The number of consecutive days up to and including today that have a walk marked. Reads from the hand-entered walk log. Needs a decided rule for what today means before it has been marked: a day with no mark yet should not break a streak built up through yesterday — show the streak as it stands through yesterday rather than dropping it to zero the moment the day rolls over.
+
+### Add panel — Month calendar
+
+On the Walk log screen. A calendar grid for one month with the walked days visibly marked. This is also the input surface — each square is tappable to mark or unmark that day. Defaults to the current month, with a way to move back to earlier months so past days can be seen and back-filled. Future days should not be markable. Fed entirely by the hand-entered walk log.
+
+### Add panel — Percentage of days walked
+
+On the Walk log screen. The share of days that have a walk marked, shown as a percentage. Computed from the hand-entered walk log. The window it covers needs settling — the last 30 days is the natural reading of what was discussed and matches the "18 of the last 30 days" framing that prompted it, and showing the underlying count alongside the percentage makes it legible. Should say there is nothing logged yet rather than show 0% on an empty log.
 
 ## Data requirements
 
-_None._
+- `walk_log` — new — One row per day Nico marks as walked, entered by hand from the month calendar. Stores his local calendar day. Feeds the streak, the calendar marks, and the percentage. Marking and unmarking add and remove rows.
+- `walk_settings` — new — Holds the no-go feels-like temperature Nico sets on the decider screen. A single stored value, defaulting to 90°F when unset; the shade band is derived as the five degrees below it rather than stored separately.
 
 ## Open questions
 
-- Weather is not one of the data sources the dashboard currently draws on — the whole screen depends on getting an hourly forecast for zip 77006 covering precipitation, heat index / feels-like temperature, and sunset time. Builder needs to confirm a forecast source can be wired in, and how often it refreshes, before this is buildable.
-- The 90°F / 85°F heat-index cutoffs and the 'finish before sunset' rule are my suggestion, accepted by Nico without a strong opinion. Worth making them easy to tune, and worth revisiting with him after a few weeks of actual use.
+- Confirm the window for the percentage panel — last 30 days, or percentage of the month currently shown on the calendar. Last 30 days is the reading closest to what was discussed, but it was never stated outright.
+- Decide how the streak treats today before it has been marked: it should not break a streak built through yesterday, but confirm this is how the builder wants it computed.
+- The walk log stores local calendar days entered by hand, while the forecast tables already resolve local day and minute when written. Confirm the two agree on what "today" is so the calendar's today square lines up with the decider's reference day.
