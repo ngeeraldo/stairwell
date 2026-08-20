@@ -8,6 +8,7 @@ import { requireState } from '@/lib/session/guard'
 import { resolveState } from '@/lib/session/resolve'
 import { appendMetric, readTranscript } from '@/lib/db/appendOnly'
 import { readDeviceClass, readTimeZone } from '@/lib/metrics/deviceClass'
+import { readRenderTrigger } from '@/lib/metrics/renderTrigger'
 import { dayKey } from '@/lib/time/dayKey'
 import type { UserDb } from '@/lib/db/userDb'
 import type { DeviceClass } from '@/lib/metrics/deviceClass'
@@ -209,6 +210,7 @@ async function renderDashboard(
       timeZone: day.timeZone,
       screen: active?.id,
     })
+    const trigger = await readRenderTrigger()
     appendMetric(getDb(), {
       accountId,
       event: 'dashboard_open',
@@ -229,6 +231,7 @@ async function renderDashboard(
         source,
         device_class,
         ...(active !== undefined ? { screen_order: active.order } : {}),
+        trigger,
       },
       at: Date.now(),
     })

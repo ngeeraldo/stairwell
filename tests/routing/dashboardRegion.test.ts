@@ -25,6 +25,7 @@ import { dayKey } from '@/lib/time/dayKey'
 // emits classic React.createElement calls for "jsx": "preserve".
 beforeEach(() => {
   vi.stubGlobal('React', React)
+  headerSlot.rsc = null
 })
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -55,18 +56,21 @@ const cookieGet = vi.fn((name: string) => {
   return undefined
 })
 /**
- * `headers` is stubbed alongside `cookies` because lib/metrics/deviceClass.ts
- * reads the User-Agent as its fallback when no stairwell_dc cookie exists
- * (onboarding ledger D4). An empty header map is the honest fixture — it is
- * exactly what a request with neither cookie nor UA looks like — and it
- * resolves to 'desktop', which is what the device_class assertions below
- * expect.
+ * Still the honest empty fixture for everything except `rsc`: a request with
+ * neither the stairwell_dc cookie nor a User-Agent, which resolves to
+ * 'desktop' (onboarding ledger D4) — which is what the device_class
+ * assertions below expect. `rsc` is settable because it is the one header
+ * whose ABSENCE is also meaningful: absent is a document load, present is a
+ * router.refresh() (lib/metrics/renderTrigger.ts).
  */
-const emptyHeaders = { get: () => null }
+const headerSlot: { rsc: string | null } = { rsc: null }
+const requestHeaders = {
+  get: (name: string) => (name.toLowerCase() === 'rsc' ? headerSlot.rsc : null),
+}
 
 vi.mock('next/headers', () => ({
   cookies: async () => ({ get: cookieGet }),
-  headers: async () => emptyHeaders,
+  headers: async () => requestHeaders,
 }))
 
 // --- the two seams under test ---------------------------------------------
@@ -397,6 +401,7 @@ describe('app/[user]/page.tsx data region', () => {
       slug: SLUG,
       source: 'synthetic',
       device_class: 'desktop',
+      trigger: 'nav',
     })
   })
 
@@ -528,8 +533,32 @@ describe('app/[user]/page.tsx data region', () => {
       source: 'synthetic',
       device_class: 'desktop',
       screen_order: 2,
+      trigger: 'nav',
     })
     expect(rawMetricData('dashboard_open')).not.toContain('money')
+  })
+
+  it('records trigger: refresh when the render came from a router.refresh()', async () => {
+    // THE RED TEST (design doc §7.2). A refresh-triggered render that writes a
+    // dashboard_open row without `trigger` is exactly the failure this pins:
+    // the field is only readable if it is present on EVERY row written after
+    // the deploy that introduced it, so a missing key must be a test failure
+    // rather than something that decodes as 'nav' and quietly lies.
+    headerSlot.rsc = '1'
+    loaderSlot.value = screenEchoingLoader(TWO_SCREENS)
+    const UserSpace = await arrange()
+    await UserSpace({
+      params: Promise.resolve({ user: SLUG }),
+      searchParams: Promise.resolve({ screen: 'money' }),
+    })
+
+    expect(metricData('dashboard_open')).toEqual({
+      slug: SLUG,
+      source: 'synthetic',
+      device_class: 'desktop',
+      screen_order: 2,
+      trigger: 'refresh',
+    })
   })
 
   it('writes one dashboard_open row per render with no dedup, even across two "tab switches"', async () => {
