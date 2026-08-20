@@ -108,7 +108,12 @@ export async function POST(
   // platform database and carries a slug and a panel and nothing else — no
   // day, no count, no payload. That bound is what makes the login page's "I
   // can see when you use it ... but not what you log" true.
-  const panel = action === 'add' ? '<panel_name>' : '<panel_name>'
+  //
+  // TWO DIFFERENT NAMES, not one reused: an add and a remove are genuinely
+  // distinct events, and a query grouping metric rows by panel needs to tell
+  // them apart. A single repeated placeholder here would read as a no-op
+  // ternary and teach the opposite.
+  const panel = action === 'add' ? '<panel_for_add>' : '<panel_for_remove>'
 
   let userDb
   try {
