@@ -130,6 +130,8 @@ git commit -m "Build $FRIEND's dashboard v$V"
 
 ## Step 10 — Ship it
 
+**Make sure you are on the terminal with $FRIEND and $V**
+
 ```bash
 git checkout main && git pull --ff-only
 git merge --no-ff "$FRIEND/v$V" -m "Build $FRIEND's dashboard v$V"
