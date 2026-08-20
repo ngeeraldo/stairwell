@@ -248,6 +248,12 @@ route**, and the route is the only thing holding a writable handle. That is two
 pieces of work, so check for it early. Build-rules §4 has the four ordered
 checks a route owes.
 
+**Use `lib/ui/WriteAction.tsx` — it is the default, and you write none of the
+mechanics.** Press → the controls sharing that route go pending → the server
+answers → every affected value patches in together, in place, no navigation.
+Do not write a plain `<form>` posting to the route yourself; that reloads the
+page. Build-rules §4 has the full contract.
+
 Annotations on synced rows live in the user's own tables, keyed to the synced
 rows — never as edits to a shared-module table, or a re-sync tramples them.
 

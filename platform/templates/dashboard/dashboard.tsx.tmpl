@@ -24,13 +24,22 @@
 //    friend is not. tests/users/noLocalDay.test.ts enforces this over every
 //    user folder — including this template, so a scaffold starts correct.
 //
-// 3. COMPOSE ONLY HOST ELEMENTS (<div>, <section>, <ul>, ...) — never a nested
-//    function component (returning <Foo />, where Foo is itself a function
-//    component). app/[user]/page.tsx wraps the direct call to this component's
-//    body in a try/catch, but a nested component's body is deferred to Next's
-//    own render pass, which runs after that function returns and therefore
-//    OUTSIDE the catch. A throw there 500s the page after the `dashboard_open`
-//    metric row has already been written.
+// 3. THE COMPONENT RULE HAS THREE ARMS (docs/dashboard-build-rules.md §3).
+//    Presentational components — shadcn's Card, Button, anything rendering
+//    props as markup without deriving values from them — are TRUSTED; nest
+//    them freely. Data-computing components — Recharts, anything deriving a
+//    scale or geometry from values — are SANCTIONED, guarded by the states
+//    rule: degenerate data renders the empty state as host elements and
+//    never mounts the component. Interaction controls — lib/ui/WriteAction.tsx
+//    below — are SANCTIONED and are the DEFAULT for every write. Outside
+//    those three classes, compose host elements only (<div>, <section>,
+//    <ul>, ...). The residual for all three arms is the same: app/[user]/page.tsx
+//    wraps the direct call to this component's body in a try/catch, but a
+//    nested component's body is deferred to Next's own render pass, which
+//    runs after that function returns and therefore OUTSIDE the catch. A
+//    throw there 500s the page after the `dashboard_open` metric row has
+//    already been written — which is why arm 3's mechanics live in
+//    lib/ui/, tested once, rather than in code you write per dashboard.
 //
 // 4. IT MUST RENDER ON AN EMPTY DATABASE. A friend's first session shows their
 //    own data, and they have none — there is no synthetic fallback standing in

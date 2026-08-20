@@ -180,10 +180,14 @@ resolves any of them itself** — CLAUDE.md.
      always been true in the code: every dashboard already nests `<Card>` and
      `<Button>`.
   2. **Data-computing** — Recharts, and anything deriving scales, layout or
-     geometry from values. **Sanctioned, guarded by the states rule:**
+     geometry from values. **Sanctioned, guarded by a states check:**
      degenerate data (empty, single-point, all-identical, NaN) renders the
-     panel's empty state as host elements and never mounts the component. The
-     empty-database first render must show empty states, not charts.
+     panel's empty state as host elements and never mounts the component.
+     That list is arm 2's own — a chart can fail to be renderable in more
+     ways than a plain read can, so it sharpens
+     `docs/dashboard-ui-ux-guidelines.md`'s States section's **Empty** entry
+     rather than restating it. The empty-database first render must show
+     empty states, not charts.
   3. **Interaction controls** — a component whose job is to accept a press and
      post it. **Sanctioned, and the default for every write** (see §4). Its
      guard is structural: it derives nothing from user values, so it has no
@@ -202,9 +206,13 @@ resolves any of them itself** — CLAUDE.md.
   reader type now, since a change-only spec carries no ids at all, so the
   `id` and `order` are the builder's to choose and `current.md`'s
   `## Screens` is where they are recorded (see "What that looks like" below).
-  `?screen=` resolves against the declared list before a
-  dashboard ever sees it, and this is exactly why the point above (no nested
-  function component) matters: a dashboard's own `<Tabs>` would be one —
+  `?screen=` resolves against the declared list before a dashboard ever sees
+  it. **This is a chrome-ownership rule, not the component rule above** —
+  shadcn's `<Tabs>` is arm 1, presentational, trusted like any other shadcn
+  component. The reason a dashboard never draws its own tab strip is that the
+  platform already draws one, from this exact array (see "No tab strip of
+  your own," below): a second `<Tabs>` here would be a second implementation
+  of the same navigation, not a forbidden component —
   CLAUDE.md > Dashboard folder conventions, `lib/dashboard/contract.ts`.
 
 ### What that looks like
@@ -241,13 +249,16 @@ export default function Dashboard({ slug, screen }: DashboardProps) {
 
 Branch on `screen` and return host elements. **No tab strip of your own** —
 `app/[user]/page.tsx` draws it above whatever this returns, as plain
-server-rendered `<a href="?screen=...">` anchors reading this exported array,
-and it does that by CALLING this component (`Dashboard(...)`, not
-`<Dashboard />`) so the whole render sits inside the page's own `try`/`catch`.
-A `<Tabs>` component returned from here would be a nested function component,
-whose body React defers to its own render pass, OUTSIDE that catch — a throw
-there 500s the page after the `dashboard_open` metric row has already been
-written.
+server-rendered `<a href="?screen=...">` anchors reading this exact exported
+`screens` array. The reason is **chrome ownership**: the platform already
+draws the tab strip from that array, so a dashboard's own `<Tabs>` — even
+though shadcn's `<Tabs>` is arm 1, presentational, trusted — would be a
+second implementation of the same navigation, reading a different source of
+truth than the one the platform reads, not one thing rendered twice. (Calling
+rather than nesting — `Dashboard(...)`, not `<Dashboard />` — also keeps the
+whole render inside the page's own `try`/`catch`, which is the §3 residual
+accepted for all three component arms; that residual is not what singles out
+tabs, the ownership duplication is.)
 
 `screens` is REQUIRED. An empty array throws at render (`activeScreen`, caught
 into `dashboard_error` rather than a 500). `tests/users/conventions.test.ts`

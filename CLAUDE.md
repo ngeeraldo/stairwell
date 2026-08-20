@@ -478,8 +478,8 @@ architectural changes; do not relitigate decided items).
   three arms — presentational (trusted), data-computing (sanctioned, guarded by
   the states rule), interaction controls (sanctioned, the default) — stated in
   full in docs/dashboard-build-rules.md §3, with the try/catch residual that
-  applies to all three. Design:
-  docs/superpowers/specs/2026-08-20-client-side-write-actions-design.md.
+  applies to all three; the source of record, if the two ever disagree, is
+  docs/superpowers/specs/2026-08-20-client-side-write-actions-design.md §4.
 - **`dashboard_open` carries `trigger`** — `'nav'` or `'refresh'`, a render
   cause and never a user value. Rows predating the 2026-08-20 deploy have no
   such key and decode as `nav`. It exists because a tap has ALWAYS written an

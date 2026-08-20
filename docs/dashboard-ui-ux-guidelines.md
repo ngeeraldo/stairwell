@@ -79,7 +79,11 @@ button clicks; there is exactly one loading pattern, decided here, not
 per dashboard: panels render immediately with their last-known data plus 
 a quiet "updating…"indicator, then settle. No blocking spinner over the 
 whole dashboard. Panels with no prior data show their empty state during 
-sync, not a skeleton.
+sync, not a skeleton. **This is a read refreshing** — data already on
+screen, being brought up to date from an upstream source the friend does
+not directly control. It is not the pattern for a write the friend just
+made; see "A write control shows its own progress," in Delight / Animation
+below, for that one.
 
 ## Formatting
 
@@ -117,8 +121,12 @@ animates when the user changes it, not when it renders.
 Pressing a control that writes puts it — and every control writing the same
 route — into a visible pending state immediately. The number itself moves when
 the server confirms, not before, and every value affected by that write moves
-together. This is the counter example below, resolved: the press feedback is
-the control responding, not the count running ahead of the database. A
+together. **This is a write the friend just made, not a read refreshing** —
+the counterpart to "Login-sync loading," above, for the opposite direction:
+there, data already on screen is being brought up to date from upstream; here,
+the friend caused the change and nothing may move before the server confirms
+it happened. This is the counter example below, resolved: the press feedback
+is the control responding, not the count running ahead of the database. A
 dashboard never reloads the page to show a write; `lib/ui/WriteAction.tsx` is
 the default and does this for you.
 
