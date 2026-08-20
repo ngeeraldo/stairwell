@@ -217,8 +217,8 @@ not exist yet:
   parameter. This has shipped as a bug once: `docs/superpowers/ledgers/friend-timezone.md`.
 - **The component rule has three arms**, and only the first is unconditional.
   **Presentational** components (shadcn's `Card`, `Button`) are trusted.
-  **Data-computing** ones (Recharts) are sanctioned but must be guarded by the
-  states rule — degenerate data renders the empty state as host elements and
+  **Data-computing** ones (Recharts) are sanctioned but must be guarded by a
+  states check — degenerate data renders the empty state as host elements and
   never mounts the component. **Interaction controls** (`lib/ui/WriteAction.tsx`)
   are sanctioned and are the DEFAULT for every write. Everything else is host
   elements. All three render outside `app/[user]/page.tsx`'s try/catch, so a

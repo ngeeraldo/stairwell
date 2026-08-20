@@ -28,8 +28,8 @@
 //    Presentational components — shadcn's Card, Button, anything rendering
 //    props as markup without deriving values from them — are TRUSTED; nest
 //    them freely. Data-computing components — Recharts, anything deriving a
-//    scale or geometry from values — are SANCTIONED, guarded by the states
-//    rule: degenerate data renders the empty state as host elements and
+//    scale or geometry from values — are SANCTIONED, guarded by a states
+//    check: degenerate data renders the empty state as host elements and
 //    never mounts the component. Interaction controls — lib/ui/WriteAction.tsx
 //    below — are SANCTIONED and are the DEFAULT for every write. Outside
 //    those three classes, compose host elements only (<div>, <section>,

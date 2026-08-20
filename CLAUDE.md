@@ -420,19 +420,25 @@ architectural changes; do not relitigate decided items).
   `dashboard_error` path that already catches a throwing `Dashboard()` call.
 
   **Why the platform owns the tabs — the single rule to know before writing a
-  second screen.** `app/[user]/page.tsx` CALLS the dashboard (`Dashboard(...)`),
-  never returns it as `<Dashboard />`, specifically so its body runs inside
-  the page's own `try`/`catch`. A nested function component — a dashboard
-  returning `<Foo />` where `Foo` is itself a function component — has its
-  body deferred to React's OWN render pass, which runs after the calling
-  function has already returned and is therefore OUTSIDE that catch: a throw
-  there 500s the page AFTER the `dashboard_open` metric row has already been
-  written. Tabs drawn by the dashboard itself would be exactly that shape, so
-  `tabStrip` lives in `app/[user]/page.tsx` instead — plain server-rendered
+  second screen.** `tabStrip` lives in `app/[user]/page.tsx`, never in a
+  dashboard, because **the platform owns that chrome**: plain server-rendered
   `<a href="?screen=...">` anchors on a search param, no client component, no
   route segment, no middleware — reading the dashboard's own `screens` export
-  and drawing nothing at all for one screen (or fewer): a single tab is
-  chrome that explains nothing.
+  and drawing nothing at all for one screen (or fewer), since a single tab is
+  chrome that explains nothing. The anchor shape is the point, not incidental:
+  it keeps the active screen IN THE URL. `activeScreen` resolves `?screen=`
+  there before a dashboard ever sees it, so deep links and bookmarks work, and
+  `dashboard_open`'s `trigger` field (below) stays meaningful — it means
+  "refresh" only because this app has no client-side navigation, the same fact
+  the `trigger` bullet below names for a client-side `<Link>`. A dashboard
+  drawing its own `<Tabs>` in component state would bypass all three: no URL,
+  no working deep link, and a `trigger` reading that can no longer be trusted.
+  (`app/[user]/page.tsx` also CALLS the dashboard — `Dashboard(...)`, never
+  `<Dashboard />` — so its body runs inside the page's own `try`/`catch`; a
+  nested function component's body would be deferred to React's own render
+  pass, OUTSIDE that catch. That residual is accepted for all three component
+  arms above, though, so it is not what singles tabs out — chrome ownership
+  and the URL-state mechanics are.)
 - **`dashboard_open` writes one row per render, every render, with NO
   write-path dedup** — a tab switch re-runs the page and writes another row,
   by design. "An open" is a definition applied when the log is READ (e.g. the
@@ -476,7 +482,7 @@ architectural changes; do not relitigate decided items).
   form, so the no-JS path is the original redirect. The route is unchanged and
   is still the only writable handle. The **component rule** this depends on has
   three arms — presentational (trusted), data-computing (sanctioned, guarded by
-  the states rule), interaction controls (sanctioned, the default) — stated in
+  a states check), interaction controls (sanctioned, the default) — stated in
   full in docs/dashboard-build-rules.md §3, with the try/catch residual that
   applies to all three; the source of record, if the two ever disagree, is
   docs/superpowers/specs/2026-08-20-client-side-write-actions-design.md §4.

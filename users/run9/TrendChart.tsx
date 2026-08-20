@@ -8,23 +8,28 @@
 //
 // ─── why this is allowed to exist, and what guards it ───
 //
-// CLAUDE.md's dashboard rules say a dashboard composes only host elements: a
-// nested function component's body is deferred to React's own render pass,
+// docs/dashboard-build-rules.md §3 states the component rule in three arms:
+// presentational components (shadcn's Card, Button) are trusted; data-computing
+// ones — this file — are sanctioned, guarded by a states check; interaction
+// controls (lib/ui/WriteAction.tsx) are sanctioned and the default for every
+// write. Outside those three classes, a dashboard composes host elements only:
+// a nested function component's body is deferred to React's own render pass,
 // which runs after app/[user]/page.tsx's renderDashboard has already returned,
 // and therefore OUTSIDE the try/catch that turns a broken dashboard into a
-// degraded panel instead of a 500 with the chat surface gone.
+// degraded panel instead of a 500 with the chat surface gone. That residual is
+// accepted for all three arms — it is not what makes this file forbidden;
+// nothing does, this arm is sanctioned.
 //
-// Nico's ruling of 2026-08-19 carves out a sanctioned exception and states its
-// guard, and both halves matter:
+// Nico's ruling of 2026-08-19 established this arm and its guard, and both
+// halves matter:
 //
 //   Data-computing components (Recharts, and anything that derives scales,
-//   layout, or geometry from values) are a sanctioned exception to
-//   host-elements-only, GUARDED BY THE STATES RULE: degenerate data (empty,
-//   single-point, all-identical, NaN) renders the panel's empty state as host
-//   elements and never mounts the component. The empty-database first render
-//   must show empty states, not charts. Purely presentational components are
-//   trusted like shadcn's. Accepted residual: a throw on well-formed props
-//   lands outside the catch.
+//   layout, or geometry from values) are SANCTIONED, guarded by a states
+//   check: degenerate data (empty, single-point, all-identical, NaN) renders
+//   the panel's empty state as host elements and never mounts the component.
+//   The empty-database first render must show empty states, not charts.
+//   Purely presentational components are trusted like shadcn's. Accepted
+//   residual: a throw on well-formed props lands outside the catch.
 //
 // So THIS FILE IS NEVER REACHED ON DEGENERATE DATA. dashboard.tsx decides
 // that before rendering anything (see `chartable` there), which is what keeps

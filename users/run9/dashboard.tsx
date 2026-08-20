@@ -12,7 +12,7 @@
 //
 // COMPOSITION. docs/dashboard-build-rules.md states the component rule in
 // three arms: presentational components (shadcn's Card, Button) are trusted;
-// data-computing ones (Recharts) are sanctioned and guarded by the states rule;
+// data-computing ones (Recharts) are sanctioned and guarded by a states check;
 // interaction controls (lib/ui/WriteAction.tsx) are sanctioned and are the
 // default for every write. `chartable` below is the states guard, and it is
 // why the empty-database first render shows an empty state rather than a

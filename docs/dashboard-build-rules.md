@@ -250,15 +250,16 @@ export default function Dashboard({ slug, screen }: DashboardProps) {
 Branch on `screen` and return host elements. **No tab strip of your own** —
 `app/[user]/page.tsx` draws it above whatever this returns, as plain
 server-rendered `<a href="?screen=...">` anchors reading this exact exported
-`screens` array. The reason is **chrome ownership**: the platform already
-draws the tab strip from that array, so a dashboard's own `<Tabs>` — even
-though shadcn's `<Tabs>` is arm 1, presentational, trusted — would be a
-second implementation of the same navigation, reading a different source of
-truth than the one the platform reads, not one thing rendered twice. (Calling
-rather than nesting — `Dashboard(...)`, not `<Dashboard />` — also keeps the
-whole render inside the page's own `try`/`catch`, which is the §3 residual
-accepted for all three component arms; that residual is not what singles out
-tabs, the ownership duplication is.)
+`screens` array. The reason is **chrome ownership, not the component rule
+above** — shadcn's `<Tabs>` is arm 1, presentational, trusted, so nesting one
+is not what this forbids. The platform already draws the tab strip from this
+array; a dashboard's own `<Tabs>` would be a second implementation of the
+same navigation, and it would give up everything the anchor shape buys — §4's
+"no client-side navigation" note has the mechanical reason. (Calling rather
+than nesting — `Dashboard(...)`, not `<Dashboard />` — also keeps the whole
+render inside the page's own `try`/`catch`, the residual §3 accepts for all
+three component arms; that residual is not what singles out tabs, chrome
+ownership and the URL-state mechanics are.)
 
 `screens` is REQUIRED. An empty array throws at render (`activeScreen`, caught
 into `dashboard_error` rather than a 500). `tests/users/conventions.test.ts`
@@ -288,6 +289,14 @@ explains nothing.
   do not. `WriteAction` renders a real form, so the no-JS path is the original
   redirect, unchanged —
   `docs/superpowers/specs/2026-08-20-client-side-write-actions-design.md` §2-3.
+- **This app has no client-side navigation anywhere — screens included.**
+  Platform tabs are plain `<a href="?screen=">` anchors, so the active screen
+  lives in the URL. `activeScreen` (§3) resolves it there, deep links and
+  bookmarks work, and `dashboard_open`'s `trigger` field stays meaningful. A
+  client-side `<Tabs>` switching in component state bypasses all three — the
+  same hazard a client-side `<Link>` under `app/[user]/` would create for
+  writes, breaking the `rsc`-header refresh detection
+  `lib/metrics/renderTrigger.ts` depends on — CLAUDE.md.
 - **Exactly two things write to a user's real database, and they are
   enumerated** — CLAUDE.md:
   1. `lib/db/migrate.ts` — creates it and changes its SHAPE, at unlock, having
