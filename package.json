@@ -10,6 +10,7 @@
     "start": "next start",
     "synthetic": "tsx scripts/regen-synthetic.ts",
     "test": "vitest run",
+    "test:live": "VITEST_LIVE=1 vitest run tests/**/*.live.test.ts",
     "shots": "tsx scripts/shots.ts"
   },
   "dependencies": {
