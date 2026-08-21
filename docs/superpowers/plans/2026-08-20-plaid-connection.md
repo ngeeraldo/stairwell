@@ -286,7 +286,75 @@ npx tsx scripts/plaid-probe.ts
 
 Do NOT run `git commit`. Report what changed; Nico commits at the gate.
 
-### 🔍 GATE 1 — Nico runs the probe
+## Gate 1 findings (recorded 2026-08-20 — Phase 1 CLEARED)
+
+All 16 routes called against Sandbox; 15 green. Everything below replaces
+guesswork in the phases that follow.
+
+**F1 — Recurring cannot be requested at connect time.** Plaid rejects
+`recurring_transactions` in `initial_products` outright ("some products cannot
+be included in initial_products"). It becomes ready roughly 10s AFTER the item
+exists, and `billed_products` gains it on the first successful call. So
+`/link/token/create` must not ask for it, and the refresh route must treat
+`PRODUCT_NOT_READY` as "not yet", never as failure. This matters because
+`agent-v9.md` promises friends "subscriptions and paychecks detected
+automatically".
+
+**F2 — Three data patterns, not two.**
+- cursor stream: `/transactions/sync`
+- snapshot replace: `/investments/holdings/get`, `/accounts/get`
+- date-ranged AND PAGINATED: `/investments/transactions/get` returned 100 of
+  1171. Needs offset paging that neither other pattern has.
+
+**F3 — Both `/refresh` endpoints are fire-and-forget** and return only
+`request_id`. The extraction is still running at the bank when they return, so
+calling one and then immediately syncing yields exactly what Plaid already had.
+Combined with a ~10s connect and a 2–6s first sync, ASYNCHRONY IS THE DOMINANT
+FACT of this integration, not an edge case.
+
+**F4 — `classifyError()` is verified against real Plaid behaviour.**
+`/sandbox/item/reset_login` followed by a sync produced `item_login_required`,
+and `/link/token/create` in UPDATE MODE (pass `access_token`, omit `products`)
+mints the token that repairs it. `/item/remove` works and is real — `/item/get`
+afterwards returns `ITEM_NOT_FOUND`.
+
+**F5 — The envelope grows from 7 tables to 9.** Add `plaid_recurring_streams`
+(PK `stream_id`) and `plaid_investment_transactions` (PK
+`investment_transaction_id`).
+
+**F6 — The scrub allowlist from the plan sketch was badly incomplete.** Fields
+that leak a merchant's identity even after `merchant_name` is scrubbed:
+`logo_url`, `website`, `personal_finance_category_icon_url`,
+`merchant_entity_id`, and the whole `counterparties[]` array (`name`,
+`website`, `logo_url`, `entity_id`) — WHICH MEANS THE SCRUBBER MUST WALK
+ARRAYS, not just top-level keys. Recurring streams add `description`;
+investment transactions add `name`.
+
+**F7 — Sandbox UNDERSTATES production, the reverse of D4's hazard.** Every
+security comes back with `cusip`, `isin`, `sector`, `industry` and
+`close_price` NULL. A builder writing a "holdings by sector" panel would see
+nulls in synthetic and reasonably conclude the field is unusable, when in
+production it is likely populated. Belongs in the build docs (Phase 6).
+
+**F8 — The default refresh must not call everything.** Measured, the seven
+plausible calls total **9.1 seconds**, and `/accounts/balance/get` and
+`/transactions/refresh` are the two typically billed PER CALL. Since F3 makes
+both `/refresh` endpoints useless within a single button press, the default
+path is `/transactions/sync` + `/accounts/get` + (holdings, if the item
+supports it) — about 1.3s, with no per-call endpoint touched.
+`/accounts/get` carries the same `balances` object as `/accounts/balance/get`
+(identical shape in the probe) from Plaid's cache, for free. Filter on what the
+ITEM supports (`available_products`, stored on `plaid_items` at connect) and on
+what the DASHBOARD asks for (named by the `<WriteAction>`), intersected
+server-side.
+
+**F9 — OAuth institutions are still unproven.** Every call used `ins_109508`,
+which is not OAuth. Real banks like Chase redirect off-site and back through
+Link. Only testable in a browser — Phase 3.
+
+---
+
+### 🔍 GATE 1 — Nico runs the probe  ✅ CLEARED 2026-08-20
 
 **STOP. Do not start Phase 2.**
 
