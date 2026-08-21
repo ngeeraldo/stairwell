@@ -163,11 +163,15 @@ only description of this dashboard's shape — there is no `schema.sql`.
 ### 2.2a First, if the spec asks for bank or card data
 
 Vendor the shared Plaid envelope before writing anything of your own. It is a
-copy, and it is `001` because the friend's own shape is built on top of it:
+copy, and it takes **the next free number** — `001` on a fresh Flow A folder,
+but a friend who already has a dashboard (Flow B) has migrations already, and
+`lib/db/migrationFiles.ts` refuses outright when two files claim the same
+number:
 
 ```bash
+ls users/$SLUG/migrations/           # look first — 001 is only free on Flow A
 cp modules/plaid/initial.sql \
-   users/$SLUG/migrations/001_module_plaid_initial.sql
+   users/$SLUG/migrations/00N_module_plaid_initial.sql
 ```
 
 The `_module_` segment records where the file came from.
@@ -183,7 +187,7 @@ JSON — `002_<slug>_finance.sql`. Read
 either file; it describes the 8 tables, what may write to them, and the four
 states a finance panel owes.
 
-Then carry on below as normal: your own migration is `002`, not `001`.
+Then carry on below as normal: your own views go in the number AFTER that.
 
 ### 2.2b Every dashboard
 

@@ -502,8 +502,9 @@ row.
 Nico does this, not you (runbook-human Step 3). It is a copy:
 
 ```bash
-cp modules/plaid/initial.sql \
-   users/<slug>/migrations/001_module_plaid_initial.sql
+ls users/<slug>/migrations/          # the vendored file takes the NEXT free
+cp modules/plaid/initial.sql \      # number — 001 only on a fresh folder
+   users/<slug>/migrations/00N_module_plaid_initial.sql
 ```
 
 The `_module_` segment records where the file came from. **Never edit the
