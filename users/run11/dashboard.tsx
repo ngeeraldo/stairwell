@@ -1,17 +1,22 @@
 // users/run11/dashboard.tsx
 //
-// run11's dashboard — spec v2, users/run11/spec.md, read against
-// users/run11/current.md. TWO screens now, so the platform draws a tab strip:
+// run11's dashboard — spec v3, users/run11/spec.md, read against
+// users/run11/current.md. THREE screens now, so the platform draws a tab strip:
 //
 //   Walk the dog?  the decider. The verdict on top and large, the next good
-//                  window below it, and — new in v2 — the friend's own no-go
-//                  temperature at the foot of the screen.
-//   Walk log       new in v2, and a different product: a streak, a month
-//                  calendar he taps to mark days, and a percentage. It reads
-//                  no forecast and the decider reads no walk.
+//                  window below it, and the friend's own no-go temperature at
+//                  the foot of the screen.
+//   Walk log       a different product: a streak, a month calendar he taps to
+//                  mark days, and a percentage. It reads no forecast and the
+//                  decider reads no walk.
+//   Spending       new in v3, and a third product again: a pie of the last 30
+//                  days from his credit card and his debit card, and the
+//                  transaction list he re-files from. It reads neither of the
+//                  other two and neither reads it.
 //
-// NO SQL HERE. Every statement, every threshold behind the verdict, and every
-// piece of calendar arithmetic lives in ./queries.ts.
+// NO SQL HERE. Every statement, every threshold behind the verdict, every piece
+// of calendar arithmetic, and every rule about what counts as a slice lives in
+// ./queries.ts.
 //
 // ─── WHERE "RIGHT NOW" COMES FROM, which is the one thing to read before
 //     changing this file ───────────────────────────────────────────────────
@@ -39,38 +44,67 @@
 // ─── COMPOSITION ────────────────────────────────────────────────────────────
 //
 // docs/dashboard-build-rules.md states the component rule in three arms:
-// presentational components (shadcn's Card, Button) are trusted; data-computing
-// ones are sanctioned behind a states check — ./MonthCalendar.tsx is the only
-// one, and its own header says why it has no degenerate-data case to guard
-// (its geometry comes from a month, not from the friend's marks); interaction
-// controls (lib/ui/WriteAction.tsx) are sanctioned and are the default for
-// every write, and every control on both screens is one. The accepted residual
-// for all three is a throw on well-formed props landing outside
-// app/[user]/page.tsx's try/catch.
+//
+//   arm 1, presentational — shadcn's Card, Button, Input. Trusted.
+//   arm 2, data-computing — sanctioned BEHIND A STATES CHECK.
+//     ./MonthCalendar.tsx's own header says why it has no degenerate-data case
+//     to guard: its geometry comes from a month, not from the friend's marks.
+//     ./SpendingPie.tsx DOES have one, and the check is in `spendingScreen`
+//     below rather than inside the component — degenerate data renders the
+//     panel's empty state as host elements and never mounts Recharts at all.
+//     A guard inside the chart would run after it had already mounted.
+//   arm 3, interaction controls — sanctioned, and the default for every write.
+//     lib/ui/WriteAction.tsx is used unchanged for Refresh and for every
+//     control on the first two screens. ./CategoryControls.tsx is the first
+//     thing in this repo a labelled button cannot express (a menu, a typed
+//     name, and a tick box that shows its own state), and it is built on
+//     lib/ui/useWriteAction.ts — the escape hatch
+//     that file's own header names — so the write LIFETIME is still platform
+//     code and is not reimplemented per user.
+//
+// The accepted residual for all three is a throw on well-formed props landing
+// outside app/[user]/page.tsx's try/catch.
 import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { PlaidConnect } from '@/lib/ui/PlaidConnect'
 import { WriteAction } from '@/lib/ui/WriteAction'
 import { MonthCalendar } from './MonthCalendar'
+import { CategoryToggle, NewCategoryControl, RefileControl } from './CategoryControls'
+import { SpendingPie, type PieSlice } from './SpendingPie'
+import { OTHER_COLOR, sliceColor } from './palette'
 import {
+  CATEGORY_NAME_MAX,
   HEAT_NO_GO_MAX_F,
   HEAT_NO_GO_MIN_F,
   HEAT_NO_GO_STEP_F,
+  OTHER_CATEGORY,
   WALK_MINUTES,
   WALK_RATE_DAYS,
+  bankCategories,
+  categoryLabel,
+  categoryTotals,
+  categoryVisibility,
   ceilToStep,
   currentStreak,
+  customCategories,
   daysBetween,
   earliestMonth,
+  foldIntoOther,
   heatNoGoF,
+  isConnected,
+  lastRefreshes,
   latestFetch,
   latestSuccessfulFetch,
   markedDays,
+  needsReauth,
   nextGoodWindow,
   rightNow,
   shadeFloorF,
+  spendingAccounts,
+  spendingTransactions,
   walkRate,
 } from './queries'
-import type { GoodWindow, RightNow, WalkReading } from './queries'
+import type { GoodWindow, PlaidRefresh, RightNow, WalkReading } from './queries'
 
 // TWO screens as of spec v2, so the platform now draws a tab strip above
 // whatever this file returns — plain `<a href="?screen=">` anchors in
@@ -86,6 +120,12 @@ import type { GoodWindow, RightNow, WalkReading } from './queries'
 export const screens: DashboardScreen[] = [
   { id: 'walk_the_dog', title: 'Walk the dog?', order: 1 },
   { id: 'walk_log', title: 'Walk log', order: 2 },
+  // THIRD, and after the two dog screens — spec v3: "A third tab alongside
+  // 'Walk the dog?' and 'Walk log', ordered after them." The landing screen is
+  // unchanged, which the spec also states ("Nothing on the two dog screens
+  // changes"): a friend who opens this to decide about a walk should not have
+  // to walk past his own spending to do it.
+  { id: 'spending', title: 'Spending', order: 3 },
 ]
 
 /**
@@ -669,14 +709,491 @@ function walkLogScreen({ slug, db, today }: { slug: string; db: DashboardProps['
   )
 }
 
+// ─── SPENDING, spec v3 ──────────────────────────────────────────────────────
+
+/**
+ * A dollar figure as this screen writes it.
+ *
+ * WHOLE DOLLARS on the pie and its legend, CENTS in the transaction list.
+ * docs/dashboard-ui-ux-guidelines.md > Formatting draws exactly that line:
+ * "Whole dollars in glance positions ($1,284, not $1,284.31); cents only in
+ * transaction rows and anywhere the user is reconciling." The pie is the
+ * glance; the list is where he reconciles a row against his own memory of it.
+ */
+function money(amount: number, { cents }: { cents: boolean }): string {
+  return amount.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: cents ? 2 : 0,
+    maximumFractionDigits: cents ? 2 : 0,
+  })
+}
+
+/**
+ * A share as a percentage.
+ *
+ * One decimal place below 10%, none above. A slice worth 0.1% of the window
+ * rendering as "0%" would read as a bug, and "14.3%" where "14%" will do is
+ * precision nobody asked for.
+ */
+function percent(share: number): string {
+  const pct = share * 100
+  return `${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`
+}
+
+/**
+ * A transaction's date, in the friend's own terms.
+ *
+ * Relative within the week, absolute beyond it, no year — the day is already
+ * inside a 30-day window, so a year would be noise
+ * (docs/dashboard-ui-ux-guidelines.md > Formatting). Pure string and UTC
+ * arithmetic over a day key Plaid stated and `today` the platform handed down:
+ * NO CLOCK IS READ, which `tests/users/noLocalDay.test.ts` enforces over this
+ * file.
+ */
+function dayLabel(day: string, today: string): string {
+  const ago = daysBetween(day, today)
+  if (ago === 0) return 'Today'
+  if (ago === 1) return 'Yesterday'
+  const parts = day.split('-').map(Number)
+  const date = new Date(Date.UTC(parts[0]!, parts[1]! - 1, parts[2]!))
+  if (ago > 1 && ago < 7) {
+    return date.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
+  }
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+}
+
+/**
+ * Join names the way a sentence does: "A", "A and B", "A, B and C".
+ *
+ * He has two accounts today, so a bare " and " read correctly right up until
+ * the synthetic database showed three and produced "A and B and C". A friend
+ * with a second card is one connection away from the same sentence.
+ */
+function listSentence(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? ''
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+}
+
+/** What one product's last refresh attempt should say, in the friend's words. */
+function describeRefresh(refresh: PlaidRefresh): string | null {
+  // THREE OUTCOMES, NOT TWO (docs/dashboard-build-rules.md §9.6). `not_ready`
+  // means Plaid holds the connection and has not finished preparing that
+  // product — routine on the first refresh after connecting. Reporting it as a
+  // failure would put "couldn't reach your bank" on screen at the moment
+  // everything is working.
+  if (refresh.ok) return null
+  if (refresh.code === 'not_ready') return 'your bank is still preparing this — try again shortly'
+  if (refresh.code === 'item_login_required') return 'your bank needs you to log in again'
+  return `couldn’t reach your bank (${refresh.code ?? 'error'})`
+}
+
+function spendingScreen({
+  slug,
+  db,
+  today,
+}: {
+  slug: string
+  db: DashboardProps['db']
+  today: string
+}) {
+  const linkTokenAction = `/api/users/${slug}/plaid/link-token`
+  const connectAction = `/api/users/${slug}/plaid/connect`
+  const refreshAction = `/api/users/${slug}/plaid/refresh`
+  const categoryAction = `/api/users/${slug}/spending-category`
+  const returnTo = `/${slug}?screen=spending`
+
+  // STATE 1 of the four a finance panel owes: NOT CONNECTED, decided by whether
+  // an item exists and NEVER by whether transactions exist. A freshly connected
+  // bank has a token and no rows for the seconds Plaid spends backfilling, and
+  // inferring "not connected" from an empty table would tell him his connection
+  // failed while it was working (docs/dashboard-build-rules.md §9.6).
+  if (!isConnected(db)) {
+    return (
+      <section className="mx-auto w-full max-w-3xl space-y-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Connect a card to see where it went</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="max-w-[42rem] text-sm text-muted-foreground">
+              This screen groups the last 30 days from your credit card and your debit card
+              into categories. Connect each one and it fills in — connecting runs on your own
+              device, and your bank login never reaches this server.
+            </p>
+            <PlaidConnect
+              linkTokenAction={linkTokenAction}
+              connectAction={connectAction}
+              returnTo={returnTo}
+            />
+          </CardContent>
+        </Card>
+      </section>
+    )
+  }
+
+  // ONE READ FEEDS BOTH PANELS, so the pie and the list can never disagree
+  // about where a dollar sits — which spec v3 asks for by name.
+  const rows = spendingTransactions(db, today)
+  // His ticked/unticked choices, and only those — every category he has never
+  // pressed takes the default `categoryTotals` resolves from the amount.
+  const totals = categoryTotals(rows, categoryVisibility(db))
+  const custom = customCategories(db)
+  const customSet = new Set(custom)
+  const accounts = spendingAccounts(db)
+  const refreshes = lastRefreshes(db)
+  const reauth = needsReauth(refreshes)
+  const problems = refreshes
+    .map((r) => ({ product: r.product, said: describeRefresh(r) }))
+    .filter((r): r is { product: string; said: string } => r.said !== null)
+
+  // THE ARM-2 STATES CHECK, and it lives here rather than inside the chart:
+  // degenerate data renders the panel's empty state as host elements and never
+  // mounts Recharts at all (docs/dashboard-build-rules.md §3). `categoryTotals`
+  // has already dropped anything netting to zero or less, so a surviving slice
+  // is finite and positive by construction; what is left to check is whether
+  // there is anything to draw.
+  const { drawn, folded } = foldIntoOther(totals.slices)
+  const drawable = drawn.length > 0 && totals.total > 0
+  const pieSlices: PieSlice[] = drawn.map((slice, index) => ({
+    label:
+      slice.category === OTHER_CATEGORY
+        ? OTHER_CATEGORY
+        : categoryLabel(slice.category, customSet),
+    amount: slice.amount,
+    share: slice.share,
+    color: sliceColor(index),
+    amountLabel: money(slice.amount, { cents: false }),
+    shareLabel: percent(slice.share),
+  }))
+
+  // Which colour each legend row wears, so a swatch can never disagree with the
+  // wedge it stands for. A category folded into "Other" takes the neutral,
+  // because that is genuinely the wedge it is part of; an unticked one gets no
+  // swatch at all, because it has no wedge.
+  const colorFor = new Map<string, string>()
+  drawn.forEach((slice, index) => colorFor.set(slice.category, sliceColor(index)))
+  for (const category of folded) colorFor.set(category, OTHER_COLOR)
+
+  // Categories he has actually kept OUT of a denominator they would otherwise
+  // be in. A category at zero or less is not in it either way — unticking one
+  // changes no percentage — so counting those here would put a caveat on screen
+  // explaining a difference that does not exist.
+  const excluded = totals.rows.filter((row) => !row.included && row.amount > 0)
+
+  // Every category a row may be moved into: his own buckets first, then every
+  // category his bank has ever produced. Built once for the whole list rather
+  // than per row — forty rows building the same array forty times is the same
+  // answer computed forty times.
+  const choices = [
+    ...custom.map((name) => ({ value: name, label: name, custom: true })),
+    ...bankCategories(db).map((name) => ({
+      value: name,
+      label: categoryLabel(name, customSet),
+      custom: false,
+    })),
+  ]
+
+  return (
+    <section className="mx-auto w-full max-w-3xl space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Where it went</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {rows.length === 0 ? (
+            /*
+              STATE 2: connected, nothing arrived yet — or a genuinely quiet
+              month. Either way NOT "$0.00", which is a confident false
+              statement about someone's money (docs/dashboard-build-rules.md
+              §9.6). It says what it is waiting for and leaves the Refresh
+              control below reachable.
+            */
+            <p className="text-sm text-muted-foreground">
+              Nothing has come through for the last 30 days yet. If you have just connected,
+              give it a moment and press Refresh.
+            </p>
+          ) : !drawable ? (
+            /*
+              Rows exist and none of them nets to money going out — every
+              category cancelled itself, which a month of refunds really can do.
+              Host elements, no chart: there is no pie to draw and a chart
+              mounted over nothing is the arm-2 failure.
+            */
+            <p className="text-sm text-muted-foreground">
+              Nothing to draw: every category is either unticked or nets to nothing. The
+              transactions are all still listed below.
+            </p>
+          ) : (
+            <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start">
+              <SpendingPie slices={pieSlices} title="Spending by category, last 30 days" />
+              {/*
+                THE LEGEND, and it is not decoration. Three of the palette's
+                colours sit below 3:1 against this page, and the rule for that
+                is "relief required — visible labels or a table view"; this is
+                the table view. It is also what carries the amount and the
+                percentage spec v3 asks each slice to show, and what keeps a
+                slice from being identified by colour alone.
+              */}
+              <ul className="w-full min-w-0 space-y-2">
+                {totals.rows.map((row) => {
+                  const label = categoryLabel(row.category, customSet)
+                  const color = colorFor.get(row.category)
+                  return (
+                    <li key={row.category} className="flex items-center gap-2 text-sm">
+                      <CategoryToggle
+                        action={categoryAction}
+                        category={row.category}
+                        label={label}
+                        included={row.included}
+                      />
+                      <span
+                        aria-hidden
+                        className="size-2.5 shrink-0 rounded-[2px] border"
+                        style={
+                          color === undefined
+                            ? { borderColor: 'var(--border)' }
+                            : { backgroundColor: color, borderColor: color }
+                        }
+                      />
+                      <span
+                        className={`min-w-0 flex-1 truncate ${
+                          row.included ? '' : 'text-muted-foreground'
+                        }`}
+                      >
+                        {label}
+                      </span>
+                      <span
+                        className={`shrink-0 tabular-nums ${
+                          row.included ? 'font-medium' : 'text-muted-foreground'
+                        }`}
+                      >
+                        {money(row.amount, { cents: false })}
+                      </span>
+                      {/*
+                        A percentage ONLY for what is in the pie. An unticked
+                        category is not in the denominator, so printing a share
+                        for it would be a number of nothing.
+                      */}
+                      <span className="w-12 shrink-0 text-right tabular-nums text-muted-foreground">
+                        {row.drawable ? percent(row.share) : ''}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+
+          {/*
+            THE FOLD ADMITS WHAT IT SWALLOWED. A grey "Other" wedge with no
+            explanation is silent truncation; naming the count is what makes it
+            a reading of the data rather than a limit of the chart. Each folded
+            category still has its own legend row and its own tick box above,
+            so it is combined in the chart and never out of reach.
+          */}
+          {folded.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              “Other” is the {folded.length} smallest categories combined.
+            </p>
+          )}
+
+          {/*
+            THE DENOMINATOR IS NOW HIS, so the percentages have to say so. Only
+            shown once something is actually unticked — before that it is a
+            sentence about a control he has not used.
+          */}
+          {excluded.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Percentages are of the ticked categories only. Unticked ones stay in the list
+              below.
+            </p>
+          )}
+
+          {/*
+            WHICH ACCOUNTS THIS IS. The scope is an allow-list in 004 — every
+            credit account plus every checking account — so a bank reporting a
+            debit account under a different subtype would drop out of the
+            picture. Naming the accounts is what makes that visible rather than
+            silent, and it is also the honest answer to "is this all of it".
+          */}
+          <p className="text-xs text-muted-foreground">
+            {accounts.length === 0
+              ? 'No card or checking account is feeding this yet.'
+              : `Counting ${listSentence(
+                  accounts.map((a) => `${a.name}${a.mask ? ` ••${a.mask}` : ''}`),
+                )}.`}
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Transactions</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            The last 30 days. Move anything into a different category and the pie above
+            follows it — the change sticks through future refreshes.
+          </p>
+
+          <NewCategoryControl action={categoryAction} maxLength={CATEGORY_NAME_MAX} />
+
+          {rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nothing to show for the last 30 days.</p>
+          ) : (
+            <ul className="divide-y">
+              {rows.map((row) => {
+                const description = row.merchant ?? row.description ?? 'Unknown'
+                return (
+                  <li
+                    key={row.transactionId}
+                    className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2.5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm">
+                        {description}
+                        {/*
+                          A pending charge can still change amount or vanish.
+                          Saying so is the difference between a number and a
+                          claim — and it is still counted, because the money has
+                          left as far as he is concerned.
+                        */}
+                        {row.pending ? (
+                          <span className="ml-1.5 text-xs text-muted-foreground">pending</span>
+                        ) : null}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {dayLabel(row.day, today)} · {row.accountName}
+                        {row.accountMask ? ` ••${row.accountMask}` : ''}
+                        {/*
+                          A row he has moved says so. Without it, a category
+                          that disagrees with his bank's own app looks like the
+                          dashboard got it wrong rather than like something he
+                          did on purpose weeks ago.
+                        */}
+                        {row.overrideCategory !== null ? ' · moved by you' : ''}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 tabular-nums text-sm ${
+                        row.amount < 0 ? 'text-green-700' : ''
+                      }`}
+                    >
+                      {/*
+                        A sign, never parentheses (guidelines > Formatting), and
+                        a negative is money coming back — green, because for
+                        spending that is the good direction.
+                      */}
+                      {row.amount < 0 ? '+' : ''}
+                      {money(Math.abs(row.amount), { cents: true })}
+                    </span>
+                    <RefileControl
+                      action={categoryAction}
+                      transactionId={row.transactionId}
+                      current={row.category}
+                      choices={choices}
+                      labelFor={categoryLabel(row.category, customSet)}
+                      describedBy={description}
+                    />
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium text-muted-foreground">
+            Your connection
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/*
+            STATE 3: an outcome per product, including the failures. Without
+            these rows a failed refresh is invisible and the figures above
+            render as though they were current, which
+            docs/dashboard-ui-ux-guidelines.md > States forbids by name.
+          */}
+          {refreshes.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Never refreshed. What is above is whatever arrived when you connected.
+            </p>
+          ) : problems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Your bank answered last time this was refreshed.
+            </p>
+          ) : (
+            <ul className="space-y-1 text-sm text-muted-foreground">
+              {problems.map((p) => (
+                <li key={p.product}>
+                  {p.product}: {p.said}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/*
+            THE ONLY TRIGGER THERE IS. His data key exists only while he is
+            unlocked, so nothing can pull on his behalf while he is away — there
+            is no scheduled job and there cannot be one
+            (docs/dashboard-build-rules.md §9.5). Pressing this is what "fresh"
+            means, and the sentence under it says so rather than leaving him to
+            wonder why yesterday's coffee is missing.
+          */}
+          <WriteAction
+            action={refreshAction}
+            payload={{}}
+            pendingLabel="Checking with your bank…"
+            // "nothing was recorded" is FALSE here: a failed refresh writes a
+            // plaid_refreshes row per product, and those rows are what the list
+            // above is made of.
+            failedLabel="Couldn’t reach your bank. What happened is recorded above."
+          >
+            Refresh
+          </WriteAction>
+          <p className="text-xs text-muted-foreground">
+            This updates when you press Refresh, and at no other time.
+          </p>
+
+          {/*
+            STATE 4: the one failure only he can fix. Offered ONLY when a
+            refresh actually came back with item_login_required — nothing in the
+            app knows an item's health until something calls Plaid, so a
+            permanently visible "reconnect your bank" would read as "your bank
+            is broken" at every moment it is not.
+          */}
+          {reauth && (
+            <div className="space-y-2 rounded-md border border-destructive/40 p-3">
+              <p className="text-sm">
+                Your bank needs you to log in again before it will send anything new.
+              </p>
+              <PlaidConnect
+                linkTokenAction={linkTokenAction}
+                connectAction={connectAction}
+                returnTo={returnTo}
+                reconnect
+              >
+                Log in to your bank again
+              </PlaidConnect>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </section>
+  )
+}
+
 export default function Run11Dashboard({ slug, db, today, screen }: DashboardProps) {
   // `screen` has already been resolved against this module's own `screens`
   // export by `activeScreen` in app/[user]/page.tsx, so it is either one of
-  // the two ids above or undefined — never an arbitrary `?screen=` value. The
+  // the three ids above or undefined — never an arbitrary `?screen=` value. The
   // fallback is the decider, which is also what `activeScreen` returns for
   // anything it does not recognise: `walk_the_dog` is order 1 and the landing
-  // screen, which spec v2 states directly.
-  return screen === 'walk_log'
-    ? walkLogScreen({ slug, db, today })
-    : deciderScreen({ slug, db, today })
+  // screen, which spec v2 states directly and spec v3 leaves alone.
+  if (screen === 'walk_log') return walkLogScreen({ slug, db, today })
+  if (screen === 'spending') return spendingScreen({ slug, db, today })
+  return deciderScreen({ slug, db, today })
 }

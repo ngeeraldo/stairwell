@@ -135,23 +135,30 @@ function houstonDay(db: UserDb, day = TODAY) {
 }
 
 describe('users/run11 — screens', () => {
-  it('declares the two screens spec v2 asks for, decider first', () => {
-    // TWO screens as of spec v2, so app/[user]/page.tsx now draws a tab strip
-    // — from this exact array, which is why the array is asserted whole rather
+  it('declares the three screens spec v3 asks for, decider first', () => {
+    // THREE screens as of spec v3, so app/[user]/page.tsx draws a tab strip —
+    // from this exact array, which is why the array is asserted whole rather
     // than by length. The titles are what spec.md calls them; the ids and
     // orders are the builder's, since a change-only spec carries no ids, and
     // users/run11/current.md's `## Screens` is where they are written down.
+    //
+    // `spending` is ORDER 3, which spec v3 asks for directly ("a third tab
+    // alongside 'Walk the dog?' and 'Walk log', ordered after them"), and the
+    // two dog screens keep the ids and orders they had — a screen id is what
+    // `?screen=` names, so changing one would quietly break a bookmark.
     expect(screens).toEqual([
       { id: 'walk_the_dog', title: 'Walk the dog?', order: 1 },
       { id: 'walk_log', title: 'Walk log', order: 2 },
+      { id: 'spending', title: 'Spending', order: 3 },
     ])
   })
 
   it('keeps walk_the_dog FIRST, which is what makes it the landing screen', () => {
     // `activeScreen` sorts by order and falls back to the lowest, so this is
     // the whole of spec v2's "'Walk the dog?' stays first and stays the
-    // landing page" — there is no other switch for it. Asserted separately
-    // from the array above so a reordering failure says which rule it broke.
+    // landing page" — there is no other switch for it, and spec v3 restates it
+    // ("Nothing on the two dog screens changes"). Asserted separately from the
+    // array above so a reordering failure says which rule it broke.
     const lowest = [...screens].sort((a, b) => a.order - b.order)[0]!
     expect(lowest.id).toBe('walk_the_dog')
   })
