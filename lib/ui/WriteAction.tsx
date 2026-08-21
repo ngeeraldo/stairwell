@@ -33,6 +33,7 @@ export function WriteAction({
   payload,
   children,
   pendingLabel,
+  failedLabel,
   disabled,
   className,
   size,
@@ -44,6 +45,22 @@ export function WriteAction({
   children: ReactNode
   /** Shown in place of `children` while the write is in flight. */
   pendingLabel?: ReactNode
+  /**
+   * Overrides WRITE_FAILED for a route where "nothing was recorded" is FALSE.
+   *
+   * The default sentence is right for every ordinary write — a friend taps,
+   * the route refuses, and nothing happened. It is wrong for a Plaid refresh,
+   * where a total failure still writes a plaid_refreshes row per product: that
+   * row is the entire reason the table exists, and it is what lets the panel
+   * say "couldn't reach your bank" instead of showing stale numbers as
+   * current. Leaving the default there put "nothing was recorded" directly
+   * above five recorded outcomes — two statements from one request that
+   * contradicted each other.
+   *
+   * Deliberately an override rather than an edit to WRITE_FAILED, which is
+   * "the one copy of the failure sentence" for everyone else.
+   */
+  failedLabel?: string
   /** The dashboard's own affordance (run9's −1 at zero). The route still enforces the rule. */
   disabled?: boolean
   className?: string
@@ -77,7 +94,12 @@ export function WriteAction({
       </Button>
       {error !== null && (
         <p role="alert" className="mt-1 text-xs text-destructive">
-          {error}
+          {/*
+            The hook's own message is used unless the caller supplied one —
+            and only for the generic failure, so a session-expired refresh or
+            any other specific message the hook produces still wins.
+          */}
+          {error === WRITE_FAILED && failedLabel !== undefined ? failedLabel : error}
         </p>
       )}
     </form>

@@ -41,6 +41,7 @@ ssh "$DROPLET" "$STAIRWELL && npx tsx scripts/revoke-invite.ts $FRIEND"
 ```bash
 ./scripts/new-dashboard.sh "$FRIEND"   # Flow A only — Flow B skips this, the folder is there
 ```
+
 ## Step 4 - Add Dashboard to App
 
 Follow the directions in the terminal from the last command
@@ -102,6 +103,11 @@ npm run synthetic -- --empty             # shape only, no rows
 # reload /<slug> — every screen, same as above
 npm run synthetic                        # put the sample data back
 ```
+
+To test a live finance pipe: 
+1. Clean database via command above
+2. Connect a bank (ICCU, Canandaigua Credit Union) → user_good / pass_good → MFA 1234 → Refresh
+
 ### Step 8 - Hand over to AI Builder for Notes and `current.md` rewrite.
 
 Same session, or a fresh one — paste:
@@ -189,6 +195,21 @@ refuses outright if `PLATFORM_DB` is unset, which is what `$STAIRWELL` sets.
 the nesting (single quotes inside the double-quoted `ssh`) cannot break. Write
 your own query the same way; for anything long, put the SQL in a file and pass
 `--file /tmp/my-query.sql`.
+
+### Inspect or break a bank connection
+
+Sandbox only; both refuse otherwise. They read `users/$FRIEND/synthetic.db` and
+nothing else.
+
+```bash
+# Is it connected, and does the token still work?
+npx tsx --env-file=.env scripts/plaid-item-status.ts "$FRIEND"
+
+# Break it on purpose, then press Reconnect: the bank reopens with no
+# institution picker. It is the only way to test re-auth by hand — disconnecting
+# deletes the item instead, which is a different flow.
+npx tsx --env-file=.env scripts/plaid-break-item.ts "$FRIEND"
+```
 
 ### Ask the friend a question mid-build
 

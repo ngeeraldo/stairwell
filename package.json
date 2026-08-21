@@ -5,13 +5,14 @@
     "node": ">=22 <23"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "tsx scripts/dev.ts",
     "build": "next build",
     "start": "next start",
     "synthetic": "tsx scripts/regen-synthetic.ts",
     "test": "vitest run",
-    "test:live": "VITEST_LIVE=1 vitest run tests/**/*.live.test.ts",
-    "shots": "tsx scripts/shots.ts"
+    "test:live": "VITEST_LIVE=1 node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run tests/**/*.live.test.ts",
+    "shots": "tsx scripts/shots.ts",
+    "dev:raw": "next dev"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
@@ -21,6 +22,7 @@
     "clsx": "^2.1.1",
     "lucide-react": "^1.31.0",
     "next": "^15.1.0",
+    "plaid": "^46.0.0",
     "radix-ui": "^1.6.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

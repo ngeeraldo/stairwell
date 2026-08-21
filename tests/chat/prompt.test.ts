@@ -48,14 +48,31 @@ const ALL_SHIPPED_PROMPTS = readdirSync(PROMPT_DIR).filter((f) => f.endsWith('.m
  * itself, then optionally swallowing a trailing `)`, sidesteps that.
  */
 const FORBIDDEN_TERMS = [
-  /\binvestments?\b/i,
   /\bliabilit(y|ies)\b/i,
-  /\bbrokerages?\b/i,
-  /\bportfolios?\b/i,
-  /\b401\s?[-(]?\s?k\b\)?/i,
   /\bmortgages?\b/i,
   /\bloans?\b/i,
 ]
+
+/**
+ * WHAT LEFT THIS LIST, AND WHY IT IS NOT A WEAKENING.
+ *
+ * `investments`, `brokerages`, `portfolios` and `401k` were here because the
+ * Investments product was not enabled on the Plaid account. It was enabled on
+ * 2026-08-21 and verified against a real item — 13 holdings, 13 securities,
+ * and 1171 investment transactions — so a prompt naming them is now telling a
+ * friend the truth. Requiring a disclaimer would have forced agent-v10.md to
+ * deny a feature that works.
+ *
+ * The list is not "finance words". It is "products this account cannot serve",
+ * and the only ones left are Liabilities — loan and credit-line detail — which
+ * is still not enabled. When that changes, these come off too and this comment
+ * is what says so.
+ *
+ * The rule this enforces is unchanged and is the reason the list exists at
+ * all: a prompt must never promise a friend something the account cannot
+ * deliver. architecture-overview.md §3 and docs/dashboard-build-rules.md §9
+ * are the sources of what is enabled.
+ */
 
 /**
  * Global-flag twins of FORBIDDEN_TERMS, precomputed once rather than rebuilt
@@ -264,15 +281,47 @@ describe('loadPrompt', () => {
     expect(() => loadPrompt(outside)).toThrow(/Path traversal not allowed/)
   })
 
-  it('flags 401(k) — the parenthesised form a rewrite is most likely to use', () => {
-    // Ledger item 11: the old pattern (/\b401\s?-?\s?k\b/i) matched "401k",
-    // "401-k", and "401 k" but not "401(k)", which is how the term is almost
-    // always written. Proving the widened pattern matches directly, rather
-    // than trusting that the real prompt still passes (it contains none of
-    // these terms today, so it would pass either way and prove nothing).
-    const sample = 'We can help you track your 401(k) balance.'
-    const matched = FORBIDDEN_TERMS.some((pattern) => pattern.test(sample))
-    expect(matched).toBe(true)
+  it('flags the inflected forms a rewrite is most likely to use', () => {
+    // Ledger item 11's lesson, repointed. The original case was 401(k): the
+    // old pattern matched "401k", "401-k" and "401 k" but not "401(k)", which
+    // is how the term is almost always written — so the sweep looked like it
+    // was working while missing the only spelling anyone uses.
+    //
+    // 401(k) left FORBIDDEN_TERMS when Investments was enabled on 2026-08-21,
+    // but the failure mode did not: a term is written in whatever form reads
+    // naturally, and a pattern that only matches one of them protects nothing.
+    // Asserted directly rather than by trusting a real prompt to contain the
+    // word, which would prove nothing on the day it stops containing it.
+    for (const sample of [
+      'Loan detail is not connected.',
+      'Loans are not connected.',
+      'Liability data is not connected.',
+      'Liabilities are not connected.',
+      'Your mortgage is not connected.',
+      'Mortgages are not connected.',
+    ]) {
+      expect(
+        FORBIDDEN_TERMS.some((pattern) => pattern.test(sample)),
+        sample,
+      ).toBe(true)
+    }
+  })
+
+  it('does NOT flag a product that is now enabled', () => {
+    // The other half, and the one that would silently over-fire: requiring a
+    // disclaimer for investments would force the live prompt to deny a feature
+    // that demonstrably works — 13 holdings and 1171 investment transactions
+    // against a real Sandbox item.
+    for (const sample of [
+      'I can show your investment holdings and trades.',
+      'Your 401(k) balance can be on the dashboard.',
+      'Your portfolio is included.',
+    ]) {
+      expect(
+        FORBIDDEN_TERMS.some((pattern) => pattern.test(sample)),
+        sample,
+      ).toBe(false)
+    }
   })
 
   it('names prompt files that exist on disk', () => {
@@ -295,18 +344,37 @@ describe('loadPrompt', () => {
     }
   })
 
-  it('points AGENT_PROMPT at v9, and keeps v8 unedited on disk', () => {
+  it('points AGENT_PROMPT at v10, and keeps v9 unedited on disk', () => {
     // The live interview prompt, pinned so a revert fails a test rather than
-    // quietly restoring what v9 removed: v8 asked the agent to describe back
-    // what was being built and never said how long the friend would wait.
-    // Prompts are added, never edited (CLAUDE.md > Data safety) — every
-    // transcript row written while v8 shipped stamps its hash, so the file
-    // must stay on disk and stay byte-identical.
-    expect(AGENT_PROMPT).toBe('agent-v9.md')
-    const v8 = loadPrompt('agent-v8.md')
-    const v9 = loadPrompt(AGENT_PROMPT)
-    expect(v8.sha).not.toBe(v9.sha)
+    // quietly restoring what v10 corrected: v9 told friends that investments
+    // were "not connected yet" (they are, since 2026-08-21) and that
+    // "refreshes happen when they log in" (they do not — there is no login
+    // sync and cannot be one; a friend presses Refresh).
+    //
+    // Both of those were FALSE STATEMENTS TO A FRIEND, which is why this was a
+    // new version rather than an edit: prompts are added, never edited
+    // (CLAUDE.md > Data safety), because every transcript row written while v9
+    // shipped stamps its hash, and editing the file would silently change what
+    // an already-stored hash points at.
+    expect(AGENT_PROMPT).toBe('agent-v10.md')
+    const v9 = loadPrompt('agent-v9.md')
+    const v10 = loadPrompt(AGENT_PROMPT)
+    expect(v9.sha).not.toBe(v10.sha)
+    expect(existsSync(promptPath('agent-v9.md'))).toBe(true)
+    // v8 too: every superseded version stays on disk forever.
     expect(existsSync(promptPath('agent-v8.md'))).toBe(true)
+  })
+
+  it('agent-v10 tells the friend the truth about refreshes and investments', () => {
+    // The two corrections that justified the version. Asserted on CONTENT
+    // rather than on the sha, so a future v11 that reintroduced either error
+    // would have to do so deliberately.
+    const { text } = loadPrompt('agent-v10.md')
+    expect(text).not.toContain('refreshes happen when they log in')
+    expect(text).toMatch(/investment holdings and trades/i)
+    // And the consequence a friend has to hear: nothing reaches them outside
+    // the app, because their key only exists while they are signed in.
+    expect(text).toMatch(/no alerts|nothing can reach them outside/i)
   })
 
   it('points ANNOUNCE_PROMPT at v3, and keeps v1 and v2 unedited on disk', () => {

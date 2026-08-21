@@ -67,3 +67,23 @@ describe('conversation.md is never committable', () => {
     expect(ignored('users/devtwo/notes/conversation.md')).toBe(false)
   })
 })
+
+describe('python bytecode is never committable', () => {
+  // The shared Plaid module is the first thing in this repo that one Python
+  // file imports from another, so users/<slug>/seed.py importing
+  // modules/plaid/seed_plaid.py is what first created a __pycache__. It is
+  // machine-specific and version-stamped, and it reached `git add -A`
+  // unnoticed — the pre-commit test gate caught it, for an unrelated reason.
+  it('ignores a __pycache__ beside the shared module', () => {
+    expect(ignored('modules/plaid/__pycache__/seed_plaid.cpython-311.pyc')).toBe(true)
+  })
+
+  it('ignores one beside a user seed, wherever python runs from', () => {
+    expect(ignored('users/plaidtest/__pycache__/seed.cpython-312.pyc')).toBe(true)
+  })
+
+  it('does not reach the source files themselves', () => {
+    expect(ignored('modules/plaid/seed_plaid.py')).toBe(false)
+    expect(ignored('users/plaidtest/seed.py')).toBe(false)
+  })
+})

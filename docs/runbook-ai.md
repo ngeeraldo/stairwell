@@ -34,6 +34,28 @@ work around when it gets in the way.
 | Edit an applied migration, or a `notes/v<n>.md` that already exists | Both are pinned by something permanent — a friend's `user_version`, an already-sent announcement. §2.2 and §3.1 say what to write instead. |
 | Add a `platform/prompts/*.md` version by editing an existing one | `prompt_sha` is stamped on rows that already exist. Prompts are added — `agent-v9.md`, never an edit to `agent-v8.md`. |
 | Put a friend's data in `notes/`, `current.md`, `metrics`, or any committed file | All are committed to the repo or unencrypted. Describe **shape** — a table, a panel, a computation — never a row, a value, or a merchant. |
+| Run any Plaid script with `PLAID_ENV` set to anything but `sandbox` | Every Plaid script in `scripts/` refuses outright, and that refusal is the point: `plaid-break-item.ts` deliberately breaks a bank connection, and doing that to a real person to test a code path is not a thing this repo should be able to do by accident. |
+| Log or print a raw Plaid error object | An SDK error carries `PLAID-SECRET` in its request headers. This is not hypothetical — it leaked into a transcript once, from a throwaway script with a bare `catch`. Extract `error_code`, or pass a `PlaidCallError` (which carries a `code`) to `logDbFailure`. Never `console.error(err)`. |
+
+## 1.1a What you MAY now do that you could not before
+
+**You may make authenticated calls to Plaid Sandbox.** Until the Plaid build,
+nothing you ran touched a network at all, and that bound is otherwise
+unchanged — this is the single exception, and it is narrow:
+
+- **Sandbox only.** The data is fabricated by Plaid and belongs to nobody.
+- **You never read `.env`.** The guard hook denies it. The variables are simply
+  in your environment; `npx tsx --env-file=.env <script>` is how a script sees
+  them, and you never see their values.
+- **A dashboard still never knows a network exists.** This permission covers
+  *scripts you run*, not code you write. Nothing under `users/<slug>/` may
+  import `lib/plaid/`.
+
+What it is for: `scripts/plaid-item-status.ts <slug>` tells you whether a bank
+is connected and healthy, and `npm run test:live` tells you whether Plaid still
+answers in the shape the committed fixture describes. Both are read-only
+questions about the world. If you find yourself wanting to WRITE through a
+Plaid script, stop — that is §1.4 territory.
 
 ## 1.2 Preflight
 
@@ -138,6 +160,37 @@ dashboard, and `spec.md` tells you only what changes.
 **Nothing after this means anything until it is done.** The migration is the
 only description of this dashboard's shape — there is no `schema.sql`.
 
+### 2.2a First, if the spec asks for bank or card data
+
+Vendor the shared Plaid envelope before writing anything of your own. It is a
+copy, and it takes **the next free number** — `001` on a fresh Flow A folder,
+but a friend who already has a dashboard (Flow B) has migrations already, and
+`lib/db/migrationFiles.ts` refuses outright when two files claim the same
+number:
+
+```bash
+ls users/$SLUG/migrations/           # look first — 001 is only free on Flow A
+cp modules/plaid/initial.sql \
+   users/$SLUG/migrations/00N_module_plaid_initial.sql
+```
+
+The `_module_` segment records where the file came from.
+`lib/db/migrationFiles.ts`'s existing filename pattern already accepts it, so
+nothing in the migration machinery changes — and the manifest command below
+picks it up like any other migration.
+
+**Never edit the copy.** That is the fork the never-forked rule forbids
+(CLAUDE.md > Schema & module rules). Everything this friend needs that Plaid's
+shape does not give them goes in your NEXT migration, as views over the stored
+JSON — `002_<slug>_finance.sql`. Read
+[docs/dashboard-build-rules.md](dashboard-build-rules.md) §9 before you write
+either file; it describes the 8 tables, what may write to them, and the four
+states a finance panel owes.
+
+Then carry on below as normal: your own views go in the number AFTER that.
+
+### 2.2b Every dashboard
+
 Use the fork from §1.2:
 
 - **No `.sql` yet** → write `migrations/001_initial.sql`. While 001 has never
@@ -171,6 +224,21 @@ That reads `SLUG` from the environment, so export it or prefix the command:
 It takes a target path, **runs the migrations in order**, and stamps
 `user_version` — a synthetic database is built by the same files a real one is,
 which is the point. Add the inserts.
+
+**If you vendored the Plaid module, you write no Plaid inserts at all.** Import
+the shared seeder instead, which replays a recorded, scrubbed Sandbox response
+so your synthetic data has Plaid's real field shape rather than a second
+author's guess at it:
+
+```python
+sys.path.insert(0, os.path.join(HERE, "..", "..", "modules", "plaid"))
+from seed_plaid import seed_plaid
+...
+seed_plaid(db)
+```
+
+`users/plaidtest/seed.py` is the worked example — copy its structure. Add your
+own inserts only for tables your own migration created.
 
 **Every value is loudly fake** — `COFFEE PALACE TEST` — **wherever the shape has
 free text to carry the marker.** A count or a `2026-08-18` cannot contain the

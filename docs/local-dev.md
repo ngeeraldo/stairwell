@@ -427,3 +427,66 @@ Both are recorded in `docs/superpowers/ledgers/step1a.md`:
   case.
 - `/unlock` has no logout control and a locked session cannot reach `/login`, so a
   forgotten password means clearing the localhost cookie by hand (residual #7).
+
+## Why `npm run dev` warms the API routes
+
+`npm run dev` runs `scripts/dev.ts`, which starts Next and then POSTs once to
+every route under `app/api/` before you log in. It prints one line:
+
+```
+[warm] compiled 16/16 API routes — unlocking now will survive the whole flow
+```
+
+**This is not an optimisation.** Next compiles a route the first time it is
+requested, and that compilation re-evaluates the server module graph —
+including `lib/session/keymap.ts`, which holds derived database keys in a
+module-level `Map` precisely because they may never be serialized. A fresh
+module instance is an empty map, so **every unlocked session in the process
+silently becomes locked**, mid-flow, with no message.
+
+It cost three debugging rounds the first time it happened, on the Plaid connect
+flow:
+
+```
+POST .../plaid/link-token 200            <- key present, works
+✓ Compiled /api/users/[user]/plaid/connect
+[plaid_connect] refused: session not unlocked   <- key gone
+POST .../plaid/connect 403
+```
+
+Two routes with identical auth checks, seconds apart, in one process. Warming
+at startup is free because nobody has unlocked yet, so there is no key to lose.
+
+Routes are DISCOVERED from the filesystem, never listed, so adding one needs no
+change here. `npm run dev:raw` skips the warm-up if you ever need Next bare.
+
+**Residual:** editing a route file still recompiles it and still drops every
+key. Nothing can prevent that, and it is at least legible — you changed a file,
+so being asked for your password again makes sense. Unlock and start the flow
+over.
+
+**Production is unaffected.** `next build` compiles every route ahead of time,
+so nothing compiles on demand. The production version of this behaviour is
+intended: a deploy leaves users logged in but locked
+(architecture-overview.md §2).
+
+## A locked session still renders a working dashboard in dev
+
+If every write suddenly 403s while the page looks completely fine, **you are
+locked and the dashboard is lying to you.** Unlock again.
+
+`app/[user]/page.tsx` calls `openUserDataForRead(slug, key)` — and in dev
+`lib/db/userData.ts` ignores the key entirely, opening `synthetic.db` as a
+plain file. So the dashboard renders whether or not a key exists, while every
+platform route refuses, because routes check `resolveState` properly.
+
+In production the same state shows "dashboard failed to load", because there
+the key is genuinely required to open the file. **Dev is the misleading one.**
+
+The usual way in: restarting `npm run dev` drops the in-process keymap (see the
+warm-up section above), you return to a tab that still shows your dashboard,
+and the first thing you press fails with no explanation. It cost a full
+debugging round during the Plaid connect build.
+
+The routes now name which gate refused — look for `refused: session not
+unlocked` in the dev server terminal, not the browser console.

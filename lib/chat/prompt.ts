@@ -47,7 +47,7 @@ const PROMPT_DIR = resolve(process.cwd(), 'platform/prompts')
  * moment it matters. Before v9 someone said "that's everything" and got a
  * receipt with no date on it.
  */
-export const AGENT_PROMPT = 'agent-v9.md'
+export const AGENT_PROMPT = 'agent-v10.md'
 
 /**
  * The spec-authoring prompt. Separate from the interview prompt so the output
