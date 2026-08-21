@@ -133,7 +133,27 @@ main() {
   # Accepted for a single-service pilot; the alternative is building to a temp
   # directory and swapping, which is real added scope. Flag to Nico before
   # relying on this path for anything with real users on it.
-  npm run build
+  #
+  # THE HEAP IS RAISED EXPLICITLY, and the number is measured rather than
+  # chosen. This droplet is 1 CPU / 961 MB, where Node sizes its default
+  # old-space at 493 MB — and `next build` runs tsc, whose peak crossed that
+  # when the Plaid SDK arrived (`plaid/dist/api.d.ts` is 3.6 MB). The failure
+  # is a bare "Reached heap limit ... Next.js build worker exited with code:
+  # null and signal: SIGABRT", which names nothing about its cause.
+  #
+  # Bisected locally by pinning --max-old-space-size to the droplet's own
+  # number:
+  #
+  #   493 MB, commit before Plaid   PASS
+  #   493 MB, commit with Plaid     OOM   <- the regression, exactly
+  #   700 MB, commit with Plaid     PASS
+  #
+  # 900 leaves margin over the 700 that passes. The box has ~646 MB available
+  # and 1.8 GB of free swap, so the tail of it swaps — slower on one core, and
+  # a build is infrequent. Raising the ceiling is preferred over
+  # `typescript: { ignoreBuildErrors: true }`, which also fixes it and would
+  # silently turn off the only compiler run that happens on this machine.
+  NODE_OPTIONS=--max-old-space-size=900 npm run build
 
   # 5. Tests gate the restart.
   if ! npx vitest run; then
