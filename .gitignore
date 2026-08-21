@@ -43,6 +43,18 @@
 users/*/conversation.md
 users/*/.conversation.md.*
 
+# Python bytecode. Nothing here generated any until the shared Plaid module
+# arrived: every seed.py before it was self-contained, so importing
+# modules/plaid/seed_plaid.py from users/<slug>/seed.py is what first created a
+# __pycache__ — and it is machine-specific, version-stamped
+# (cpython-311.pyc) and worthless as history.
+#
+# It was caught by the pre-commit test gate rather than by anything that knows
+# what a .pyc is: the gate saw a change under modules/ with no matching test
+# and blocked. Correct outcome, unrelated reason.
+__pycache__/
+*.pyc
+
 # Dependencies
 node_modules/
 

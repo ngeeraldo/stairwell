@@ -17,6 +17,7 @@ import type { DashboardModule } from './contract'
 const DASHBOARDS: Record<string, () => Promise<DashboardModule>> = {
   devone: () => import('@/users/devone/dashboard'),
   devtwo: () => import('@/users/devtwo/dashboard'),
+  plaidtest: () => import('@/users/plaidtest/dashboard'),
   run9: () => import('@/users/run9/dashboard'),
   run10: () => import('@/users/run10/dashboard'),
   run11: () => import('@/users/run11/dashboard'),

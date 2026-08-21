@@ -10,11 +10,15 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { PlaidApi } from 'plaid'
 import {
+  LINK_CLIENT_NAME,
   PlaidCallError,
   classifyError,
+  createLinkToken,
   exchangePublicToken,
   getHoldings,
+  getItem,
   plaidApiFromEnv,
+  removeItem,
   syncTransactions,
 } from '@/lib/plaid/client'
 
@@ -204,5 +208,141 @@ describe('plaidApiFromEnv refuses to guess an environment', () => {
     delete process.env.PLAID_SECRET
 
     expect(() => plaidApiFromEnv()).toThrow(PlaidCallError)
+  })
+})
+
+describe('createLinkToken — the two modes Phase 3 depends on', () => {
+  it('asks for products when connecting a NEW bank', async () => {
+    let seen: any
+    const api = stub({
+      linkTokenCreate: (req: unknown) => {
+        seen = req
+        return Promise.resolve({ data: { link_token: 'link-sandbox-1' } })
+      },
+    })
+
+    const token = await createLinkToken(api, {
+      clientUserId: '7',
+      products: ['transactions', 'investments'],
+    })
+
+    expect(token).toBe('link-sandbox-1')
+    expect(seen.products).toEqual(['transactions', 'investments'])
+    expect(seen.access_token).toBeUndefined()
+    // The friend sees this name above their bank's login form.
+    expect(seen.client_name).toBe(LINK_CLIENT_NAME)
+  })
+
+  it('asks for NO products in update mode, which is how a broken item is repaired', async () => {
+    let seen: any
+    const api = stub({
+      linkTokenCreate: (req: unknown) => {
+        seen = req
+        return Promise.resolve({ data: { link_token: 'link-sandbox-2' } })
+      },
+    })
+
+    await createLinkToken(api, { clientUserId: '7', accessToken: 'access-sandbox-x' })
+
+    // Plaid rejects the pair. Sending products here would make re-auth
+    // impossible for a friend whose bank has expired — the one failure the
+    // design currently has no other way out of.
+    expect(seen.access_token).toBe('access-sandbox-x')
+    expect('products' in seen).toBe(false)
+  })
+
+  it('refuses to send both, rather than letting Plaid answer with an opaque 400', async () => {
+    const api = stub({ linkTokenCreate: () => Promise.resolve({ data: {} }) })
+    await expect(
+      createLinkToken(api, { clientUserId: '7', products: ['transactions'], accessToken: 'a' }),
+    ).rejects.toBeInstanceOf(PlaidCallError)
+  })
+
+  it('never sends a friend’s slug to Plaid as the user id', async () => {
+    // Plaid STORES client_user_id. A slug is a name a person chose; the
+    // account's opaque integer id is not.
+    let seen: any
+    const api = stub({
+      linkTokenCreate: (req: unknown) => {
+        seen = req
+        return Promise.resolve({ data: { link_token: 't' } })
+      },
+    })
+
+    await createLinkToken(api, { clientUserId: '42', products: ['transactions'] })
+
+    expect(seen.user).toEqual({ client_user_id: '42' })
+    expect(JSON.stringify(seen)).not.toContain('run11')
+  })
+})
+
+describe('getItem — what this connection can serve, and whether it is broken', () => {
+  it('reports the products stored on plaid_items at connect time', async () => {
+    const api = stub({
+      itemGet: () =>
+        Promise.resolve({
+          data: {
+            item: {
+              item_id: 'item_1',
+              institution_id: 'ins_109508',
+              available_products: ['balance', 'recurring_transactions'],
+              error: null,
+            },
+          },
+        }),
+    })
+
+    const item = await getItem(api, 'token')
+
+    expect(item.itemId).toBe('item_1')
+    expect(item.institutionId).toBe('ins_109508')
+    expect(item.availableProducts).toEqual(['balance', 'recurring_transactions'])
+    expect(item.errorCode).toBeUndefined()
+  })
+
+  it('surfaces an expired bank connection as a taxonomy code, never as prose', async () => {
+    const api = stub({
+      itemGet: () =>
+        Promise.resolve({
+          data: {
+            item: {
+              item_id: 'item_1',
+              available_products: [],
+              error: { error_code: 'ITEM_LOGIN_REQUIRED', error_message: UPSTREAM_PROSE },
+            },
+          },
+        }),
+    })
+
+    const item = await getItem(api, 'token')
+
+    expect(item.errorCode).toBe('ITEM_LOGIN_REQUIRED')
+    expect(JSON.stringify(item)).not.toContain('Chase')
+  })
+
+  it('refuses an item with no id rather than inventing one', async () => {
+    const api = stub({ itemGet: () => Promise.resolve({ data: { item: {} } }) })
+    await expect(getItem(api, 'token')).rejects.toMatchObject({ code: 'unparseable' })
+  })
+})
+
+describe('removeItem', () => {
+  it('revokes the connection at Plaid', async () => {
+    let seen: any
+    const api = stub({
+      itemRemove: (req: unknown) => {
+        seen = req
+        return Promise.resolve({ data: { request_id: 'r' } })
+      },
+    })
+
+    await removeItem(api, 'access-sandbox-x')
+
+    expect(seen).toEqual({ access_token: 'access-sandbox-x' })
+  })
+
+  it('raises a code, not prose, when Plaid refuses', async () => {
+    const api = stub({ itemRemove: () => Promise.reject(httpError(400, 'INVALID_API_KEYS')) })
+    await expect(removeItem(api, 't')).rejects.toMatchObject({ code: 'auth' })
   })
 })

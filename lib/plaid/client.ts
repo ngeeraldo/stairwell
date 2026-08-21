@@ -63,6 +63,15 @@ import { Configuration, PlaidApi, PlaidEnvironments } from 'plaid'
  */
 export const PLAID_TIMEOUT_MS = 15_000
 
+/**
+ * The name Plaid Link shows the friend above their bank's login form.
+ *
+ * They are about to type real bank credentials into a window this name
+ * appears on, so it has to be something they recognise from the text message
+ * that invited them, not an internal codename.
+ */
+export const LINK_CLIENT_NAME = 'Stairwell'
+
 export type PlaidErrorCode =
   /** Non-2xx that is not one of the two below. */
   | 'http'
@@ -303,4 +312,123 @@ export async function getAccounts(api: PlaidApi, accessToken: string): Promise<u
     api.accountsGet({ access_token: accessToken }),
   )
   return arrayAt(body, 'accounts')
+}
+
+/**
+ * Mint the token Plaid Link opens with.
+ *
+ * TWO MODES, ONE FUNCTION, because they differ by one field and pretending
+ * otherwise would put the same four auth checks behind two routes:
+ *
+ *   NEW CONNECTION  — pass `products`. Plaid shows the institution picker.
+ *   UPDATE MODE     — pass `accessToken` and OMIT `products`. Plaid reopens
+ *                     the bank the friend already connected so they can log in
+ *                     again. This is the ONLY repair for an item that has gone
+ *                     `item_login_required`, and Plaid rejects the pair, so the
+ *                     caller may not supply both.
+ *
+ * `recurring_transactions` must NEVER appear in `products`: Plaid rejects it
+ * outright ("some products cannot be included in initial_products") and it
+ * becomes available on its own roughly ten seconds after the item exists.
+ * Verified against Sandbox — plan finding F1.
+ *
+ * `clientUserId` is OURS, not Plaid's, and it must never be a friend's slug or
+ * anything derived from their identity: Plaid stores it, and a slug is a name
+ * a person chose. The account's opaque integer id is the right value.
+ */
+export async function createLinkToken(
+  api: PlaidApi,
+  opts: {
+    clientUserId: string
+    products?: string[]
+    /**
+     * Products the friend CONSENTS to but which Plaid does not initialise, and
+     * which — critically — DO NOT FILTER THE INSTITUTION PICKER.
+     *
+     * Measured against Sandbox: 213 of 500 institutions are OAuth, and 112 of
+     * those 213 support transactions but NOT investments. Asking for
+     * investments in `products` therefore hides 53% of OAuth banks from the
+     * picker with no error — a friend banking with Chime, Discover or KeyBank
+     * would simply not find their own bank, and would have nothing to report
+     * except that it "isn't there".
+     */
+    additionalConsentedProducts?: string[]
+    accessToken?: string
+    /**
+     * Where an OAuth bank returns the friend after they log in.
+     *
+     * Must EXACTLY match an entry in the Plaid dashboard's allowed redirect
+     * URIs, path included. Set on every token, not only OAuth ones: which kind
+     * of institution the friend will pick is unknowable at mint time.
+     */
+    redirectUri?: string
+  },
+): Promise<string> {
+  if (opts.accessToken && opts.products) {
+    // A programming error, not an upstream one. Plaid would reject it anyway;
+    // failing here names the reason instead of returning an opaque 400.
+    throw new PlaidCallError('unparseable')
+  }
+
+  const body = await call<{ link_token?: unknown }>(() =>
+    api.linkTokenCreate({
+      user: { client_user_id: opts.clientUserId },
+      client_name: LINK_CLIENT_NAME,
+      country_codes: ['US'] as never,
+      language: 'en',
+      ...(opts.products ? { products: opts.products as never } : {}),
+      ...(opts.additionalConsentedProducts
+        ? { additional_consented_products: opts.additionalConsentedProducts as never }
+        : {}),
+      ...(opts.accessToken ? { access_token: opts.accessToken } : {}),
+      ...(opts.redirectUri ? { redirect_uri: opts.redirectUri } : {}),
+    }),
+  )
+  if (typeof body.link_token !== 'string') throw new PlaidCallError('unparseable')
+  return body.link_token
+}
+
+/**
+ * What this ITEM can serve, and whether it is broken.
+ *
+ * `availableProducts` is stored on the friend's plaid_items row at connect
+ * time so the refresh route can skip calls this connection cannot answer — a
+ * friend with one credit card should never pay the latency of an investments
+ * call (plan F8).
+ *
+ * `errorCode` is Plaid's own taxonomy value, not prose: it is how a session
+ * learns the bank connection has expired without anything reaching out to the
+ * friend, which nothing in this app can do anyway.
+ */
+export async function getItem(
+  api: PlaidApi,
+  accessToken: string,
+): Promise<{ itemId: string; institutionId?: string; availableProducts: string[]; errorCode?: string }> {
+  const body = await call<{ item?: Record<string, unknown> }>(() =>
+    api.itemGet({ access_token: accessToken }),
+  )
+  const item = body.item
+  if (!item || typeof item.item_id !== 'string') throw new PlaidCallError('unparseable')
+
+  const error = item.error as { error_code?: unknown } | null | undefined
+  return {
+    itemId: item.item_id,
+    institutionId: typeof item.institution_id === 'string' ? item.institution_id : undefined,
+    availableProducts: Array.isArray(item.available_products)
+      ? item.available_products.filter((p): p is string => typeof p === 'string')
+      : [],
+    errorCode: typeof error?.error_code === 'string' ? error.error_code : undefined,
+  }
+}
+
+/**
+ * Revoke the connection at Plaid.
+ *
+ * Genuinely irreversible: the access token stops working immediately and
+ * `/item/get` afterwards returns ITEM_NOT_FOUND (verified in Phase 1). A friend
+ * who reconnects gets a NEW item with new ids, so nothing about the old one
+ * survives on Plaid's side.
+ */
+export async function removeItem(api: PlaidApi, accessToken: string): Promise<void> {
+  await call<Record<string, unknown>>(() => api.itemRemove({ access_token: accessToken }))
 }

@@ -30,3 +30,7 @@
 PLATFORM_DB        REQUIRED  # Path to the platform database. Absent, lib/db/instance.ts falls back to the SYNTHETIC dev database and production serves loudly-fake data with every health check green.
 ANTHROPIC_API_KEY  DEGRADED  # Read by @anthropic-ai/sdk. Absent, POST /api/chat returns 503 and logs a chat_error, and scripts/announce-deploy.ts refuses to draft (use --plain to send the fixed sentence); the rest of the site is unaffected.
 NTFY_TOPIC         REQUIRED  # ntfy.sh topic for conversation-start alerts (lib/alerts/ntfy.ts). Absent, nothing user-visible fails and no page errors — the only symptom is a phone that never buzzes, which is the REQUIRED tier's definition rather than the DEGRADED one.
+PLAID_CLIENT_ID    DEGRADED  # Plaid API client id. Absent, connecting and refreshing a bank fail loudly with their own error states and a plaid_refreshes row; every dashboard without a bank is unaffected.
+PLAID_SECRET       DEGRADED  # Plaid API secret for the configured environment. Same loud failure as PLAID_CLIENT_ID.
+PLAID_ENV          REQUIRED  # sandbox | production. This is the PLATFORM_DB failure shape: a default would let production talk to Sandbox and serve fabricated balances to a real person with every health check green. lib/plaid/client.ts throws rather than guessing.
+PLAID_REDIRECT_URI DEGRADED  # Where an OAuth bank returns the friend (https://<host>/plaid/oauth). Must EXACTLY match an entry in the Plaid dashboard. Absent, non-OAuth banks still connect and OAuth banks — which is most real banks — fail at the picker.
