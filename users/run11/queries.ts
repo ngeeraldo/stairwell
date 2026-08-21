@@ -37,14 +37,23 @@
 // asked whether he wanted to set both bands and said "Just the hard no
 // number", and nothing has ever been said about rain.
 //
-// ─── AND SPEC v2 ADDED A SECOND SUBJECT ────────────────────────────────────
+// ─── AND SPEC v2 ADDED A SECOND SUBJECT — v3 A THIRD ───────────────────────
 //
-// Everything above the "WALK LOG" divider below is about a FORECAST — public
-// data about a place, written by a refresh, read to answer one question.
-// Everything below it is about what the friend TYPED IN. The two share this
-// file and nothing else: the walk log reads no forecast row, the decider reads
-// no walk, and spec v2 is explicit that the log "reads nothing from the
-// forecast and shares no data with the decider". Do not join them.
+// THREE SUBJECTS NOW, one per divider, and they share this file and nothing
+// else:
+//
+//   FORECAST   public data about a place, written by a refresh route, read to
+//              answer one question.
+//   WALK LOG   what the friend TYPED IN.
+//   SPENDING   what his BANK SYNCED, through the shared Plaid envelope, plus
+//              the re-filing he does on top of it.
+//
+// DO NOT JOIN THEM. The walk log reads no forecast row and the decider reads
+// no walk — spec v2 is explicit that the log "reads nothing from the forecast
+// and shares no data with the decider" — and spending touches neither. That is
+// three separate products on one dashboard, deliberately, and the obvious
+// joins ("you walked on 4 of the 6 days it said don't go") are the ones to
+// propose out loud rather than to slip in.
 import type { UserDb } from '@/lib/db/userDb'
 
 /**
@@ -839,4 +848,501 @@ export function earliestMonth(days: string[], today: string): string {
   if (first === undefined) return rolling
   const firstMonth = monthOf(first)
   return firstMonth < rolling ? firstMonth : rolling
+}
+
+// ─── SPENDING, spec v3 ──────────────────────────────────────────────────────
+//
+// The third screen, and a different SOURCE from everything above it. The
+// forecast is written by a route from a public API; the walk log is typed in;
+// this is SYNCED FROM A BANK, through the shared Plaid envelope that
+// migrations/003_module_plaid_initial.sql vendored.
+//
+// ─── THIS FILE STILL DOES NOT KNOW A NETWORK EXISTS ────────────────────────
+//
+// Nothing below imports lib/plaid/ and nothing below could. A dashboard reads
+// tables that are already there and already populated; every Plaid CALL lives
+// in one of four shared platform routes that no builder writes or copies
+// (docs/dashboard-build-rules.md §9.1). The only reason this section knows the
+// word "Plaid" at all is that the tables are named for where their rows came
+// from.
+//
+// ─── AND IT STILL WRITES NOTHING ───────────────────────────────────────────
+//
+// No INSERT, UPDATE or DELETE against a plaid_* table, ever: exactly one thing
+// writes them, and it is the refresh route (§9.4). The handle these functions
+// receive is read-only in dev and in production alike, so that is enforced
+// rather than intended. The friend's re-filing is an ANNOTATION in his own
+// table keyed to `transaction_id` — never an edit to a synced row, or the next
+// refresh would trample it.
+//
+// ─── EVERY VALUE COMES OUT OF JSON, VIA A VIEW ─────────────────────────────
+//
+// The envelope stores Plaid's payload verbatim and gives columns only to the
+// keys a row is upserted or filtered on, so a panel reads
+// json_extract(payload, '$.whatever'). Both views live in
+// migrations/004_run11_spending.sql rather than here: which accounts count and
+// how a category is resolved are SHAPE, and putting them in SQL means the pie
+// and the list cannot drift apart by being written twice.
+//
+// ─── SIGNS, WHICH ARE THE WHOLE ARITHMETIC OF THE PIE ──────────────────────
+//
+// Plaid signs an outflow POSITIVE and an inflow NEGATIVE. This file NETS the
+// signed amounts per category rather than summing the positives, and that
+// choice is doing real work in two places — see `categoryTotals`.
+
+/**
+ * How far back the Spending screen looks, in days, inclusive of today.
+ *
+ * Spec v3 asks for "the last 30 days" throughout. It is a FIXED window, with
+ * no pre-existence bound of the kind `walkRate` above carries, and the
+ * difference is the guidelines' own rule: a panel fed by a synced source shows
+ * history as far back as real data exists, because backfilled data is data
+ * (docs/dashboard-ui-ux-guidelines.md > States). The walk log needs that bound
+ * because a day before the friend had the screen is a day he could not have
+ * marked; his bank has no such gap.
+ */
+export const SPENDING_WINDOW_DAYS = 30
+
+/** The category a transaction with no Plaid categorisation falls into. */
+export const UNCATEGORIZED = 'UNCATEGORIZED'
+
+/**
+ * How long a category name the friend types may be.
+ *
+ * A bound rather than an opinion: this is the first free-text value written by
+ * any dashboard in this repo, and an unbounded string in a primary key is a
+ * row nobody can render. Restated by the route, which is what actually
+ * enforces it — see the route's own header for why it does not import this.
+ */
+export const CATEGORY_NAME_MAX = 40
+
+export type SpendingAccount = {
+  accountId: string
+  name: string
+  mask: string | null
+  type: string
+  subtype: string | null
+}
+
+export type SpendingTransaction = {
+  transactionId: string
+  day: string
+  accountName: string
+  accountMask: string | null
+  merchant: string | null
+  description: string | null
+  amount: number
+  pending: number | null
+  plaidCategory: string | null
+  overrideCategory: string | null
+  category: string
+}
+
+export type CategorySlice = {
+  category: string
+  /** Net dollars out, rounded to cents. Always > 0 — see `categoryTotals`. */
+  amount: number
+  /** This category's share of `total`, 0..1. */
+  share: number
+  count: number
+}
+
+/**
+ * One line of the legend: every category in the window, drawn or not.
+ *
+ * The legend lists ALL of them because it is also the CONTROL — a category he
+ * has unticked has to stay on screen with its box, or he cannot tick it back.
+ */
+export type CategoryRow = {
+  category: string
+  /** Net dollars, rounded to cents. May be zero or negative. */
+  amount: number
+  count: number
+  /** Resolved: his explicit choice if he made one, else the default. */
+  included: boolean
+  /** Whether he has actually pressed this, as opposed to taking the default. */
+  chosen: boolean
+  /** Included AND positive — a wedge can be drawn for it. */
+  drawable: boolean
+  /** Share of `total`, 0..1. Zero unless drawable. */
+  share: number
+}
+
+export type CategoryTotals = {
+  /** Every category in the window, largest first. The legend renders this. */
+  rows: CategoryRow[]
+  /** Just the drawable ones, largest first. The pie renders this. */
+  slices: CategorySlice[]
+  /** The sum of every slice, and the denominator of every share. */
+  total: number
+}
+
+export type PlaidRefresh = {
+  at: number
+  product: string
+  ok: number
+  code: string | null
+}
+
+/**
+ * The first day of the 30-day window ending on `today`.
+ *
+ * Inclusive at both ends, so the window is exactly SPENDING_WINDOW_DAYS long —
+ * the same reading `walkRate` uses for "the last 30 days", deliberately, so
+ * two panels on one dashboard do not mean two different things by the phrase.
+ */
+export function spendingWindowStart(today: string): string {
+  return shiftDay(today, -(SPENDING_WINDOW_DAYS - 1))
+}
+
+/**
+ * Whether a bank is connected at all.
+ *
+ * COUNTS ITEMS, NEVER TRANSACTIONS, and that is the most load-bearing line in
+ * this section. A freshly connected bank has a token and zero rows for the
+ * seconds Plaid spends backfilling; inferring "not connected" from an empty
+ * transaction table would tell the friend his connection failed at the exact
+ * moment it was working (docs/dashboard-build-rules.md §9.6, state 1).
+ */
+export function isConnected(db: UserDb): boolean {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM plaid_items').get() as { n: number }
+  return row.n > 0
+}
+
+/**
+ * The accounts this screen counts, which the panel names on screen.
+ *
+ * The scope itself is in the view (004's `spending_accounts`): every `credit`
+ * account plus every `depository` account whose subtype is `checking` — spec
+ * v3's "a connected credit card and a connected debit card". It is read back
+ * here so the panel can SAY which accounts it is reading. That is not
+ * decoration: the scope is an allow-list, so a bank reporting his debit
+ * account under a different subtype would drop out of the picture, and naming
+ * the accounts is what makes that visible rather than silent.
+ */
+export function spendingAccounts(db: UserDb): SpendingAccount[] {
+  return db
+    .prepare(
+      `SELECT account_id AS accountId, name, mask, type, subtype
+         FROM spending_accounts
+        ORDER BY type, name`,
+    )
+    .all() as SpendingAccount[]
+}
+
+/**
+ * Every transaction in the window, newest first, with its category resolved.
+ *
+ * ONE READ FEEDS BOTH PANELS. The pie and the list are computed from the same
+ * array — `categoryTotals` below is a pure function of it — so they cannot
+ * disagree about where a dollar sits, which spec v3 asks for by name ("the two
+ * panels never disagree"). Two queries would be two answers to "what is in
+ * this window".
+ *
+ * `date` is Plaid's own YYYY-MM-DD, stored as given, so the window is a string
+ * comparison — 'YYYY-MM-DD' sorts as its own calendar. NOTHING HERE READS A
+ * CLOCK: `today` is handed to the dashboard by the platform and passed down.
+ *
+ * Unbounded by design, like `markedDays` above. A LIMIT would silently drop
+ * transactions out of the pie, and a pie missing its tail is wrong in a way
+ * nobody can see. Thirty days of one card and one current account is a
+ * three-figure row count at the very worst.
+ */
+export function spendingTransactions(db: UserDb, today: string): SpendingTransaction[] {
+  return db
+    .prepare(
+      `SELECT transaction_id   AS transactionId,
+              day,
+              account_name     AS accountName,
+              account_mask     AS accountMask,
+              merchant,
+              description,
+              amount,
+              pending,
+              plaid_category    AS plaidCategory,
+              override_category AS overrideCategory,
+              category
+         FROM spending_transactions
+        WHERE day BETWEEN ? AND ?
+        ORDER BY day DESC, transaction_id DESC`,
+    )
+    .all(spendingWindowStart(today), today) as SpendingTransaction[]
+}
+
+/**
+ * His explicit ticked/unticked choices, and only those.
+ *
+ * A category he has never pressed has NO ROW here — the default is resolved at
+ * read time by `categoryTotals` below. See 004's comment on the table for why
+ * that is forced rather than preferred: writing a default row would be the
+ * dashboard writing to his database on a render, and a render never writes.
+ */
+export function categoryVisibility(db: UserDb): Map<string, boolean> {
+  const rows = db.prepare('SELECT category, included FROM category_visibility').all() as {
+    category: string
+    included: number
+  }[]
+  return new Map(rows.map((r) => [r.category, r.included === 1]))
+}
+
+/**
+ * Whether a category is in the pie, given its net and his choices.
+ *
+ * THE DEFAULT IS CONDITIONAL, which is the whole reason `category_visibility`
+ * stores a boolean rather than a presence: ticked by default if the category
+ * consumed money, unticked by default if it did not.
+ *
+ * A category that nets to zero or less is money that came back rather than
+ * money that went out — a refund, or a card payment with both sides connected
+ * — and it cannot be drawn as a wedge anyway. Defaulting it off means the
+ * legend shows it at $0 with an empty box, which explains itself, instead of
+ * the panel needing a sentence about where it went.
+ *
+ * Resolved at READ time, so a category that nets to zero this fortnight and
+ * goes positive next month comes back on its own rather than staying silently
+ * switched off because of one quiet spell.
+ */
+export function resolveVisibility(amount: number, chosen: boolean | undefined): boolean {
+  return chosen ?? amount > 0
+}
+
+/**
+ * The pie and the legend: net dollars per category, largest first.
+ *
+ * A PURE FUNCTION of the rows above plus his choices, so every edge below is
+ * testable without a database and the two panels are guaranteed to be
+ * describing one list.
+ *
+ * ─── WHY IT NETS SIGNED AMOUNTS RATHER THAN SUMMING OUTFLOWS ───────────────
+ *
+ * Plaid signs an outflow positive and an inflow negative, so netting is what
+ * makes two things come out right that a positives-only sum gets wrong:
+ *
+ *   * A REFUND reduces the category it came back from. A $500 flight charged
+ *     and then refunded is not $500 that went to travel, and a pie that says
+ *     it did is answering the friend's one question — "what percentage of my
+ *     money is going where" — with a number he did not spend.
+ *   * A CARD PAYMENT cancels against itself when both sides are connected: it
+ *     leaves the current account as an outflow and lands on the card as an
+ *     inflow, under the same category, so the pair nets to nothing instead of
+ *     double-counting spending the card's own charges already carry.
+ *
+ * ─── AND WHY THE TICK BOX EXISTS ON TOP OF THAT ────────────────────────────
+ *
+ * Netting only cancels a transfer whose OTHER SIDE IS ALSO CONNECTED. One
+ * whose counterpart is an account this screen does not cover has nothing to
+ * cancel against, and lands as a large slice that is not spending — which is
+ * spec v3's own second open question. Nothing here decides that a category is
+ * "not really spending", because that would be this dashboard forming an
+ * opinion about his money; his tick does.
+ *
+ * ─── WHAT `rows` AND `slices` ARE FOR ──────────────────────────────────────
+ *
+ * `rows` is EVERY category in the window, ticked or not, and the legend
+ * renders it — an unticked category has to stay on screen with its box, or he
+ * cannot tick it back. `slices` is the subset that can actually be drawn, and
+ * the pie renders that. Shares are computed against the ticked, positive total
+ * ONLY, which is what "exclude from the pie chart and the percentage" means.
+ *
+ * Rounded to cents BEFORE anything compares against zero, so a float residue
+ * of a fraction of a penny cannot decide whether a category is ticked.
+ */
+export function categoryTotals(
+  rows: SpendingTransaction[],
+  visibility: ReadonlyMap<string, boolean> = new Map(),
+): CategoryTotals {
+  const net = new Map<string, { amount: number; count: number }>()
+  for (const row of rows) {
+    const entry = net.get(row.category) ?? { amount: 0, count: 0 }
+    entry.amount += row.amount
+    entry.count += 1
+    net.set(row.category, entry)
+  }
+
+  const all: CategoryRow[] = []
+  let total = 0
+  for (const [category, entry] of net) {
+    const amount = Math.round(entry.amount * 100) / 100
+    const chosen = visibility.get(category)
+    const included = resolveVisibility(amount, chosen)
+    const drawable = included && amount > 0
+    if (drawable) total += amount
+    all.push({
+      category,
+      amount,
+      count: entry.count,
+      included,
+      chosen: chosen !== undefined,
+      drawable,
+      share: 0,
+    })
+  }
+
+  // Largest first, and ties broken by name so the order — and therefore every
+  // slice's colour — is stable between renders. Two categories at the same
+  // figure swapping places on a refresh would look like the data moved. This
+  // also sinks the zero and negative ones to the bottom of the legend on their
+  // own, without a second sorting rule to keep in step with this one.
+  all.sort((a, b) => b.amount - a.amount || a.category.localeCompare(b.category))
+
+  const withShares = all.map((row) => ({
+    ...row,
+    share: row.drawable && total > 0 ? row.amount / total : 0,
+  }))
+
+  return {
+    rows: withShares,
+    slices: withShares
+      .filter((row) => row.drawable)
+      .map(({ category, amount, share, count }) => ({ category, amount, share, count })),
+    // The denominator, and nothing else. Spec v3 drops the grand total from
+    // the screen on the friend's own correction — he asked for one, then said
+    // he had misspoken and meant the amount per category — so this is never
+    // rendered.
+    total: Math.round(total * 100) / 100,
+  }
+}
+
+/**
+ * The buckets the friend has made for himself, alphabetically.
+ *
+ * Stored COLLATE NOCASE (004), so "Coffee" and "coffee" are one bucket. These
+ * are offered in the re-file menu whether or not anything sits in them yet:
+ * spec v3 has them becoming slices "once anything is filed there", which means
+ * an empty one is a legitimate state and not a row to hide.
+ */
+export function customCategories(db: UserDb): string[] {
+  const rows = db
+    .prepare('SELECT name FROM custom_categories ORDER BY name COLLATE NOCASE')
+    .all() as { name: string }[]
+  return rows.map((r) => r.name)
+}
+
+/**
+ * Every category a transaction can be moved into.
+ *
+ * The friend's own buckets, plus every category his bank has ever produced —
+ * not just the ones inside the current window. A category that was on screen
+ * last month has to stay reachable, or a transaction re-filed by mistake can
+ * never be put back where it came from.
+ *
+ * Read across the whole view rather than the window for exactly that reason.
+ * It is a distinct-value scan of a small table with no user input in it.
+ */
+export function bankCategories(db: UserDb): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT COALESCE(plaid_category, ?) AS category
+         FROM spending_transactions
+        ORDER BY category`,
+    )
+    .all(UNCATEGORIZED) as { category: string }[]
+  return rows.map((r) => r.category)
+}
+
+/**
+ * A category key as the friend should read it.
+ *
+ * His own bucket is shown exactly as he typed it — it is his sentence, not
+ * ours to reformat. A bank category is one of Plaid's SCREAMING_SNAKE keys and
+ * is humanised, because `FOOD_AND_DRINK` on a pie slice reads as a database.
+ *
+ * Which of the two a key is comes from the custom-category set rather than
+ * from the shape of the string. A friend who types a name that happens to look
+ * like a Plaid key gets it back unchanged, and the alternative — inferring
+ * from capitalisation — would quietly rewrite a bucket someone deliberately
+ * named in capitals.
+ */
+export function categoryLabel(category: string, custom: ReadonlySet<string>): string {
+  if (custom.has(category)) return category
+  const words = category.toLowerCase().split('_').join(' ')
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+/**
+ * The last refresh attempt per product, successful or not.
+ *
+ * A FAILED attempt is as load-bearing as a successful one: without it the
+ * panel cannot tell "we couldn't reach your bank" from "your bank has nothing
+ * new", and would render stale figures as current — which
+ * docs/dashboard-ui-ux-guidelines.md > States forbids by name. There is no
+ * automatic refresh and there cannot be one: the friend's data key exists only
+ * while he is unlocked, so pressing Refresh is what "fresh" means (§9.5).
+ */
+export function lastRefreshes(db: UserDb): PlaidRefresh[] {
+  return db
+    .prepare(
+      `SELECT at, product, ok, code
+         FROM plaid_refreshes r
+        WHERE at = (SELECT MAX(at) FROM plaid_refreshes WHERE product = r.product)
+        ORDER BY product`,
+    )
+    .all() as PlaidRefresh[]
+}
+
+/**
+ * Whether any product's last attempt says the bank needs him to log in again.
+ *
+ * The one failure only the friend can fix (§9.6, state 4), and the only
+ * condition under which this dashboard offers a reconnect control. Showing one
+ * permanently would read as "your bank is broken" at every moment it is not —
+ * nothing in the app knows an item's health until something calls Plaid and
+ * gets this code back.
+ */
+export function needsReauth(refreshes: PlaidRefresh[]): boolean {
+  return refreshes.some((r) => !r.ok && r.code === 'item_login_required')
+}
+
+/**
+ * How many categories the pie draws individually before folding the rest.
+ *
+ * Seven, because the validated palette has seven categorical slots and an
+ * eighth colour would have to be generated or recycled — which is how a
+ * palette stops being checkable (users/run11/palette.ts). It is also simply
+ * how many wedges a pie can carry before it stops answering anything.
+ */
+export const PIE_MAX_SLICES = 7
+
+/**
+ * The fold bucket's name. Not a category anybody can be filed into — nothing
+ * writes it, it is never offered in the re-file menu, and it exists only for
+ * the length of one render.
+ */
+export const OTHER_CATEGORY = 'Other'
+
+/**
+ * The slices as drawn: the largest `max`, plus one "Other" carrying the rest.
+ *
+ * A pure function of `categoryTotals`' output, kept here rather than in the
+ * component because it decides what the friend can and cannot see — a rule
+ * left in a client component is a rule this folder's own tests cannot reach
+ * (the same reason `calendarGrid` lives here, and ./MonthCalendar.tsx says so
+ * at length).
+ *
+ * `folded` NAMES the categories that went into the bucket rather than counting
+ * them. The panel needs the names, not a number: each one still gets its own
+ * legend row with its own tick box, so a category he wants out of the pie is
+ * reachable even when the chart has combined it into a grey wedge. A fold that
+ * swallowed a category's control along with its wedge would be silent
+ * truncation with an extra step (docs/dashboard-ui-ux-guidelines.md > States).
+ *
+ * Folding only happens at `max + 2` or more. With exactly one category over
+ * the limit, an "Other" wedge would hold a single category and hide its name
+ * for no gain — so the eighth is simply drawn, in the neutral, and named.
+ */
+export function foldIntoOther(
+  slices: CategorySlice[],
+  max: number = PIE_MAX_SLICES,
+): { drawn: CategorySlice[]; folded: string[] } {
+  if (slices.length <= max + 1) return { drawn: slices, folded: [] }
+  const kept = slices.slice(0, max)
+  const rest = slices.slice(max)
+  const amount = Math.round(rest.reduce((sum, s) => sum + s.amount, 0) * 100) / 100
+  const other: CategorySlice = {
+    category: OTHER_CATEGORY,
+    amount,
+    share: rest.reduce((sum, s) => sum + s.share, 0),
+    count: rest.reduce((sum, s) => sum + s.count, 0),
+  }
+  return { drawn: [...kept, other], folded: rest.map((s) => s.category) }
 }
