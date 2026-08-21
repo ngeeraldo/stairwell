@@ -85,6 +85,16 @@ export type PlaidErrorCode =
   | 'auth'
   /** The FRIEND must reconnect their bank. The one code with a user-facing meaning. */
   | 'item_login_required'
+  /**
+   * Plaid has the connection but has not finished preparing this product yet.
+   *
+   * NOT A FAILURE, and it needs its own code precisely so a caller can tell it
+   * apart. Recurring cannot be requested when an item is created and becomes
+   * available roughly ten seconds later, so the first refresh after a friend
+   * connects routinely sees this — and reporting "couldn't reach your bank"
+   * then would be wrong in a way the friend can see.
+   */
+  | 'product_not_ready'
 
 /**
  * Carries a CODE, never Plaid's message.
@@ -162,6 +172,7 @@ export function classifyError(error: unknown): PlaidErrorCode {
 
   const plaidCode = e.response?.data?.error_code
   if (plaidCode === 'ITEM_LOGIN_REQUIRED') return 'item_login_required'
+  if (plaidCode === 'PRODUCT_NOT_READY') return 'product_not_ready'
   if (plaidCode === 'INVALID_API_KEYS' || status === 401) return 'auth'
 
   return 'http'
@@ -431,4 +442,151 @@ export async function getItem(
  */
 export async function removeItem(api: PlaidApi, accessToken: string): Promise<void> {
   await call<Record<string, unknown>>(() => api.itemRemove({ access_token: accessToken }))
+}
+
+export type RecurringStreams = {
+  inflow: unknown[]
+  outflow: unknown[]
+}
+
+/**
+ * Detected subscriptions and paychecks.
+ *
+ * A SNAPSHOT, not a log: Plaid recomputes the streams on every call, and a
+ * stream that stops recurring stops being returned. The caller replaces rather
+ * than merges.
+ *
+ * ── PRODUCT_NOT_READY IS NOT A FAILURE ──────────────────────────────────────
+ *
+ * Recurring cannot be requested when an item is created — Plaid rejects it in
+ * `initial_products` outright — and becomes available on its own roughly ten
+ * seconds later. Measured against Sandbox: not ready at 5s, ready at 10s.
+ *
+ * So the FIRST refresh after a friend connects will very often find it
+ * missing, and treating that as an error would put "couldn't reach your bank"
+ * on the screen at the exact moment everything is working. `notReady` is the
+ * honest third answer, distinct from both success and failure, and the panel
+ * can say "still working this out" rather than lying in either direction.
+ */
+export async function getRecurring(
+  api: PlaidApi,
+  accessToken: string,
+): Promise<RecurringStreams | 'notReady'> {
+  try {
+    const body = await call<Record<string, unknown>>(() =>
+      api.transactionsRecurringGet({ access_token: accessToken }),
+    )
+    return {
+      inflow: arrayAt(body, 'inflow_streams'),
+      outflow: arrayAt(body, 'outflow_streams'),
+    }
+  } catch (error) {
+    // Checked against OUR code, not Plaid's raw body: `call` has already
+    // normalised the error by the time it reaches here, which is exactly why
+    // 'product_not_ready' is a member of the closed set rather than something
+    // this function digs out of a response. Everything else keeps propagating,
+    // so a genuine outage is still an outage.
+    if (error instanceof PlaidCallError && error.code === 'product_not_ready') return 'notReady'
+    throw error
+  }
+}
+
+/**
+ * How many investment transactions to ask for per page.
+ *
+ * Plaid's maximum is 500. A real Sandbox item held 1171, so this is genuinely
+ * paged rather than theoretically paged — the FIRST page is not the answer.
+ */
+export const INVESTMENT_TX_PAGE = 500
+
+/**
+ * A hard stop on paging, so a bad `total` can never spin forever.
+ *
+ * 20 pages is 10,000 transactions — far past anything two years of investing
+ * produces, and the loop reports how many it fetched, so a friend at the cap
+ * shows up as a number rather than as silence.
+ */
+const INVESTMENT_TX_MAX_PAGES = 20
+
+/**
+ * Buys and sells over a date range.
+ *
+ * THE THIRD DATA PATTERN, and the only one that pages. Unlike
+ * /transactions/sync there is no cursor to resume from, and unlike
+ * /investments/holdings/get one call is not the whole answer — so this walks
+ * offsets until it has everything Plaid says exists.
+ *
+ * Dates are supplied by the caller as YYYY-MM-DD and never derived from a
+ * clock here: this app has exactly one answer to what day it is for a friend
+ * (lib/time/dayKey.ts), and a Plaid client is not allowed to become a second.
+ */
+export async function getInvestmentTransactions(
+  api: PlaidApi,
+  accessToken: string,
+  range: { startDate: string; endDate: string },
+): Promise<{ transactions: unknown[]; securities: unknown[]; truncated: boolean }> {
+  const transactions: unknown[] = []
+  const securities = new Map<string, unknown>()
+  let total = Infinity
+  let page = 0
+
+  while (transactions.length < total && page < INVESTMENT_TX_MAX_PAGES) {
+    const body = await call<Record<string, unknown>>(() =>
+      api.investmentsTransactionsGet({
+        access_token: accessToken,
+        start_date: range.startDate,
+        end_date: range.endDate,
+        options: { count: INVESTMENT_TX_PAGE, offset: page * INVESTMENT_TX_PAGE },
+      }),
+    )
+
+    const batch = arrayAt(body, 'investment_transactions')
+    // Securities repeat across pages; keyed so one page's copy does not
+    // overwrite another's with an identical value a hundred times.
+    for (const security of arrayAt(body, 'securities')) {
+      const id = (security as { security_id?: unknown })?.security_id
+      if (typeof id === 'string') securities.set(id, security)
+    }
+
+    transactions.push(...batch)
+    const reported = body.total_investment_transactions
+    total = typeof reported === 'number' ? reported : transactions.length
+    page += 1
+
+    // A page Plaid answered with nothing means there is nothing further,
+    // whatever the total claims. Without this a wrong total is an infinite
+    // loop bounded only by MAX_PAGES.
+    if (batch.length === 0) break
+  }
+
+  return {
+    transactions,
+    securities: [...securities.values()],
+    // Said out loud rather than hidden: a silently truncated list reads as
+    // "this is everything" (CLAUDE.md — no silent caps).
+    truncated: transactions.length < total,
+  }
+}
+
+/**
+ * Ask the BANK for anything newer than Plaid's cached copy.
+ *
+ * FIRE AND FORGET, and that is why it is not on the default refresh path.
+ * It returns a `request_id` and nothing else — the extraction is still running
+ * at the bank when this resolves, so calling it and then immediately syncing
+ * returns exactly what Plaid already had. It is also one of the two endpoints
+ * billed PER CALL.
+ *
+ * Kept because it is the only way to get data newer than Plaid's last pull,
+ * which a friend staring at a missing coffee they just bought will eventually
+ * want. Its caller has to be honest that the result arrives on a LATER
+ * refresh, not this one.
+ */
+export async function requestTransactionsRefresh(
+  api: PlaidApi,
+  accessToken: string,
+): Promise<void> {
+  await call<Record<string, unknown>>(() =>
+    api.transactionsRefresh({ access_token: accessToken }),
+  )
 }

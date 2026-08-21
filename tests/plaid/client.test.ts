@@ -10,15 +10,19 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { PlaidApi } from 'plaid'
 import {
+  INVESTMENT_TX_PAGE,
   LINK_CLIENT_NAME,
   PlaidCallError,
   classifyError,
   createLinkToken,
   exchangePublicToken,
   getHoldings,
+  getInvestmentTransactions,
   getItem,
+  getRecurring,
   plaidApiFromEnv,
   removeItem,
+  requestTransactionsRefresh,
   syncTransactions,
 } from '@/lib/plaid/client'
 
@@ -57,6 +61,13 @@ describe('property 3 — a code, never Plaid’s prose', () => {
   it('separates no-egress from a slow provider', () => {
     expect(classifyError({ code: 'ENOTFOUND' })).toBe('network')
     expect(classifyError({ code: 'ECONNABORTED' })).toBe('timeout')
+  })
+
+  it('gives PRODUCT_NOT_READY its own code, because it is not a failure', () => {
+    // Plaid has the connection and has not finished preparing the product.
+    // Lumping it in with 'http' would make the first refresh after connecting
+    // say "couldn't reach your bank" while everything was working.
+    expect(classifyError(httpError(400, 'PRODUCT_NOT_READY'))).toBe('product_not_ready')
   })
 
   it('falls back to http for any other non-2xx', () => {
@@ -344,5 +355,143 @@ describe('removeItem', () => {
   it('raises a code, not prose, when Plaid refuses', async () => {
     const api = stub({ itemRemove: () => Promise.reject(httpError(400, 'INVALID_API_KEYS')) })
     await expect(removeItem(api, 't')).rejects.toMatchObject({ code: 'auth' })
+  })
+})
+
+describe('getRecurring — the third answer that is neither success nor failure', () => {
+  it('returns notReady for PRODUCT_NOT_READY, rather than an error', async () => {
+    // Recurring cannot be requested at item creation and becomes available on
+    // its own about ten seconds later, so the FIRST refresh after a friend
+    // connects very often finds it missing. Treating that as an error would
+    // put "couldn't reach your bank" on screen at the exact moment everything
+    // is working.
+    const api = stub({
+      transactionsRecurringGet: () => Promise.reject(httpError(400, 'PRODUCT_NOT_READY')),
+    })
+
+    await expect(getRecurring(api, 'token')).resolves.toBe('notReady')
+  })
+
+  it('still raises a genuine outage', async () => {
+    const api = stub({
+      transactionsRecurringGet: () => Promise.reject(httpError(500, 'INTERNAL_SERVER_ERROR')),
+    })
+    await expect(getRecurring(api, 'token')).rejects.toMatchObject({ code: 'http' })
+  })
+
+  it('separates inflow from outflow — a paycheck is not a subscription', async () => {
+    const api = stub({
+      transactionsRecurringGet: () =>
+        Promise.resolve({
+          data: { inflow_streams: [{ stream_id: 'in_1' }], outflow_streams: [{ stream_id: 'out_1' }] },
+        }),
+    })
+
+    const streams = await getRecurring(api, 'token')
+
+    expect(streams).toEqual({ inflow: [{ stream_id: 'in_1' }], outflow: [{ stream_id: 'out_1' }] })
+  })
+})
+
+describe('getInvestmentTransactions — the only paged endpoint', () => {
+  /** `total` pages of `count` each, so paging is genuinely exercised. */
+  function pager(total: number) {
+    const calls: any[] = []
+    const api = stub({
+      investmentsTransactionsGet: (req: any) => {
+        calls.push(req)
+        const offset = req.options.offset as number
+        const size = Math.min(req.options.count as number, Math.max(0, total - offset))
+        return Promise.resolve({
+          data: {
+            investment_transactions: Array.from({ length: size }, (_, i) => ({
+              investment_transaction_id: `tx_${offset + i}`,
+            })),
+            // The SAME security on every page, to prove dedup.
+            securities: [{ security_id: 'sec_1' }],
+            total_investment_transactions: total,
+          },
+        })
+      },
+    })
+    return { api, calls }
+  }
+
+  const RANGE = { startDate: '2024-01-01', endDate: '2026-01-01' }
+
+  it('walks past the first page — a real item held 1171', async () => {
+    const { api, calls } = pager(1171)
+
+    const result = await getInvestmentTransactions(api, 'token', RANGE)
+
+    expect(result.transactions).toHaveLength(1171)
+    expect(result.truncated).toBe(false)
+    // Offsets advance; a loop that always asked for offset 0 would return the
+    // first page forever and look like it worked.
+    expect(calls.map((c) => c.options.offset)).toEqual([0, INVESTMENT_TX_PAGE, INVESTMENT_TX_PAGE * 2])
+  })
+
+  it('deduplicates securities that repeat on every page', async () => {
+    const { api } = pager(1171)
+    const result = await getInvestmentTransactions(api, 'token', RANGE)
+    expect(result.securities).toEqual([{ security_id: 'sec_1' }])
+  })
+
+  it('stops on an empty page even when the total disagrees', async () => {
+    // A wrong total would otherwise be an infinite loop bounded only by the
+    // page cap.
+    const api = stub({
+      investmentsTransactionsGet: () =>
+        Promise.resolve({
+          data: {
+            investment_transactions: [],
+            securities: [],
+            total_investment_transactions: 9999,
+          },
+        }),
+    })
+
+    const result = await getInvestmentTransactions(api, 'token', RANGE)
+
+    expect(result.transactions).toHaveLength(0)
+  })
+
+  it('reports truncation rather than presenting a partial list as complete', async () => {
+    // CLAUDE.md: no silent caps. A truncated list that says nothing reads as
+    // "this is everything".
+    const { api } = pager(INVESTMENT_TX_PAGE * 40)
+
+    const result = await getInvestmentTransactions(api, 'token', RANGE)
+
+    expect(result.truncated).toBe(true)
+    expect(result.transactions.length).toBeLessThan(INVESTMENT_TX_PAGE * 40)
+  })
+
+  it('sends the caller’s dates and never invents its own', async () => {
+    // This app has exactly one answer to what day it is for a friend, and a
+    // Plaid client is not allowed to become a second one.
+    const { api, calls } = pager(1)
+
+    await getInvestmentTransactions(api, 'token', RANGE)
+
+    expect(calls[0].start_date).toBe('2024-01-01')
+    expect(calls[0].end_date).toBe('2026-01-01')
+  })
+})
+
+describe('requestTransactionsRefresh', () => {
+  it('asks the bank and returns nothing, because there is nothing to return', async () => {
+    // Fire and forget: the extraction is still running when this resolves,
+    // which is why it is not on the default refresh path.
+    let seen: any
+    const api = stub({
+      transactionsRefresh: (req: unknown) => {
+        seen = req
+        return Promise.resolve({ data: { request_id: 'r' } })
+      },
+    })
+
+    await expect(requestTransactionsRefresh(api, 'access-sandbox-x')).resolves.toBeUndefined()
+    expect(seen).toEqual({ access_token: 'access-sandbox-x' })
   })
 })

@@ -362,3 +362,39 @@ describe('WriteAction', () => {
     })
   })
 })
+
+describe('failedLabel — for the one route where "nothing was recorded" is false', () => {
+  it('uses WRITE_FAILED by default, for every ordinary write', async () => {
+    const { release } = deferredFetch()
+    const { container, unmount } = await mount(
+      <WriteAction action="/api/x" payload={{}}>
+        Tap
+      </WriteAction>,
+    )
+    await click(container.querySelector('button'))
+    release({ ok: false, status: 500 })
+    await flush()
+
+    expect(container.textContent).toContain(WRITE_FAILED)
+    await unmount()
+  })
+
+  it('lets a caller replace it where the failure IS the thing recorded', async () => {
+    // A failed Plaid refresh writes a plaid_refreshes row per product, which
+    // the panel then displays. "Nothing was recorded" sat directly above five
+    // recorded outcomes — one request, two contradictory statements.
+    const { release } = deferredFetch()
+    const { container, unmount } = await mount(
+      <WriteAction action="/api/x" payload={{}} failedLabel="Recorded above.">
+        Refresh
+      </WriteAction>,
+    )
+    await click(container.querySelector('button'))
+    release({ ok: false, status: 502 })
+    await flush()
+
+    expect(container.textContent).toContain('Recorded above.')
+    expect(container.textContent).not.toContain(WRITE_FAILED)
+    await unmount()
+  })
+})

@@ -29,9 +29,30 @@ import {
   isConnected,
   lastRefreshes,
   recentTransactions,
+  type Refresh,
 } from './queries'
 
 export const screens: DashboardScreen[] = [{ id: 'money', title: 'Money', order: 1 }]
+
+/**
+ * What one product's last refresh attempt should say.
+ *
+ * THREE OUTCOMES, NOT TWO. `not_ready` means Plaid holds the connection and
+ * has not finished preparing that product — routine for recurring streams,
+ * which cannot be requested when an item is created and become available about
+ * ten seconds later. Reporting it as a failure would put "couldn't reach your
+ * bank" on screen at the exact moment everything is working; reporting it as
+ * success would claim data that is not there.
+ *
+ * A failure names the CODE rather than a provider's prose, and says so plainly
+ * — that sentence is what stops the numbers above it from reading as current.
+ */
+function describeRefresh(refresh: Refresh): string {
+  if (refresh.ok) return 'ok'
+  if (refresh.code === 'not_ready') return 'still being prepared by your bank — try again shortly'
+  if (refresh.code === 'item_login_required') return 'your bank needs you to log in again'
+  return `couldn’t reach your bank (${refresh.code ?? 'error'})`
+}
 
 function money(amount: number | null): string {
   if (amount === null) return '—'
@@ -122,7 +143,7 @@ export default function PlaidTestDashboard({ slug, db }: DashboardProps) {
         )}
       </section>
 
-      <section>
+      <section className="flex flex-col gap-2">
         <h2 className="text-lg font-medium">Connection</h2>
         <p className="text-sm text-muted-foreground">
           {products.length > 0
@@ -130,21 +151,37 @@ export default function PlaidTestDashboard({ slug, db }: DashboardProps) {
             : 'This bank reported no additional products.'}
         </p>
         {refreshes.length === 0 ? (
+          // NOT "up to date". Nothing has ever been pulled, and saying
+          // otherwise about someone's money is the kind of confident wrong
+          // this panel exists to avoid.
           <p className="text-sm text-muted-foreground">Never refreshed.</p>
         ) : (
           <ul className="flex flex-col gap-1 text-sm">
             {refreshes.map((refresh) => (
               <li key={refresh.product}>
-                {refresh.product}:{' '}
-                {refresh.ok
-                  ? 'ok'
-                  : // The code, never a provider's prose — and saying it failed
-                    // is what stops the numbers above reading as current.
-                    `couldn’t reach your bank (${refresh.code ?? 'error'})`}
+                {refresh.product}: {describeRefresh(refresh)}
               </li>
             ))}
           </ul>
         )}
+        {/*
+          The friend's own control, and the ONLY trigger in V1. Their data key
+          exists only while they are unlocked, so nothing can pull on their
+          behalf while they are away — there is no scheduled job and cannot be
+          one. Pressing this is what "fresh" means.
+        */}
+        <WriteAction
+          action={`/api/users/${slug}/plaid/refresh`}
+          payload={{}}
+          pendingLabel="Checking with your bank…"
+          // "nothing was recorded" is FALSE here: a failed refresh writes a
+          // plaid_refreshes row per product, and those rows are listed
+          // directly above this message. The default sentence contradicted
+          // them on screen.
+          failedLabel="Couldn’t reach your bank. What happened is recorded above."
+        >
+          Refresh
+        </WriteAction>
       </section>
 
       <section className="flex flex-col gap-2">

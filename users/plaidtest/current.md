@@ -29,9 +29,19 @@ no accounts yet, says nothing has arrived rather than showing a total.
 whether the charge is still pending. A pending charge is labelled because it
 can still change amount or disappear entirely.
 
-**Connection.** Which products this particular bank can serve, and the outcome
-of the last refresh attempt per product — including failures, so a stale number
-is never shown as though it were current.
+**Connection.** Which products this particular bank can serve, the outcome of
+the last refresh attempt per product, and the Refresh control. Outcomes have
+THREE forms, not two: ok, a failure naming its cause, and "still being prepared"
+for a product Plaid holds the connection for but has not finished readying —
+routine for recurring streams on the first refresh after connecting. A failure
+that only the friend can fix — their bank wanting a fresh login — says so
+instead of reading as a fault. Before any refresh has happened it says "never
+refreshed" rather than implying the numbers are current.
+
+**Refresh.** The only trigger that exists. A friend's key lives in memory only
+while they are unlocked, so nothing can pull on their behalf while they are
+away; pressing this is what "fresh" means. It pulls only the products this
+connection reports it can serve.
 
 **Reconnect / Disconnect.** Reconnect reopens the same bank for re-login, which
 is the only repair when a connection expires — Plaid shows no institution
@@ -44,13 +54,22 @@ place, because stopping a connection is reversible and deleting a financial
 history is not.
 
 ## What can be entered
-Nothing is typed in. The only inputs are the three connection controls —
-connect, reconnect, disconnect — each of which posts to a platform route.
+Nothing is typed in. The only inputs are four controls — connect, reconnect,
+disconnect and refresh — each of which posts to a platform route.
 
 ## Deliberately not included
 Any indication of whether the bank connection is healthy. The item's error state
 is only knowable by calling Plaid, and nothing does until the refresh route
 exists; showing a guess would be worse than showing nothing.
+
+Any scheduled or automatic refresh: it is not possible, since a friend's key
+exists only while they are unlocked. Nothing can reach them when they are not
+in the app, so no alert or notification may be promised either.
+
+The two on-demand extraction endpoints (/transactions/refresh,
+/investments/refresh): both are fire-and-forget and both are billed per call,
+so pressing Refresh would pay four extra seconds for data that arrives on the
+NEXT press. Available if a panel ever justifies it.
 
 Multiple banks at once: connecting replaces any existing connection rather than
 adding to it. A delete-my-data action separate from disconnect. Any panel

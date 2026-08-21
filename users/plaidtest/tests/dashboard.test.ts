@@ -156,17 +156,60 @@ describe('with synced data', () => {
 
   it('says a refresh has never happened rather than implying data is current', () => {
     // plaid_refreshes is seeded empty on purpose: a refresh is something that
-    // HAPPENED, and none has.
+    // HAPPENED, and none has. "Up to date" would be a confident false
+    // statement about someone's money.
     expect(render()).toContain('Never refreshed')
+  })
+
+  it('does not claim nothing was recorded when a failed refresh records rows', () => {
+    // A total refresh failure still writes a plaid_refreshes row per product,
+    // and those rows render directly above the error. The shared WRITE_FAILED
+    // sentence ("nothing was recorded") contradicted them on screen.
+    // (This block's beforeEach already connected — connect() again would
+    // violate plaid_items' primary key.)
+    expect(render()).toContain('What happened is recorded above')
+  })
+
+  it('offers Refresh, which is the ONLY trigger that exists', () => {
+    // A friend's data key lives only in the in-process keymap while they are
+    // unlocked, so nothing can pull on their behalf while they are away. There
+    // is no scheduled job and there cannot be one — pressing this is what
+    // "fresh" means.
+    const out = render()
+    expect(out).toContain('/api/users/plaidtest/plaid/refresh')
+    expect(out).toContain('Checking with your bank…')
   })
 
   it('reports a failed refresh instead of letting stale numbers read as current', () => {
     db.prepare(
       `INSERT INTO plaid_refreshes (at, day, product, ok, code)
-       VALUES (1, '2026-08-21', 'transactions', 0, 'item_login_required')`,
+       VALUES (1, '2026-08-21', 'transactions', 0, 'network')`,
     ).run()
     const out = render()
     expect(out).toContain('couldn’t reach your bank')
-    expect(out).toContain('item_login_required')
+  })
+
+  it('names re-authentication as the friend’s job, not as a fault', () => {
+    // The one failure only they can fix. "couldn't reach your bank (
+    // item_login_required)" would leave them with nothing to do.
+    db.prepare(
+      `INSERT INTO plaid_refreshes (at, day, product, ok, code)
+       VALUES (1, '2026-08-21', 'transactions', 0, 'item_login_required')`,
+    ).run()
+    expect(render()).toContain('needs you to log in again')
+  })
+
+  it('does NOT call a not-ready product a failure', () => {
+    // Recurring cannot be requested when an item is created and becomes
+    // available about ten seconds later, so the first refresh after connecting
+    // routinely sees this. Saying "couldn't reach your bank" then would be
+    // wrong in a way the friend can see.
+    db.prepare(
+      `INSERT INTO plaid_refreshes (at, day, product, ok, code)
+       VALUES (1, '2026-08-21', 'recurring', 0, 'not_ready')`,
+    ).run()
+    const out = render()
+    expect(out).toContain('still being prepared')
+    expect(out).not.toContain('couldn’t reach your bank')
   })
 })
