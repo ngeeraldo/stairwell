@@ -459,6 +459,14 @@ architectural changes; do not relitigate decided items).
   so no scheduled job can open their database at all — the same constraint that
   makes migrations run at unlock or not at all. V1 therefore has exactly two
   triggers: **a control the friend presses, and a one-time action at login.**
+  **Plaid uses only the first.** The login half was dropped for it deliberately
+  (2026-08-20 Plaid plan, D1): login and a button are the only two moments a
+  write is POSSIBLE at all, and the button alone covers every "I want it now",
+  while dropping the login half removes staleness thresholds, the
+  never-refuse-the-session handling, and latency on unlock. The consequence,
+  said plainly: a friend's bank data is as fresh as the last time they pressed
+  Refresh, and `platform/prompts/agent-v10.md` tells the agent to say so rather
+  than treat it as a limitation to apologise for.
   This bounds the friend's database only; the platform database is unencrypted,
   so scheduled work against it (caching a public forecast, say) is a separate
   question and is not foreclosed here. **Login-triggered work never refuses the
@@ -466,9 +474,13 @@ architectural changes; do not relitigate decided items).
   half-migrated shape is worse than not serving. A sync whose upstream is down
   must still let the friend in. Say the consequence out loud rather than
   rediscover it: nothing can reach a friend who is not in the app, so no alert
-  or notification may be promised to one. A background Plaid sync in step 6b
-  would need the access token readable without them, which is an amendment to
-  this rule, not an exception to it.
+  or notification may be promised to one. A background Plaid sync would need
+  the access token readable without them, which is an amendment to this rule,
+  not an exception to it — and step 6b shipped WITHOUT one for exactly that
+  reason. The access token lives in the friend's own encrypted database and
+  nowhere else, so no scheduled job can open it, and Plaid webhooks can never
+  deliver data into it unattended, which is the only thing a webhook would be
+  wanted for.
 - A dashboard may **render** an entry widget — a form for hand-logging or
   annotating data — but the widget POSTs to a platform route, same as the
   write-route template above. The read-only-handle rule above is unchanged and
@@ -508,7 +520,15 @@ architectural changes; do not relitigate decided items).
   of a read-only dashboard would be a false failure.
 - Everything a dashboard shows in DEV is synthetic, and
   the page says so with the banner on every synthetic render. Real per-user
-  data arrived in step 6a; Plaid-sourced data is step 6b.
+  data arrived in step 6a. Plaid-sourced data arrived in step 6b and is
+  **built**: `modules/plaid/` holds the shared 8-table envelope, which stores
+  Plaid's payload verbatim as JSON so per-friend shaping is a VIEW rather than
+  a migration against an encrypted database nobody can open. A dashboard reads
+  those tables and never imports `lib/plaid/` — every Plaid call lives in one
+  of four shared platform routes (`link-token`, `connect`, `refresh`,
+  `disconnect`) that no builder writes or copies. The full build rules are
+  docs/dashboard-build-rules.md §9; the design and its findings are
+  docs/superpowers/plans/2026-08-20-plaid-connection.md.
 
 ## Onboarding
 - The end-to-end operator process — invite, spec import, build, deploy,

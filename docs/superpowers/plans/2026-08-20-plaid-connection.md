@@ -127,7 +127,15 @@ amounts pass through byte-exact.
 
 **D5 — No module-vendoring machinery at V1.** `modules/plaid/initial.sql` is
 the one source of truth and reaches a friend's `migrations/` by `cp`, as a
-documented runbook line. No `add-module.sh`, no byte-equality sweep test, no
+documented runbook line.
+
+**CORRECTED 2026-08-21: the BUILDER does the `cp`, not Nico.** This originally
+put it in docs/runbook-human.md on the reasoning that "Nico runs anything that
+scaffolds a folder". That was wrong — a `cp` into `migrations/` is not
+scaffolding, it is WRITING A MIGRATION, and the builder already owns every
+migration a dashboard has. Splitting one dashboard's migrations across two
+people would have been the anomaly. It now lives in docs/runbook-ai.md §2.2a,
+one step before the manifest command that already sweeps every migration. No `add-module.sh`, no byte-equality sweep test, no
 `plaid_*` write sweep, no module versioning. Those answer "how do I stop drift
 across five finance friends" and there are zero. **Named cost:** at one or two
 friends a builder editing the vendored copy is something Nico would notice; at
@@ -677,24 +685,16 @@ more than a green suite.
 
 ---
 
-## Phase 6 — Write down what Phase 5 taught
+## Phase 6b — Fix what Phase 5 exposed
 
-- [ ] **Step 1: Rewrite `docs/dashboard-build-rules.md` §9.** It currently says
-      "Not built yet." Replace with: where the module lives, the `cp` line, that
-      the payload is JSON and per-friend shaping is views, and that nothing but
-      the refresh route writes a `plaid_*` table.
-- [ ] **Step 2: Add the runbook steps** to `docs/runbook-human.md` — vendoring
-      the module, connecting a bank, and D7's `npm run synthetic` cleanup.
-- [ ] **Step 3: Widen `docs/runbook-ai.md` §1** with D6, explicitly: the builder
-      may make authenticated Sandbox calls, and may not use any other
-      environment.
-- [ ] **Step 4: Create `platform/prompts/agent-v10.md`** — a NEW file. Investments
-      are enabled; refreshes happen when the friend presses Refresh, not at
-      login.
-- [ ] **Step 5: Update `CLAUDE.md`** — the V1-triggers sentence currently names
-      a one-time action at login, which D1 removed for Plaid.
-- [ ] **Step 6: Fix whatever Phase 5 exposed.**
-- [ ] **Step 7: Full suite. Leave the work for Nico to commit**
+Everything in 6a was written from what we KNEW. This pass is written from what
+a builder actually did — the only source of that information is Phase 5's
+stuck-list, and it cannot be guessed in advance.
+
+- [ ] **Step 1: Fix every doc gap Phase 5 exposed.** Its stuck-list is the input.
+- [ ] **Step 2: Re-read §9 against what actually happened**, not against what
+      was intended.
+- [ ] **Step 3: Full suite. Leave the work for Nico to commit**
 
 ```bash
 npx vitest run

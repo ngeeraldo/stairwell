@@ -139,7 +139,8 @@ describe('with synced data', () => {
       [resolve(__dirname, '..', '..', '..', 'modules', 'plaid', 'seed_plaid.py'), join(dir, 'synthetic.db'), '2026-08-21'],
       { stdio: 'pipe' },
     )
-    connect()
+    // The seeder now writes its own loudly-fake item, so this block is already
+    // connected — connect() again would violate the primary key.
   })
 
   it('lists accounts with balances', () => {

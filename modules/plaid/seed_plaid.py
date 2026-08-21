@@ -60,7 +60,7 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "fixtures", "sandbox.json")
@@ -121,12 +121,38 @@ def seed_plaid(db, today=None):
         db.executemany(sql, rows)
         counts[table] = len(rows)
 
-    # There is no plaid_items row. An access token is a real bank credential
-    # and a synthetic database must never contain one, not even a fake one:
-    # a row here would make "is this connected?" answer yes on a database that
-    # can reach no bank, and every panel downstream would render the wrong
-    # branch. A dev dashboard shows the NOT-CONNECTED state, which is also the
-    # state a real friend sees before they connect.
+    # ONE plaid_items row, with a loudly fake token.
+    #
+    # This file used to seed none, on the reasoning that a synthetic database
+    # must never hold a bank credential even a fake one. That protected nothing
+    # - the string below reaches no bank and never could - and it cost
+    # something real: a dashboard decides connected-vs-not by whether an item
+    # EXISTS, so without this row every seeded finance dashboard rendered "no
+    # bank connected" and hid all of its own data. Reviewing panels, or
+    # screenshotting them, meant connecting a real Sandbox bank first.
+    #
+    # Both states stay reachable, which is the point:
+    #   npm run synthetic            connected, with data - the normal review
+    #   npm run synthetic -- --empty not connected - a friend's first session
+    #
+    # Pressing Refresh against this token fails with an auth error and records
+    # it in plaid_refreshes, so the panel says "couldn't reach your bank". That
+    # is an honest state and a useful one to be able to look at.
+    insert(
+        "plaid_items",
+        "INSERT OR REPLACE INTO plaid_items "
+        "(item_id, access_token, institution_id, cursor, available_products, payload, connected_at) "
+        "VALUES (?,?,?,NULL,?,'{}',?)",
+        [(
+            "item-SYNTHETIC-TEST",
+            # Loudly fake, and shaped nothing like a real token, so it can
+            # never be mistaken for one in a dump or a screenshot.
+            "access-SYNTHETIC-NOT-A-REAL-TOKEN-TEST",
+            "ins_SYNTHETIC_TEST",
+            json.dumps(["investments", "recurring_transactions", "transactions_refresh"]),
+            int(datetime(2026, 1, 1).timestamp() * 1000),
+        )],
+    )
 
     insert(
         "plaid_accounts",

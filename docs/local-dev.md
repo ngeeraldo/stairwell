@@ -469,3 +469,24 @@ over.
 so nothing compiles on demand. The production version of this behaviour is
 intended: a deploy leaves users logged in but locked
 (architecture-overview.md §2).
+
+## A locked session still renders a working dashboard in dev
+
+If every write suddenly 403s while the page looks completely fine, **you are
+locked and the dashboard is lying to you.** Unlock again.
+
+`app/[user]/page.tsx` calls `openUserDataForRead(slug, key)` — and in dev
+`lib/db/userData.ts` ignores the key entirely, opening `synthetic.db` as a
+plain file. So the dashboard renders whether or not a key exists, while every
+platform route refuses, because routes check `resolveState` properly.
+
+In production the same state shows "dashboard failed to load", because there
+the key is genuinely required to open the file. **Dev is the misleading one.**
+
+The usual way in: restarting `npm run dev` drops the in-process keymap (see the
+warm-up section above), you return to a tab that still shows your dashboard,
+and the first thing you press fails with no explanation. It cost a full
+debugging round during the Plaid connect build.
+
+The routes now name which gate refused — look for `refused: session not
+unlocked` in the dev server terminal, not the browser console.

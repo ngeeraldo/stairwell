@@ -451,22 +451,137 @@ Sacred data.
 
 ## 9. Shared modules and synced data
 
-- Shared module internals (e.g. `plaid.sql`) are **never forked per user**.
-  User-specific needs = views/derived tables in the user's own schema —
-  CLAUDE.md.
-- Shared-module changes happen from repo root only, never inside `/users/<name>/`
-  — CLAUDE.md.
+### 9.1 Plaid is BUILT. What you actually do
+
+A finance dashboard reads tables that are **already there and already
+populated**. You write three files and none of them mentions Plaid as a
+service:
+
+| You write | What it is |
+|---|---|
+| `migrations/00N_<slug>_finance.sql` | views over the JSON |
+| `queries.ts` | pure functions reading those views |
+| `dashboard.tsx` | panels, plus the controls below |
+
+**You never import `lib/plaid/`.** A dashboard never knows a network exists
+(CLAUDE.md > Testing). Every Plaid call lives in a platform route that is
+already written and shared by every finance friend — you do not create, copy or
+edit one.
+
+`users/plaidtest/` is the worked example. Read its `queries.ts` before writing
+your own.
+
+### 9.2 The envelope: 8 tables, and almost no schema
+
+`modules/plaid/initial.sql` stores **Plaid's payload verbatim as JSON**. Only
+three kinds of column get their own slot: the key a row is upserted on, the key
+it is deleted on, and the one date every query filters by.
+
+```
+plaid_items                    item, access token, cursor, available_products
+plaid_accounts                 account_id, item_id, payload
+plaid_transactions             transaction_id, account_id, date, payload
+plaid_holdings                 (account_id, security_id), payload
+plaid_securities               security_id, payload
+plaid_recurring_streams        stream_id, account_id, direction, payload
+plaid_investment_transactions  investment_transaction_id, account_id, …, payload
+plaid_refreshes                at, day, product, ok, code
+```
+
+So a panel reads `json_extract(payload, '$.merchant_name')`, not a column. That
+is deliberate and it is what makes your job cheap: a friend who later wants a
+field nobody anticipated gets a VIEW, not a migration against an encrypted
+database that nobody — including Nico — can open.
+
+SQLite ships JSON1, so `json_extract` needs no extension. If a query is ever
+slow, add a generated column over it and index that, without touching a stored
+row.
+
+### 9.3 Vendoring the module into a friend's folder
+
+Nico does this, not you (runbook-human Step 3). It is a copy:
+
+```bash
+cp modules/plaid/initial.sql \
+   users/<slug>/migrations/001_module_plaid_initial.sql
+```
+
+The `_module_` segment records where the file came from. **Never edit the
+copy** — that is the fork the never-forked rule forbids. A friend's own needs
+go in a LATER migration of their own, as views on top.
+
+### 9.4 What you may not do
+
+- **No INSERT, UPDATE or DELETE against a `plaid_*` table.** Exactly one thing
+  writes them: `app/api/users/[user]/plaid/refresh/route.ts`. Your handle is
+  read-only in both dev and production, so this is enforced, not merely asked.
+- **An annotation is not an edit.** A friend's note on a transaction goes in
+  THEIR OWN table keyed to `transaction_id`. Edit the synced row and the next
+  refresh overwrites it.
+- **Never derive a day from a clock.** `today` and `timeZone` arrive as props.
+
+### 9.5 The controls a finance dashboard renders
+
+All shared, all already written:
+
+| Control | Component | What it does |
+|---|---|---|
+| Connect / reconnect | `<PlaidConnect>` | opens Plaid Link on the friend's device |
+| Disconnect | `<WriteAction>` → `plaid/disconnect` | revokes the item, KEEPS the data |
+| Refresh | `<WriteAction>` → `plaid/refresh` | the ONLY way data ever updates |
+
+**There is no automatic refresh and there cannot be one.** A friend's data key
+exists only in memory while they are unlocked, so nothing can pull on their
+behalf while they are away. No scheduled job, no login sync, and no alert or
+notification may be promised to someone who is not in the app.
+
+### 9.6 The states a finance panel owes
+
+Four, and the first two are the ones that get missed:
+
+1. **Not connected.** Decide this by whether a `plaid_items` row exists —
+   **never** by whether transactions exist. A freshly connected bank has a
+   token and zero rows for several seconds while Plaid backfills, and inferring
+   "not connected" from an empty table tells a friend their connection failed
+   while it is working.
+2. **Connected, nothing arrived yet.** Say so. `$0.00` is a confident false
+   statement about someone's money.
+3. **Refreshed, with an outcome per product.** `plaid_refreshes` has THREE
+   outcomes, not two: ok, a failure, and `not_ready` — Plaid holds the
+   connection and has not finished preparing that product. Recurring routinely
+   reports `not_ready` on the first refresh after connecting. Calling that a
+   failure puts "couldn't reach your bank" on screen while everything works.
+4. **Needs re-authentication** (`item_login_required`). The one failure only
+   the friend can fix. Say that, rather than showing a generic error.
+
+### 9.7 Synthetic data understates production — the trap
+
+`users/<slug>/synthetic.db` is filled from a **recorded, scrubbed Plaid Sandbox
+response** (`modules/plaid/seed_plaid.py`), so its field shape is real. It also
+carries one loudly-fake `plaid_items` row, so your dashboard renders its
+CONNECTED state by default; `npm run synthetic -- --empty` gives you the
+not-connected one. Both are reachable without a bank. But
+Sandbox returns **`cusip`, `isin`, `sector`, `industry` and `close_price` as
+null on every security.**
+
+So a "holdings by sector" panel looks impossible in dev and probably works in
+production. **Do not conclude a field is unusable because synthetic data has it
+null.** Flag it to Nico instead.
+
+The reverse trap is guarded for you: names are marked `TEST` but category
+enums, ids, dates, tickers and amounts are byte-identical to production, so a
+view that groups on `personal_finance_category.primary` means the same thing in
+both worlds.
+
+### 9.8 Standing rules
+
+- Shared module internals are **never forked per user**. User-specific needs =
+  views/derived tables in the user's own schema — CLAUDE.md.
+- Shared-module changes happen from repo root only, never inside
+  `/users/<name>/` — CLAUDE.md.
 - Annotations on synced rows live in the user's own tables, keyed to the synced
-  rows — never as edits to a shared-module table. This is what stops a login sync
-  or a re-pull from trampling an annotation — CLAUDE.md.
-- **Not built yet.** Plaid-sourced data is step 6b; `modules/` currently holds
-  only `tests/`. Scope already approved: Transactions (24mo), Balance,
-  Transactions Refresh, Recurring Transactions. Plaid Link runs on the friend's
-  device; only the access token is stored, encrypted at rest. Investments and
-  Liabilities are **not** enabled — check in the interview before promising a
-  panel — `architecture-overview.md` §3.
-- Residual 2 (§5) is a **prerequisite for 6b**, not a note: when Plaid tables
-  arrive, every existing `<slug>.db` needs a shape it was not born with.
+  rows — never as edits to a shared-module table. This is what stops a refresh
+  from trampling an annotation — CLAUDE.md.
 
 ---
 

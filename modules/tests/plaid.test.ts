@@ -88,12 +88,26 @@ describe('the migration and the seeder compose', () => {
     expect(one<{ n: number }>('SELECT COUNT(*) n FROM plaid_recurring_streams').n).toBeGreaterThan(0)
   })
 
-  it('leaves plaid_items and plaid_refreshes EMPTY, deliberately', () => {
-    // An access token is a real bank credential and a synthetic database must
-    // never hold one, not even a fake one — a row here would make "is this
-    // connected?" answer yes on a database that can reach no bank. And a
-    // refresh is something that HAPPENED; none has.
-    expect(one<{ n: number }>('SELECT COUNT(*) n FROM plaid_items').n).toBe(0)
+  it('seeds ONE loudly-fake item, so the dashboard renders its own data', () => {
+    // A dashboard decides connected-vs-not by whether an item EXISTS. Without
+    // this row every seeded finance dashboard rendered "no bank connected" and
+    // hid all of its own transactions — reviewing a panel, or screenshotting
+    // one, meant connecting a real Sandbox bank first.
+    const item = one<{ access_token: string; item_id: string }>(
+      'SELECT access_token, item_id FROM plaid_items',
+    )
+    expect(item.item_id).toContain('TEST')
+    // Shaped nothing like a real token, so it can never be mistaken for one in
+    // a dump or a screenshot, and it reaches no bank.
+    expect(item.access_token).toContain('NOT-A-REAL-TOKEN')
+    expect(item.access_token).toContain(MARKER)
+    expect(one<{ n: number }>('SELECT COUNT(*) n FROM plaid_items').n).toBe(1)
+  })
+
+  it('still leaves plaid_refreshes EMPTY', () => {
+    // A refresh is something that HAPPENED, and none has. "Never refreshed" is
+    // the honest thing for a panel to say about a database nobody has pulled
+    // into.
     expect(one<{ n: number }>('SELECT COUNT(*) n FROM plaid_refreshes').n).toBe(0)
   })
 })
