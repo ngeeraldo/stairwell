@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type ComponentProps } from 'react'
 import { Button } from '@/components/ui/button'
 import { assertHostRelativeAction } from './useWriteAction'
 import {
@@ -72,6 +72,9 @@ export function PlaidConnect({
   returnTo,
   children,
   reconnect,
+  itemId,
+  manageAccounts = false,
+  variant,
 }: {
   /** POSTs here to mint a link token. Host-relative. */
   linkTokenAction: string
@@ -80,8 +83,33 @@ export function PlaidConnect({
   /** Where an OAuth resume sends the friend afterwards. Host-relative. */
   returnTo: string
   children?: React.ReactNode
-  /** Copy-only: the routes decide new-vs-update by reading the database. */
+  /** Copy-only. */
   reconnect?: boolean
+  /**
+   * Which connection this control acts on. Absent means a NEW bank.
+   *
+   * The routes used to decide that themselves, by asking whether the friend
+   * had any connection at all — which made "connect another bank" impossible
+   * the moment they had one. The friend presses a control next to a particular
+   * bank, so which bank it is belongs to the press.
+   */
+  itemId?: string
+  /**
+   * Open the bank's ACCOUNT PICKER rather than its login form.
+   *
+   * Update mode only. This is how a friend adds a second account at a bank
+   * they already connected, or stops sharing one — and it is the only flag
+   * that lets the connect route delete anything.
+   */
+  manageAccounts?: boolean
+  /**
+   * Weight of the button, so this can sit in a row of other controls.
+   *
+   * A connect control is the primary action on an empty dashboard and a
+   * secondary one next to a bank the friend already has — same mechanics,
+   * different emphasis, and lib/ui/PlaidSources.tsx renders both.
+   */
+  variant?: ComponentProps<typeof Button>['variant']
 }) {
   // Bounded to this origin before anything renders, exactly as WriteAction
   // bounds its own action — this is a sanctioned place a dashboard causes a
@@ -100,7 +128,7 @@ export function PlaidConnect({
   const exchange = useCallback(
     async (publicToken: string) => {
       setPhase('exchanging')
-      if (!(await exchangeAtConnectRoute(connectAction, publicToken))) {
+      if (!(await exchangeAtConnectRoute(connectAction, publicToken, manageAccounts))) {
         setPhase('failed')
         return
       }
@@ -110,13 +138,18 @@ export function PlaidConnect({
       // the database actually holds.
       window.location.reload()
     },
-    [connectAction],
+    [connectAction, manageAccounts],
   )
 
   const start = useCallback(async () => {
     setPhase('minting')
     try {
-      const response = await fetch(linkTokenAction, { method: 'POST' })
+      // The body names which connection, if any. A press with no item is the
+      // institution picker; a press next to a bank is that bank.
+      const body = new FormData()
+      if (itemId) body.set('item_id', itemId)
+      if (manageAccounts) body.set('manage_accounts', '1')
+      const response = await fetch(linkTokenAction, { method: 'POST', body })
       if (!response.ok) {
         setPhase('failed')
         console.error('[plaid connect] link-token failed with status', response.status)
@@ -137,7 +170,7 @@ export function PlaidConnect({
       // BEFORE open(), because open() may navigate away and never come back
       // to this component. Whether it does is decided inside Plaid's UI, which
       // has not run yet.
-      rememberLinkSession({ token, connectAction, returnTo })
+      rememberLinkSession({ token, connectAction, returnTo, manageAccounts })
 
       const created = window.Plaid.create({
         token,
@@ -157,13 +190,13 @@ export function PlaidConnect({
       setPhase('failed')
       console.error('[plaid connect] threw before Link opened', error)
     }
-  }, [linkTokenAction, connectAction, returnTo, exchange])
+  }, [linkTokenAction, connectAction, returnTo, itemId, manageAccounts, exchange])
 
   const busy = phase === 'minting' || phase === 'linking' || phase === 'exchanging'
 
   return (
     <div className="flex flex-col gap-2">
-      <Button type="button" onClick={() => void start()} disabled={busy}>
+      <Button type="button" variant={variant} onClick={() => void start()} disabled={busy}>
         {busy ? LABEL[phase] : (children ?? (reconnect ? 'Reconnect your bank' : 'Connect a bank'))}
       </Button>
       {phase === 'exchanging' && (

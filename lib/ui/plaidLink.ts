@@ -64,6 +64,15 @@ export type LinkSession = {
   token: string
   connectAction: string
   returnTo: string
+  /**
+   * Whether this trip started from the ACCOUNT PICKER.
+   *
+   * It has to survive the redirect, because it is what tells the connect route
+   * it may delete the rows of an account the friend deselected. Losing it
+   * across an OAuth trip would silently turn "remove this account" into a
+   * no-op, and the account would come back empty on the next refresh.
+   */
+  manageAccounts?: boolean
 }
 
 export function rememberLinkSession(session: LinkSession): void {
@@ -88,7 +97,10 @@ export function recallLinkSession(): LinkSession | null {
     ) {
       return null
     }
-    return parsed as LinkSession
+    // manageAccounts is optional and defaults to false — an old entry written
+    // before this field existed must resume as an ordinary connection, never
+    // as one permitted to delete rows.
+    return { ...(parsed as LinkSession), manageAccounts: parsed.manageAccounts === true }
   } catch {
     return null
   }
@@ -140,9 +152,13 @@ export function loadPlaidScript(): Promise<void> {
 export async function exchangeAtConnectRoute(
   connectAction: string,
   publicToken: string,
+  manageAccounts = false,
 ): Promise<boolean> {
   const body = new FormData()
   body.set('public_token', publicToken)
+  // Sent only when the friend came back from the account picker. The route
+  // deletes nothing without it — see its header for the two guards.
+  if (manageAccounts) body.set('manage_accounts', '1')
   const response = await fetch(connectAction, {
     method: 'POST',
     body,

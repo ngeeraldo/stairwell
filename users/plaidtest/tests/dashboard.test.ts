@@ -21,6 +21,8 @@ import { join, resolve } from 'node:path'
 import * as React from 'react'
 import type { UserDb } from '@/lib/db/userDb'
 import Dashboard, { screens } from '@/users/plaidtest/dashboard'
+import { PlaidSources } from '@/lib/ui/PlaidSources'
+import type { PlaidSource } from '@/modules/plaid/sources'
 import { applyUserMigrations } from '@/tests/support/userMigrations'
 
 let dir: string
@@ -42,10 +44,45 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-const render = () =>
-  JSON.stringify(
-    Dashboard({ slug: 'plaidtest', db, today: '2026-08-21', timeZone: 'America/Chicago' }),
-  )
+const tree = () =>
+  Dashboard({
+    slug: 'plaidtest',
+    db,
+    today: '2026-08-21',
+    now: Date.parse('2026-08-21T12:00:00Z'),
+    timeZone: 'America/Chicago',
+  })
+
+const render = () => JSON.stringify(tree())
+
+/**
+ * The props this dashboard handed the shared bank surface.
+ *
+ * Its OUTPUT is not reachable from here: a server component is rendered by
+ * CALLING it, so a child component element in the returned tree still holds
+ * its props and has not produced any DOM. That is the honest boundary anyway —
+ * this dashboard's job is to hand the shared surface the friend's connections,
+ * and what the surface then says is pinned once, in
+ * tests/ui/plaidSources.test.tsx, rather than re-asserted in every folder.
+ */
+function surface(): { slug: string; sources: PlaidSource[]; now: number } | null {
+  let found: { slug: string; sources: PlaidSource[]; now: number } | null = null
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    const element = node as { type?: unknown; props?: Record<string, unknown> }
+    if (element.type === PlaidSources) {
+      found = element.props as { slug: string; sources: PlaidSource[]; now: number }
+      return
+    }
+    if (element.props) walk(element.props.children)
+  }
+  walk(tree())
+  return found
+}
 
 /** A stored connection. No transactions — that is the point of it. */
 function connect(): void {
@@ -65,10 +102,10 @@ describe('with no bank connected', () => {
   it('renders the connect screen over an empty database', () => {
     // An empty database is an ordinary state and every dashboard must render
     // one. This is a friend's first session.
-    const out = render()
-    expect(out).toContain('No bank connected')
-    expect(out).toContain('/api/users/plaidtest/plaid/link-token')
-    expect(out).toContain('/api/users/plaidtest/plaid/connect')
+    expect(render()).toContain('No bank connected')
+    // And the shared surface is still handed the (empty) list, so the friend
+    // gets a connect control from the same place everyone else does.
+    expect(surface()).toMatchObject({ slug: 'plaidtest', sources: [] })
   })
 
   it('promises that the bank login never reaches the server', () => {
@@ -79,7 +116,7 @@ describe('with no bank connected', () => {
   it('shows no account or transaction panel at all', () => {
     const out = render()
     expect(out).not.toContain('Recent transactions')
-    expect(out).not.toContain('Disconnect')
+    expect(out).not.toContain('Stop updating')
   })
 })
 
@@ -101,29 +138,39 @@ describe('with a bank connected but nothing synced yet', () => {
     expect(out).not.toContain('$0.00')
   })
 
-  it('offers reconnect and disconnect', () => {
+  it('hands every bank control to the shared surface', () => {
+    // WHAT THIS DASHBOARD NO LONGER DOES. It used to hand-wire a refresh, a
+    // reconnect and a disconnect, and offered no way to add a second bank,
+    // change which accounts one shared, or delete one. Every friend with a
+    // bank now gets the same controls from lib/ui/PlaidSources.tsx, swept for
+    // by tests/users/plaidSurface.test.ts — so what is asserted here is that
+    // the delegation happened, not what each control says. That belongs to
+    // tests/ui/plaidSources.test.tsx, where there is one copy of it.
     connect()
-    const out = render()
-    expect(out).toContain('Log in to your bank again')
-    expect(out).toContain('Disconnect this bank')
-    // It must NOT read as a prompt: nothing here knows the connection is
-    // broken, so implying it would be a claim with no grounds.
-    expect(out).toContain('only known after a refresh')
-    expect(out).toContain('/api/users/plaidtest/plaid/disconnect')
+    const props = surface()
+    expect(props?.sources.map((s) => s.itemId)).toEqual(['item_1'])
+    // A freshly connected bank is WORKING, not broken.
+    expect(props?.sources[0]!.status).toBe('never_refreshed')
   })
 
-  it('disconnects through WriteAction, so a failure does not replace the app', () => {
-    // A bare <form> navigates on failure: a 403 replaced the entire page with
-    // the browser's own error, losing the dashboard, the chat surface and any
-    // way back. WriteAction renders a real form too — the no-JS path is
-    // identical — but intercepts when JavaScript is available.
+  it('does NOT say "no bank connected" when the only bank is disconnected', () => {
+    // Disconnecting is a soft delete: the row survives and so does every
+    // transaction under it. Falling back to the connect screen would put "No
+    // bank connected" above a page still full of that bank's data, and would
+    // hide the only control that can delete it.
     connect()
+    db.prepare('UPDATE plaid_items SET disconnected_at = 9000').run()
     const out = render()
-    // `pendingLabel` is a WriteAction prop and appears in the element tree; a
-    // bare <form> has no such thing. That is what distinguishes the two here —
-    // the X-Stairwell-Write header is set inside the hook at fetch time and
-    // never appears in a server render.
-    expect(out).toContain('Disconnecting…')
+    expect(out).not.toContain('No bank connected')
+    expect(surface()?.sources.map((s) => s.status)).toEqual(['disconnected'])
+  })
+
+  it('hands down the render instant rather than reading a clock', () => {
+    // "Updated 5 minutes ago" needs an instant, and a dashboard is not allowed
+    // to ask for one — tests/users/noLocalDay.test.ts sweeps for it. The page
+    // resolves it once, from the same Date.now() that produced `today`.
+    connect()
+    expect(surface()?.now).toBe(Date.parse('2026-08-21T12:00:00Z'))
   })
 
   it('reports what the connection can serve', () => {
@@ -162,23 +209,86 @@ describe('with synced data', () => {
     expect(render()).toContain('Never refreshed')
   })
 
-  it('does not claim nothing was recorded when a failed refresh records rows', () => {
-    // A total refresh failure still writes a plaid_refreshes row per product,
-    // and those rows render directly above the error. The shared WRITE_FAILED
-    // sentence ("nothing was recorded") contradicted them on screen.
-    // (This block's beforeEach already connected — connect() again would
-    // violate plaid_items' primary key.)
-    expect(render()).toContain('What happened is recorded above')
-  })
-
-  it('offers Refresh, which is the ONLY trigger that exists', () => {
+  it('leaves Refresh to the shared surface, which puts a time next to it', () => {
     // A friend's data key lives only in the in-process keymap while they are
     // unlocked, so nothing can pull on their behalf while they are away. There
     // is no scheduled job and there cannot be one — pressing this is what
     // "fresh" means.
+    //
+    // The control moved to lib/ui/PlaidSources.tsx along with everything else
+    // a friend does to a bank, and gained something this dashboard's own
+    // version never had: a last-updated time beside it
+    // (docs/dashboard-ui-ux-guidelines.md > States). Its wording, including
+    // the failure sentence that must not say "nothing was recorded" when a
+    // failed refresh writes a row per product, is pinned in
+    // tests/ui/plaidSources.test.tsx.
+    //
+    // (This block's beforeEach already connected — connect() again would
+    // violate plaid_items' primary key.)
+    // TWO banks, because that is what modules/plaid/seed_plaid.py now seeds —
+    // one live and one disconnected, so every finance dashboard renders the
+    // multi-source states by default rather than only after a friend hits
+    // them.
+    const sources = surface()?.sources ?? []
+    expect(sources).toHaveLength(2)
+    expect(sources.filter((s) => s.status === 'disconnected')).toHaveLength(1)
+  })
+
+  it('stops showing an account the bank no longer shares, without deleting it', () => {
+    // Nothing deletes the data of an unticked account — the picker only adds
+    // — so the JOIN to plaid_accounts is what keeps it off the screen. Without
+    // it this list would keep showing an account the friend removed, forever,
+    // with nothing to explain why it is there.
+    // An account that actually HAS transactions — most of the fixture's
+    // fourteen are investment or loan accounts with none.
+    const shown = db
+      .prepare(
+        `SELECT t.transaction_id, t.account_id
+           FROM plaid_transactions t
+           JOIN plaid_accounts a ON a.account_id = t.account_id
+          ORDER BY t.date DESC LIMIT 1`,
+      )
+      .get() as { transaction_id: string; account_id: string }
+    expect(render()).toContain(shown.transaction_id)
+
+    // What the next refresh does when Plaid stops returning that account.
+    db.prepare('DELETE FROM plaid_accounts WHERE account_id = ?').run(shown.account_id)
+
+    expect(render()).not.toContain(shown.transaction_id)
+    // And the rows are still there, ready to come back if it is re-ticked.
+    expect(
+      (
+        db
+          .prepare('SELECT COUNT(*) n FROM plaid_transactions WHERE account_id = ?')
+          .get(shown.account_id) as { n: number }
+      ).n,
+    ).toBeGreaterThan(0)
+  })
+
+  it('names which BANK each refresh line is about', () => {
+    // THE BUG A REAL SESSION FOUND. Grouping by product alone rendered
+    // "transactions: ok / transactions: ok / transactions: ok" for a friend
+    // with three connections — three true statements that together said
+    // nothing anyone could act on, while one of those banks was failing and
+    // the list could not say which.
+    const items = db.prepare('SELECT item_id FROM plaid_items ORDER BY connected_at').all() as {
+      item_id: string
+    }[]
+    // DIFFERENT instants per bank, which is the case that separates "latest
+    // per bank per product" from "latest per product". Refreshing is per-press
+    // and a disconnected bank is skipped, so two banks routinely have their
+    // last attempt at different times — and grouping by product alone drops
+    // the older bank's line entirely rather than showing it as stale.
+    for (const [index, item] of items.entries()) {
+      db.prepare(
+        `INSERT INTO plaid_refreshes (at, day, product, ok, code, item_id)
+         VALUES (?, '2026-08-21', 'transactions', ?, ?, ?)`,
+      ).run(9_000 - index * 1_000, index === 0 ? 1 : 0, index === 0 ? null : 'network', item.item_id)
+    }
+
     const out = render()
-    expect(out).toContain('/api/users/plaidtest/plaid/refresh')
-    expect(out).toContain('Checking with your bank…')
+    expect(out).toContain('FIRST PLATYPUS BANK TEST — ')
+    expect(out).toContain('SECOND PLATYPUS BANK TEST — ')
   })
 
   it('reports a failed refresh instead of letting stale numbers read as current', () => {

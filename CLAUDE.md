@@ -526,9 +526,35 @@ architectural changes; do not relitigate decided items).
   a migration against an encrypted database nobody can open. A dashboard reads
   those tables and never imports `lib/plaid/` — every Plaid call lives in one
   of four shared platform routes (`link-token`, `connect`, `refresh`,
-  `disconnect`) that no builder writes or copies. The full build rules are
-  docs/dashboard-build-rules.md §9; the design and its findings are
-  docs/superpowers/plans/2026-08-20-plaid-connection.md.
+  `disconnect`) that no builder writes or copies. It MAY import
+  `modules/plaid/sources.ts`, which is SQL and no network, and it must:
+  **every finance dashboard renders `lib/ui/PlaidSources.tsx`**, the one bank
+  management surface, and `tests/users/plaidSurface.test.ts` fails the suite
+  for a folder with a vendored `_module_plaid` migration that does not. It is
+  required rather than offered because a friend who can connect a bank can
+  always add another, see when each updated, choose which accounts each shares,
+  repair one, stop one and delete one — and a dashboard offering some subset
+  would strand them, with which subset varying per friend for no reason either
+  of them chose. **A friend may have more than one bank**, so every synced row
+  carries the `item_id` it came from and every write is scoped by it;
+  disconnecting is a SOFT delete that keeps the history and says it is no
+  longer updating, and deleting is a separate, louder action. **Exactly one
+  thing deletes a synced row: `disconnect` with `action=remove`.** Plaid's
+  account picker only ever ADDS — it opens with nothing ticked, so a friend
+  adding one account is indistinguishable from a friend removing all the
+  others, and deleting on that basis destroyed history nobody can restore. An
+  account a bank stops sharing loses its `plaid_accounts` row on the next
+  refresh and keeps its data, so a panel must read transactions THROUGH
+  `plaid_accounts` or it will keep counting an account the friend removed —
+  swept by `tests/users/plaidTransactionJoin.test.ts`, because that rule was a
+  doc line and a dashboard was already breaking it. Re-adding an account does
+  NOT restore its old rows: Plaid issues a new `account_id` and new
+  `transaction_id`s, so the history is stored twice and the stranded copy is
+  kept rather than pruned — "no longer listed" cannot distinguish a re-added
+  account's duplicate from a removed account's only copy. The full build
+  rules are docs/dashboard-build-rules.md §9; the designs are
+  docs/superpowers/plans/2026-08-20-plaid-connection.md and
+  docs/superpowers/plans/2026-08-21-plaid-multi-source.md.
 
 ## Onboarding
 - The end-to-end operator process — invite, spec import, build, deploy,

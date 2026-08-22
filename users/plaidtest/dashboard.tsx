@@ -21,8 +21,8 @@
 // "not connected" from an empty table would tell a friend their connection
 // failed while it was still working.
 import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
-import { PlaidConnect } from '@/lib/ui/PlaidConnect'
-import { WriteAction } from '@/lib/ui/WriteAction'
+import { PlaidSources } from '@/lib/ui/PlaidSources'
+import { readPlaidSources } from '@/modules/plaid/sources'
 import {
   accountBalances,
   availableProducts,
@@ -59,18 +59,13 @@ function money(amount: number | null): string {
   return amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
 }
 
-export default function PlaidTestDashboard({ slug, db }: DashboardProps) {
+export default function PlaidTestDashboard({ slug, db, now, timeZone }: DashboardProps) {
   const connected = isConnected(db)
-
-  // Both URLs are host-relative and built from the slug the page handed us —
-  // PlaidConnect asserts that before it renders, the same bound WriteAction
-  // puts on its own action.
-  const linkTokenAction = `/api/users/${slug}/plaid/link-token`
-  const connectAction = `/api/users/${slug}/plaid/connect`
-  // Where an OAuth bank's return page sends the friend once the connection
-  // finishes. It has to be carried rather than re-derived: /plaid/oauth is a
-  // cold page load that knows nothing about whose connection this was.
-  const returnTo = `/${slug}`
+  // The shared surface, identical on every finance dashboard (2026-08-21 plan
+  // D4, swept by tests/users/plaidSurface.test.ts). Every control a friend has
+  // over their banks lives in it — connect another, choose accounts, sign in
+  // again, stop, delete, refresh — so this dashboard writes none of them.
+  const sources = readPlaidSources(db)
 
   if (!connected) {
     return (
@@ -82,11 +77,7 @@ export default function PlaidTestDashboard({ slug, db }: DashboardProps) {
             server.
           </p>
         </div>
-        <PlaidConnect
-          linkTokenAction={linkTokenAction}
-          connectAction={connectAction}
-          returnTo={returnTo}
-        />
+        <PlaidSources slug={slug} sources={sources} now={now} timeZone={timeZone} />
       </section>
     )
   }
@@ -98,6 +89,27 @@ export default function PlaidTestDashboard({ slug, db }: DashboardProps) {
 
   return (
     <section className="flex flex-col gap-6">
+      <section className="flex flex-col gap-2">
+        <h2 className="text-lg font-medium">Your banks</h2>
+        {/*
+          THE SHARED SURFACE, and this dashboard writes none of it.
+
+          Everything that used to be hand-wired here — a refresh control, a
+          reconnect control, a disconnect form — now lives in lib/ui, is
+          identical for every friend with a bank, and is swept for by
+          tests/users/plaidSurface.test.ts. That is not tidying: the version
+          this replaced offered a friend a way to connect ONE bank and no way
+          to add a second, see which one had gone stale, change which accounts
+          it shared, or remove it.
+
+          It also carries a last-updated time beside the refresh control
+          (docs/dashboard-ui-ux-guidelines.md > States), which the hand-wired
+          version did not — a refresh button with no time next to it invites a
+          friend to assume the numbers are current.
+        */}
+        <PlaidSources slug={slug} sources={sources} now={now} timeZone={timeZone} />
+      </section>
+
       <section>
         <h2 className="text-lg font-medium">Accounts</h2>
         {accounts.length === 0 ? (
@@ -158,79 +170,19 @@ export default function PlaidTestDashboard({ slug, db }: DashboardProps) {
         ) : (
           <ul className="flex flex-col gap-1 text-sm">
             {refreshes.map((refresh) => (
-              <li key={refresh.product}>
+              // The BANK is named. Without it a friend with three connections
+              // read "transactions: ok / transactions: ok / transactions: ok"
+              // — three true statements that together said nothing they could
+              // act on, while one of those banks was failing.
+              <li key={`${refresh.bank ?? ''}-${refresh.product}`}>
+                {refresh.bank ? `${refresh.bank} — ` : ''}
                 {refresh.product}: {describeRefresh(refresh)}
               </li>
             ))}
           </ul>
         )}
-        {/*
-          The friend's own control, and the ONLY trigger in V1. Their data key
-          exists only while they are unlocked, so nothing can pull on their
-          behalf while they are away — there is no scheduled job and cannot be
-          one. Pressing this is what "fresh" means.
-        */}
-        <WriteAction
-          action={`/api/users/${slug}/plaid/refresh`}
-          payload={{}}
-          pendingLabel="Checking with your bank…"
-          // "nothing was recorded" is FALSE here: a failed refresh writes a
-          // plaid_refreshes row per product, and those rows are listed
-          // directly above this message. The default sentence contradicted
-          // them on screen.
-          failedLabel="Couldn’t reach your bank. What happened is recorded above."
-        >
-          Refresh
-        </WriteAction>
       </section>
 
-      <section className="flex flex-col gap-2">
-        {/*
-          ALWAYS AVAILABLE, NEVER A PROMPT — and the wording has to say so.
-          Nothing in the app knows whether this connection still works: the
-          item's health is only discovered when something CALLS Plaid and gets
-          ITEM_LOGIN_REQUIRED back, which is the refresh route (Phase 4).
-          Until then a permanently-visible "Reconnect your bank" reads as
-          "your bank is broken", which is a claim this dashboard has no
-          grounds to make. Verified against a real Sandbox item: after
-          reset_login and a repair, the screen was identical in both states.
-        */}
-        <p className="text-sm text-muted-foreground">
-          Whether this connection still works is only known after a refresh.
-        </p>
-        <PlaidConnect
-          linkTokenAction={linkTokenAction}
-          connectAction={connectAction}
-          returnTo={returnTo}
-          reconnect
-        >
-          Log in to your bank again
-        </PlaidConnect>
-        {/*
-          WriteAction, NOT a bare <form>, and the difference is not cosmetic.
-
-          This was a native form on the reasoning that disconnect is
-          destructive and must work without JavaScript. That reasoning was
-          right and the conclusion was wrong: WriteAction ALSO renders a real
-          form, so the no-JS path is identical — and when JavaScript is
-          available it intercepts, so a failure becomes an inline message
-          instead of navigating the browser to a raw error page.
-
-          Measured, not theorised: a 403 from this control replaced the entire
-          app with Chrome's "Access to localhost was denied", losing the
-          dashboard, the chat surface and any way back. A friend hitting that
-          has nothing to do except close the tab.
-        */}
-        <WriteAction
-          action={`/api/users/${slug}/plaid/disconnect`}
-          payload={{}}
-          variant="ghost"
-          size="sm"
-          pendingLabel="Disconnecting…"
-        >
-          Disconnect this bank
-        </WriteAction>
-      </section>
     </section>
   )
 }

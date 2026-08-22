@@ -982,6 +982,8 @@ export type PlaidRefresh = {
   product: string
   ok: number
   code: string | null
+  /** What he calls the bank this attempt was for. Null on pre-002 rows. */
+  bank: string | null
 }
 
 /**
@@ -1270,27 +1272,25 @@ export function categoryLabel(category: string, custom: ReadonlySet<string>): st
  * while he is unlocked, so pressing Refresh is what "fresh" means (§9.5).
  */
 export function lastRefreshes(db: UserDb): PlaidRefresh[] {
+  // PER BANK per product, and the bank is NAMED. Grouping by product alone
+  // rendered "transactions: ok" three times for a friend with three
+  // connections, and — worse — dropped a bank's line entirely once its last
+  // attempt was older than another's, which is routine since a disconnected
+  // bank is skipped and each press writes one instant. He has two cards by
+  // design, so this list could not do its job without it.
   return db
     .prepare(
-      `SELECT at, product, ok, code
+      `SELECT r.at, r.product, r.ok, r.code, i.institution_name AS bank
          FROM plaid_refreshes r
-        WHERE at = (SELECT MAX(at) FROM plaid_refreshes WHERE product = r.product)
-        ORDER BY product`,
+         LEFT JOIN plaid_items i ON i.item_id = r.item_id
+        WHERE r.at = (
+                SELECT MAX(at) FROM plaid_refreshes
+                 WHERE product = r.product
+                   AND (item_id IS r.item_id)
+              )
+        ORDER BY bank, r.product`,
     )
     .all() as PlaidRefresh[]
-}
-
-/**
- * Whether any product's last attempt says the bank needs him to log in again.
- *
- * The one failure only the friend can fix (§9.6, state 4), and the only
- * condition under which this dashboard offers a reconnect control. Showing one
- * permanently would read as "your bank is broken" at every moment it is not —
- * nothing in the app knows an item's health until something calls Plaid and
- * gets this code back.
- */
-export function needsReauth(refreshes: PlaidRefresh[]): boolean {
-  return refreshes.some((r) => !r.ok && r.code === 'item_login_required')
 }
 
 /**

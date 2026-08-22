@@ -30,13 +30,22 @@ afterEach(() => {
 
 // A Thursday, so the weekday labels below are stable and nameable.
 const TODAY = '2026-08-20'
+/**
+ * The render instant the page would have handed down for a given day.
+ *
+ * Derived from the same day the test asked for, so `today` and `now` agree
+ * the way app/[user]/page.tsx guarantees they do.
+ */
+const atMidday = (day: string) => Date.parse(`${day}T12:00:00Z`)
+/** The render instant the page would have handed down, on TODAY. */
+const NOW = Date.parse(`${TODAY}T12:00:00Z`)
 
 function render(db: UserDb, today = TODAY): string {
   // JSON.stringify drops the `type` of every element (a function is not JSON)
   // and keeps props and children, which is exactly what this needs: the copy
   // each panel chose, and the `data` prop handed to the chart if one was
   // handed at all.
-  return JSON.stringify(Dashboard({ slug: 'run10', db, today, timeZone: 'UTC' }))
+  return JSON.stringify(Dashboard({ slug: 'run10', db, today, now: atMidday(today), timeZone: 'UTC' }))
 }
 
 /**
@@ -80,7 +89,7 @@ describe('users/run10 — an empty database', () => {
     // an ordinary state, not an error (2026-08-15 migrations design, §9).
     const db = emptyDbFromMigrations('run10')
     try {
-      expect(Dashboard({ slug: 'run10', db, today: TODAY, timeZone: 'UTC' })).toBeDefined()
+      expect(Dashboard({ slug: 'run10', db, today: TODAY, now: NOW, timeZone: 'UTC' })).toBeDefined()
     } finally {
       db.close()
     }

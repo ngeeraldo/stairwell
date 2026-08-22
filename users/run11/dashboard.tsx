@@ -67,6 +67,8 @@
 import type { DashboardProps, DashboardScreen } from '@/lib/dashboard/contract'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { PlaidConnect } from '@/lib/ui/PlaidConnect'
+import { PlaidSources } from '@/lib/ui/PlaidSources'
+import { readPlaidSources } from '@/modules/plaid/sources'
 import { WriteAction } from '@/lib/ui/WriteAction'
 import { MonthCalendar } from './MonthCalendar'
 import { CategoryToggle, NewCategoryControl, RefileControl } from './CategoryControls'
@@ -96,7 +98,6 @@ import {
   latestFetch,
   latestSuccessfulFetch,
   markedDays,
-  needsReauth,
   nextGoodWindow,
   rightNow,
   shadeFloorF,
@@ -792,14 +793,18 @@ function spendingScreen({
   slug,
   db,
   today,
+  now,
+  timeZone,
 }: {
   slug: string
   db: DashboardProps['db']
   today: string
+  /** The render instant, handed down. This screen never reads a clock. */
+  now: number
+  timeZone: string | undefined
 }) {
   const linkTokenAction = `/api/users/${slug}/plaid/link-token`
   const connectAction = `/api/users/${slug}/plaid/connect`
-  const refreshAction = `/api/users/${slug}/plaid/refresh`
   const categoryAction = `/api/users/${slug}/spending-category`
   const returnTo = `/${slug}?screen=spending`
 
@@ -842,10 +847,12 @@ function spendingScreen({
   const customSet = new Set(custom)
   const accounts = spendingAccounts(db)
   const refreshes = lastRefreshes(db)
-  const reauth = needsReauth(refreshes)
+  // Every bank he has, and what each is doing — the shared read behind the
+  // shared surface (modules/plaid/sources.ts).
+  const sources = readPlaidSources(db)
   const problems = refreshes
-    .map((r) => ({ product: r.product, said: describeRefresh(r) }))
-    .filter((r): r is { product: string; said: string } => r.said !== null)
+    .map((r) => ({ product: r.product, bank: r.bank, said: describeRefresh(r) }))
+    .filter((r): r is { product: string; bank: string | null; said: string } => r.said !== null)
 
   // THE ARM-2 STATES CHECK, and it lives here rather than inside the chart:
   // degenerate data renders the panel's empty state as host elements and never
@@ -896,6 +903,65 @@ function spendingScreen({
 
   return (
     <section className="mx-auto w-full max-w-3xl space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium text-muted-foreground">
+            Your connection
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/*
+            STATE 3: an outcome per product, including the failures. Without
+            these rows a failed refresh is invisible and the figures above
+            render as though they were current, which
+            docs/dashboard-ui-ux-guidelines.md > States forbids by name.
+          */}
+          {refreshes.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Never refreshed. What is above is whatever arrived when you connected.
+            </p>
+          ) : problems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Your bank answered last time this was refreshed.
+            </p>
+          ) : (
+            <ul className="space-y-1 text-sm text-muted-foreground">
+              {problems.map((p) => (
+                // The BANK is named. He has two cards by design, so "couldn't
+                // reach your bank" without saying WHICH is a sentence he
+                // cannot act on.
+                <li key={`${p.bank ?? ''}-${p.product}`}>
+                  {p.bank ? `${p.bank} — ` : ''}
+                  {p.product}: {p.said}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/*
+            THE SHARED BANK SURFACE, identical on every finance dashboard
+            (2026-08-21 plan D4, swept by tests/users/plaidSurface.test.ts).
+
+            This screen used to hand-wire a Refresh control and a conditional
+            reconnect, and that was the whole of it: he could connect one card
+            and then had no way to add his second, see which one had gone
+            stale, change which accounts either shared, or remove one. Nothing
+            was violated — §9.5 listed the controls as available parts and this
+            build used the parts spec v3 asked for.
+
+            THE ONLY TRIGGER THERE IS is still a control he presses. His data
+            key exists only while he is unlocked, so nothing can pull on his
+            behalf while he is away — there is no scheduled job and there
+            cannot be one. The surface carries a last-updated time beside the
+            button, which this screen's own version never did.
+          */}
+          <PlaidSources slug={slug} sources={sources} now={now} timeZone={timeZone} />
+          <p className="text-xs text-muted-foreground">
+            This updates when you press Refresh, and at no other time.
+          </p>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>Where it went</CardTitle>
@@ -1104,89 +1170,11 @@ function spendingScreen({
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            Your connection
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {/*
-            STATE 3: an outcome per product, including the failures. Without
-            these rows a failed refresh is invisible and the figures above
-            render as though they were current, which
-            docs/dashboard-ui-ux-guidelines.md > States forbids by name.
-          */}
-          {refreshes.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Never refreshed. What is above is whatever arrived when you connected.
-            </p>
-          ) : problems.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Your bank answered last time this was refreshed.
-            </p>
-          ) : (
-            <ul className="space-y-1 text-sm text-muted-foreground">
-              {problems.map((p) => (
-                <li key={p.product}>
-                  {p.product}: {p.said}
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {/*
-            THE ONLY TRIGGER THERE IS. His data key exists only while he is
-            unlocked, so nothing can pull on his behalf while he is away — there
-            is no scheduled job and there cannot be one
-            (docs/dashboard-build-rules.md §9.5). Pressing this is what "fresh"
-            means, and the sentence under it says so rather than leaving him to
-            wonder why yesterday's coffee is missing.
-          */}
-          <WriteAction
-            action={refreshAction}
-            payload={{}}
-            pendingLabel="Checking with your bank…"
-            // "nothing was recorded" is FALSE here: a failed refresh writes a
-            // plaid_refreshes row per product, and those rows are what the list
-            // above is made of.
-            failedLabel="Couldn’t reach your bank. What happened is recorded above."
-          >
-            Refresh
-          </WriteAction>
-          <p className="text-xs text-muted-foreground">
-            This updates when you press Refresh, and at no other time.
-          </p>
-
-          {/*
-            STATE 4: the one failure only he can fix. Offered ONLY when a
-            refresh actually came back with item_login_required — nothing in the
-            app knows an item's health until something calls Plaid, so a
-            permanently visible "reconnect your bank" would read as "your bank
-            is broken" at every moment it is not.
-          */}
-          {reauth && (
-            <div className="space-y-2 rounded-md border border-destructive/40 p-3">
-              <p className="text-sm">
-                Your bank needs you to log in again before it will send anything new.
-              </p>
-              <PlaidConnect
-                linkTokenAction={linkTokenAction}
-                connectAction={connectAction}
-                returnTo={returnTo}
-                reconnect
-              >
-                Log in to your bank again
-              </PlaidConnect>
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </section>
   )
 }
 
-export default function Run11Dashboard({ slug, db, today, screen }: DashboardProps) {
+export default function Run11Dashboard({ slug, db, today, now, timeZone, screen }: DashboardProps) {
   // `screen` has already been resolved against this module's own `screens`
   // export by `activeScreen` in app/[user]/page.tsx, so it is either one of
   // the three ids above or undefined — never an arbitrary `?screen=` value. The
@@ -1194,6 +1182,6 @@ export default function Run11Dashboard({ slug, db, today, screen }: DashboardPro
   // anything it does not recognise: `walk_the_dog` is order 1 and the landing
   // screen, which spec v2 states directly and spec v3 leaves alone.
   if (screen === 'walk_log') return walkLogScreen({ slug, db, today })
-  if (screen === 'spending') return spendingScreen({ slug, db, today })
+  if (screen === 'spending') return spendingScreen({ slug, db, today, now, timeZone })
   return deciderScreen({ slug, db, today })
 }

@@ -31,18 +31,30 @@ import { SESSION_COOKIE } from '@/lib/session/store'
  * The ACCESS token — which can — never appears in a response from anywhere in
  * this app.
  *
- * ── IT CHOOSES BETWEEN TWO MODES BY LOOKING AT THE FRIEND'S OWN DATABASE ────
+ * ── THREE MODES, AND THE CALLER NAMES WHICH ────────────────────────────────
  *
- * A friend with no plaid_items row is connecting a bank for the first time, so
- * Plaid shows the institution picker. A friend who already has one is
- * REPAIRING it — their bank expired and Plaid needs them to log in again — so
- * the token is minted in update mode against their existing access token and
- * Plaid reopens that bank directly.
+ *   no item_id            NEW — Plaid shows the institution picker
+ *   item_id               UPDATE — Plaid reopens THAT bank's login form
+ *   item_id + accounts    ACCOUNTS — Plaid reopens that bank's ACCOUNT picker
  *
- * Deciding here rather than making the browser say which is deliberate: the
- * browser would be asserting something about the friend's stored state that
- * only the server can see, and a caller that guessed wrong would either get an
- * institution picker when it wanted a repair, or a Plaid rejection.
+ * This route used to decide for itself, by asking whether the friend had any
+ * plaid_items row at all: none meant new, any meant repair. That was wrong the
+ * moment a friend could have two banks, and it is the bug that produced this
+ * whole plan — once a friend connected one bank, "connect another" reopened
+ * the bank they already had and the institution picker was unreachable
+ * forever.
+ *
+ * Which connection to act on is a choice the FRIEND makes, by pressing a
+ * control next to one of their banks, so it is the caller's to send. What the
+ * caller does NOT get to do is name a connection that is not theirs: the id
+ * arrives as an opaque string and is resolved against the friend's own
+ * database below. An id that is not in there mints nothing and Plaid is never
+ * called.
+ *
+ * A DISCONNECTED item is refused the same way. Disconnecting revokes the token
+ * at Plaid, so an update-mode token minted against it could only produce an
+ * error — and offering the friend a repair for a connection that cannot be
+ * repaired is worse than offering nothing.
  *
  * ── WHY A READ HANDLE ───────────────────────────────────────────────────────
  *
@@ -135,25 +147,52 @@ export async function POST(
     return new Response(null, { status: 403 })
   }
 
-  // The existing connection, if there is one. Read AFTER the auth checks:
-  // opening a friend's database is work done on their behalf, and an
-  // unauthenticated caller gets none of it.
-  let existingToken: string | undefined
+  // READ AFTER the auth checks, deliberately: parsing a body is work done on
+  // behalf of the caller, and an unauthenticated caller gets none of it.
+  let requestedItem: string | undefined
+  let manageAccounts = false
   try {
-    const userDb = openUserDataForRead(user, key)
+    const form = await request.formData()
+    const raw = form.get('item_id')
+    if (typeof raw === 'string' && raw !== '') requestedItem = raw
+    manageAccounts = form.get('manage_accounts') === '1'
+  } catch {
+    // No body at all is the ordinary "connect a bank" press. PlaidConnect
+    // posts nothing when it is opening the institution picker.
+  }
+
+  // The connection the caller named, resolved against the friend's OWN
+  // database. Opening it is work done on their behalf, so it happens after the
+  // auth checks.
+  let existingToken: string | undefined
+  if (requestedItem !== undefined) {
+    let row: { access_token?: string; disconnected_at?: number | null } | undefined
     try {
-      const row = userDb
-        .prepare('SELECT access_token FROM plaid_items ORDER BY connected_at LIMIT 1')
-        .get() as { access_token?: string } | undefined
-      existingToken = row?.access_token
-    } finally {
-      userDb.close()
+      const userDb = openUserDataForRead(user, key)
+      try {
+        row = userDb
+          .prepare(
+            'SELECT access_token, disconnected_at FROM plaid_items WHERE item_id = ?',
+          )
+          .get(requestedItem) as { access_token?: string; disconnected_at?: number | null } | undefined
+      } finally {
+        userDb.close()
+      }
+    } catch (error) {
+      // A missing plaid_items table means this dashboard has no Plaid module
+      // vendored into its migrations — a build mistake, not a friend's problem.
+      logDbFailure('plaid_link_token_error', user, error)
+      return new Response(null, { status: 500 })
     }
-  } catch (error) {
-    // A missing plaid_items table means this dashboard has no Plaid module
-    // vendored into its migrations — a build mistake, not a friend's problem.
-    logDbFailure('plaid_link_token_error', user, error)
-    return new Response(null, { status: 500 })
+
+    // 404 for both "no such item" and "not yours", exactly as check 2 answers
+    // 404 rather than 403 for another account's space: a caller learns that
+    // the id names nothing they can act on, and nothing about whether it
+    // exists for someone else.
+    if (!row?.access_token || row.disconnected_at !== null) {
+      return new Response(null, { status: 404 })
+    }
+    existingToken = row.access_token
   }
 
   try {
@@ -162,12 +201,15 @@ export async function POST(
       // slug is a name a person chose. The account's opaque id is not.
       clientUserId: String(accountId),
       ...(existingToken
-        ? { accessToken: existingToken }
+        ? { accessToken: existingToken, ...(manageAccounts ? { accountSelection: true } : {}) }
         : { products: PRODUCTS, additionalConsentedProducts: CONSENTED }),
       ...(redirectUri() ? { redirectUri: redirectUri() } : {}),
     })
 
-    return Response.json({ link_token: token, mode: existingToken ? 'update' : 'new' })
+    return Response.json({
+      link_token: token,
+      mode: existingToken ? (manageAccounts ? 'accounts' : 'update') : 'new',
+    })
   } catch (error) {
     // PASSED THROUGH UNWRAPPED, and that is the whole point: PlaidCallError
     // carries a `code`, and lib/db/failureLog.ts prints an error's `name` and

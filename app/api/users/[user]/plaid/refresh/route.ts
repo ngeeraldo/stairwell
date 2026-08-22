@@ -161,65 +161,97 @@ export async function POST(
   }
 
   try {
-    const item = userDb
-      .prepare('SELECT item_id, access_token, available_products FROM plaid_items ORDER BY connected_at LIMIT 1')
-      .get() as { item_id: string; access_token: string; available_products: string } | undefined
+    // EVERY LIVE BANK, not the oldest one. This read was
+    // `ORDER BY connected_at LIMIT 1`, so a friend's second bank was never
+    // refreshed at all — it sat there going stale while the button reported
+    // success.
+    //
+    // Disconnected banks are excluded rather than attempted: disconnecting
+    // destroys the stored token, so there is nothing to call with, and
+    // recording a failure for a connection the friend deliberately stopped
+    // would read as a fault rather than as their own choice.
+    const items = userDb
+      .prepare(
+        `SELECT item_id, access_token, available_products
+           FROM plaid_items
+          WHERE disconnected_at IS NULL
+          ORDER BY connected_at`,
+      )
+      .all() as { item_id: string; access_token: string; available_products: string }[]
 
     // Nothing connected. Not an error — it is the state every friend is in
     // before they connect, and a 4xx here would make an ordinary situation
     // look like a fault.
-    if (!item) return writeAnswer(request, `/${user}`)
-
-    let available: string[] = []
-    try {
-      const parsed: unknown = JSON.parse(item.available_products)
-      if (Array.isArray(parsed)) available = parsed.filter((p): p is string => typeof p === 'string')
-    } catch {
-      // A malformed column is a bug in the connect route, not a reason to
-      // refuse the friend a refresh of the products that need no capability.
-    }
+    if (items.length === 0) return writeAnswer(request, `/${user}`)
 
     const api = plaidApiFromEnv()
-    const outcomes: ProductOutcome[] = []
+    // `itemId` is optional on ProductOutcome — some callers describe a single
+    // item they already have in hand — but this route loops over banks, so
+    // narrowing it here makes "every outcome names its bank" a compiler rule
+    // rather than a convention.
+    const outcomes: (ProductOutcome & { itemId: string })[] = []
 
-    for (const product of plannedProducts(available, requested)) {
+    for (const item of items) {
+      let available: string[] = []
       try {
-        if (product === 'transactions') {
-          await pullTransactions(userDb, api, item.access_token)
-        } else if (product === 'accounts') {
-          await pullAccounts(userDb, api, item.access_token, item.item_id)
-        } else if (product === 'holdings') {
-          await pullHoldings(userDb, api, item.access_token)
-        } else if (product === 'recurring') {
-          const state = await pullRecurring(userDb, api, item.access_token)
-          // 'not_ready' is recorded as its own outcome rather than as a
-          // success or a failure: Plaid has the connection and has not
-          // finished preparing the product, which is routine on the first
-          // refresh after connecting and is neither.
-          outcomes.push({ product, ok: state === 'ok', code: state === 'ok' ? undefined : 'not_ready' })
-          continue
-        } else {
-          await pullInvestmentTransactions(userDb, api, item.access_token, {
-            startDate: dayKey(now - INVESTMENT_WINDOW_DAYS * 86_400_000, timeZone),
-            endDate: attempt.day,
-          })
+        const parsed: unknown = JSON.parse(item.available_products)
+        if (Array.isArray(parsed)) {
+          available = parsed.filter((p): p is string => typeof p === 'string')
         }
-        outcomes.push({ product, ok: true })
-      } catch (error) {
-        // ONE PRODUCT'S FAILURE IS NOT THE REFRESH'S FAILURE. A bank being slow
-        // with investments must not discard the transactions that already
-        // landed — those rows are already committed, and the friend pressing
-        // Refresh again would only re-fetch what they already have.
-        const code = error instanceof PlaidCallError ? error.code : 'error'
-        outcomes.push({ product, ok: false, code })
-        logDbFailure('plaid_refresh_failed', user, error)
+      } catch {
+        // A malformed column is a bug in the connect route, not a reason to
+        // refuse the friend a refresh of the products that need no capability.
+      }
+
+      const ref = { itemId: item.item_id, accessToken: item.access_token }
+
+      for (const product of plannedProducts(available, requested)) {
+        try {
+          if (product === 'transactions') {
+            await pullTransactions(userDb, api, ref)
+          } else if (product === 'accounts') {
+            await pullAccounts(userDb, api, ref)
+          } else if (product === 'holdings') {
+            await pullHoldings(userDb, api, ref)
+          } else if (product === 'recurring') {
+            const state = await pullRecurring(userDb, api, ref)
+            // 'not_ready' is recorded as its own outcome rather than as a
+            // success or a failure: Plaid has the connection and has not
+            // finished preparing the product, which is routine on the first
+            // refresh after connecting and is neither.
+            outcomes.push({
+              product,
+              ok: state === 'ok',
+              code: state === 'ok' ? undefined : 'not_ready',
+              itemId: item.item_id,
+            })
+            continue
+          } else {
+            await pullInvestmentTransactions(userDb, api, ref, {
+              startDate: dayKey(now - INVESTMENT_WINDOW_DAYS * 86_400_000, timeZone),
+              endDate: attempt.day,
+            })
+          }
+          outcomes.push({ product, ok: true, itemId: item.item_id })
+        } catch (error) {
+          // ONE FAILURE IS NOT THE REFRESH'S FAILURE, and that now holds in
+          // two directions. A bank being slow with investments must not
+          // discard the transactions that already landed; and ONE BANK being
+          // down must not leave the friend's other bank stale, because they
+          // pressed Refresh once and both are theirs.
+          const code = error instanceof PlaidCallError ? error.code : 'error'
+          outcomes.push({ product, ok: false, code, itemId: item.item_id })
+          logDbFailure('plaid_refresh_failed', user, error)
+        }
       }
     }
 
     // Every attempt is recorded, including the failures. Without these rows a
     // failed refresh is indistinguishable from no refresh and the dashboard
-    // renders stale numbers as though they were current.
-    for (const outcome of outcomes) recordRefresh(userDb, attempt, outcome)
+    // renders stale numbers as though they were current. Each row names its
+    // bank: "transactions failed" is unactionable when the friend's other bank
+    // is perfectly healthy.
+    for (const outcome of outcomes) recordRefresh(userDb, attempt, outcome, outcome.itemId)
 
     // Permanent policy: a slug and a panel, never a value. Not how many
     // transactions arrived, not a balance, not the institution.

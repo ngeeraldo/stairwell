@@ -23,7 +23,7 @@ describe('users/__SLUG__', () => {
     const db = emptyDbFromMigrations('__SLUG__')
     try {
       const json = JSON.stringify(
-        Dashboard({ slug: '__SLUG__', db, today: '2026-01-01', timeZone: 'UTC' }),
+        Dashboard({ slug: '__SLUG__', db, today: '2026-01-01', now: Date.parse('2026-01-01T12:00:00Z'), timeZone: 'UTC' }),
       )
       expect(json).toContain('Under construction')
       expect(json).toContain('__SLUG__')
@@ -58,7 +58,7 @@ describe('users/__SLUG__', () => {
     const db = emptyDbFromMigrations('__SLUG__')
     try {
       expect(
-        Dashboard({ slug: '__SLUG__', db, today: '2026-01-01', timeZone: 'UTC' }),
+        Dashboard({ slug: '__SLUG__', db, today: '2026-01-01', now: Date.parse('2026-01-01T12:00:00Z'), timeZone: 'UTC' }),
       ).toBeDefined()
     } finally {
       db.close()

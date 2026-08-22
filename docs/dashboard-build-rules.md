@@ -478,15 +478,26 @@ three kinds of column get their own slot: the key a row is upserted on, the key
 it is deleted on, and the one date every query filters by.
 
 ```
-plaid_items                    item, access token, cursor, available_products
+plaid_items                    item, access token, cursor, available_products,
+                               institution_name, disconnected_at
 plaid_accounts                 account_id, item_id, payload
-plaid_transactions             transaction_id, account_id, date, payload
-plaid_holdings                 (account_id, security_id), payload
+plaid_transactions             transaction_id, account_id, item_id, date, payload
+plaid_holdings                 (account_id, security_id), item_id, payload
 plaid_securities               security_id, payload
-plaid_recurring_streams        stream_id, account_id, direction, payload
-plaid_investment_transactions  investment_transaction_id, account_id, …, payload
-plaid_refreshes                at, day, product, ok, code
+plaid_recurring_streams        stream_id, account_id, item_id, direction, payload
+plaid_investment_transactions  investment_transaction_id, account_id, item_id, …
+plaid_refreshes                at, day, product, ok, code, item_id
 ```
+
+**Every synced row names the bank it came from.** `item_id` is on all of them
+(002_multi_source), so a query about one connection scopes directly rather than
+joining through `plaid_accounts` — which matters because an account that has
+since closed is gone from there, stranding its rows where nothing can reach
+them. `plaid_securities` is the one exception and has no owner: two brokerages
+holding the same fund report the same `security_id`.
+
+**`disconnected_at IS NULL` means live.** A disconnected bank keeps every row it
+brought — see §9.6.
 
 So a panel reads `json_extract(payload, '$.merchant_name')`, not a column. That
 is deliberate and it is what makes your job cheap: a friend who later wants a
@@ -499,46 +510,168 @@ row.
 
 ### 9.3 Vendoring the module into a friend's folder
 
-Nico does this, not you (runbook-human Step 3). It is a copy:
+It is a copy, and there are **two files now** — every one in `modules/plaid/`,
+in that order:
 
 ```bash
-ls users/<slug>/migrations/          # the vendored file takes the NEXT free
-cp modules/plaid/initial.sql \      # number — 001 only on a fresh folder
+ls users/<slug>/migrations/           # each takes the NEXT free number
+cp modules/plaid/initial.sql \
    users/<slug>/migrations/00N_module_plaid_initial.sql
+cp modules/plaid/002_multi_source.sql \
+   users/<slug>/migrations/00M_module_plaid_multi_source.sql
 ```
+
+Then regenerate the manifest (runbook-ai §2.2a).
+
+`002` ALTERs tables `initial.sql` creates, so **the order of the numbers is
+load-bearing** — reversed, it throws at unlock, on the friend's own encrypted
+file, where nobody can open it to see why.
 
 The `_module_` segment records where the file came from. **Never edit the
 copy** — that is the fork the never-forked rule forbids. A friend's own needs
 go in a LATER migration of their own, as views on top.
 
+`modules/tests/vendored.test.ts` sweeps for both failures: a vendored copy that
+differs from the module source, and a folder that vendored one file and not the
+other.
+
 ### 9.4 What you may not do
 
-- **No INSERT, UPDATE or DELETE against a `plaid_*` table.** Exactly one thing
-  writes them: `app/api/users/[user]/plaid/refresh/route.ts`. Your handle is
-  read-only in both dev and production, so this is enforced, not merely asked.
+- **No INSERT, UPDATE or DELETE against a `plaid_*` table.** Three platform
+  routes write them and nothing else does: `refresh` (the synced data),
+  `connect` (the connection), `disconnect` (stopping one, or deleting it and
+  everything it brought). You write none of them and copy none of them. Your
+  handle is read-only in both dev and production, so this is enforced, not
+  merely asked.
+- **Exactly one thing deletes a friend's financial history:** `disconnect` with
+  `action=remove`, behind a button that says so. Nothing else — no sync, no
+  reconnect, no account picker — removes a synced row.
 - **An annotation is not an edit.** A friend's note on a transaction goes in
   THEIR OWN table keyed to `transaction_id`. Edit the synced row and the next
   refresh overwrites it.
 - **Never derive a day from a clock.** `today` and `timeZone` arrive as props.
 
-### 9.5 The controls a finance dashboard renders
+### 9.5 The bank management surface is REQUIRED, and it is one component
 
-All shared, all already written:
+```tsx
+import { PlaidSources } from '@/lib/ui/PlaidSources'
+import { readPlaidSources } from '@/modules/plaid/sources'
 
-| Control | Component | What it does |
-|---|---|---|
-| Connect / reconnect | `<PlaidConnect>` | opens Plaid Link on the friend's device |
-| Disconnect | `<WriteAction>` → `plaid/disconnect` | revokes the item, KEEPS the data |
-| Refresh | `<WriteAction>` → `plaid/refresh` | the ONLY way data ever updates |
+const sources = readPlaidSources(db)
+…
+<PlaidSources slug={slug} sources={sources} now={now} timeZone={timeZone} />
+```
+
+That is the whole of it. **`tests/users/plaidSurface.test.ts` fails the suite**
+if a folder holding a vendored `_module_plaid` migration does not render it, so
+this is not a component you may choose among others.
+
+It gives every friend, identically: connect another bank, choose which accounts
+each bank shares, sign in again when one expires, stop one updating, delete one
+and its data, refresh, and a last-updated time beside the refresh control.
+
+The two that take something away — **Stop updating** and **Delete data** — ask
+before they act (`confirm` on `<WriteAction>`): the first press arms the button
+and changes what it says, the second does it, and it disarms itself after a few
+seconds. Use the same prop for any control of your own that a friend cannot
+undo.
+
+**Why it is uniform rather than a menu.** §9.5 used to LIST these as available
+parts. A builder then wired up exactly what one friend's spec asked for and no
+more, and shipped a screen a friend could connect a bank to once and never
+manage again. Nothing was violated; there was nothing to violate. The
+capabilities are not a design question — a friend who can connect a bank can
+always manage it, and *which* subset they got would otherwise vary per friend
+for no reason either of them chose.
+
+**Put it near the TOP of the screen.** Pressing Refresh is the only way a
+friend's data ever changes, so burying it under the panels it updates makes the
+one control that matters the last one they find. The rows collapse to a line
+each, so the whole block is a header strip rather than a panel — which is what
+makes top placement affordable at 375px.
+
+**What you still decide:** what surrounds it, and everything else on the
+screen.
+
+**Do not write your own.** No `<PlaidConnect>` of your own, no disconnect form,
+no refresh button. A folder that grows its own bank list drifts from every
+other friend's, which is the fork the never-forked rule forbids (CLAUDE.md >
+Schema & module rules) applied to the UI.
 
 **There is no automatic refresh and there cannot be one.** A friend's data key
 exists only in memory while they are unlocked, so nothing can pull on their
 behalf while they are away. No scheduled job, no login sync, and no alert or
-notification may be promised to someone who is not in the app.
+notification may be promised to someone who is not in the app. A friend's bank
+data is as fresh as the last time they pressed Refresh.
 
 ### 9.6 The states a finance panel owes
 
-Four, and the first two are the ones that get missed:
+`<PlaidSources>` already says all of this about the CONNECTIONS. This section is
+about **your own panels** — the numbers you put on screen, which are what a
+friend actually reads, and which can be stale without saying so.
+
+Five per source, from `readPlaidSources(db)`'s `status`, and the first two are
+the ones that get missed:
+
+| status | means |
+|---|---|
+| `never_refreshed` | connected, nothing pulled yet — **working, not broken** |
+| `live` | a refresh succeeded; `lastRefreshAt` is meaningful |
+| `needs_login` | the one failure only the friend can fix |
+| `unreachable` | something else failed; not theirs to repair |
+| `disconnected` | they stopped it. The history is still on screen and must say so |
+
+**A refresh can succeed and fail at the same time.** One bank's transactions
+land while its balances don't, and `status` stays `live` because the connection
+genuinely is. `failedProducts` carries what didn't arrive in the newest round,
+and the shared surface says so in red and tells the friend to press Refresh
+again — which is the real fix, since a bank that fails intermittently usually
+answers on the second try and nothing can retry on their behalf. If your own
+panel shows a number fed by a product in that list, it is showing the previous
+value: say so rather than letting it read as current.
+
+**READ TRANSACTIONS THROUGH `plaid_accounts`.** Not a style note — it is what
+keeps an account a friend removed off their screen:
+
+```sql
+FROM plaid_transactions t
+JOIN plaid_accounts a ON a.account_id = t.account_id
+```
+
+The account picker in Plaid Link **only ever adds**. Nothing deletes the data
+of an account a bank stops sharing, deliberately: that picker opens with
+nothing ticked, so a friend adding one account looks from the server like a
+friend removing all the others, and deleting on that basis destroyed history
+nobody could restore. So an unticked account loses its `plaid_accounts` row on
+the next refresh — a deselected account and a *closed* one are
+indistinguishable from Plaid, and a closed one has to leave the screen — while
+every transaction under it stays.
+
+The join is what turns that into the right behaviour: the account stops
+appearing and nothing was destroyed. Query `plaid_transactions` on its own and
+you will keep counting an account your friend removed, forever, with nothing on
+screen to explain it.
+
+**`tests/users/plaidTransactionJoin.test.ts` fails the suite if you don't.**
+It checks per SQL statement, and a view of your own over `plaid_accounts`
+counts — `users/run11` reads through its `spending_accounts` view, which is the
+shape §9.2 asks for.
+
+**Re-adding an account does not restore its old rows.** Plaid issues it a new
+`account_id` and new `transaction_id`s, so the history ends up stored twice —
+once under the stale account, once under the live one (measured: 24
+transactions became 42). The stranded copy is invisible behind the join and is
+removed with the bank. It is deliberately never pruned: "transactions whose
+account is no longer listed" cannot tell a re-added account's dead duplicate
+from a removed account's only surviving copy.
+
+**A disconnected source's rows are still in your queries too.** Nothing deletes
+them — that is the point of a soft disconnect — so a panel that sums
+transactions is summing a frozen bank's alongside a live one's. Say so, or
+scope the panel to live sources with `status !== 'disconnected'`. Rendering
+them silently is the orphan this whole thing exists to remove.
+
+And the four underlying states, unchanged:
 
 1. **Not connected.** Decide this by whether a `plaid_items` row exists —
    **never** by whether transactions exist. A freshly connected bank has a

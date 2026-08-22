@@ -91,40 +91,68 @@ export type Transaction = {
  * settled one — it can still change amount or vanish entirely. A friend who
  * only cares about processed transactions filters on it; this scratch
  * dashboard shows both and labels them, which is the honest default.
+ *
+ * JOINED TO plaid_accounts, and that join is doing real work
+ * (docs/dashboard-build-rules.md §9.6). Nothing ever deletes the transactions
+ * of an account a bank stops sharing — the account picker only adds — so a
+ * panel reading plaid_transactions on its own would keep counting an account
+ * the friend removed, forever, with nothing on screen to explain it. The join
+ * is what makes an unticked account simply stop appearing, and what makes
+ * re-ticking it bring everything back.
  */
 export function recentTransactions(db: UserDb, limit = 12): Transaction[] {
   return db
     .prepare(
-      `SELECT transaction_id AS transactionId,
-              date,
-              json_extract(payload, '$.merchant_name') AS merchant,
-              json_extract(payload, '$.amount')        AS amount,
-              json_extract(payload, '$.personal_finance_category.primary') AS category,
-              json_extract(payload, '$.pending')       AS pending
-         FROM plaid_transactions
-        ORDER BY date DESC, transaction_id DESC
+      `SELECT t.transaction_id AS transactionId,
+              t.date,
+              json_extract(t.payload, '$.merchant_name') AS merchant,
+              json_extract(t.payload, '$.amount')        AS amount,
+              json_extract(t.payload, '$.personal_finance_category.primary') AS category,
+              json_extract(t.payload, '$.pending')       AS pending
+         FROM plaid_transactions t
+         JOIN plaid_accounts a ON a.account_id = t.account_id
+        ORDER BY t.date DESC, t.transaction_id DESC
         LIMIT ?`,
     )
     .all(limit) as Transaction[]
 }
 
-export type Refresh = { at: number; product: string; ok: number; code: string | null }
+export type Refresh = {
+  at: number
+  product: string
+  ok: number
+  code: string | null
+  /** What the friend calls the bank this attempt was for. Null on pre-002 rows. */
+  bank: string | null
+}
 
 /**
- * The last refresh attempt per product, successful or not.
+ * The last refresh attempt per BANK per product, successful or not.
  *
  * A FAILED attempt is as load-bearing as a successful one. Without this the
  * panel cannot tell "we could not reach your bank" from "your bank has nothing
  * new", and would render stale numbers as though they were current — which
  * docs/dashboard-ui-ux-guidelines.md > States forbids by name.
+ *
+ * PER BANK, and the bank is NAMED. Grouping by product alone produced
+ * "transactions: ok / transactions: ok / transactions: ok" on a friend with
+ * three connections — three true statements that together said nothing anyone
+ * could act on, since one of those banks was failing and the list could not
+ * say which. That is exactly what plaid_refreshes.item_id was added for
+ * (modules/plaid/002_multi_source.sql).
  */
 export function lastRefreshes(db: UserDb): Refresh[] {
   return db
     .prepare(
-      `SELECT at, product, ok, code
+      `SELECT r.at, r.product, r.ok, r.code, i.institution_name AS bank
          FROM plaid_refreshes r
-        WHERE at = (SELECT MAX(at) FROM plaid_refreshes WHERE product = r.product)
-        ORDER BY product`,
+         LEFT JOIN plaid_items i ON i.item_id = r.item_id
+        WHERE r.at = (
+                SELECT MAX(at) FROM plaid_refreshes
+                 WHERE product = r.product
+                   AND (item_id IS r.item_id)
+              )
+        ORDER BY bank, r.product`,
     )
     .all() as Refresh[]
 }

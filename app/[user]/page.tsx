@@ -61,7 +61,7 @@ async function dashboardRegion(
   accountId: number,
   sessionId: string,
   device_class: DeviceClass,
-  day: { today: string; timeZone: string | undefined },
+  day: { today: string; timeZone: string | undefined; now: number },
   requestedScreen: string | undefined,
 ) {
   const loader = dashboardLoaderFor(slug)
@@ -180,7 +180,7 @@ async function renderDashboard(
   accountId: number,
   source: 'synthetic' | 'real',
   device_class: DeviceClass,
-  day: { today: string; timeZone: string | undefined },
+  day: { today: string; timeZone: string | undefined; now: number },
   requestedScreen: string | undefined,
 ) {
   try {
@@ -209,6 +209,7 @@ async function renderDashboard(
       db,
       today: day.today,
       timeZone: day.timeZone,
+      now: day.now,
       screen: active?.id,
     })
     const trigger = await readRenderTrigger()
@@ -331,7 +332,12 @@ export default async function UserSpace({
   // dashboard. Deriving it inside a dashboard is what let the read and the
   // write disagree about what day it is — see lib/dashboard/contract.ts.
   const timeZone = await readTimeZone()
-  const day = { today: dayKey(Date.now(), timeZone), timeZone }
+  // ONE Date.now() for both, deliberately. `today` and `now` describing
+  // different instants is the same class of bug as a read and a write
+  // disagreeing about the calendar — it would take a render straddling
+  // midnight to show it, and it would be wrong forever afterwards.
+  const renderedAt = Date.now()
+  const day = { today: dayKey(renderedAt, timeZone), timeZone, now: renderedAt }
 
   // The shell's one boolean (onboarding-ux-spec.md S3). "Deployed" is exactly
   // "is this slug in lib/dashboard/registry.ts" — a line there is what makes a
