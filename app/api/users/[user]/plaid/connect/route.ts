@@ -10,6 +10,7 @@ import { writeAnswer } from '@/lib/http/redirect'
 import {
   PlaidCallError,
   exchangePublicToken,
+  getAccounts,
   getItem,
   plaidApiFromEnv,
 } from '@/lib/plaid/client'
@@ -51,13 +52,85 @@ import { SESSION_COOKIE } from '@/lib/session/store'
  * lets the refresh route skip it rather than spend 3.5 seconds discovering it
  * every time (plan F8).
  *
- * ── ONE ITEM PER FRIEND, FOR NOW ────────────────────────────────────────────
+ * ── IT APPENDS, AND IT USED TO REPLACE ──────────────────────────────────────
  *
- * The table can hold several, but connecting replaces rather than appends.
- * Multiple banks per friend is a real want and a real design question — which
- * accounts belong to which item, what a partial failure means, what the UI
- * says — and inventing an answer here would be guessing at it. Named as a
- * limit rather than left to be discovered.
+ * This route ran `DELETE FROM plaid_items` before inserting, so a friend's
+ * second connection silently replaced their first. That was not merely a
+ * missing feature: disconnecting deliberately KEEPS synced rows, so the
+ * replaced bank's transactions survived with no item that could ever refresh
+ * them — permanently frozen, and indistinguishable on screen from live data.
+ * The absence of a "connect another bank" button was the only thing stopping
+ * anyone from reaching it.
+ *
+ * So it upserts on `item_id` instead. Plaid issues a new item id for a new
+ * connection and returns the EXISTING one from update mode, which makes the id
+ * itself the right thing to key on: a repair updates the row it belongs to, a
+ * new bank adds one, and neither can produce a duplicate the friend cannot
+ * tell apart.
+ *
+ * Reconnecting also clears `disconnected_at`. Without that, a friend who
+ * disconnected a bank and later reconnected it would keep every panel saying
+ * "no longer updating" about a live connection — and the refresh loop skips
+ * disconnected items, so it would never update again either.
+ *
+ * ── THE ACCOUNT PICKER ONLY EVER ADDS. IT DELETES NOTHING ───────────────────
+ *
+ * `manage_accounts=1` means the friend just came back from Plaid's ACCOUNT
+ * PICKER, where they chose which accounts this bank shares.
+ *
+ * This route used to delete the rows of anything they left unticked, on the
+ * reasoning that "remove this account" should mean what a friend thinks it
+ * means. That reasoning rested on a belief about Plaid's UI which turned out
+ * to be false, and finding out cost nothing only because it was found in
+ * testing:
+ *
+ *   THE PICKER OPENS WITH NOTHING TICKED. It does not show the friend their
+ *   current selection — it looks like a fresh start.
+ *
+ * So a friend opening it to ADD one account, ticking that one and submitting
+ * had, from here, deselected everything else. The old code then deleted all of
+ * it: years of history, permanently, unrecoverable by anyone including Nico
+ * because nobody can read the database — from a button labelled "Choose
+ * accounts". Whether the picker pre-ticks anything is a Plaid DASHBOARD
+ * setting (`link_customization_name`, Account Select view behaviour), which is
+ * to say it lives outside this repository, no test can see it, and it can be
+ * changed back by anyone with access. A data-safety property may not rest on
+ * that.
+ *
+ * So nothing here deletes, ever (Nico's ruling, 2026-08-22). An account the
+ * bank stops sharing simply stops being shared: the next refresh drops its row
+ * from plaid_accounts — a deselected account and a CLOSED one are
+ * indistinguishable from /accounts/get, and a closed one has to leave the
+ * screen — while every transaction under it stays.
+ *
+ * ── WHAT RE-ADDING AN ACCOUNT ACTUALLY DOES ─────────────────────────────────
+ *
+ * MEASURED, because the obvious guess is wrong. Re-ticking an account does NOT
+ * restore the rows that were there: Plaid issues the re-added account a NEW
+ * account_id and its transactions come back with NEW transaction_ids, so
+ * nothing upserts and the friend's history is stored twice — once under the
+ * stale account_id, once under the live one. Observed in Sandbox: 24
+ * transactions became 42.
+ *
+ * The stranded copy is harmless and is left alone, deliberately. A panel reads
+ * transactions THROUGH plaid_accounts (tests/users/plaidTransactionJoin.test.ts
+ * sweeps for it), so rows under an unlisted account are invisible, and they are
+ * still stamped with the bank, so "Delete data" removes them.
+ *
+ * They are NOT pruned automatically, and the reason is the whole point of this
+ * header: "transactions whose account the bank no longer lists" cannot tell an
+ * account that was re-added — where the old rows are a dead duplicate — from
+ * an account that was removed and left off, where the old rows are the friend's
+ * ONLY copy of that history and keeping them is the entire ruling. Same
+ * predicate, opposite meaning. Deleting on it would undo this.
+ *
+ * What makes that coherent rather than half-done is on the READ side: a panel
+ * reads transactions THROUGH plaid_accounts (docs/dashboard-build-rules.md
+ * §9.6), so an unticked account stops appearing without anything being
+ * destroyed. Deleting a friend's financial history happens in exactly one
+ * place, behind a button that says so: disconnect's `action=remove`.
+ *
+ * The accounts call is still made, for one reason only — the cursor, below.
  */
 
 /** The panel a metric row names. A constant, never anything derived. */
@@ -101,9 +174,13 @@ export async function POST(
   // READ AFTER the auth checks, deliberately: parsing a body is work done on
   // behalf of the caller, and an unauthenticated caller gets none of it.
   let publicToken: string
+  let manageAccounts = false
   try {
     const form = await request.formData()
     publicToken = String(form.get('public_token') ?? '')
+    // The friend just came back from Plaid's account picker. See the header:
+    // this is the ONLY flag that lets anything below delete a row.
+    manageAccounts = form.get('manage_accounts') === '1'
   } catch {
     return new Response(null, { status: 400 })
   }
@@ -118,6 +195,14 @@ export async function POST(
   // applies to its provider call.
   let item: { accessToken: string; itemId: string }
   let detail: { institutionId?: string; institutionName?: string; availableProducts: string[] }
+  /**
+   * The accounts this bank shares NOW, read only on the account-picker path.
+   *
+   * `undefined` means "not asked", which is what stops the reconciliation
+   * below from running at all. It is deliberately distinct from `[]`, which
+   * means the bank was asked and named none — see guard 2 in the header.
+   */
+  let sharedAccounts: string[] | undefined
   try {
     const api = plaidApiFromEnv()
     item = await exchangePublicToken(api, publicToken)
@@ -126,6 +211,22 @@ export async function POST(
       institutionId: described.institutionId,
       institutionName: described.institutionName,
       availableProducts: described.availableProducts,
+    }
+    if (manageAccounts) {
+      try {
+        const accounts = await getAccounts(api, item.accessToken)
+        sharedAccounts = accounts
+          .map((a) => (a as { account_id?: unknown }).account_id)
+          .filter((id): id is string => typeof id === 'string')
+      } catch (error) {
+        // SWALLOWED ON PURPOSE, unlike every other Plaid failure here. The
+        // connection is what the friend pressed for and it has already
+        // succeeded; refusing the whole press because a follow-up call timed
+        // out would leave them with a bank Plaid has and this app does not.
+        // Leaving `sharedAccounts` undefined means nothing is deleted, which
+        // is the safe direction — the friend can reopen the picker.
+        logDbFailure('plaid_connect_accounts_failed', user, error)
+      }
     }
   } catch (error) {
     // PASSED THROUGH UNWRAPPED. PlaidCallError carries a `code`, and
@@ -141,17 +242,27 @@ export async function POST(
   try {
     const userDb = openUserDataForWrite(user, key)
     try {
-      // REPLACE, not append — see the one-item-per-friend note above. Inside a
-      // transaction so a crash cannot leave a friend with two items and no way
-      // to tell which one their data came from.
+      // ONE TRANSACTION for the upsert and the reconciliation together. Half
+      // of this — an account deselected at Plaid whose rows are still here, or
+      // rows deleted for a connection that did not land — is a state no later
+      // press can repair.
       userDb.transaction(() => {
-        userDb.prepare('DELETE FROM plaid_items').run()
         userDb
           .prepare(
             `INSERT INTO plaid_items
                (item_id, access_token, institution_id, institution_name, cursor,
                 available_products, payload, connected_at)
-             VALUES (?, ?, ?, ?, NULL, ?, '{}', ?)`,
+             VALUES (?, ?, ?, ?, NULL, ?, '{}', ?)
+             ON CONFLICT(item_id) DO UPDATE SET
+               access_token       = excluded.access_token,
+               institution_id     = excluded.institution_id,
+               institution_name   = excluded.institution_name,
+               available_products = excluded.available_products,
+               -- Back to life. A row that kept its disconnected_at would make
+               -- every panel say "no longer updating" about a live connection,
+               -- and the refresh loop skips disconnected items, so it never
+               -- would update again.
+               disconnected_at    = NULL`,
           )
           .run(
             item.itemId,
@@ -164,6 +275,40 @@ export async function POST(
             JSON.stringify(detail.availableProducts),
             now,
           )
+
+        if (sharedAccounts !== undefined && sharedAccounts.length > 0) {
+          // ── THE CURSOR, AND WHY ADDING AN ACCOUNT RESETS IT ──────────────
+          //
+          // MEASURED AGAINST SANDBOX. This code originally left the cursor
+          // alone on every update, on the reasoning that it only moves forward
+          // and re-sending would be a slow no-op. That was wrong, and the way
+          // it was wrong is invisible:
+          //
+          //   A friend added two accounts at a bank they already had.
+          //   /transactions/sync then reported SUCCESS on every refresh
+          //   afterwards and returned nothing, because the stored cursor had
+          //   already passed everything Plaid was willing to re-send. The two
+          //   accounts sat empty forever, with a green connection above them
+          //   and no amount of pressing Refresh able to fix it.
+          //
+          // So an account the friend has just ADDED clears the cursor, and the
+          // next sync re-pulls the window. Everything upserts by
+          // transaction_id, so nothing is duplicated, and this names one item.
+          //
+          // Only on an ADD. Removing an account can bring nothing new, and a
+          // repair changes no account at all — re-pulling a whole history in
+          // either case is a slow surprise on a press the friend is waiting on.
+          const known = new Set(
+            (
+              userDb
+                .prepare('SELECT account_id FROM plaid_accounts WHERE item_id = ?')
+                .all(item.itemId) as { account_id: string }[]
+            ).map((row) => row.account_id),
+          )
+          if (sharedAccounts.some((accountId) => !known.has(accountId))) {
+            userDb.prepare('UPDATE plaid_items SET cursor = NULL WHERE item_id = ?').run(item.itemId)
+          }
+        }
       })()
     } finally {
       userDb.close()

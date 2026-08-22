@@ -104,6 +104,63 @@ describe('opening a bank connection', () => {
     await unmount()
   })
 
+  it('names no connection when it is a NEW bank', async () => {
+    // An empty body is what makes the server open the institution picker. It
+    // used to decide that by asking whether the friend had any connection at
+    // all, which made "connect another bank" impossible the moment they had
+    // one.
+    const { container, unmount } = await mount(
+      <PlaidConnect linkTokenAction={LINK} connectAction={CONNECT} returnTo={RETURN_TO} />,
+    )
+    await click(button(container))
+    await flush()
+
+    const body = (fetch as any).mock.calls[0]![1].body as FormData
+    expect(body.get('item_id')).toBeNull()
+    expect(body.get('manage_accounts')).toBeNull()
+    await unmount()
+  })
+
+  it('names the connection it acts on, and asks for the account picker', async () => {
+    const { container, unmount } = await mount(
+      <PlaidConnect
+        linkTokenAction={LINK}
+        connectAction={CONNECT}
+        returnTo={RETURN_TO}
+        itemId="item_9"
+        manageAccounts
+      />,
+    )
+    await click(button(container))
+    await flush()
+
+    const body = (fetch as any).mock.calls[0]![1].body as FormData
+    expect(body.get('item_id')).toBe('item_9')
+    expect(body.get('manage_accounts')).toBe('1')
+    await unmount()
+  })
+
+  it('tells the connect route it came from the account picker', async () => {
+    // The route deletes nothing without this flag, so losing it here would
+    // silently turn "remove this account" into a no-op.
+    const { container, unmount } = await mount(
+      <PlaidConnect
+        linkTokenAction={LINK}
+        connectAction={CONNECT}
+        returnTo={RETURN_TO}
+        itemId="item_9"
+        manageAccounts
+      />,
+    )
+    await click(button(container))
+    await flush()
+    await fromPlaid(() => onSuccess?.('public-sandbox-1'))
+
+    const exchange = (fetch as any).mock.calls.find((c: any[]) => c[0] === CONNECT)!
+    expect((exchange[1].body as FormData).get('manage_accounts')).toBe('1')
+    await unmount()
+  })
+
   it('exchanges the public token against our own route, never Plaid', async () => {
     const { container, unmount } = await mount(
       <PlaidConnect linkTokenAction={LINK} connectAction={CONNECT} returnTo={RETURN_TO} />,
@@ -237,7 +294,33 @@ describe('preparing for an OAuth bank it cannot predict', () => {
       token: 'link-sandbox-1',
       connectAction: CONNECT,
       returnTo: RETURN_TO,
+      // Stored explicitly, and false here. It is what permits the connect
+      // route to delete an account's rows, so it must survive an OAuth trip
+      // rather than being re-derived on the other side — and an ordinary
+      // connection must carry it as false rather than as absent.
+      manageAccounts: false,
     })
+    await unmount()
+  })
+
+  it('carries the account-picker flag across the trip when managing accounts', async () => {
+    // Losing this across an OAuth redirect would silently turn "remove this
+    // account" into a no-op, and the account would come back empty on the
+    // friend's next refresh.
+    const { container, unmount } = await mount(
+      <PlaidConnect
+        linkTokenAction={LINK}
+        connectAction={CONNECT}
+        returnTo={RETURN_TO}
+        itemId="item_9"
+        manageAccounts
+      />,
+    )
+    await click(button(container))
+    await flush()
+
+    const stored = JSON.parse(sessionStorage.getItem('stairwell.plaid.link') ?? 'null')
+    expect(stored.manageAccounts).toBe(true)
     await unmount()
   })
 

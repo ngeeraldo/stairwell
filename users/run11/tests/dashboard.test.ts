@@ -43,6 +43,13 @@ afterEach(() => {
 })
 
 const TODAY = '2026-08-20'
+/**
+ * The render instant the page would have handed down for a given day.
+ *
+ * Derived from the same day the test asked for, so `today` and `now` agree
+ * the way app/[user]/page.tsx guarantees they do.
+ */
+const atMidday = (day: string) => Date.parse(`${day}T12:00:00Z`)
 const TOMORROW = '2026-08-21'
 const SUNRISE = 6 * 60 + 53
 const SUNSET = 19 * 60 + 56
@@ -59,7 +66,7 @@ function render(db: UserDb, today = TODAY, screen?: string): string {
   // JSON.stringify drops each element's `type` (a function is not JSON) and
   // keeps props and children — which is exactly what this needs: the copy each
   // panel chose, and the action URL the write control was handed.
-  return JSON.stringify(Dashboard({ slug: 'run11', db, today, timeZone: 'UTC', screen }))
+  return JSON.stringify(Dashboard({ slug: 'run11', db, today, now: atMidday(today), timeZone: 'UTC', screen }))
 }
 
 /**
@@ -82,7 +89,7 @@ function text(node: unknown): string {
 
 /** What the screen READS AS, rather than what it is made of. */
 function renderText(db: UserDb, today = TODAY, screen?: string): string {
-  return text(Dashboard({ slug: 'run11', db, today, timeZone: 'UTC', screen }))
+  return text(Dashboard({ slug: 'run11', db, today, now: atMidday(today), timeZone: 'UTC', screen }))
 }
 
 /** The walk log screen, by its declared id. */

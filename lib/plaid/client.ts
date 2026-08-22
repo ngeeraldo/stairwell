@@ -366,6 +366,18 @@ export async function createLinkToken(
     additionalConsentedProducts?: string[]
     accessToken?: string
     /**
+     * Reopen the bank's ACCOUNT PICKER, not just its login form.
+     *
+     * Update mode only — it is meaningless without an access token, since
+     * there is no existing selection to change. This is the one mechanism by
+     * which a friend adds a second account at a bank they already connected,
+     * or stops sharing one: which accounts an institution hands over is chosen
+     * inside Plaid's own UI and cannot be set from here.
+     *
+     * Verified accepted by a real /link/token/create in Sandbox.
+     */
+    accountSelection?: boolean
+    /**
      * Where an OAuth bank returns the friend after they log in.
      *
      * Must EXACTLY match an entry in the Plaid dashboard's allowed redirect
@@ -392,6 +404,7 @@ export async function createLinkToken(
         ? { additional_consented_products: opts.additionalConsentedProducts as never }
         : {}),
       ...(opts.accessToken ? { access_token: opts.accessToken } : {}),
+      ...(opts.accountSelection ? { update: { account_selection_enabled: true } } : {}),
       ...(opts.redirectUri ? { redirect_uri: opts.redirectUri } : {}),
     }),
   )

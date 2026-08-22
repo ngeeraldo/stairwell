@@ -1,6 +1,6 @@
 'use client'
 
-import type { ComponentProps, ReactNode } from 'react'
+import { useEffect, useState, type ComponentProps, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { useWriteAction, WRITE_FAILED } from './useWriteAction'
 
@@ -38,6 +38,7 @@ export function WriteAction({
   className,
   size,
   variant,
+  confirm,
   'aria-label': ariaLabel,
 }: {
   action: string
@@ -61,6 +62,25 @@ export function WriteAction({
    * "the one copy of the failure sentence" for everyone else.
    */
   failedLabel?: string
+  /**
+   * Make this control ask before it fires. The label shown while it is armed.
+   *
+   * A DELIBERATELY PLAIN two-press, not a modal: the first press arms the
+   * button and changes what it says, the second does the thing. It is for the
+   * controls that stop or destroy something a friend cannot get back — nobody,
+   * including Nico, can restore a deleted history, because nobody can read the
+   * database.
+   *
+   * It disarms itself after a few seconds, so a button left armed and forgotten
+   * cannot be fired by a stray later click.
+   *
+   * WITH JAVASCRIPT OFF there is no confirmation: the form submits natively on
+   * the first press, exactly as it does today. That is the same degradation
+   * every other control here makes — the real form is the mechanism and the
+   * interception is the enhancement — and a confirmation that only exists in
+   * the enhanced path is still worth having.
+   */
+  confirm?: string
   /** The dashboard's own affordance (run9's −1 at zero). The route still enforces the rule. */
   disabled?: boolean
   className?: string
@@ -69,12 +89,27 @@ export function WriteAction({
   'aria-label'?: string
 }) {
   const { fire, pending, error } = useWriteAction(action)
+  const [armed, setArmed] = useState(false)
+
+  // A control left armed and forgotten must not be fireable by a stray click a
+  // minute later. Responds to the friend's own press, and stops on its own.
+  useEffect(() => {
+    if (!armed) return
+    const timer = setTimeout(() => setArmed(false), 5_000)
+    return () => clearTimeout(timer)
+  }, [armed])
+
   return (
     <form
       method="post"
       action={action}
       onSubmit={(event) => {
         event.preventDefault()
+        if (confirm !== undefined && !armed) {
+          setArmed(true)
+          return
+        }
+        setArmed(false)
         fire(payload)
       }}
     >
@@ -86,11 +121,13 @@ export function WriteAction({
         disabled={disabled === true || pending}
         aria-busy={pending}
         aria-label={ariaLabel}
-        className={className}
+        className={armed ? undefined : className}
         size={size}
-        variant={variant}
+        // Armed, it stops looking like the quiet control it was. The friend is
+        // one press from something irreversible and the button should say so.
+        variant={armed ? 'destructive' : variant}
       >
-        {pending && pendingLabel !== undefined ? pendingLabel : children}
+        {pending && pendingLabel !== undefined ? pendingLabel : armed ? confirm : children}
       </Button>
       {error !== null && (
         <p role="alert" className="mt-1 text-xs text-destructive">

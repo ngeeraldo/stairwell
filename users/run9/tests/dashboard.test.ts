@@ -32,7 +32,9 @@ function render(db: UserDb, today = '2026-08-19'): string {
   // and keeps props and children, which is exactly what this needs: the copy
   // each panel chose, and the `data` prop handed to the chart if one was
   // handed at all.
-  return JSON.stringify(Dashboard({ slug: 'run9', db, today, timeZone: 'UTC' }))
+  return JSON.stringify(
+    Dashboard({ slug: 'run9', db, today, now: Date.parse(`${today}T12:00:00Z`), timeZone: 'UTC' }),
+  )
 }
 
 /**
@@ -75,7 +77,7 @@ describe('users/run9 — an empty database', () => {
     // an ordinary state, not an error (2026-08-15 migrations design, §9).
     const db = emptyDbFromMigrations('run9')
     try {
-      expect(Dashboard({ slug: 'run9', db, today: '2026-08-19', timeZone: 'UTC' })).toBeDefined()
+      expect(Dashboard({ slug: 'run9', db, today: '2026-08-19', now: Date.parse('2026-08-19T12:00:00Z'), timeZone: 'UTC' })).toBeDefined()
     } finally {
       db.close()
     }

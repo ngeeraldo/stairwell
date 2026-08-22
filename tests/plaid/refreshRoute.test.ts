@@ -178,12 +178,22 @@ async function openUserDb(write = false) {
 }
 
 /** A connected item advertising the given capabilities. */
-async function connect(available: string[]) {
+async function connect(
+  available: string[],
+  opts: { itemId?: string; accessToken?: string; connectedAt?: number; disconnectedAt?: number } = {},
+) {
   const db = await openUserDb(true)
   db.prepare(
-    `INSERT INTO plaid_items (item_id, access_token, available_products, connected_at)
-     VALUES ('item_1', 'token', ?, 1)`,
-  ).run(JSON.stringify(available))
+    `INSERT INTO plaid_items
+       (item_id, access_token, available_products, connected_at, disconnected_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    opts.itemId ?? 'item_1',
+    opts.accessToken ?? 'token',
+    JSON.stringify(available),
+    opts.connectedAt ?? 1,
+    opts.disconnectedAt ?? null,
+  )
   db.close()
 }
 
@@ -391,5 +401,148 @@ describe('the metric', () => {
     // Permanent policy.
     expect(rows[0]!.data).not.toContain('1234')
     expect(rows[0]!.data).not.toContain('t1')
+  })
+})
+
+describe('a friend with more than one bank', () => {
+  const rowsByItem = async () => {
+    const db = await openUserDb()
+    const rows = db
+      .prepare('SELECT item_id, product, ok, code FROM plaid_refreshes ORDER BY item_id, product')
+      .all() as { item_id: string; product: string; ok: number; code: string | null }[]
+    db.close()
+    return rows
+  }
+
+  it('refreshes every live bank, not just the oldest', async () => {
+    // This route read `ORDER BY connected_at LIMIT 1`, so a friend's second
+    // bank was never refreshed at all — it simply sat there going stale while
+    // the Refresh button reported success.
+    await arrange()
+    await connect([], { itemId: 'item_1', accessToken: 'token-a' })
+    await connect([], { itemId: 'item_2', accessToken: 'token-b', connectedAt: 2 })
+
+    await (await refresh())(post(), params())
+
+    const tokens = syncTransactionsSpy.mock.calls.map((c) => c[1])
+    expect(tokens).toContain('token-a')
+    expect(tokens).toContain('token-b')
+  })
+
+  it('names the bank on every refresh row', async () => {
+    // "Transactions failed" is unactionable once a friend has two banks: one
+    // of them may be perfectly healthy. Which one failed is the only version
+    // of that sentence anyone can act on.
+    await arrange()
+    await connect([], { itemId: 'item_1', accessToken: 'token-a' })
+    await connect([], { itemId: 'item_2', accessToken: 'token-b', connectedAt: 2 })
+
+    await (await refresh())(post(), params())
+
+    const rows = await rowsByItem()
+    expect(rows.every((r) => r.item_id === 'item_1' || r.item_id === 'item_2')).toBe(true)
+    expect(rows.filter((r) => r.item_id === 'item_1').length).toBeGreaterThan(0)
+    expect(rows.filter((r) => r.item_id === 'item_2').length).toBeGreaterThan(0)
+  })
+
+  it('keeps refreshing the second bank when the first one fails outright', async () => {
+    // One bank being down must not make the other one stale. The friend
+    // pressed Refresh once and both are theirs.
+    const { PlaidCallError } = await import('@/lib/plaid/client')
+    await arrange()
+    await connect([], { itemId: 'item_1', accessToken: 'token-a' })
+    await connect([], { itemId: 'item_2', accessToken: 'token-b', connectedAt: 2 })
+    syncTransactionsSpy.mockImplementation((_api: unknown, token: string) =>
+      token === 'token-a'
+        ? Promise.reject(new PlaidCallError('item_login_required'))
+        : Promise.resolve({ added: [], modified: [], removed: [], nextCursor: 'c', hasMore: false }),
+    )
+
+    const response = await (await refresh())(post(), params())
+
+    expect(response.status).toBeLessThan(400)
+    const rows = await rowsByItem()
+    expect(rows).toContainEqual({
+      item_id: 'item_1',
+      product: 'transactions',
+      ok: 0,
+      code: 'item_login_required',
+    })
+    expect(rows).toContainEqual({ item_id: 'item_2', product: 'transactions', ok: 1, code: null })
+  })
+
+  it('skips a disconnected bank entirely', async () => {
+    // Its token was destroyed when it was disconnected, so there is nothing to
+    // call with. Trying would record a failure for a connection the friend
+    // deliberately stopped, which reads as a fault rather than as a choice.
+    await arrange()
+    await connect([], { itemId: 'item_live', accessToken: 'token-live' })
+    await connect([], { itemId: 'item_dead', accessToken: '', connectedAt: 2, disconnectedAt: 9 })
+
+    await (await refresh())(post(), params())
+
+    const tokens = syncTransactionsSpy.mock.calls.map((c) => c[1])
+    expect(tokens).toEqual(['token-live'])
+    expect((await rowsByItem()).every((r) => r.item_id === 'item_live')).toBe(true)
+  })
+
+  it('answers 502 only when every product of every bank failed', async () => {
+    const { PlaidCallError } = await import('@/lib/plaid/client')
+    await arrange()
+    await connect([], { itemId: 'item_1', accessToken: 'token-a' })
+    await connect([], { itemId: 'item_2', accessToken: 'token-b', connectedAt: 2 })
+    getAccountsSpy.mockRejectedValue(new PlaidCallError('network'))
+    syncTransactionsSpy.mockImplementation((_api: unknown, token: string) =>
+      token === 'token-a'
+        ? Promise.reject(new PlaidCallError('network'))
+        : Promise.resolve({ added: [], modified: [], removed: [], nextCursor: 'c', hasMore: false }),
+    )
+
+    // One bank's transactions landed, so the press did something.
+    expect((await (await refresh())(post(), params())).status).toBeLessThan(400)
+  })
+
+  it('does not let one bank’s data land under the other’s name', async () => {
+    // The landmine, at the route level rather than in the sync layer: both
+    // banks sync in one press, and each one's rows must carry its own item.
+    await arrange()
+    await connect([], { itemId: 'item_1', accessToken: 'token-a' })
+    await connect([], { itemId: 'item_2', accessToken: 'token-b', connectedAt: 2 })
+    syncTransactionsSpy.mockImplementation((_api: unknown, token: string) =>
+      Promise.resolve({
+        added: [
+          {
+            transaction_id: `txn-${token}`,
+            account_id: `acc-${token}`,
+            date: '2026-08-01',
+            merchant_name: 'COFFEE PALACE TEST',
+          },
+        ],
+        modified: [],
+        removed: [],
+        nextCursor: `cursor-${token}`,
+        hasMore: false,
+      }),
+    )
+
+    await (await refresh())(post(), params())
+
+    const db = await openUserDb()
+    const transactions = db
+      .prepare('SELECT transaction_id, item_id FROM plaid_transactions ORDER BY transaction_id')
+      .all()
+    const cursors = db
+      .prepare('SELECT item_id, cursor FROM plaid_items ORDER BY item_id')
+      .all()
+    db.close()
+
+    expect(transactions).toEqual([
+      { transaction_id: 'txn-token-a', item_id: 'item_1' },
+      { transaction_id: 'txn-token-b', item_id: 'item_2' },
+    ])
+    expect(cursors).toEqual([
+      { item_id: 'item_1', cursor: 'cursor-token-a' },
+      { item_id: 'item_2', cursor: 'cursor-token-b' },
+    ])
   })
 })

@@ -45,7 +45,7 @@ describe('users/devone/dashboard.tsx', () => {
     add('BURRITO BARN TEST', 'eating out', 1550, now - 2000)
     add('GROCERY WORLD TEST', 'groceries', 8000, now - 3000)
 
-    const json = JSON.stringify(await DevOneDashboard({ slug: 'devone', db, today: '2026-08-14', timeZone: 'UTC' }))
+    const json = JSON.stringify(await DevOneDashboard({ slug: 'devone', db, today: '2026-08-14', now: Date.parse('2026-08-14T12:00:00Z'), timeZone: 'UTC' }))
 
     // $20.00 = 450 + 1550, i.e. the aggregate actually ran and reached the
     // output. A hard-coded panel would not produce this.
@@ -70,7 +70,7 @@ describe('users/devone/dashboard.tsx', () => {
     // Found by reading the screenshot, not here: rendering $0.00 is not a
     // throw, so every test stayed green while the screen said something false.
     const json = JSON.stringify(
-      await DevOneDashboard({ slug: 'devone', db, today: '2026-08-14', timeZone: 'UTC' }),
+      await DevOneDashboard({ slug: 'devone', db, today: '2026-08-14', now: Date.parse('2026-08-14T12:00:00Z'), timeZone: 'UTC' }),
     )
     expect(json).toContain('Nothing logged yet')
     expect(json).not.toContain('$0.00')
@@ -92,10 +92,10 @@ describe('users/devone/dashboard.tsx', () => {
     add('LATE NIGHT TEST', 'eating out', 200, at)
 
     const inNewYork = JSON.stringify(
-      DevOneDashboard({ slug: 'devone', db, today: '2026-08-31', timeZone: 'America/New_York' }),
+      DevOneDashboard({ slug: 'devone', db, today: '2026-08-31', now: Date.parse('2026-08-31T12:00:00Z'), timeZone: 'America/New_York' }),
     )
     const inUtc = JSON.stringify(
-      DevOneDashboard({ slug: 'devone', db, today: '2026-09-01', timeZone: 'UTC' }),
+      DevOneDashboard({ slug: 'devone', db, today: '2026-09-01', now: Date.parse('2026-09-01T12:00:00Z'), timeZone: 'UTC' }),
     )
 
     // Matched against the merchant, in the exact shape the <li>'s children
@@ -111,7 +111,7 @@ describe('users/devone/dashboard.tsx', () => {
     expect(inUtc).toContain('$2.00')
     expect(
       JSON.stringify(
-        DevOneDashboard({ slug: 'devone', db, today: '2026-09-01', timeZone: 'America/New_York' }),
+        DevOneDashboard({ slug: 'devone', db, today: '2026-09-01', now: Date.parse('2026-09-01T12:00:00Z'), timeZone: 'America/New_York' }),
       ),
     ).toContain('$0.00')
   })
@@ -140,7 +140,7 @@ it('renders on an EMPTY database without throwing', async () => {
     // not — two of the three dashboards are synchronous, and a test that
     // assumed otherwise would pass for the wrong reason.
     const rendered = await Promise.resolve(
-      DevOneDashboard({ slug: 'devone', db: empty, today: '2026-01-01', timeZone: 'UTC' }),
+      DevOneDashboard({ slug: 'devone', db: empty, today: '2026-01-01', now: Date.parse('2026-01-01T12:00:00Z'), timeZone: 'UTC' }),
     )
     expect(rendered).toBeDefined()
   } finally {

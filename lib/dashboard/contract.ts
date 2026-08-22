@@ -42,6 +42,22 @@ export type DashboardProps = {
    */
   timeZone: string | undefined
   /**
+   * The instant this page was rendered, in epoch milliseconds.
+   *
+   * Handed down for exactly the same reason `today` is: a dashboard never
+   * reads a clock, and `tests/users/noLocalDay.test.ts` sweeps every user
+   * folder for `Date.now()` and zero-argument `new Date()` to keep it that
+   * way. `today` answers "what day is it for this friend"; this answers "how
+   * long ago was that", which a day key cannot — "updated 5 minutes ago" and
+   * "updated yesterday" are both things a panel owes a friend, and only one of
+   * them is a calendar question.
+   *
+   * Resolved once per request by app/[user]/page.tsx, from the same
+   * `Date.now()` that produced `today`, so the two can never disagree about
+   * which day the render happened on.
+   */
+  now: number
+  /**
    * Which of the dashboard's own `screens` is active for this render — the
    * id of one entry in the `screens` array the dashboard's own module
    * exports, never a second source. app/[user]/page.tsx resolves this

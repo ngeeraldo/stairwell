@@ -21,6 +21,7 @@
 //    useWriteAction.ts exists to protect)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as React from 'react'
+import { act } from 'react'
 import { click, flush, mount } from '@/tests/support/dom'
 import { __resetWriteActionStore, isWriteInFlight } from '@/lib/ui/writeActionStore'
 import { assertHostRelativeAction, WRITE_FAILED } from '@/lib/ui/useWriteAction'
@@ -67,6 +68,98 @@ function deferredFetch() {
   vi.stubGlobal('fetch', fetchMock)
   return { fetchMock, release }
 }
+
+describe('a control that asks first', () => {
+  // For the controls that stop or destroy something a friend cannot get back.
+  // Deliberately a two-press rather than a modal: nothing to trap focus in,
+  // nothing to dismiss, and it degrades to today's behaviour with no
+  // JavaScript rather than to a broken dialog.
+  it('does NOT write on the first press', async () => {
+    const { fetchMock } = deferredFetch()
+    const { container, unmount } = await mount(
+      <WriteAction action="/api/users/run9/pee" payload={{ item_id: 'item_9' }} confirm="Sure?">
+        Delete data
+      </WriteAction>,
+    )
+
+    await click(container.querySelector('button'))
+    expect(fetchMock).not.toHaveBeenCalled()
+    await unmount()
+  })
+
+  it('says what the second press will do', async () => {
+    const { container, unmount } = await mount(
+      <WriteAction action="/api/users/run9/pee" payload={{}} confirm="Delete it all?">
+        Delete data
+      </WriteAction>,
+    )
+
+    await click(container.querySelector('button'))
+    expect(container.querySelector('button')?.textContent).toBe('Delete it all?')
+    await unmount()
+  })
+
+  it('writes on the second press', async () => {
+    const { fetchMock, release } = deferredFetch()
+    const { container, unmount } = await mount(
+      <WriteAction action="/api/users/run9/pee" payload={{}} confirm="Sure?">
+        Delete data
+      </WriteAction>,
+    )
+
+    await click(container.querySelector('button'))
+    await click(container.querySelector('button'))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Settled before unmounting: a write left in flight keeps its action URL
+    // marked pending, and pending is grouped by URL across the whole page.
+    release({ ok: true })
+    await flush()
+    await unmount()
+  })
+
+  it('disarms itself, so a forgotten button cannot be fired later', async () => {
+    // A control left armed and walked away from must not be one stray click
+    // from something irreversible.
+    vi.useFakeTimers()
+    try {
+      deferredFetch()
+      const { container, unmount } = await mount(
+        <WriteAction action="/api/users/run9/pee" payload={{}} confirm="Sure?">
+          Delete data
+        </WriteAction>,
+      )
+      await click(container.querySelector('button'))
+      expect(container.querySelector('button')?.textContent).toBe('Sure?')
+
+      await act(async () => {
+        vi.advanceTimersByTime(6_000)
+      })
+      expect(container.querySelector('button')?.textContent).toBe('Delete data')
+      await unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves an ordinary control firing on the first press', async () => {
+    // Every other write in the app is a tap that means what it says. Asking
+    // twice for a walk would be noise.
+    const { fetchMock, release } = deferredFetch()
+    const { container, unmount } = await mount(
+      <WriteAction action="/api/users/run9/pee" payload={{}}>
+        Walked
+      </WriteAction>,
+    )
+
+    await click(container.querySelector('button'))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Settled before unmounting: pending is grouped by action URL across the
+    // whole page, so a write left in flight leaks into the next test.
+    release({ ok: true })
+    await flush()
+    await unmount()
+  })
+})
 
 describe('WriteAction', () => {
   it('renders a real form POST, so the control still works with JS off', async () => {

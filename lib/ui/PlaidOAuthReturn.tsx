@@ -81,7 +81,14 @@ export function PlaidOAuthReturn() {
           onSuccess: (publicToken) => {
             void (async () => {
               setPhase('exchanging')
-              const ok = await exchangeAtConnectRoute(session.connectAction, publicToken)
+              // The account-picker flag rides in the stored session, so a
+              // trip through an OAuth bank does not silently downgrade
+              // "remove this account" into a no-op.
+              const ok = await exchangeAtConnectRoute(
+                session.connectAction,
+                publicToken,
+                session.manageAccounts === true,
+              )
               forgetLinkSession()
               if (!ok) {
                 setPhase('failed')

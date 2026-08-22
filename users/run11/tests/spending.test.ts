@@ -52,7 +52,6 @@ import {
   foldIntoOther,
   isConnected,
   lastRefreshes,
-  needsReauth,
   spendingAccounts,
   spendingTransactions,
   spendingWindowStart,
@@ -67,6 +66,13 @@ afterEach(() => {
 })
 
 const TODAY = '2026-08-20'
+/**
+ * The render instant the page would have handed down for a given day.
+ *
+ * Derived from the same day the test asked for, so `today` and `now` agree
+ * the way app/[user]/page.tsx guarantees they do.
+ */
+const atMidday = (day: string) => Date.parse(`${day}T12:00:00Z`)
 
 let db: UserDb
 
@@ -156,7 +162,14 @@ function refresh({ product = 'transactions', ok = 1, code = null as string | nul
 
 function render(handle: UserDb, today = TODAY, screen = 'spending'): string {
   return JSON.stringify(
-    Dashboard({ slug: 'run11', db: handle, today, timeZone: 'America/Chicago', screen }),
+    Dashboard({
+      slug: 'run11',
+      db: handle,
+      today,
+      now: atMidday(today),
+      timeZone: 'America/Chicago',
+      screen,
+    }),
   )
 }
 
@@ -558,15 +571,13 @@ describe('users/run11 — the connection states', () => {
     ])
   })
 
-  it('asks for a re-login only on item_login_required, not on any failure', () => {
-    // The one failure only he can fix. A permanently visible "reconnect your
-    // bank" would read as "your bank is broken" at every moment it is not.
-    expect(needsReauth([{ at: 1, product: 'transactions', ok: 0, code: 'api_error' }])).toBe(false)
-    expect(needsReauth([{ at: 1, product: 'recurring', ok: 0, code: 'not_ready' }])).toBe(false)
-    expect(
-      needsReauth([{ at: 1, product: 'transactions', ok: 0, code: 'item_login_required' }]),
-    ).toBe(true)
-  })
+  // `needsReauth` used to live here. It is gone, and deliberately not
+  // replaced: whether a bank needs a re-login is now decided once, in
+  // modules/plaid/sources.ts, for every friend with a bank — and that
+  // precedence (a sign-in failure outranks a plain one, because it is the only
+  // one they can act on) is pinned in modules/tests/plaidSources.test.ts. Two
+  // implementations of one question is the fork the shared-module rule
+  // forbids, applied to a read instead of to a table.
 })
 
 describe('users/run11 — the Spending screen on a screen', () => {
@@ -592,8 +603,13 @@ describe('users/run11 — the Spending screen on a screen', () => {
     const json = render(db)
     expect(json).toContain('Nothing has come through')
     expect(json).not.toContain('$0')
-    // And Refresh is reachable, so the state is not a dead end.
-    expect(json).toContain('/api/users/run11/plaid/refresh')
+    // And the shared bank surface is on the page, so the state is not a dead
+    // end: refresh, reconnect and the rest all live there now
+    // (lib/ui/PlaidSources.tsx). Its own contents are pinned once, in
+    // tests/ui/plaidSources.test.tsx — a server component is rendered by
+    // CALLING it, so a child component element in this tree still holds its
+    // props and has produced no output to search.
+    expect(json).toContain('"sources"')
   })
 
   it('never mounts the chart when there is nothing drawable', () => {
@@ -764,6 +780,35 @@ describe('users/run11 — the Spending screen on a screen', () => {
     // `var(--border)` in a swatch's inline style, which is not what this rule
     // is about — the guidelines forbid parenthesised NEGATIVE AMOUNTS.
     expect(json).not.toContain('($')
+  })
+
+  it('names which BANK a failing product belongs to', () => {
+    // He has two cards by design, so "couldn't reach your bank" without saying
+    // WHICH is a sentence he cannot act on — and grouping by product alone
+    // dropped the older bank's line entirely, which is routine once one bank
+    // has been refreshed more recently than the other.
+    // A second card, which is what spec v3 describes him having.
+    db.prepare(
+      `INSERT INTO plaid_items
+         (item_id, access_token, institution_id, institution_name, available_products, payload, connected_at)
+       VALUES ('item-TWO-TEST', 'access-NOT-A-REAL-TOKEN-TEST', 'ins_TWO_TEST', 'SECOND CARD TEST', '[]', '{}', 2)`,
+    ).run()
+    db.prepare("UPDATE plaid_items SET institution_name = 'FIRST CARD TEST' WHERE item_id = 'item-TEST'").run()
+    // DIFFERENT instants, which is the case that separates "latest per bank
+    // per product" from "latest per product" — routine, since each press
+    // writes one instant and a disconnected bank is skipped entirely.
+    db.prepare(
+      `INSERT INTO plaid_refreshes (at, day, product, ok, code, item_id)
+       VALUES (9000, '2026-08-20', 'transactions', 0, 'network', 'item-TEST')`,
+    ).run()
+    db.prepare(
+      `INSERT INTO plaid_refreshes (at, day, product, ok, code, item_id)
+       VALUES (8000, '2026-08-20', 'transactions', 0, 'network', 'item-TWO-TEST')`,
+    ).run()
+
+    const json = render(db)
+    expect(json).toContain('FIRST CARD TEST — ')
+    expect(json).toContain('SECOND CARD TEST — ')
   })
 
   it('offers a re-login only when a refresh actually said so', () => {

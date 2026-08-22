@@ -31,6 +31,8 @@ const DAY = 86_400_000
  */
 const ZONE = 'America/New_York'
 const today = () => dayKey(Date.now(), ZONE)
+/** The render instant the page would have handed down, from the same clock. */
+const NOW = Date.now()
 const daysAgo = (n: number) => dayKey(Date.now() - n * DAY, ZONE)
 
 function walked(...days: string[]) {
@@ -55,7 +57,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   it('shows today as walked, with the streak and percentage computed', async () => {
     walked(today(), daysAgo(1), daysAgo(2))
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), now: NOW, timeZone: ZONE }))
 
     expect(json).toContain('WALKED')
     // 3 of 30 = 10%. A hard-coded panel cannot produce this.
@@ -81,7 +83,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   it('singularises the streak label to "day in a row" at exactly one', async () => {
     walked(today())
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), now: NOW, timeZone: ZONE }))
 
     expect(json).toContain('{"type":"p","key":null,"props":{"children":1}')
     expect(json).toContain('"children":"day in a row"}')
@@ -90,7 +92,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   it('shows the not-yet state and offers the tap when today is unlogged', async () => {
     walked(daysAgo(1))
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), now: NOW, timeZone: ZONE }))
 
     expect(json).toContain('NOT YET')
     // The control is the whole product. It must post to the write path.
@@ -105,7 +107,7 @@ describe('users/devtwo/dashboard.tsx', () => {
     // not a placeholder pending a field that never arrives.
     walked(daysAgo(1))
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), now: NOW, timeZone: ZONE }))
 
     expect(json).toContain('"action":"/api/users/devtwo/walk","payload":{}')
     expect(json).toContain('"pendingLabel":"Marking…"')
@@ -117,7 +119,7 @@ describe('users/devtwo/dashboard.tsx', () => {
     // reading "missed" — days that passed before their dashboard existed.
     walked(daysAgo(3))
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), now: NOW, timeZone: ZONE }))
     // JSON.stringify renders an object key as `"data-day":`, never
     // `data-day=` — that HTML-attribute syntax only exists once Next
     // renders this element tree to a markup string, which this unit test
@@ -128,7 +130,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   it('does NOT call fourteen untouched days missed before anything is logged', async () => {
     // The empty database every friend has on the morning their dashboard
     // ships. "Missed" is a judgement, and there is nothing yet to judge.
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), now: NOW, timeZone: ZONE }))
 
     expect(json).toContain('Nothing logged yet')
     expect(json).not.toContain('missed')
@@ -144,7 +146,7 @@ describe('users/devtwo/dashboard.tsx', () => {
     // alone.
     walked(today(), daysAgo(2))
 
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), now: NOW, timeZone: ZONE }))
 
     const order = [...json.matchAll(/"data-day":"([^"]+)"/g)].map((m) => m[1])
     expect(order).toEqual(Array.from({ length: 14 }, (_, i) => daysAgo(13 - i)))
@@ -154,7 +156,7 @@ describe('users/devtwo/dashboard.tsx', () => {
   })
 
   it('renders an empty database without throwing', async () => {
-    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), timeZone: ZONE }))
+    const json = JSON.stringify(await DevTwoDashboard({ slug: 'devtwo', db, today: today(), now: NOW, timeZone: ZONE }))
     expect(json).toContain('NOT YET')
     expect(json).toContain('[0,"%"]')
   })
@@ -182,7 +184,7 @@ it('renders on an EMPTY database without throwing', async () => {
     // not — two of the three dashboards are synchronous, and a test that
     // assumed otherwise would pass for the wrong reason.
     const rendered = await Promise.resolve(
-      DevTwoDashboard({ slug: 'devtwo', db: empty, today: '2026-01-01', timeZone: 'UTC' }),
+      DevTwoDashboard({ slug: 'devtwo', db: empty, today: '2026-01-01', now: Date.parse('2026-01-01T12:00:00Z'), timeZone: 'UTC' }),
     )
     expect(rendered).toBeDefined()
   } finally {

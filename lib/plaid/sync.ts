@@ -113,6 +113,15 @@ export type ProductOutcome = {
   ok: boolean
   /** A PlaidErrorCode, 'not_ready', or undefined on success. Never prose. */
   code?: string
+  /**
+   * Which connection this outcome belongs to.
+   *
+   * Optional because an outcome is a value the caller composes and some
+   * callers describe a single item they already have in hand. The refresh
+   * route sets it on every one, because it loops over several banks and the
+   * outcomes would otherwise be indistinguishable once flattened.
+   */
+  itemId?: string
 }
 
 /**
