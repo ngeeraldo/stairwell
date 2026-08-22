@@ -6,7 +6,7 @@ you:
 
 | You are asked | You do | Nico does next |
 |---|---|---|
-| "do Step 6 in runbook-ai for `<slug>`" | migrations, `seed.py`, `queries.ts`, `dashboard.tsx`, tests | Step 7: starts the dev server and looks at every screen |
+| "do Step 6 in runbook-ai for `<slug>`" | §2.0: propose the build and **stop**. Then, on his go-ahead: migrations, `seed.py`, `queries.ts`, `dashboard.tsx`, tests | Step 6a: reads the plan and approves it. Step 7: starts the dev server and looks at every screen |
 | "do Step 8 in runbook-ai for `<slug>`" | `notes/v<n>.md`, rewrite `current.md` | Step 9: commits, then merges, deploys, announces |
 
 Read **Section 1 in full** before either step. Sections 2 and 3 are the steps
@@ -111,12 +111,11 @@ Read them where they sit; they are more specific than anything here.
 
 ## 1.4 When to stop rather than guess
 
-Three cases. In all three: **finish everything that does not depend on the
-answer, then stop and report to Nico** — to him, not to the friend. He has the
-spec and he decides; the friend can ask for a change afterwards. He can also
-put a question into their chat by hand (`scripts/ask-user.ts`, the Reference
-section of `docs/runbook-human.md`), but that is rare and it is his call, not
-something to suggest. You cannot reach them either way, and nothing in this
+Three cases. In all three: **stop and report to Nico** — to him, not to the
+friend. He has the spec and he decides; the friend can ask for a change
+afterwards. He can also put a question into their chat by hand
+(`scripts/ask-user.ts`, the Reference section of `docs/runbook-human.md`), but
+that is rare and it is his call, not something to suggest. You cannot reach them either way, and nothing in this
 system can reach a friend who is not in the app.
 
 1. **A decision only the friend can make** — does the streak reset on a missed
@@ -127,6 +126,16 @@ system can reach a friend who is not in the app.
    cannot be built.** The friend's own UI request outranks
    `docs/dashboard-ui-ux-guidelines.md` — except for those three, which escalate
    to Nico rather than being quietly adjusted.
+
+**Raise them at §2.0, before you write anything.** Nearly every one of these is
+visible in the spec while the folder is still empty, and §2.0 is the step that
+exists to surface it. The same question costs a sentence on paper and a
+migration, a seeder, a query and a test once the build rests on an answer
+nobody gave.
+
+**Finish everything that does not depend on the answer, then stop and report**
+is what remains for the case §2.0 could not have caught — something that only
+became a question once the code existed. It is the fallback, not the norm.
 
 An **in-spirit adjustment** is different and does not need escalating: the
 build's shape differs from how the spec described it, and works better that way.
@@ -141,7 +150,51 @@ the friend never sees, and routes back through Nico.
 # Section 2 — Step 6: build the dashboard
 
 Everything in `users/$SLUG/`, plus a platform route if the spec has a write
-path. Nico looks at it on a screen at his Step 7 and commits it at Step 9.
+path. Nico approves a plan at his Step 6a before any of it is written, looks at
+the result on a screen at his Step 7, and commits it at Step 9.
+
+## 2.0 Propose the build, then stop
+
+**Write nothing until Nico has approved a plan.** You have read Section 1, the
+spec, the conversation and `current.md`. Hand back what you intend to build,
+and wait. This is his Step 6a.
+
+It is a **message in the chat, not a file.** Nothing under `users/$SLUG/` gets
+a plan document: the folder's six required entries are swept for strays by
+`tests/users/conventions.test.ts`, and a plan is not one of them.
+
+Write it as a **draft of `current.md`** — the five sections of §3.2, in that
+order, describing what the dashboard will BE once this version is built. You
+are drafting the file you rewrite at Step 8, and the vocabulary is the same
+because the question is the same. On a Flow B folder, write only the sections
+the change touches and say the rest of `current.md` stands: Nico is approving a
+change, and restating the whole surface buries it.
+
+Two things go in the plan that `current.md` never carries:
+
+- **The table shape.** Every migration you intend to write, and the tables and
+  views it would create. This is the expensive part, and §2.2b says why: while
+  `001_initial.sql` has never been applied you may edit it freely, and *that is
+  the whole window for getting a shape right cheaply.* The window is open
+  exactly now and shut by the time anyone looks at a screen.
+- **The decisions the spec does not make**, each with your proposed answer.
+  Does the streak reset on a missed day. Does the month start Monday. Is a day
+  with no entry blank, or a zero. Where the window boundaries fall. Say which
+  of them you think is a §1.4 case only the friend can settle, and which is
+  Nico's to call. A spec is prose and will not always say — but every one of
+  these becomes a line in a query whether or not anybody decided it.
+
+Same bound as everything else you write down: **shape, never a row, a value or
+a merchant.** A plan is not committed, but it is read beside files that are,
+and there is no reason for it to be the one place a merchant name turns up.
+
+**Keep it to about a screen.** A plan too long to read is a plan that gets
+approved without being read, and then this step has cost a round trip and
+bought nothing. Decisions earn the space; a recap of the spec does not — Nico
+wrote the spec.
+
+**Then stop.** He approves it, pushes back on it, or works it over with you.
+Only after that do you start at §2.1.
 
 ## 2.1 What the scaffold left you
 
@@ -159,6 +212,11 @@ dashboard, and `spec.md` tells you only what changes.
 
 **Nothing after this means anything until it is done.** The migration is the
 only description of this dashboard's shape — there is no `schema.sql`.
+
+**The shape you write is the shape Nico approved at §2.0.** If building it
+shows the approved shape to be wrong, that goes back to him; it does not get
+quietly corrected in the migration. The approval is what makes §2.0 a gate
+rather than a summary.
 
 ### 2.2a First, if the spec asks for bank or card data
 
@@ -368,6 +426,9 @@ runs the compiler: a green suite says nothing about whether it typechecks.
 Do not commit. Report to Nico:
 
 - what shipped, panel by panel, and which screens exist;
+- anywhere the build **diverged from the plan he approved at §2.0**, and why —
+  he approved a shape and a set of decisions, so a silent departure from either
+  spends the step without paying for it;
 - any **in-spirit adjustment** — where the build differs from the spec's wording
   and why it works better (this becomes `## Built differently`);
 - anything in the spec that did **not** land, and why (this becomes `## Open`,
@@ -441,6 +502,12 @@ heading throws:
 4. `## What can be entered` — every control that writes, and what it writes.
    "Nothing" is a real answer.
 5. `## Deliberately not included` — see below.
+
+**The §2.0 plan was a draft of this file, and it is not this file.** That
+described what you intended; this describes what shipped. Rewrite from the
+code. A plan pasted forward describes a dashboard that was approved rather than
+one that exists, and every later spec version is written against what this file
+says.
 
 **Write the panel descriptions from `queries.ts`, not from `dashboard.tsx`.** A
 panel's real behaviour usually lives in its query — a grace day, a window, what

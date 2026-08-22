@@ -23,7 +23,7 @@ Nothing in this file is new. If a rule is not cited, it is not a rule.
 | `docs/superpowers/ledgers/friend-timezone.md` | Why the day belongs to the friend, and what the bug cost. |
 | `users/devone/` | The worked reference. Its README: "Copy this folder's shape when building a real dashboard." |
 | `users/<slug>/spec.md`, `conversation.md`, `current.md` | The build contract for this friend: what changes, what they meant, what already exists. No mockup — §8. |
-| `docs/runbook-ai.md` | The two steps the AI builder owns, in order: Step 6 (migrations, seeder, dashboard) and Step 8 (notes, `current.md`). Section 1 is its bounds — what it never does, and when it stops and asks. That file is the SEQUENCE and points here for the substance; this file is why the sequence is what it is, and does not repeat it. |
+| `docs/runbook-ai.md` | The two steps the AI builder owns, in order: Step 6 (propose the build and stop for approval, then migrations, seeder, dashboard) and Step 8 (notes, `current.md`). Section 1 is its bounds — what it never does, and when it stops and asks. That file is the SEQUENCE and points here for the substance; this file is why the sequence is what it is, and does not repeat it. |
 | `docs/runbook-human.md` | The surrounding operator sequence Nico runs by hand — invite, pull the spec, branch, hand over, look at it on a screen, commit, deploy, announce. |
 | `docs/dashboard-ui-ux-guidelines.md` | How a dashboard should LOOK and behave: the default stack (shadcn on Tailwind, Recharts), the fluid 375–1200px container, the four non-happy panel states, formatting, and what animation may and may not imply. Defaults — a friend's own request outranks them, subject to the three limits that file names. |
 

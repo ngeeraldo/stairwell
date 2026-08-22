@@ -63,26 +63,21 @@ git add "users/$FRIEND"                         # the whole folder: *.db is giti
 git commit -m "Scaffold $FRIEND and pull spec v$V"   # Flow B: drop "Scaffold and"
 ```
 
-## Step 6 - Hand over Build to AI Builder
+## Step 6a — Hand over to the AI builder: the plan first
 
 Start a fresh Claude Code session on this branch and paste:
 
 ```
-It is time for you to do Step 6 in docs/runbook-ai.md for $FRIEND
+It is time for you to do Step 6 in docs/runbook-ai.md for
 ```
 
-(Type the slug itself — that message is not going through a shell, so `$FRIEND`
-will not expand.)
+It reads Section 1 and the spec, then **stops and hands you a plan before it writes anything.
 
-It reads Section 1, then builds: migrations, `seed.py`, `queries.ts`,
-`dashboard.tsx`, tests. It does **not** commit — you do, at Step 9.
+Read it and answer. Approve it, push back, or work it over together. 
 
-Answer its questions and wait for it to finish. It reports blockers **to you**: 
-anything in the spec that did not land, and anything the spec
-left ambiguous. You decide, and they adjust later if it is wrong.
+## Step 6b — It builds
 
-Two checks in `tests/users/conventions.test.ts` are red when it hands back —
-both want `current.md`, which is Step 8. That is expected, not a failure.
+Say go, in the same session.
 
 ### Step 7 - Manually Test
 
