@@ -285,6 +285,18 @@ describe('paths a person with no session can reach', () => {
     expect(response.headers.get('location')).toBeNull()
   })
 
+  it('lets the tab icon through', () => {
+    // THE PAGE THAT SHOWS THE ICON MOST IS /login, and nobody looking at
+    // /login has a session. Next injects <link rel="icon" href="/icon.svg?…">
+    // into every page; without this the browser followed a 307 to /login and
+    // got HTML where an image belonged, so the tab stayed blank for exactly
+    // the visitors we were trying to look legitimate to. The query string
+    // Next fingerprints it with is not part of the pathname, so an exact
+    // match is enough.
+    const response = middleware(new NextRequest('http://localhost/icon.svg?f01bb3f0'))
+    expect(response.headers.get('location')).toBeNull()
+  })
+
   it('still bounces a path that merely STARTS with the word invite', () => {
     // The segment-boundary bug isAdminPath already guards against, in its new
     // home: `startsWith('/invite')` would open '/invitations' and anything

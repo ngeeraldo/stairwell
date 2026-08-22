@@ -39,6 +39,14 @@ function isPublicPath(pathname: string): boolean {
   return (
     pathname === '/login' ||
     pathname === '/forgot' ||
+    // The tab icon. app/icon.svg is a Next file convention, so every page —
+    // /login included — carries <link rel="icon" href="/icon.svg?…">, and the
+    // browser fetches it with whatever session the visitor has, which on the
+    // login page is none. Without this it followed a 307 and got HTML where an
+    // image belonged. It sits HERE and not in the matcher's exclusion list
+    // beside favicon.ico for the reason this file's header gives: a path
+    // excluded by the matcher cannot be tested by the suite.
+    pathname === '/icon.svg' ||
     pathname.startsWith('/invite/') ||
     pathname.startsWith('/api/invite/')
   )
