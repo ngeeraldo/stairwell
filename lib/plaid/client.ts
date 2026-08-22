@@ -414,7 +414,22 @@ export async function createLinkToken(
 export async function getItem(
   api: PlaidApi,
   accessToken: string,
-): Promise<{ itemId: string; institutionId?: string; availableProducts: string[]; errorCode?: string }> {
+): Promise<{
+  itemId: string
+  institutionId?: string
+  /**
+   * What the friend calls this bank.
+   *
+   * Verified present on a real /item/get in Sandbox, in the same response the
+   * connect route already makes — so telling two banks apart costs no extra
+   * Plaid call. Undefined rather than '' when Plaid omits it: a blank rendered
+   * as a bank's name reads as a bank with no name, where undefined lets a
+   * panel fall back to something true.
+   */
+  institutionName?: string
+  availableProducts: string[]
+  errorCode?: string
+}> {
   const body = await call<{ item?: Record<string, unknown> }>(() =>
     api.itemGet({ access_token: accessToken }),
   )
@@ -425,6 +440,10 @@ export async function getItem(
   return {
     itemId: item.item_id,
     institutionId: typeof item.institution_id === 'string' ? item.institution_id : undefined,
+    institutionName:
+      typeof item.institution_name === 'string' && item.institution_name !== ''
+        ? item.institution_name
+        : undefined,
     availableProducts: Array.isArray(item.available_products)
       ? item.available_products.filter((p): p is string => typeof p === 'string')
       : [],

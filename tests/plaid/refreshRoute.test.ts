@@ -63,10 +63,14 @@ vi.mock('@/lib/plaid/client', async () => {
   }
 })
 
-const SCHEMA = readFileSync(
-  resolve(__dirname, '..', '..', 'modules', 'plaid', 'initial.sql'),
-  'utf8',
-)
+const moduleSql = (name: string) =>
+  readFileSync(resolve(__dirname, '..', '..', 'modules', 'plaid', name), 'utf8')
+
+/** The module's migrations, as a friend's folder vendors them. */
+const MODULE_MIGRATIONS = [
+  { number: 1, file: '001_module_plaid_initial.sql', sql: moduleSql('initial.sql') },
+  { number: 2, file: '002_module_plaid_multi_source.sql', sql: moduleSql('002_multi_source.sql') },
+]
 
 let dir: string
 let handle: PlatformDb | undefined
@@ -81,11 +85,16 @@ beforeEach(() => {
   setNodeEnv('production')
 
   mkdirSync(join(dir, 'users', 'devtwo', 'migrations'), { recursive: true })
-  writeFileSync(join(dir, 'users', 'devtwo', 'migrations', '001_module_plaid_initial.sql'), SCHEMA)
+  for (const m of MODULE_MIGRATIONS) {
+    writeFileSync(join(dir, 'users', 'devtwo', 'migrations', m.file), m.sql)
+  }
   writeFileSync(
     join(dir, 'users', 'devtwo', 'migrations', 'manifest.json'),
     JSON.stringify({
-      migrations: [{ number: 1, sha256: createHash('sha256').update(SCHEMA).digest('hex') }],
+      migrations: MODULE_MIGRATIONS.map((m) => ({
+        number: m.number,
+        sha256: createHash('sha256').update(m.sql).digest('hex'),
+      })),
     }),
   )
 

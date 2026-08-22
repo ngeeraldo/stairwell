@@ -117,13 +117,14 @@ export async function POST(
   // and the same reasoning app/api/users/[user]/forecast/route.ts already
   // applies to its provider call.
   let item: { accessToken: string; itemId: string }
-  let detail: { institutionId?: string; availableProducts: string[] }
+  let detail: { institutionId?: string; institutionName?: string; availableProducts: string[] }
   try {
     const api = plaidApiFromEnv()
     item = await exchangePublicToken(api, publicToken)
     const described = await getItem(api, item.accessToken)
     detail = {
       institutionId: described.institutionId,
+      institutionName: described.institutionName,
       availableProducts: described.availableProducts,
     }
   } catch (error) {
@@ -148,13 +149,18 @@ export async function POST(
         userDb
           .prepare(
             `INSERT INTO plaid_items
-               (item_id, access_token, institution_id, cursor, available_products, payload, connected_at)
-             VALUES (?, ?, ?, NULL, ?, '{}', ?)`,
+               (item_id, access_token, institution_id, institution_name, cursor,
+                available_products, payload, connected_at)
+             VALUES (?, ?, ?, ?, NULL, ?, '{}', ?)`,
           )
           .run(
             item.itemId,
             item.accessToken,
             detail.institutionId ?? null,
+            // What the friend calls this bank, from the /item/get above. NULL
+            // rather than '' when Plaid has no name for it: a panel can fall
+            // back from NULL, where a blank renders as a bank with no name.
+            detail.institutionName ?? null,
             JSON.stringify(detail.availableProducts),
             now,
           )

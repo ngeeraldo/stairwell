@@ -181,17 +181,18 @@ export async function POST(
 
     const api = plaidApiFromEnv()
     const outcomes: ProductOutcome[] = []
+    const ref = { itemId: item.item_id, accessToken: item.access_token }
 
     for (const product of plannedProducts(available, requested)) {
       try {
         if (product === 'transactions') {
-          await pullTransactions(userDb, api, item.access_token)
+          await pullTransactions(userDb, api, ref)
         } else if (product === 'accounts') {
-          await pullAccounts(userDb, api, item.access_token, item.item_id)
+          await pullAccounts(userDb, api, ref)
         } else if (product === 'holdings') {
-          await pullHoldings(userDb, api, item.access_token)
+          await pullHoldings(userDb, api, ref)
         } else if (product === 'recurring') {
-          const state = await pullRecurring(userDb, api, item.access_token)
+          const state = await pullRecurring(userDb, api, ref)
           // 'not_ready' is recorded as its own outcome rather than as a
           // success or a failure: Plaid has the connection and has not
           // finished preparing the product, which is routine on the first
@@ -199,7 +200,7 @@ export async function POST(
           outcomes.push({ product, ok: state === 'ok', code: state === 'ok' ? undefined : 'not_ready' })
           continue
         } else {
-          await pullInvestmentTransactions(userDb, api, item.access_token, {
+          await pullInvestmentTransactions(userDb, api, ref, {
             startDate: dayKey(now - INVESTMENT_WINDOW_DAYS * 86_400_000, timeZone),
             endDate: attempt.day,
           })
@@ -219,7 +220,7 @@ export async function POST(
     // Every attempt is recorded, including the failures. Without these rows a
     // failed refresh is indistinguishable from no refresh and the dashboard
     // renders stale numbers as though they were current.
-    for (const outcome of outcomes) recordRefresh(userDb, attempt, outcome)
+    for (const outcome of outcomes) recordRefresh(userDb, attempt, outcome, item.item_id)
 
     // Permanent policy: a slug and a panel, never a value. Not how many
     // transactions arrived, not a balance, not the institution.

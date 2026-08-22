@@ -34,6 +34,36 @@
 // annotation keyed to a transaction id. The reverse order is harmless: rows
 // written without the cursor are simply re-sent and upserted next time.
 //
+// ── EVERY READ AND EVERY WRITE IS SCOPED TO ONE ITEM ────────────────────────
+//
+// A friend may connect more than one bank, so every function here takes the
+// item it is acting for and touches nothing outside it. That is not a tidiness
+// rule, it is the difference between a refresh and a data loss:
+//
+//   - The cursor UPDATE without a WHERE stamped EVERY item with the cursor of
+//     whichever one was syncing. An item whose cursor points into someone
+//     else's stream is unrecoverable — Plaid never re-sends what a cursor
+//     claims you already have, and the only repair is disconnect-and-reconnect,
+//     which loses every annotation keyed to a transaction id.
+//   - A snapshot DELETE without a WHERE meant syncing bank A emptied bank B's
+//     accounts, holdings, recurring streams and investment transactions.
+//
+// Every table here carries its own item_id (modules/plaid/002_multi_source.sql)
+// and is scoped directly on it. Plaid keys transactions, holdings, recurring
+// streams and investment transactions by ACCOUNT and never mentions the item,
+// so the alternative was to scope them by joining back through plaid_accounts
+// — and that fails in the case that matters. A dashboard may refresh holdings
+// alone, so plaid_accounts is never consulted and may be empty; a closed
+// account is gone from it entirely, stranding its transactions where no delete
+// can reach them. The bank is stamped on the row at write time instead.
+//
+// plaid_securities is the exception and is never scoped, because a security is
+// not owned by anyone: two brokerages holding the same fund describe the same
+// security_id. So it UPSERTS and never deletes. The rows it accumulates are
+// only ever reached by joining from a holding or an investment transaction, so
+// an orphan is invisible rather than wrong — and deleting one out from under
+// another item's holding would leave that holding unjoinable, which is.
+//
 // ── WHAT THIS FILE MAY NOT DO ───────────────────────────────────────────────
 //
 // It never reads a clock. Date ranges arrive from the caller, which resolved
@@ -64,6 +94,19 @@ import {
  */
 const MAX_PAGES = 100
 
+/**
+ * The one connection a pull is acting for.
+ *
+ * The two fields travel together in an object rather than as adjacent string
+ * parameters deliberately: they are both strings, so a swapped pair would
+ * compile, run, and quietly write one bank's rows under another bank's id.
+ * That is exactly the failure this file was rewritten to remove.
+ */
+export type PlaidItemRef = {
+  itemId: string
+  accessToken: string
+}
+
 /** What one product's pull did, for the plaid_refreshes row that follows. */
 export type ProductOutcome = {
   product: string
@@ -82,18 +125,22 @@ export type ProductOutcome = {
  */
 export function applyTransactionPage(
   db: UserDb,
+  itemId: string,
   page: { added: unknown[]; modified: unknown[]; removed: string[]; nextCursor: string },
 ): void {
   const upsert = db.prepare(
-    `INSERT INTO plaid_transactions (transaction_id, account_id, date, payload)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO plaid_transactions (transaction_id, account_id, item_id, date, payload)
+     VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(transaction_id) DO UPDATE SET
        account_id = excluded.account_id,
+       item_id    = excluded.item_id,
        date       = excluded.date,
        payload    = excluded.payload`,
   )
   const remove = db.prepare('DELETE FROM plaid_transactions WHERE transaction_id = ?')
-  const setCursor = db.prepare('UPDATE plaid_items SET cursor = ?')
+  // WHERE item_id — a friend's other bank must keep its own place in its own
+  // stream. Without it, refreshing either bank stamped both.
+  const setCursor = db.prepare('UPDATE plaid_items SET cursor = ? WHERE item_id = ?')
 
   db.transaction(() => {
     for (const raw of [...page.added, ...page.modified]) {
@@ -108,26 +155,28 @@ export function applyTransactionPage(
       ) {
         continue
       }
-      upsert.run(t.transaction_id, t.account_id, t.date, JSON.stringify(raw))
+      upsert.run(t.transaction_id, t.account_id, itemId, t.date, JSON.stringify(raw))
     }
     for (const id of page.removed) remove.run(id)
-    setCursor.run(page.nextCursor)
+    setCursor.run(page.nextCursor, itemId)
   })()
 }
 
 export async function pullTransactions(
   db: UserDb,
   api: PlaidApi,
-  accessToken: string,
+  item: PlaidItemRef,
 ): Promise<void> {
-  const row = db.prepare('SELECT cursor FROM plaid_items LIMIT 1').get() as
+  // WHERE item_id, not LIMIT 1. Handing bank B a cursor minted for bank A asks
+  // Plaid to resume a stream that is not B's.
+  const row = db.prepare('SELECT cursor FROM plaid_items WHERE item_id = ?').get(item.itemId) as
     | { cursor?: string | null }
     | undefined
   let cursor = row?.cursor ?? undefined
 
   for (let page = 0; page < MAX_PAGES; page++) {
-    const result = await syncTransactions(api, accessToken, cursor)
-    applyTransactionPage(db, result)
+    const result = await syncTransactions(api, item.accessToken, cursor)
+    applyTransactionPage(db, item.itemId, result)
     cursor = result.nextCursor
     if (!result.hasMore) return
   }
@@ -144,10 +193,15 @@ export async function pullTransactions(
  *
  * Modelled on replaceForecast in app/api/users/[user]/forecast/route.ts, which
  * draws exactly this distinction for exactly this reason.
+ *
+ * `scope` is what makes "replace whole" mean "replace this item's whole share".
+ * It is REQUIRED rather than optional: an omitted scope is a DELETE with no
+ * WHERE, which is the bug this parameter exists to make unwritable.
  */
 function replaceAll(
   db: UserDb,
   table: string,
+  scope: Scope,
   rows: unknown[],
   toValues: (row: Record<string, unknown>) => unknown[] | null,
   columns: string[],
@@ -156,8 +210,9 @@ function replaceAll(
     `INSERT OR REPLACE INTO ${table} (${columns.join(', ')})
      VALUES (${columns.map(() => '?').join(', ')})`,
   )
+  const clear = db.prepare(`DELETE FROM ${table} WHERE ${scope.where}`)
   db.transaction(() => {
-    db.prepare(`DELETE FROM ${table}`).run()
+    clear.run(...scope.params)
     for (const row of rows) {
       const values = toValues(row as Record<string, unknown>)
       if (values) insert.run(...values)
@@ -165,45 +220,64 @@ function replaceAll(
   })()
 }
 
-export async function pullAccounts(
-  db: UserDb,
-  api: PlaidApi,
-  accessToken: string,
-  itemId: string,
-): Promise<void> {
-  const accounts = await getAccounts(api, accessToken)
+/** A WHERE fragment naming the rows one item owns, and its bound parameters. */
+type Scope = { where: string; params: unknown[] }
+
+/**
+ * Every table a snapshot replaces carries item_id, so this is the only scope
+ * there is. It reads no other table, which is the property that matters: a
+ * replace cannot be silently narrowed by a plaid_accounts that is empty,
+ * stale, or missing a closed account.
+ */
+const ownedBy = (itemId: string): Scope => ({ where: 'item_id = ?', params: [itemId] })
+
+/**
+ * Securities upsert and are never deleted — they belong to no item.
+ *
+ * Both products that return them (holdings and investment transactions) return
+ * the SAME objects for the same security_id, and two items at different
+ * brokerages can hold the same fund. Whichever refreshed last would otherwise
+ * delete the other's securities and leave its rows unjoinable.
+ */
+function upsertSecurities(db: UserDb, rows: unknown[]): void {
+  const insert = db.prepare(
+    'INSERT OR REPLACE INTO plaid_securities (security_id, payload) VALUES (?, ?)',
+  )
+  db.transaction(() => {
+    for (const raw of rows) {
+      const s = raw as { security_id?: unknown }
+      if (typeof s.security_id === 'string') insert.run(s.security_id, JSON.stringify(raw))
+    }
+  })()
+}
+
+export async function pullAccounts(db: UserDb, api: PlaidApi, item: PlaidItemRef): Promise<void> {
+  const accounts = await getAccounts(api, item.accessToken)
   replaceAll(
     db,
     'plaid_accounts',
+    ownedBy(item.itemId),
     accounts,
     (a) =>
-      typeof a.account_id === 'string' ? [a.account_id, itemId, JSON.stringify(a)] : null,
+      typeof a.account_id === 'string' ? [a.account_id, item.itemId, JSON.stringify(a)] : null,
     ['account_id', 'item_id', 'payload'],
   )
 }
 
-export async function pullHoldings(
-  db: UserDb,
-  api: PlaidApi,
-  accessToken: string,
-): Promise<void> {
-  const snapshot = await getHoldings(api, accessToken)
-  replaceAll(
-    db,
-    'plaid_securities',
-    snapshot.securities,
-    (s) => (typeof s.security_id === 'string' ? [s.security_id, JSON.stringify(s)] : null),
-    ['security_id', 'payload'],
-  )
+export async function pullHoldings(db: UserDb, api: PlaidApi, item: PlaidItemRef): Promise<void> {
+  const snapshot = await getHoldings(api, item.accessToken)
+  // Securities first, so a holding never lands with nothing to join to.
+  upsertSecurities(db, snapshot.securities)
   replaceAll(
     db,
     'plaid_holdings',
+    ownedBy(item.itemId),
     snapshot.holdings,
     (h) =>
       typeof h.account_id === 'string' && typeof h.security_id === 'string'
-        ? [h.account_id, h.security_id, JSON.stringify(h)]
+        ? [h.account_id, h.security_id, item.itemId, JSON.stringify(h)]
         : null,
-    ['account_id', 'security_id', 'payload'],
+    ['account_id', 'security_id', 'item_id', 'payload'],
   )
 }
 
@@ -214,9 +288,9 @@ export async function pullHoldings(
 export async function pullRecurring(
   db: UserDb,
   api: PlaidApi,
-  accessToken: string,
+  item: PlaidItemRef,
 ): Promise<'ok' | 'notReady'> {
-  const streams = await getRecurring(api, accessToken)
+  const streams = await getRecurring(api, item.accessToken)
   if (streams === 'notReady') return 'notReady'
 
   const tagged = [
@@ -226,6 +300,7 @@ export async function pullRecurring(
   replaceAll(
     db,
     'plaid_recurring_streams',
+    ownedBy(item.itemId),
     tagged,
     (entry) => {
       const { direction, stream } = entry as { direction: string; stream: Record<string, unknown> }
@@ -233,10 +308,10 @@ export async function pullRecurring(
       // outflow into two arrays and the id space is shared, so without it a
       // paycheck and a subscription could collide on stream_id.
       return typeof stream.stream_id === 'string' && typeof stream.account_id === 'string'
-        ? [stream.stream_id, stream.account_id, direction, JSON.stringify(stream)]
+        ? [stream.stream_id, stream.account_id, item.itemId, direction, JSON.stringify(stream)]
         : null
     },
-    ['stream_id', 'account_id', 'direction', 'payload'],
+    ['stream_id', 'account_id', 'item_id', 'direction', 'payload'],
   )
   return 'ok'
 }
@@ -249,14 +324,15 @@ export async function pullRecurring(
 export async function pullInvestmentTransactions(
   db: UserDb,
   api: PlaidApi,
-  accessToken: string,
+  item: PlaidItemRef,
   range: { startDate: string; endDate: string },
 ): Promise<{ truncated: boolean }> {
-  const result = await getInvestmentTransactions(api, accessToken, range)
+  const result = await getInvestmentTransactions(api, item.accessToken, range)
 
   replaceAll(
     db,
     'plaid_investment_transactions',
+    ownedBy(item.itemId),
     result.transactions,
     (t) =>
       typeof t.investment_transaction_id === 'string' &&
@@ -265,25 +341,16 @@ export async function pullInvestmentTransactions(
         ? [
             t.investment_transaction_id,
             t.account_id,
+            item.itemId,
             typeof t.security_id === 'string' ? t.security_id : null,
             t.date,
             JSON.stringify(t),
           ]
         : null,
-    ['investment_transaction_id', 'account_id', 'security_id', 'date', 'payload'],
+    ['investment_transaction_id', 'account_id', 'item_id', 'security_id', 'date', 'payload'],
   )
 
-  // Securities arrive from BOTH holdings and investment transactions and are
-  // the same objects, so this upserts rather than replacing — otherwise
-  // whichever product refreshed last would delete the other's securities and
-  // leave its rows unjoinable.
-  const insert = db.prepare('INSERT OR REPLACE INTO plaid_securities (security_id, payload) VALUES (?, ?)')
-  db.transaction(() => {
-    for (const raw of result.securities) {
-      const s = raw as { security_id?: unknown }
-      if (typeof s.security_id === 'string') insert.run(s.security_id, JSON.stringify(raw))
-    }
-  })()
+  upsertSecurities(db, result.securities)
 
   return { truncated: result.truncated }
 }
@@ -295,13 +362,18 @@ export async function pullInvestmentTransactions(
  * no refresh, and the dashboard renders the numbers it already had as though
  * they were current. The forecast build learned this first; the panel's honest
  * "couldn't reach your bank" is built on this row existing.
+ *
+ * `itemId` is what makes that sentence actionable once a friend has two banks.
+ * "Transactions failed" is not something anyone can act on when one bank is
+ * perfectly healthy; "Capital One couldn't be reached" is.
  */
 export function recordRefresh(
   db: UserDb,
   attempt: { at: number; day: string },
   outcome: ProductOutcome,
+  itemId: string,
 ): void {
   db.prepare(
-    'INSERT INTO plaid_refreshes (at, day, product, ok, code) VALUES (?, ?, ?, ?, ?)',
-  ).run(attempt.at, attempt.day, outcome.product, outcome.ok ? 1 : 0, outcome.code ?? null)
+    'INSERT INTO plaid_refreshes (at, day, product, ok, code, item_id) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(attempt.at, attempt.day, outcome.product, outcome.ok ? 1 : 0, outcome.code ?? null, itemId)
 }

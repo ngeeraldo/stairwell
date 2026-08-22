@@ -331,6 +331,43 @@ describe('getItem — what this connection can serve, and whether it is broken',
     expect(JSON.stringify(item)).not.toContain('Chase')
   })
 
+  it('reports the institution NAME, which the same response already carries', async () => {
+    // Verified against Sandbox, not assumed: /item/get returns
+    // institution_name alongside institution_id, so a friend with two banks can
+    // be shown two names instead of two ids. No extra Plaid call, no new
+    // failure mode — the connect route already makes this request.
+    const api = stub({
+      itemGet: () =>
+        Promise.resolve({
+          data: {
+            item: {
+              item_id: 'item_1',
+              institution_id: 'ins_109508',
+              institution_name: 'First Platypus Bank',
+              available_products: [],
+              error: null,
+            },
+          },
+        }),
+    })
+
+    expect((await getItem(api, 'token')).institutionName).toBe('First Platypus Bank')
+  })
+
+  it('leaves the institution name undefined when Plaid omits it', async () => {
+    // Not every institution has one, and an empty string rendered as a bank's
+    // name is worse than an id: it reads as a bank with no name rather than as
+    // a missing field a panel can fall back from.
+    const api = stub({
+      itemGet: () =>
+        Promise.resolve({
+          data: { item: { item_id: 'item_1', available_products: [], error: null } },
+        }),
+    })
+
+    expect((await getItem(api, 'token')).institutionName).toBeUndefined()
+  })
+
   it('refuses an item with no id rather than inventing one', async () => {
     const api = stub({ itemGet: () => Promise.resolve({ data: { item: {} } }) })
     await expect(getItem(api, 'token')).rejects.toMatchObject({ code: 'unparseable' })

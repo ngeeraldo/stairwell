@@ -164,12 +164,15 @@ describe('users/run11 — 002 does not lose what 001 stored', () => {
     // enforces on content, applied to membership. 003 is the vendored Plaid
     // envelope and 004 is spec v3's own tables and views; both arrived with
     // users/run11/tests/migrationV3.test.ts, which is where their data-survival
-    // proof lives.
+    // proof lives. 005 is the SECOND vendored module file — the multi-source
+    // migration — whose survival proof is modules/tests/plaidMultiSource.test.ts
+    // and whose byte-identity to the module source is modules/tests/vendored.test.ts.
     expect(files.map((f) => basename(f))).toEqual([
       '001_initial.sql',
       '002_walk_log_and_settings.sql',
       '003_module_plaid_initial.sql',
       '004_run11_spending.sql',
+      '005_module_plaid_multi_source.sql',
     ])
   })
 })

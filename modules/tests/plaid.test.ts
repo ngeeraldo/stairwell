@@ -29,7 +29,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { MARKER } from '@/modules/plaid/scrub'
 
 const MODULE_DIR = resolve(__dirname, '..', 'plaid')
-const SCHEMA = join(MODULE_DIR, 'initial.sql')
+const SCHEMA = [join(MODULE_DIR, 'initial.sql'), join(MODULE_DIR, '002_multi_source.sql')]
 const SEEDER = join(MODULE_DIR, 'seed_plaid.py')
 const FIXTURE = join(MODULE_DIR, 'fixtures', 'sandbox.json')
 
@@ -44,7 +44,7 @@ beforeAll(() => {
   const path = join(dir, 'synthetic.db')
 
   const built = new Database(path)
-  built.exec(readFileSync(SCHEMA, 'utf8'))
+  for (const file of SCHEMA) built.exec(readFileSync(file, 'utf8'))
   built.close()
 
   // THE DAY IS HANDED IN, never read from a clock on either side. Before
@@ -88,20 +88,104 @@ describe('the migration and the seeder compose', () => {
     expect(one<{ n: number }>('SELECT COUNT(*) n FROM plaid_recurring_streams').n).toBeGreaterThan(0)
   })
 
-  it('seeds ONE loudly-fake item, so the dashboard renders its own data', () => {
+  it('seeds TWO loudly-fake banks, so every dashboard renders the multi-source states', () => {
     // A dashboard decides connected-vs-not by whether an item EXISTS. Without
-    // this row every seeded finance dashboard rendered "no bank connected" and
-    // hid all of its own transactions — reviewing a panel, or screenshotting
-    // one, meant connecting a real Sandbox bank first.
-    const item = one<{ access_token: string; item_id: string }>(
-      'SELECT access_token, item_id FROM plaid_items',
+    // these rows every seeded finance dashboard rendered "no bank connected"
+    // and hid all of its own transactions — reviewing a panel, or
+    // screenshotting one, meant connecting a real Sandbox bank first.
+    //
+    // TWO of them, because one is the case where every multi-source bug hides.
+    // A management surface built against a single seeded bank cannot show a
+    // list, a per-source status, or the difference between "this one" and "all
+    // of them" — and nobody would notice until a friend connected a second.
+    const items = all<{ access_token: string; item_id: string; institution_name: string }>(
+      'SELECT access_token, item_id, institution_name FROM plaid_items ORDER BY connected_at',
     )
-    expect(item.item_id).toContain('TEST')
-    // Shaped nothing like a real token, so it can never be mistaken for one in
-    // a dump or a screenshot, and it reaches no bank.
-    expect(item.access_token).toContain('NOT-A-REAL-TOKEN')
-    expect(item.access_token).toContain(MARKER)
-    expect(one<{ n: number }>('SELECT COUNT(*) n FROM plaid_items').n).toBe(1)
+
+    expect(items).toHaveLength(2)
+    for (const item of items) {
+      expect(item.item_id).toContain('TEST')
+      // Shaped nothing like a real token, so it can never be mistaken for one
+      // in a dump or a screenshot, and it reaches no bank.
+      expect(item.access_token).toContain('NOT-A-REAL-TOKEN')
+      expect(item.access_token).toContain(MARKER)
+      // A friend with two banks needs to tell them apart before any control
+      // means anything, so the seeded pair must be tellable apart too.
+      expect(item.institution_name).toContain(MARKER)
+    }
+    expect(items[0]!.institution_name).not.toBe(items[1]!.institution_name)
+  })
+
+  it('seeds one bank LIVE and one DISCONNECTED', () => {
+    // The disconnected state is data a panel has to keep rendering while
+    // saying it is no longer updating. Seeding only live banks means the
+    // "no longer updating" path is first exercised by a real friend.
+    const states = all<{ disconnected_at: number | null }>(
+      'SELECT disconnected_at FROM plaid_items ORDER BY connected_at',
+    )
+    expect(states.map((s) => s.disconnected_at === null)).toEqual([true, false])
+  })
+
+  it('gives the disconnected bank real history, not an empty shell', () => {
+    // A disconnected source that brought no data proves nothing: the whole
+    // point of keeping a revoked connection is the history under it.
+    const frozen = one<{ item_id: string }>(
+      'SELECT item_id FROM plaid_items WHERE disconnected_at IS NOT NULL',
+    )
+    expect(
+      one<{ n: number }>(
+        `SELECT COUNT(*) n FROM plaid_transactions WHERE item_id = '${frozen.item_id}'`,
+      ).n,
+    ).toBeGreaterThan(0)
+  })
+
+  it('files every synced row under a bank that actually exists', () => {
+    // The seeder used to write accounts under an item_id no plaid_items row
+    // had. Nothing noticed, because nothing joined them. Now that a delete is
+    // scoped by item_id, a row filed under a bank that does not exist is a row
+    // no friend can ever remove.
+    for (const table of [
+      'plaid_accounts',
+      'plaid_transactions',
+      'plaid_holdings',
+      'plaid_recurring_streams',
+      'plaid_investment_transactions',
+    ]) {
+      expect({
+        table,
+        orphans: one<{ n: number }>(
+          `SELECT COUNT(*) n FROM ${table}
+            WHERE item_id IS NULL
+               OR item_id NOT IN (SELECT item_id FROM plaid_items)`,
+        ).n,
+      }).toEqual({ table, orphans: 0 })
+    }
+  })
+
+  it('gives each bank its own accounts, and each account exactly one bank', () => {
+    const perItem = all<{ item_id: string; n: number }>(
+      'SELECT item_id, COUNT(*) n FROM plaid_accounts GROUP BY item_id ORDER BY item_id',
+    )
+    expect(perItem).toHaveLength(2)
+    for (const row of perItem) expect(row.n).toBeGreaterThan(0)
+  })
+
+  it('keeps a synced row with the same bank its account belongs to', () => {
+    // The stamp is a shortcut for the join, so the two must never disagree.
+    const joined = one<{ n: number }>(
+      `SELECT COUNT(*) n FROM plaid_transactions t
+         JOIN plaid_accounts a ON a.account_id = t.account_id`,
+    ).n
+    const agreeing = one<{ n: number }>(
+      `SELECT COUNT(*) n FROM plaid_transactions t
+         JOIN plaid_accounts a ON a.account_id = t.account_id
+        WHERE a.item_id = t.item_id`,
+    ).n
+    // Counted both ways on purpose: `WHERE a.item_id <> t.item_id` returns
+    // zero when every t.item_id is NULL, so a test asserting only that would
+    // have passed against the very database this stamp exists to replace.
+    expect(joined).toBeGreaterThan(0)
+    expect(agreeing).toBe(joined)
   })
 
   it('still leaves plaid_refreshes EMPTY', () => {

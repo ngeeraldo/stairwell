@@ -102,6 +102,43 @@ def _offset_days(fixture, today):
     return (today - date.fromisoformat(max(dates))).days
 
 
+def _split_accounts(fixture, live_item, frozen_item):
+    """Decide which of the fixture's accounts belongs to which seeded bank.
+
+    Returns {account_id: item_id}, covering every account the fixture names.
+
+    The fixture is a recording of ONE Sandbox item, so a second bank has to be
+    carved out of it. The rule: the two accounts with the fewest transactions -
+    but at least one - go to the disconnected bank, and everything else stays
+    live.
+
+    Two properties are being bought here, and both matter for review:
+
+      * The frozen bank has REAL HISTORY. A disconnected source with no rows
+        under it proves nothing; the whole reason to keep a revoked connection
+        is the data it already brought.
+      * The live bank keeps the bulk, including every investment account, so
+        the panels a builder is actually looking at stay full.
+
+    Deterministic - sorted by (count, account_id) - so the same fixture always
+    produces the same split and a screenshot is comparable to yesterday's.
+    """
+    counts = {}
+    for transaction in fixture["transactions"]:
+        counts[transaction["account_id"]] = counts.get(transaction["account_id"], 0) + 1
+
+    with_history = sorted(
+        (account["account_id"] for account in fixture["accounts"] if counts.get(account["account_id"])),
+        key=lambda account_id: (counts[account_id], account_id),
+    )
+    frozen = set(with_history[:2])
+
+    return {
+        account["account_id"]: (frozen_item if account["account_id"] in frozen else live_item)
+        for account in fixture["accounts"]
+    }
+
+
 def seed_plaid(db, today=None):
     """Fill every plaid_* table from the fixture. Returns a row count per table.
 
@@ -121,51 +158,88 @@ def seed_plaid(db, today=None):
         db.executemany(sql, rows)
         counts[table] = len(rows)
 
-    # ONE plaid_items row, with a loudly fake token.
+    # TWO plaid_items rows, both with loudly fake tokens, one of them revoked.
     #
     # This file used to seed none, on the reasoning that a synthetic database
     # must never hold a bank credential even a fake one. That protected nothing
-    # - the string below reaches no bank and never could - and it cost
+    # - the strings below reach no bank and never could - and it cost
     # something real: a dashboard decides connected-vs-not by whether an item
-    # EXISTS, so without this row every seeded finance dashboard rendered "no
+    # EXISTS, so without these rows every seeded finance dashboard rendered "no
     # bank connected" and hid all of its own data. Reviewing panels, or
     # screenshotting them, meant connecting a real Sandbox bank first.
     #
-    # Both states stay reachable, which is the point:
-    #   npm run synthetic            connected, with data - the normal review
+    # It then seeded exactly ONE, which was the next version of the same
+    # mistake. Every multi-source bug hides at one bank: a management surface
+    # built against a single seeded item cannot show a list, a per-source
+    # status, or the difference between removing THIS bank and removing all of
+    # them, and nobody notices until a friend connects their second. So the
+    # default synthetic database has two, and one of them is disconnected -
+    # which is the state a panel has to keep rendering while saying out loud
+    # that it is no longer updating.
+    #
+    # Both connection states stay reachable, which is the point:
+    #   npm run synthetic            two banks, with data - the normal review
     #   npm run synthetic -- --empty not connected - a friend's first session
     #
-    # Pressing Refresh against this token fails with an auth error and records
-    # it in plaid_refreshes, so the panel says "couldn't reach your bank". That
-    # is an honest state and a useful one to be able to look at.
+    # Pressing Refresh against these tokens fails with an auth error and
+    # records it in plaid_refreshes, so the panel says "couldn't reach your
+    # bank". That is an honest state and a useful one to be able to look at.
+    live_item = "item-SYNTHETIC-TEST"
+    frozen_item = "item-SYNTHETIC-TWO-TEST"
+    connected_at = int(datetime(2026, 1, 1).timestamp() * 1000)
+
     insert(
         "plaid_items",
         "INSERT OR REPLACE INTO plaid_items "
-        "(item_id, access_token, institution_id, cursor, available_products, payload, connected_at) "
-        "VALUES (?,?,?,NULL,?,'{}',?)",
-        [(
-            "item-SYNTHETIC-TEST",
-            # Loudly fake, and shaped nothing like a real token, so it can
-            # never be mistaken for one in a dump or a screenshot.
-            "access-SYNTHETIC-NOT-A-REAL-TOKEN-TEST",
-            "ins_SYNTHETIC_TEST",
-            json.dumps(["investments", "recurring_transactions", "transactions_refresh"]),
-            int(datetime(2026, 1, 1).timestamp() * 1000),
-        )],
+        "(item_id, access_token, institution_id, institution_name, cursor, "
+        " available_products, payload, connected_at, disconnected_at) "
+        "VALUES (?,?,?,?,NULL,?,'{}',?,?)",
+        [
+            (
+                live_item,
+                # Loudly fake, and shaped nothing like a real token, so it can
+                # never be mistaken for one in a dump or a screenshot.
+                "access-SYNTHETIC-NOT-A-REAL-TOKEN-TEST",
+                "ins_SYNTHETIC_TEST",
+                fixture.get("institution_name", "FIRST PLATYPUS BANK TEST"),
+                json.dumps(["investments", "recurring_transactions", "transactions_refresh"]),
+                connected_at,
+                None,
+            ),
+            (
+                frozen_item,
+                "access-SYNTHETIC-TWO-NOT-A-REAL-TOKEN-TEST",
+                "ins_SYNTHETIC_TWO_TEST",
+                "SECOND PLATYPUS BANK TEST",
+                json.dumps(["transactions_refresh"]),
+                connected_at + 1,
+                # Revoked at Plaid, data kept. NOT NULL is what turns an
+                # orphaned pile of transactions into a stated fact.
+                connected_at + 86_400_000,
+            ),
+        ],
     )
+
+    owner = _split_accounts(shifted, live_item, frozen_item)
 
     insert(
         "plaid_accounts",
         "INSERT OR REPLACE INTO plaid_accounts (account_id, item_id, payload) VALUES (?,?,?)",
-        [(a["account_id"], "synthetic-item", json.dumps(a)) for a in shifted["accounts"]],
+        [(a["account_id"], owner[a["account_id"]], json.dumps(a)) for a in shifted["accounts"]],
     )
 
     insert(
         "plaid_transactions",
         "INSERT OR REPLACE INTO plaid_transactions "
-        "(transaction_id, account_id, date, payload) VALUES (?,?,?,?)",
+        "(transaction_id, account_id, item_id, date, payload) VALUES (?,?,?,?,?)",
         [
-            (t["transaction_id"], t["account_id"], t["date"], json.dumps(t))
+            (
+                t["transaction_id"],
+                t["account_id"],
+                owner[t["account_id"]],
+                t["date"],
+                json.dumps(t),
+            )
             for t in shifted["transactions"]
         ],
     )
@@ -175,8 +249,11 @@ def seed_plaid(db, today=None):
     insert(
         "plaid_recurring_streams",
         "INSERT OR REPLACE INTO plaid_recurring_streams "
-        "(stream_id, account_id, direction, payload) VALUES (?,?,?,?)",
-        [(s["stream_id"], s["account_id"], d, json.dumps(s)) for d, s in streams],
+        "(stream_id, account_id, item_id, direction, payload) VALUES (?,?,?,?,?)",
+        [
+            (s["stream_id"], s["account_id"], owner[s["account_id"]], d, json.dumps(s))
+            for d, s in streams
+        ],
     )
 
     insert(
@@ -188,18 +265,23 @@ def seed_plaid(db, today=None):
     insert(
         "plaid_holdings",
         "INSERT OR REPLACE INTO plaid_holdings "
-        "(account_id, security_id, payload) VALUES (?,?,?)",
-        [(h["account_id"], h["security_id"], json.dumps(h)) for h in shifted["holdings"]],
+        "(account_id, security_id, item_id, payload) VALUES (?,?,?,?)",
+        [
+            (h["account_id"], h["security_id"], owner[h["account_id"]], json.dumps(h))
+            for h in shifted["holdings"]
+        ],
     )
 
     insert(
         "plaid_investment_transactions",
         "INSERT OR REPLACE INTO plaid_investment_transactions "
-        "(investment_transaction_id, account_id, security_id, date, payload) VALUES (?,?,?,?,?)",
+        "(investment_transaction_id, account_id, item_id, security_id, date, payload) "
+        "VALUES (?,?,?,?,?,?)",
         [
             (
                 t["investment_transaction_id"],
                 t["account_id"],
+                owner[t["account_id"]],
                 t.get("security_id"),
                 t["date"],
                 json.dumps(t),

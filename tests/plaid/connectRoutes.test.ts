@@ -71,10 +71,14 @@ vi.mock('@/lib/plaid/client', async () => {
 })
 
 /** The real shared envelope, so these tests break if it stops holding a token. */
-const SCHEMA = readFileSync(
-  resolve(__dirname, '..', '..', 'modules', 'plaid', 'initial.sql'),
-  'utf8',
-)
+const moduleSql = (name: string) =>
+  readFileSync(resolve(__dirname, '..', '..', 'modules', 'plaid', name), 'utf8')
+
+/** The module's migrations, as a friend's folder vendors them. */
+const MODULE_MIGRATIONS = [
+  { number: 1, file: '001_module_plaid_initial.sql', sql: moduleSql('initial.sql') },
+  { number: 2, file: '002_module_plaid_multi_source.sql', sql: moduleSql('002_multi_source.sql') },
+]
 
 /** A value that must never appear in a response body. */
 const ACCESS_TOKEN = 'access-sandbox-SECRET-DO-NOT-LEAK'
@@ -92,11 +96,16 @@ beforeEach(() => {
   setNodeEnv('production')
 
   mkdirSync(join(dir, 'users', 'devtwo', 'migrations'), { recursive: true })
-  writeFileSync(join(dir, 'users', 'devtwo', 'migrations', '001_module_plaid_initial.sql'), SCHEMA)
+  for (const m of MODULE_MIGRATIONS) {
+    writeFileSync(join(dir, 'users', 'devtwo', 'migrations', m.file), m.sql)
+  }
   writeFileSync(
     join(dir, 'users', 'devtwo', 'migrations', 'manifest.json'),
     JSON.stringify({
-      migrations: [{ number: 1, sha256: createHash('sha256').update(SCHEMA).digest('hex') }],
+      migrations: MODULE_MIGRATIONS.map((m) => ({
+        number: m.number,
+        sha256: createHash('sha256').update(m.sql).digest('hex'),
+      })),
     }),
   )
 
@@ -277,6 +286,7 @@ describe('connect stores the token and never shows it to anyone', () => {
     getItemSpy.mockResolvedValue({
       itemId: 'item_9',
       institutionId: 'ins_109508',
+      institutionName: 'First Platypus Bank',
       availableProducts: ['balance', 'recurring_transactions'],
     })
   })
@@ -298,6 +308,35 @@ describe('connect stores the token and never shows it to anyone', () => {
     expect(JSON.parse(rows[0].available_products)).toEqual(['balance', 'recurring_transactions'])
     // No cursor yet: nothing has been synced.
     expect(rows[0].cursor).toBeNull()
+  })
+
+  it('stores the institution NAME, because ins_109508 is not a name', async () => {
+    // The friend has to be able to tell two banks apart before any control
+    // over one of them means anything. It rides in on the /item/get the route
+    // already makes, so this costs no additional Plaid call.
+    await arrange()
+    await (await connect())(post({ public_token: 'public-sandbox-1' }), params())
+
+    const db = await openUserDb()
+    const row = db.prepare('SELECT institution_name FROM plaid_items').get() as any
+    db.close()
+
+    expect(row.institution_name).toBe('First Platypus Bank')
+  })
+
+  it('stores no institution name rather than an empty one when Plaid omits it', async () => {
+    // NULL is a fallback a panel can act on. '' renders as a bank with no
+    // name, which looks like a bug in the connection rather than a missing
+    // field.
+    await arrange()
+    getItemSpy.mockResolvedValue({ itemId: 'item_9', availableProducts: [] })
+    await (await connect())(post({ public_token: 'public-sandbox-1' }), params())
+
+    const db = await openUserDb()
+    const row = db.prepare('SELECT institution_name FROM plaid_items').get() as any
+    db.close()
+
+    expect(row.institution_name).toBeNull()
   })
 
   it('replaces rather than appends, so a friend cannot end up with two items', async () => {
