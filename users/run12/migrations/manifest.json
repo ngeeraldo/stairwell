@@ -1,0 +1,20 @@
+{
+  "migrations": [
+    {
+      "number": 1,
+      "sha256": "f5084accecde28874fdb38b8e74f4bbe92c696927556228e310ff28ddd774afb"
+    },
+    {
+      "number": 2,
+      "sha256": "c3615af9198aa3ce79b3ba943cfb58fa7d1eda3e2d5857accee2d59e8b240da9"
+    },
+    {
+      "number": 3,
+      "sha256": "c1337b63c9bfe055a3d3f6816a7a4ba10f2c9f1e7dd756dad7fcbb668dac08b3"
+    },
+    {
+      "number": 4,
+      "sha256": "0f4b1cd1941d196f3b197811f9afb9d623f8c2424dd2dc0f0291b5991b072b5d"
+    }
+  ]
+}
