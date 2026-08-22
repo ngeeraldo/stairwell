@@ -454,6 +454,34 @@ architectural changes; do not relitigate decided items).
   `metrics` would be the first friend-derived identifier ever written to that
   unencrypted table, which the metrics bound above ("Metrics never carry user
   values") forbids.
+- **`page_view` is the event that means A PERSON WAS HERE, and `dashboard_open`
+  is not.** Written by `app/[user]/page.tsx` at the SHELL, once per render, no
+  dedup — `{ device_class, unlocked, dashboard: 'built' | 'placeholder' }`,
+  session state and registry state, no user values. It exists because
+  `dashboard_open` structurally cannot answer "did they come back": the
+  placeholder branch returns before any metric is written, so a friend checking
+  daily while their v1 is being built left NO row anywhere, and with
+  `SESSION_TTL_MS` at 30 days `login` fires about once a month. Shell-level
+  placement is the point — locked or unlocked, built or not, chat-only or not,
+  and a screen added inside the shell later is covered without being
+  instrumented.
+  **What counts as a visit is decided at READ time, in `lib/metrics/retention.ts`
+  and nowhere else** — the same ruling `dashboard_open` is under, applied to the
+  whole question. `activeDays` reduces a day to a BOOLEAN, so the render
+  inflation both events carry cannot reach it. It reads an explicit ALLOWLIST
+  (`PRESENCE_EVENTS`) rather than every row bearing the account's id, because
+  the account is not the only thing that writes such rows: `deploy_announced`
+  is written by `scripts/announce-deploy.ts`, by Nico, on a day the friend may
+  never have opened the app, and the transcript union is `role = 'user'` for
+  the same reason — that script writes an ASSISTANT turn into their transcript
+  on deploy day. Manufacturing retention out of our own activity is the one
+  direction this report must not be able to lie in. The legacy events stay in
+  the allowlist because `metrics` is append-only and the pilot's history
+  predates `page_view`; dropping them would blank out every week already lived.
+  Days are bucketed in ONE zone for every account (`REPORTING_TIME_ZONE`),
+  not the friend's own: per-friend bucketing would need their zone stored on
+  every row, which is a weak location signal in the unencrypted table. Read it
+  at `/admin/<slug>` → Activity.
 - **Nothing writes to a friend's database except from their own session.**
   Their data key exists only in the in-process keymap while they are unlocked,
   so no scheduled job can open their database at all — the same constraint that

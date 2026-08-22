@@ -316,3 +316,45 @@ describe('the spec tab', () => {
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
   })
 })
+
+describe('the activity tab', () => {
+  // Which days a friend was in the app — the retention question. The pane
+  // itself is unit-tested in tests/admin/activityPane.test.tsx; these three
+  // prove the PAGE feeds it the right days, which is where the definition of
+  // a visit could quietly go wrong.
+
+  it('offers Activity as a tab of its own', async () => {
+    await seed()
+
+    expect(await renderUser('devone')).toContain('Activity')
+  })
+
+  it('shows a month the friend was here', async () => {
+    const { devone } = await seed()
+    const { appendMetric } = await import('@/lib/db/appendOnly')
+    const { REPORTING_TIME_ZONE } = await import('@/lib/metrics/retention')
+    const { dayKey } = await import('@/lib/time/dayKey')
+    const at = Date.now()
+
+    appendMetric(db!, { accountId: devone, event: 'page_view', at })
+
+    const month = dayKey(at, REPORTING_TIME_ZONE).slice(0, 7)
+    expect(await renderUser('devone')).toContain(
+      `data-month="${month}" data-active-count="1"`,
+    )
+  })
+
+  it('does not count a deploy WE made as a day THEY were here', async () => {
+    // deploy_announced carries the friend's account_id and is written by
+    // scripts/announce-deploy.ts, from Nico's laptop, on a day the friend may
+    // never have opened the app. This is the one direction the report must
+    // not be able to lie in, so it is pinned end to end and not only in the
+    // retention unit tests.
+    const { devone } = await seed()
+    const { appendMetric } = await import('@/lib/db/appendOnly')
+
+    appendMetric(db!, { accountId: devone, event: 'deploy_announced', at: Date.now() })
+
+    expect(await renderUser('devone')).toContain('No activity yet')
+  })
+})

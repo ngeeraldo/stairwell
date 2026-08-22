@@ -24,15 +24,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export function AdminTabs({
   transcript,
   spec,
+  activity,
 }: {
   transcript: React.ReactNode
   spec: React.ReactNode
+  activity: React.ReactNode
 }) {
   return (
     <Tabs defaultValue="transcript" className="w-full">
       <TabsList>
         <TabsTrigger value="transcript">Transcript</TabsTrigger>
         <TabsTrigger value="spec">Spec</TabsTrigger>
+        {/* Third pane: which days they were here. Last, and not the default,
+            because the transcript is what this page is opened for — the
+            activity grid answers "should I be worried about them", which is a
+            question you ask before reading, not instead of it. */}
+        <TabsTrigger value="activity">Activity</TabsTrigger>
       </TabsList>
       {/*
         forceMount on both, for the same reason the proposal card's
@@ -50,6 +57,9 @@ export function AdminTabs({
       </TabsContent>
       <TabsContent value="spec" forceMount className="data-[state=inactive]:hidden">
         {spec}
+      </TabsContent>
+      <TabsContent value="activity" forceMount className="data-[state=inactive]:hidden">
+        {activity}
       </TabsContent>
     </Tabs>
   )

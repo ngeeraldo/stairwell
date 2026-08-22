@@ -361,6 +361,42 @@ export default async function UserSpace({
     })
   }
 
+  // THE ONE EVENT THAT MEANS "THE FRIEND WAS HERE".
+  //
+  // Written at the shell, not inside the dashboard region, and that placement
+  // is the whole point. dashboard_open cannot answer "did they come back": the
+  // placeholder branch (dashboardRegion, above) returns before any metric is
+  // written, so a friend checking every day while their v1 is being built —
+  // exactly the week we watch hardest — left no row anywhere at all. `login`
+  // does not cover it either; SESSION_TTL_MS is 30 days, so it fires about
+  // once a month. Here, every landing writes one: locked or unlocked,
+  // dashboard built or not, chat-only or not. A screen added inside the shell
+  // later is covered without anyone remembering to instrument it.
+  //
+  // ONE ROW PER RENDER, NO DEDUP, for the same reason dashboard_open has none:
+  // "a visit" is a definition applied when the log is READ. lib/metrics/
+  // retention.ts is where that definition lives, and it reduces a day to a
+  // boolean, so re-render inflation cannot reach it.
+  //
+  // NO USER VALUES. `unlocked` is session state and `dashboard` is registry
+  // state — neither is derived from anything the friend typed, chose or was
+  // shown, so this stays inside CLAUDE.md's bound on the unencrypted metrics
+  // table. `device_class` is the one already written beside it.
+  appendMetric(getDb(), {
+    accountId,
+    event: 'page_view',
+    data: {
+      device_class,
+      unlocked,
+      // hasDashboard(user) directly rather than reusing chatOpenByDefault's
+      // inverse: they happen to agree today, and they are answers to two
+      // different questions. A row in an append-only table should not change
+      // meaning because a chat-panel default was retuned.
+      dashboard: hasDashboard(user) ? 'built' : 'placeholder',
+    },
+    at: Date.now(),
+  })
+
   // The agent speaks first (onboarding-ux-spec.md S3; agent-v4.md "Your first
   // message"). Written HERE rather than by a model call, because the model is
   // only ever invoked in response to a user message and there is none yet —

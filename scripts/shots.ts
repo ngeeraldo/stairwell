@@ -544,7 +544,7 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
   admin: async (dbPath) => {
     const { openPlatformDb } = await import('../lib/db/platform')
     const { createAccount } = await import('../lib/auth/accounts')
-    const { appendTranscript } = await import('../lib/db/appendOnly')
+    const { appendMetric, appendTranscript } = await import('../lib/db/appendOnly')
     const { insertSpec } = await import('../lib/db/specs')
     const { parseSpecVersion } = await import('../lib/spec/validate')
     const { parseSpecChangeDraft, sealChange } = await import('../lib/spec/change')
@@ -682,6 +682,32 @@ const SEEDERS: Partial<Record<ScreenState, Seeder>> = {
         'INSERT INTO spec_confirmations (spec_id, account_id, at) VALUES (?, ?, ?)',
       ).run(specId, friend, base + 4000)
 
+      // The Activity pane needs a SHAPE, not just a non-empty grid. A friend
+      // who used it hard for a fortnight, drifted off for a month, and has
+      // come back twice this week is the one pattern the picture has to make
+      // obvious at a glance — a uniformly dense grid and a uniformly empty one
+      // would both photograph fine while telling nobody anything.
+      //
+      // page_view is the event a real visit writes (app/[user]/page.tsx), so
+      // this fixture exercises the same path lib/metrics/retention.ts reads
+      // rather than a shortcut only the screenshot uses.
+      const DAY_MS = 86_400_000
+      const visited = [
+        // Days ago: an early dense stretch...
+        76, 75, 74, 73, 71, 70, 69, 68, 67, 65, 64, 62,
+        // ...then nothing for a month...
+        // ...then back this week.
+        6, 2,
+      ]
+      for (const daysAgo of visited) {
+        appendMetric(db, {
+          accountId: friend,
+          event: 'page_view',
+          data: { device_class: 'mobile', unlocked: true, dashboard: 'built' },
+          at: base - daysAgo * DAY_MS,
+        })
+      }
+
       // NOT the friend's slug: the admin index and the per-user pane both take
       // the SLUG in the path, and the session belongs to nico.
       return { slug: 'admintest', password, admin: true }
@@ -808,6 +834,9 @@ async function performAct(page: Page, act: string): Promise<void> {
       break
     case 'tab-mockup':
       await page.getByRole('tab', { name: /^mockup$/i }).click()
+      break
+    case 'tab-activity':
+      await page.getByRole('tab', { name: /^activity$/i }).click()
       break
     case 'wait-writing-spec':
     case 'wait-drawing-preview':

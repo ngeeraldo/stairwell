@@ -48,6 +48,7 @@ export type ScreenAct =
   | 'collapse-chat'
   | 'tab-spec'
   | 'tab-mockup'
+  | 'tab-activity'
   // The two halves of the authoring wait. Both send a message and hold the
   // reply open, because the wait exists only mid-turn — see performAct.
   | 'wait-writing-spec'
@@ -381,6 +382,29 @@ export const SCREENS: Screen[] = [
       'The spec renders as real markdown — headings are headings, lists are lists. Not a wall of preformatted text.',
       'A version label and an "as of" timestamp sit at the top. NOT a confirmation timestamp: nothing confirms any more, currentSpec returns the newest row whether or not it was ever confirmed, and the newest row here (v3) has no spec_confirmations row — so page.tsx falls back to the spec\'s own authored time (`current.confirmed_at ?? current.at`).',
       'The current version is CHANGE-shaped, so the document is the change-only one: "What changed", then "Changes" with an "Add panel — …" heading under it. No screens section, because a change-only spec has no screens.',
+    ],
+  },
+  {
+    id: 'admin-activity',
+    path: '/admin/SLUG',
+    routeFile: 'app/admin/[user]/page.tsx',
+    state: 'admin',
+    act: 'tab-activity',
+    live: true,
+    // THE ONE SCREEN THAT ANSWERS "IS THIS READABLE AT A GLANCE". Every test
+    // this pane has proves the right days are marked; none of them can say
+    // whether twelve rows of small squares read as a pattern or as noise, or
+    // whether an active cell is distinguishable from an inactive one at
+    // 375px. That is the whole reason this gate exists (onboarding ledger
+    // D16).
+    assertions: [
+      'A grid of twelve week rows, Monday-start, with a weekday header that lines up over the columns.',
+      'Active and inactive days are distinguishable at a glance, at BOTH widths — a filled square against an outlined one, not two shades of grey.',
+      'The newest week stops at today. No cells for days that have not happened yet.',
+      'The seeded shape is legible without counting: a dense first stretch, then a gap, then a couple of recent days.',
+      'A by-month table below the grid, newest month first, with a day count per month.',
+      'A line naming the reporting timezone, so a day boundary is never ambiguous to the person reading it.',
+      'At 375 the week rows do not wrap or overflow the container.',
     ],
   },
   {

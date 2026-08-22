@@ -563,6 +563,87 @@ describe('the shell, from the page', () => {
       ).get() as { n: number }).n,
     ).toBe(1)
   })
+
+  // ── page_view ─────────────────────────────────────────────────────────────
+  //
+  // The one event that means "the friend was here", whatever they landed on.
+  // It exists because dashboard_open cannot answer that question on its own:
+  // the placeholder branch returns before any metric is written, so a friend
+  // checking every day while their v1 is being built left NO row anywhere —
+  // and with a 30-day session, `login` would not fire either.
+  function pageViews(): Record<string, unknown>[] {
+    return (
+      handle!
+        .prepare("SELECT data FROM metrics WHERE event = 'page_view' ORDER BY id")
+        .all() as { data: string }[]
+    ).map((row) => JSON.parse(row.data) as Record<string, unknown>)
+  }
+
+  it('writes a page_view on every render, unlike first_session_start', async () => {
+    const { render } = await arrangeOwner()
+    await render()
+    await render()
+
+    expect(pageViews()).toHaveLength(2)
+  })
+
+  it('writes one when no dashboard is deployed — the placeholder case', async () => {
+    // THE GAP THIS EVENT CLOSES. dashboardRegion returns the placeholder card
+    // before it can write a dashboard_open, so this render used to be
+    // invisible to every retention read.
+    registrySlot.hasDashboard = false
+    const { render } = await arrangeOwner()
+    await render()
+
+    expect(pageViews()).toEqual([
+      { device_class: 'desktop', unlocked: true, dashboard: 'placeholder' },
+    ])
+  })
+
+  it('says so when a dashboard IS deployed', async () => {
+    // The inverse, so the field cannot be a hardcoded constant that passes
+    // both ways.
+    registrySlot.hasDashboard = true
+    const { render } = await arrangeOwner()
+    await render()
+
+    expect(pageViews()[0]).toMatchObject({ dashboard: 'built' })
+  })
+
+  it('writes one for a LOCKED session, and records that it was locked', async () => {
+    const { getDb } = await import('@/lib/db/instance')
+    const { createAccount: createAcct } = await import('@/lib/auth/accounts')
+    const { createSession: createSess, SESSION_COOKIE } = await import(
+      '@/lib/session/store'
+    )
+    sessionCookieName = SESSION_COOKIE
+    handle = getDb()
+    const id = await createAcct(handle, { slug: 'devone', role: 'user', password: 'pw' })
+    cookieSlot.value = { value: createSess(handle, id) } // no putKey: locked
+
+    const { default: UserSpace } = await import('@/app/[user]/page')
+    await UserSpace({ params: Promise.resolve({ user: 'devone' }) })
+
+    // A friend who comes back, cannot remember whether they are unlocked, and
+    // bounces is still a friend who came back.
+    expect(pageViews()).toEqual([
+      { device_class: 'desktop', unlocked: false, dashboard: 'placeholder' },
+    ])
+  })
+
+  it('carries no user values', async () => {
+    // EXACT shape, not a subset match — the same bound dashboard_open is held
+    // to. Session state and registry state only: no slug-derived id, no day,
+    // no count, nothing the friend typed.
+    const { render } = await arrangeOwner()
+    await render()
+
+    expect(Object.keys(pageViews()[0]!).sort()).toEqual([
+      'dashboard',
+      'device_class',
+      'unlocked',
+    ])
+  })
 })
 
 describe('app/admin/page.tsx (AdminPortal)', () => {

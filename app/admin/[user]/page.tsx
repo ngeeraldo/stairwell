@@ -16,7 +16,20 @@ import { readStoredSpec, type StoredSpec } from '@/lib/spec/stored'
 import { diffVersions, type SpecDiff } from '@/lib/spec/diff'
 import { renderChangeMarkdown, renderLegacyMarkdown, renderSpecMarkdown } from '@/lib/spec/render'
 import { buildTimeline } from '@/lib/chat/timeline'
+import { activeDays, REPORTING_TIME_ZONE } from '@/lib/metrics/retention'
+import { dayKey } from '@/lib/time/dayKey'
 import { AdminTabs } from './AdminTabs'
+import { ActivityPane } from './ActivityPane'
+
+/**
+ * How far back the Activity grid draws.
+ *
+ * Twelve weeks is a quarter — long enough that a friend who drifted off in
+ * month two is visible as a gap rather than as an empty pane, short enough
+ * that the rows still fit on a phone. The by-month table beneath it is not
+ * windowed at all, so nothing is actually lost off the top.
+ */
+const ACTIVITY_WEEKS = 12
 
 /**
  * What a current-shape row can be shown against.
@@ -522,6 +535,17 @@ export default async function TranscriptPane({
               </div>
             </div>
           )
+        }
+        activity={
+          <ActivityPane
+            days={activeDays(getDb(), account.id)}
+            // Resolved here, in the ONE reporting zone, and handed down — the
+            // same discipline app/[user]/page.tsx applies to a friend's
+            // `today`. A pane that asked a clock what day it is could disagree
+            // with the days it is drawing.
+            today={dayKey(Date.now(), REPORTING_TIME_ZONE)}
+            weeks={ACTIVITY_WEEKS}
+          />
         }
       />
 
